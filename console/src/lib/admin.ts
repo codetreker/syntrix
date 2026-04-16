@@ -30,6 +30,16 @@ export interface UpdateUserRequest {
   disabled: boolean
 }
 
+export interface DatabaseInfo {
+  name: string
+  [key: string]: unknown
+}
+
+export interface HealthInfo {
+  status: string
+  [key: string]: unknown
+}
+
 export const adminApi = {
   /**
    * List all users with optional pagination
@@ -38,6 +48,22 @@ export const adminApi = {
     const response = await api.get<User[]>('/admin/users', {
       params: { limit, offset }
     })
+    return response.data
+  },
+
+  /**
+   * List all databases
+   */
+  async listDatabases(): Promise<DatabaseInfo[]> {
+    const response = await api.get<DatabaseInfo[]>('/admin/databases')
+    return response.data
+  },
+
+  /**
+   * Get admin health info
+   */
+  async adminHealth(): Promise<HealthInfo> {
+    const response = await api.get<HealthInfo>('/admin/health')
     return response.data
   },
 
