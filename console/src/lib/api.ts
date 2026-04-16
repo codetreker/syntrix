@@ -110,6 +110,14 @@ export const authApi = {
 };
 
 // Data API endpoints
+export interface User {
+  id: string;
+  username: string;
+  role: string;
+  database: string;
+  created_at?: string;
+}
+
 export interface QueryRequest {
   collection: string;
   filter?: Record<string, unknown>;
