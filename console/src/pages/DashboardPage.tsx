@@ -358,7 +358,7 @@ export default function DashboardPage() {
       const [users, databases, rules, healthRes, adminHealthOk] =
         await Promise.all([
           adminApi.listUsers(100, 0).catch(() => [] as User[]),
-          adminApi.listDatabases().then((r): DatabaseInfo[] => r.databases?.map((d) => ({ name: d.display_name, ...d })) || []).catch((): DatabaseInfo[] => []),
+          adminApi.listDatabases().catch(() => [] as DatabaseInfo[]),
           adminApi.getRules().catch(() => null),
           api
             .get('/health')

@@ -13,7 +13,6 @@ const CollectionsPage = lazy(() => import('../pages/CollectionsPage'));
 const TriggersPage = lazy(() => import('../pages/TriggersPage'));
 const UsersPage = lazy(() => import('../pages/admin/UsersPage'));
 const SecurityPage = lazy(() => import('../pages/admin/SecurityPage'));
-const DatabasesPage = lazy(() => import('../pages/admin/DatabasesPage'));
 const SettingsPage = lazy(() => import('../pages/SettingsPage'));
 
 // Suspense wrapper for lazy loaded components
@@ -96,14 +95,6 @@ export const router = createBrowserRouter([
             element: (
               <SuspenseWrapper>
                 <DashboardPage />
-              </SuspenseWrapper>
-            ),
-          },
-          {
-            path: 'databases',
-            element: (
-              <SuspenseWrapper>
-                <DatabasesPage />
               </SuspenseWrapper>
             ),
           },
