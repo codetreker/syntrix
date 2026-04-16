@@ -27,6 +27,7 @@ export interface RuleSet {
 
 export interface UpdateUserRequest {
   roles: string[]
+  db_admin?: string[]
   disabled: boolean
 }
 
