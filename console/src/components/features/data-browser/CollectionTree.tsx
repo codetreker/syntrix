@@ -29,10 +29,10 @@ export function CollectionTree({
     setError(null);
     try {
       const data = await adminApi.listDatabases();
-      setDatabases(data);
+      setDatabases(data.databases?.map((d) => ({ name: d.display_name, ...d })) || []);
       // Auto-select first database if none selected
-      if (!selectedDatabase && data.length > 0) {
-        onSelectDatabase(data[0].name);
+      if (!selectedDatabase && data.databases?.length > 0) {
+        onSelectDatabase(data.databases[0].display_name);
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load databases');
