@@ -54,7 +54,7 @@ function AppLayout() {
   
   const handleLogout = () => {
     logout();
-    window.location.href = '/login';
+    window.location.href = `${BASE_PATH}/login`;
   };
   
   return (
@@ -63,6 +63,8 @@ function AppLayout() {
     </Layout>
   );
 }
+
+const BASE_PATH = '/console';
 
 export const router = createBrowserRouter([
   // Auth routes
@@ -145,4 +147,4 @@ export const router = createBrowserRouter([
     path: '*',
     element: <Navigate to="/" replace />,
   },
-]);
+], { basename: BASE_PATH });

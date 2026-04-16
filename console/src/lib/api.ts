@@ -37,7 +37,7 @@ api.interceptors.response.use(
       localStorage.removeItem('auth-storage');
       // Only redirect if not already on login page
       if (!window.location.pathname.includes('/login')) {
-        window.location.href = '/login';
+        window.location.href = '/console/login';
       }
     }
     return Promise.reject(error);
@@ -99,8 +99,8 @@ export const authApi = {
     });
   },
 
-  logout: async (): Promise<void> => {
-    await api.post('/auth/v1/logout');
+  logout: async (refreshToken: string): Promise<void> => {
+    await api.post('/auth/v1/logout', { refresh_token: refreshToken });
   },
 
   me: async () => {

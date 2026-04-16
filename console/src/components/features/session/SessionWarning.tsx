@@ -51,7 +51,7 @@ export function SessionWarning() {
   const handleLogout = () => {
     setVisible(false)
     logout()
-    window.location.href = '/login'
+    window.location.href = '/console/login'
   }
 
   const formatTime = (seconds: number) => {
