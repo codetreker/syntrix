@@ -95,7 +95,7 @@ export default function DatabasesPage() {
     if (!deleteTarget) return;
     setDeleting(true);
     try {
-      await adminApi.deleteDatabase(deleteTarget.id);
+      await adminApi.deleteDatabase(`id:${deleteTarget.id}`);
       toast.success(`Database "${deleteTarget.display_name}" deleted`);
       setDeleteTarget(null);
       fetchDatabases();
