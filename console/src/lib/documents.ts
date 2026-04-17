@@ -15,6 +15,7 @@ export interface Filter {
 }
 
 export interface QueryOptions {
+  database: string;
   collection: string;
   filters?: Filter[];
   limit?: number;
@@ -34,22 +35,24 @@ export interface CollectionInfo {
 
 export const documentsApi = {
   /**
-   * Query documents from a collection with optional filters
+   * Query documents using POST /api/v1/databases/{db}/query
    */
   query: async (options: QueryOptions): Promise<QueryResponse> => {
-    // Backend returns array directly, not wrapped object
-    const response = await api.post<Document[]>('/api/v1/query', {
-      collection: options.collection,
-      filters: options.filters || [],
-      limit: (options.limit || 50) + 1, // Request one extra to check if there's more
-      startAfter: options.startAfter,
-      orderBy: options.orderBy || [],
-    });
-    
+    const limit = options.limit || 20;
+    const response = await api.post<Document[]>(
+      `/api/v1/databases/${encodeURIComponent(options.database)}/query`,
+      {
+        collection: options.collection,
+        filters: options.filters || [],
+        limit: limit + 1,
+        startAfter: options.startAfter,
+        orderBy: options.orderBy || [],
+      }
+    );
+
     const docs = response.data || [];
-    const limit = options.limit || 50;
     const hasMore = docs.length > limit;
-    
+
     return {
       documents: hasMore ? docs.slice(0, limit) : docs,
       hasMore,
@@ -57,54 +60,71 @@ export const documentsApi = {
   },
 
   /**
-   * Get a single document by path (collection/id)
+   * Get a single document: GET /api/v1/databases/{db}/documents/{collection}/{id}
    */
-  get: async (collection: string, id: string): Promise<Document> => {
-    const response = await api.get<Document>(`/api/v1/${collection}/${id}`);
+  get: async (database: string, collection: string, id: string): Promise<Document> => {
+    const response = await api.get<Document>(
+      `/api/v1/databases/${encodeURIComponent(database)}/documents/${collection}/${id}`
+    );
     return response.data;
   },
 
   /**
-   * Create a new document
+   * Create a new document: POST /api/v1/databases/{db}/documents/{collection}
    */
-  create: async (collection: string, data: Record<string, unknown>, id?: string): Promise<Document> => {
-    const path = id ? `/api/v1/${collection}/${id}` : `/api/v1/${collection}`;
-    const response = await api.post<Document>(path, data);
+  create: async (database: string, collection: string, data: Record<string, unknown>, documentId?: string): Promise<Document> => {
+    const payload = documentId ? { ...data, id: documentId } : data;
+    const response = await api.post<Document>(
+      `/api/v1/databases/${encodeURIComponent(database)}/documents/${collection}`,
+      payload
+    );
     return response.data;
   },
 
   /**
-   * Update an existing document
+   * Update (patch) an existing document: PATCH /api/v1/databases/{db}/documents/{collection}/{id}
+   * Backend expects { doc: {...} }
    */
-  update: async (collection: string, id: string, data: Record<string, unknown>): Promise<Document> => {
-    const response = await api.patch<Document>(`/api/v1/${collection}/${id}`, data);
+  update: async (database: string, collection: string, id: string, data: Record<string, unknown>): Promise<Document> => {
+    const response = await api.patch<Document>(
+      `/api/v1/databases/${encodeURIComponent(database)}/documents/${collection}/${id}`,
+      { doc: data }
+    );
     return response.data;
   },
 
   /**
-   * Delete a document
+   * Delete a document: DELETE /api/v1/databases/{db}/documents/{collection}/{id}
    */
-  delete: async (collection: string, id: string): Promise<void> => {
-    await api.delete(`/api/v1/${collection}/${id}`);
+  delete: async (database: string, collection: string, id: string): Promise<void> => {
+    await api.delete(
+      `/api/v1/databases/${encodeURIComponent(database)}/documents/${collection}/${id}`
+    );
   },
 
   /**
-   * List all collections (queries with empty filter to discover collections)
-   * Note: This is a workaround - ideally there would be a /collections endpoint
+   * Discover collections by querying with an empty filter.
+   * Since there's no dedicated collections endpoint, we look at _collection fields
+   * from a broad query with a small limit.
    */
-  listCollections: async (): Promise<CollectionInfo[]> => {
+  listCollections: async (database: string): Promise<CollectionInfo[]> => {
     try {
-      // Try to get collections from a metadata endpoint if available
-      const response = await api.get<{ collections: CollectionInfo[] }>('/api/v1/collections');
-      return response.data.collections || [];
+      // Query with no collection filter to discover what exists
+      // The backend may return documents from various collections
+      const response = await api.post<Document[]>(
+        `/api/v1/databases/${encodeURIComponent(database)}/query`,
+        { collection: '', filters: [], limit: 100, orderBy: [] }
+      );
+      const docs = response.data || [];
+      const collectionSet = new Set<string>();
+      for (const doc of docs) {
+        if (doc._collection) {
+          collectionSet.add(doc._collection);
+        }
+      }
+      return Array.from(collectionSet).sort().map((name) => ({ name }));
     } catch {
-      // Fallback: return known collections
-      // In a real implementation, this could scan recent queries or use a discovery endpoint
-      return [
-        { name: 'messages' },
-        { name: 'users' },
-        { name: 'settings' },
-      ];
+      return [];
     }
   },
 };

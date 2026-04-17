@@ -1,21 +1,36 @@
 import { useState, useEffect, useCallback } from 'react';
-import { ChevronLeft, ChevronRight, RefreshCw } from 'lucide-react';
-import { documentsApi, type Document, type QueryResponse } from '../../../lib/documents';
+import { ChevronLeft, ChevronRight, RefreshCw, Search, X } from 'lucide-react';
+import { documentsApi, type Document, type QueryResponse, type Filter } from '../../../lib/documents';
 import { Table, type Column, Button, Spinner } from '../../ui';
 
+const FILTER_OPS: { value: Filter['op']; label: string }[] = [
+  { value: 'eq', label: '=' },
+  { value: 'ne', label: '!=' },
+  { value: 'gt', label: '>' },
+  { value: 'gte', label: '>=' },
+  { value: 'lt', label: '<' },
+  { value: 'lte', label: '<=' },
+  { value: 'contains', label: 'contains' },
+];
+
 interface DocumentListProps {
+  database: string;
   collection: string;
   selectedDocumentId?: string | null;
   onSelectDocument: (doc: Document) => void;
 }
 
-export function DocumentList({ collection, onSelectDocument }: DocumentListProps) {
+export function DocumentList({ database, collection, onSelectDocument }: DocumentListProps) {
   const [documents, setDocuments] = useState<Document[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [hasMore, setHasMore] = useState(false);
-  const [cursors, setCursors] = useState<string[]>([]); // Stack of cursors for prev navigation
+  const [cursors, setCursors] = useState<string[]>([]);
   const [currentCursor, setCurrentCursor] = useState<string | undefined>(undefined);
+  const [filterField, setFilterField] = useState('');
+  const [filterOp, setFilterOp] = useState<Filter['op']>('eq');
+  const [filterValue, setFilterValue] = useState('');
+  const [activeFilters, setActiveFilters] = useState<Filter[]>([]);
   const limit = 20;
 
   const fetchDocuments = useCallback(async (startAfter?: string, isGoingBack = false) => {
@@ -23,7 +38,9 @@ export function DocumentList({ collection, onSelectDocument }: DocumentListProps
     setError(null);
     try {
       const response: QueryResponse = await documentsApi.query({
+        database,
         collection,
+        filters: activeFilters,
         limit,
         startAfter,
       });
@@ -41,11 +58,26 @@ export function DocumentList({ collection, onSelectDocument }: DocumentListProps
     } finally {
       setLoading(false);
     }
-  }, [collection]);
+  }, [database, collection, activeFilters]);
 
   useEffect(() => {
     fetchDocuments();
   }, [collection, fetchDocuments]);
+
+  const handleAddFilter = () => {
+    if (!filterField.trim()) return;
+    let parsedValue: unknown = filterValue;
+    if (filterValue === 'true') parsedValue = true;
+    else if (filterValue === 'false') parsedValue = false;
+    else if (filterValue !== '' && !isNaN(Number(filterValue))) parsedValue = Number(filterValue);
+    setActiveFilters((prev) => [...prev, { field: filterField, op: filterOp, value: parsedValue }]);
+    setFilterField('');
+    setFilterValue('');
+  };
+
+  const handleRemoveFilter = (index: number) => {
+    setActiveFilters((prev) => prev.filter((_, i) => i !== index));
+  };
 
   const handleNextPage = () => {
     if (hasMore && documents.length > 0) {
@@ -142,6 +174,59 @@ export function DocumentList({ collection, onSelectDocument }: DocumentListProps
         >
           <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
         </button>
+      </div>
+
+      {/* Filter Bar */}
+      <div className="px-4 py-2 border-b border-gray-200 dark:border-gray-700 space-y-2">
+        <div className="flex items-center gap-2">
+          <input
+            type="text"
+            placeholder="Field name"
+            value={filterField}
+            onChange={(e) => setFilterField(e.target.value)}
+            className="w-32 px-2 py-1 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100"
+          />
+          <select
+            value={filterOp}
+            onChange={(e) => setFilterOp(e.target.value as Filter['op'])}
+            className="px-2 py-1 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100"
+          >
+            {FILTER_OPS.map((o) => (
+              <option key={o.value} value={o.value}>{o.label}</option>
+            ))}
+          </select>
+          <input
+            type="text"
+            placeholder="Value"
+            value={filterValue}
+            onChange={(e) => setFilterValue(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && handleAddFilter()}
+            className="w-32 px-2 py-1 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100"
+          />
+          <button
+            onClick={handleAddFilter}
+            disabled={!filterField.trim()}
+            className="p-1.5 rounded hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-600 dark:text-gray-400 disabled:opacity-50"
+            title="Add filter"
+          >
+            <Search className="w-4 h-4" />
+          </button>
+        </div>
+        {activeFilters.length > 0 && (
+          <div className="flex flex-wrap gap-1.5">
+            {activeFilters.map((f, i) => (
+              <span
+                key={i}
+                className="inline-flex items-center gap-1 px-2 py-0.5 text-xs rounded-full bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300"
+              >
+                {f.field} {FILTER_OPS.find((o) => o.value === f.op)?.label} {String(f.value)}
+                <button onClick={() => handleRemoveFilter(i)} className="hover:text-blue-900 dark:hover:text-blue-100">
+                  <X className="w-3 h-3" />
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* Table */}

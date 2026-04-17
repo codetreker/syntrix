@@ -37,7 +37,7 @@ api.interceptors.response.use(
       localStorage.removeItem('auth-storage');
       // Only redirect if not already on login page
       if (!window.location.pathname.includes('/login')) {
-        window.location.href = '/login';
+        window.location.href = '/console/login';
       }
     }
     return Promise.reject(error);
@@ -99,8 +99,8 @@ export const authApi = {
     });
   },
 
-  logout: async (): Promise<void> => {
-    await api.post('/auth/v1/logout');
+  logout: async (refreshToken: string): Promise<void> => {
+    await api.post('/auth/v1/logout', { refresh_token: refreshToken });
   },
 
   me: async () => {
@@ -110,6 +110,14 @@ export const authApi = {
 };
 
 // Data API endpoints
+export interface User {
+  id: string;
+  username: string;
+  role: string;
+  database: string;
+  created_at?: string;
+}
+
 export interface QueryRequest {
   collection: string;
   filter?: Record<string, unknown>;
@@ -148,7 +156,7 @@ export const dataApi = {
   },
 };
 
-// Admin API endpoints
+// Auth-context User (minimal, for JWT-parsed current user)
 export interface User {
   id: string;
   username: string;
@@ -157,53 +165,4 @@ export interface User {
   created_at?: string;
 }
 
-export interface TriggerRule {
-  id: string;
-  name: string;
-  collection: string;
-  event_type: string;
-  enabled: boolean;
-  config: Record<string, unknown>;
-}
-
-export const adminApi = {
-  // User management
-  listUsers: async (): Promise<User[]> => {
-    const response = await api.get('/admin/users');
-    return response.data.users || [];
-  },
-
-  createUser: async (data: { username: string; password: string; role: string }): Promise<User> => {
-    const response = await api.post('/admin/users', data);
-    return response.data;
-  },
-
-  updateUser: async (id: string, data: Partial<User>): Promise<User> => {
-    const response = await api.put(`/admin/users/${id}`, data);
-    return response.data;
-  },
-
-  deleteUser: async (id: string): Promise<void> => {
-    await api.delete(`/admin/users/${id}`);
-  },
-
-  // Trigger rules
-  listRules: async (): Promise<TriggerRule[]> => {
-    const response = await api.get('/admin/rules');
-    return response.data.rules || [];
-  },
-
-  createRule: async (data: Omit<TriggerRule, 'id'>): Promise<TriggerRule> => {
-    const response = await api.post('/admin/rules', data);
-    return response.data;
-  },
-
-  updateRule: async (id: string, data: Partial<TriggerRule>): Promise<TriggerRule> => {
-    const response = await api.put(`/admin/rules/${id}`, data);
-    return response.data;
-  },
-
-  deleteRule: async (id: string): Promise<void> => {
-    await api.delete(`/admin/rules/${id}`);
-  },
-};
+// Full admin API is in lib/admin.ts — do not duplicate here

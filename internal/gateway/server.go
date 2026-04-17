@@ -2,6 +2,8 @@ package gateway
 
 import (
 	"net/http"
+	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/syntrixbase/syntrix/internal/core/database"
@@ -82,8 +84,22 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 		mux.HandleFunc("GET /realtime/sse", s.realtime.HandleSSE)
 	}
 
-	// Console
-	mux.Handle("GET /console/", http.StripPrefix("/console/", http.FileServer(http.Dir("console"))))
+	// Console – serve built frontend with SPA fallback
+	consoleDir := "console/dist"
+	mux.HandleFunc("GET /console/", func(w http.ResponseWriter, r *http.Request) {
+		// Strip the /console/ prefix to get the relative file path
+		relPath := r.URL.Path[len("/console/"):]
+		// Check if the requested file exists on disk
+		if relPath != "" {
+			absPath := filepath.Join(consoleDir, filepath.Clean("/"+relPath))
+			if info, err := os.Stat(absPath); err == nil && !info.IsDir() {
+				http.StripPrefix("/console/", http.FileServer(http.Dir(consoleDir))).ServeHTTP(w, r)
+				return
+			}
+		}
+		// SPA fallback: serve index.html for client-side routing
+		http.ServeFile(w, r, filepath.Join(consoleDir, "index.html"))
+	})
 }
 
 // SetDatabaseService injects the database service for database management operations.

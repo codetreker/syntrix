@@ -113,9 +113,13 @@ export const useAuthStore = create<AuthState>()(
       },
 
       logout: () => {
-        const { refreshTimerId } = get();
+        const { refreshTimerId, refreshToken } = get();
         if (refreshTimerId) {
           clearTimeout(refreshTimerId);
+        }
+        // Best-effort server-side logout (don't block on failure)
+        if (refreshToken) {
+          authApi.logout(refreshToken).catch(() => {});
         }
         localStorage.removeItem('token');
         localStorage.removeItem('refreshToken');

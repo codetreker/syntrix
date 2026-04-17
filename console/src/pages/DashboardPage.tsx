@@ -1,41 +1,60 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { useAuthStore } from '../stores'
-import { adminApi } from '../lib/admin'
-import { documentsApi } from '../lib/documents'
+import { adminApi, type User, type DatabaseInfo, type RuleSet } from '../lib/admin'
 import { api } from '../lib/api'
-import { Spinner } from '../components/ui/Loading'
-import { 
-  Database, 
-  Users, 
-  FileText, 
-  Zap, 
-  Activity, 
+import {
+  Database,
+  Users,
+  Shield,
   RefreshCw,
   CheckCircle,
   XCircle,
-  Clock
+  AlertTriangle,
+  Clock,
+  Heart,
 } from 'lucide-react'
 import { Button } from '../components/ui/Button'
 
-interface DashboardStats {
-  collections: number
-  documents: number
-  users: number
-  triggers: number
-  healthStatus: 'healthy' | 'unhealthy' | 'unknown'
-  lastChecked: Date | null
+const AUTO_REFRESH_MS = 30_000
+
+// ─── Types ───────────────────────────────────────────────────────────
+
+interface DashboardData {
+  users: User[]
+  databases: DatabaseInfo[]
+  rules: RuleSet | null
+  healthOk: boolean
+  adminHealthOk: boolean
 }
 
-interface StatCardProps {
+type LoadState = 'loading' | 'error' | 'ready'
+
+// ─── Skeleton ────────────────────────────────────────────────────────
+
+function Skeleton({ className = '' }: { className?: string }) {
+  return (
+    <div
+      className={`animate-pulse rounded bg-gray-200 dark:bg-gray-700 ${className}`}
+    />
+  )
+}
+
+// ─── Stat Card ───────────────────────────────────────────────────────
+
+function StatCard({
+  title,
+  value,
+  icon,
+  loading,
+  color = 'blue',
+}: {
   title: string
   value: number | string
   icon: React.ReactNode
   loading?: boolean
   color?: string
-}
-
-function StatCard({ title, value, icon, loading, color = 'blue' }: StatCardProps) {
-  const colorClasses: Record<string, string> = {
+}) {
+  const bg: Record<string, string> = {
     blue: 'bg-blue-100 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400',
     green: 'bg-green-100 text-green-600 dark:bg-green-900/30 dark:text-green-400',
     purple: 'bg-purple-100 text-purple-600 dark:bg-purple-900/30 dark:text-purple-400',
@@ -43,65 +62,60 @@ function StatCard({ title, value, icon, loading, color = 'blue' }: StatCardProps
   }
 
   return (
-    <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 p-6">
+    <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 p-4 sm:p-6">
       <div className="flex items-center justify-between">
-        <div>
-          <p className="text-sm font-medium text-gray-500 dark:text-gray-400">{title}</p>
+        <div className="min-w-0">
+          <p className="text-sm font-medium text-gray-500 dark:text-gray-400 truncate">
+            {title}
+          </p>
           {loading ? (
-            <div className="mt-2 h-9 flex items-center">
-              <Spinner size="sm" />
-            </div>
+            <Skeleton className="mt-2 h-9 w-16" />
           ) : (
-            <p className="mt-2 text-3xl font-bold text-gray-900 dark:text-white">{value}</p>
+            <p className="mt-2 text-3xl font-bold text-gray-900 dark:text-white truncate">
+              {value}
+            </p>
           )}
         </div>
-        <div className={`p-3 rounded-lg ${colorClasses[color]}`}>
-          {icon}
-        </div>
+        <div className={`p-3 rounded-lg shrink-0 ${bg[color]}`}>{icon}</div>
       </div>
     </div>
   )
 }
 
-function HealthStatusCard({ status, lastChecked, loading }: { 
-  status: DashboardStats['healthStatus']
-  lastChecked: Date | null
-  loading?: boolean 
-}) {
-  const statusConfig = {
-    healthy: {
-      icon: <CheckCircle className="w-6 h-6" />,
-      text: 'Healthy',
-      color: 'text-green-600 dark:text-green-400',
-      bgColor: 'bg-green-100 dark:bg-green-900/30',
-    },
-    unhealthy: {
-      icon: <XCircle className="w-6 h-6" />,
-      text: 'Unhealthy',
-      color: 'text-red-600 dark:text-red-400',
-      bgColor: 'bg-red-100 dark:bg-red-900/30',
-    },
-    unknown: {
-      icon: <Activity className="w-6 h-6" />,
-      text: 'Unknown',
-      color: 'text-gray-600 dark:text-gray-400',
-      bgColor: 'bg-gray-100 dark:bg-gray-800',
-    },
-  }
+// ─── Health Card ─────────────────────────────────────────────────────
 
-  const config = statusConfig[status]
+function HealthCard({
+  healthOk,
+  adminHealthOk,
+  lastChecked,
+  loading,
+}: {
+  healthOk: boolean
+  adminHealthOk: boolean
+  lastChecked: Date | null
+  loading?: boolean
+}) {
+  const allGood = healthOk && adminHealthOk
 
   return (
-    <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 p-6">
+    <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 p-4 sm:p-6">
       <div className="flex items-center justify-between">
         <div>
-          <p className="text-sm font-medium text-gray-500 dark:text-gray-400">System Status</p>
+          <p className="text-sm font-medium text-gray-500 dark:text-gray-400">
+            System Health
+          </p>
           {loading ? (
-            <div className="mt-2 h-9 flex items-center">
-              <Spinner size="sm" />
-            </div>
+            <Skeleton className="mt-2 h-9 w-24" />
           ) : (
-            <p className={`mt-2 text-2xl font-bold ${config.color}`}>{config.text}</p>
+            <p
+              className={`mt-2 text-2xl font-bold ${
+                allGood
+                  ? 'text-green-600 dark:text-green-400'
+                  : 'text-red-600 dark:text-red-400'
+              }`}
+            >
+              {allGood ? 'Healthy' : 'Degraded'}
+            </p>
           )}
           {lastChecked && (
             <p className="mt-1 text-xs text-gray-400 dark:text-gray-500 flex items-center gap-1">
@@ -110,195 +124,357 @@ function HealthStatusCard({ status, lastChecked, loading }: {
             </p>
           )}
         </div>
-        <div className={`p-3 rounded-lg ${config.bgColor} ${config.color}`}>
-          {config.icon}
+        <div
+          className={`p-3 rounded-lg ${
+            loading
+              ? 'bg-gray-100 text-gray-400 dark:bg-gray-800 dark:text-gray-500'
+              : allGood
+                ? 'bg-green-100 text-green-600 dark:bg-green-900/30 dark:text-green-400'
+                : 'bg-red-100 text-red-600 dark:bg-red-900/30 dark:text-red-400'
+          }`}
+        >
+          {allGood ? (
+            <CheckCircle className="w-6 h-6" />
+          ) : (
+            <XCircle className="w-6 h-6" />
+          )}
         </div>
       </div>
+      {!loading && (
+        <div className="mt-4 space-y-2 text-sm">
+          <StatusRow label="Core API" ok={healthOk} />
+          <StatusRow label="Admin API" ok={adminHealthOk} />
+        </div>
+      )}
     </div>
   )
 }
 
+function StatusRow({ label, ok }: { label: string; ok: boolean }) {
+  return (
+    <div className="flex items-center justify-between">
+      <span className="text-gray-600 dark:text-gray-400">{label}</span>
+      <span
+        className={`flex items-center gap-1 font-medium ${
+          ok
+            ? 'text-green-600 dark:text-green-400'
+            : 'text-red-600 dark:text-red-400'
+        }`}
+      >
+        {ok ? (
+          <CheckCircle className="w-3.5 h-3.5" />
+        ) : (
+          <XCircle className="w-3.5 h-3.5" />
+        )}
+        {ok ? 'OK' : 'Down'}
+      </span>
+    </div>
+  )
+}
+
+// ─── Databases Overview ──────────────────────────────────────────────
+
+function DatabasesTable({
+  databases,
+  loading,
+}: {
+  databases: DatabaseInfo[]
+  loading?: boolean
+}) {
+  return (
+    <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 p-4 sm:p-6">
+      <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-4">
+        Databases
+      </h3>
+      {loading ? (
+        <div className="space-y-3">
+          {[1, 2, 3].map((i) => (
+            <Skeleton key={i} className="h-8 w-full" />
+          ))}
+        </div>
+      ) : databases.length === 0 ? (
+        <p className="text-sm text-gray-500 dark:text-gray-400">
+          No databases found.
+        </p>
+      ) : (
+        <div className="overflow-x-auto -mx-4 sm:mx-0">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-gray-200 dark:border-gray-700">
+                <th className="text-left py-2 px-4 sm:px-2 font-medium text-gray-500 dark:text-gray-400">
+                  Name
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {databases.map((db) => (
+                <tr
+                  key={db.name}
+                  className="border-b border-gray-100 dark:border-gray-700/50"
+                >
+                  <td className="py-2 px-4 sm:px-2 text-gray-900 dark:text-white flex items-center gap-2">
+                    <Database className="w-4 h-4 text-blue-500 shrink-0" />
+                    <span className="truncate">{db.name}</span>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ─── Users Table ─────────────────────────────────────────────────────
+
+function UsersTable({
+  users,
+  loading,
+}: {
+  users: User[]
+  loading?: boolean
+}) {
+  return (
+    <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 p-4 sm:p-6">
+      <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-4">
+        Users
+      </h3>
+      {loading ? (
+        <div className="space-y-3">
+          {[1, 2, 3].map((i) => (
+            <Skeleton key={i} className="h-8 w-full" />
+          ))}
+        </div>
+      ) : users.length === 0 ? (
+        <p className="text-sm text-gray-500 dark:text-gray-400">
+          No users found.
+        </p>
+      ) : (
+        <div className="overflow-x-auto -mx-4 sm:mx-0">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-gray-200 dark:border-gray-700">
+                <th className="text-left py-2 px-4 sm:px-2 font-medium text-gray-500 dark:text-gray-400">
+                  Username
+                </th>
+                <th className="text-left py-2 px-4 sm:px-2 font-medium text-gray-500 dark:text-gray-400 hidden sm:table-cell">
+                  Database
+                </th>
+                <th className="text-left py-2 px-4 sm:px-2 font-medium text-gray-500 dark:text-gray-400 hidden md:table-cell">
+                  Roles
+                </th>
+                <th className="text-left py-2 px-4 sm:px-2 font-medium text-gray-500 dark:text-gray-400">
+                  Status
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {users.slice(0, 10).map((u) => (
+                <tr
+                  key={u.id}
+                  className="border-b border-gray-100 dark:border-gray-700/50"
+                >
+                  <td className="py-2 px-4 sm:px-2 text-gray-900 dark:text-white truncate max-w-[120px]">
+                    {u.username}
+                  </td>
+                  <td className="py-2 px-4 sm:px-2 text-gray-600 dark:text-gray-400 hidden sm:table-cell">
+                    {u.database}
+                  </td>
+                  <td className="py-2 px-4 sm:px-2 text-gray-600 dark:text-gray-400 hidden md:table-cell">
+                    {u.roles?.join(', ') || '-'}
+                  </td>
+                  <td className="py-2 px-4 sm:px-2">
+                    <span
+                      className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${
+                        u.disabled
+                          ? 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400'
+                          : 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400'
+                      }`}
+                    >
+                      {u.disabled ? 'Disabled' : 'Active'}
+                    </span>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {users.length > 10 && (
+            <p className="mt-2 text-xs text-gray-400 dark:text-gray-500">
+              Showing 10 of {users.length} users
+            </p>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ─── Error State ─────────────────────────────────────────────────────
+
+function ErrorBanner({
+  message,
+  onRetry,
+}: {
+  message: string
+  onRetry: () => void
+}) {
+  return (
+    <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-xl p-4 sm:p-6 flex flex-col sm:flex-row items-start sm:items-center gap-3">
+      <AlertTriangle className="w-5 h-5 text-red-500 shrink-0" />
+      <p className="text-sm text-red-700 dark:text-red-400 flex-1">
+        {message}
+      </p>
+      <Button variant="secondary" onClick={onRetry} className="shrink-0">
+        <RefreshCw className="w-4 h-4 mr-2" />
+        Retry
+      </Button>
+    </div>
+  )
+}
+
+// ─── Page ────────────────────────────────────────────────────────────
+
 export default function DashboardPage() {
   const { user } = useAuthStore()
-  const isAdmin = user?.role === 'admin'
-  
-  const [stats, setStats] = useState<DashboardStats>({
-    collections: 0,
-    documents: 0,
-    users: 0,
-    triggers: 0,
-    healthStatus: 'unknown',
-    lastChecked: null,
-  })
-  const [loading, setLoading] = useState(true)
-  const [refreshing, setRefreshing] = useState(false)
 
-  const fetchStats = useCallback(async (isRefresh = false) => {
+  const [data, setData] = useState<DashboardData>({
+    users: [],
+    databases: [],
+    rules: null,
+    healthOk: false,
+    adminHealthOk: false,
+  })
+  const [state, setState] = useState<LoadState>('loading')
+  const [lastChecked, setLastChecked] = useState<Date | null>(null)
+  const [refreshing, setRefreshing] = useState(false)
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  const fetchAll = useCallback(async (isRefresh = false) => {
     if (isRefresh) setRefreshing(true)
-    else setLoading(true)
+    else setState('loading')
 
     try {
-      // Fetch collections
-      let collections: { name: string }[] = []
-      try {
-        collections = await documentsApi.listCollections()
-      } catch {
-        collections = []
-      }
+      const [users, databases, rules, healthRes, adminHealthOk] =
+        await Promise.all([
+          adminApi.listUsers(100, 0).catch(() => [] as User[]),
+          adminApi.listDatabases().then((r): DatabaseInfo[] => r.databases?.map((d) => ({ name: d.display_name, ...d })) || []).catch((): DatabaseInfo[] => []),
+          adminApi.getRules().catch(() => null),
+          api
+            .get('/health')
+            .then(() => true)
+            .catch(() => false),
+          adminApi.health(),
+        ])
 
-      // Count documents per collection (sample first few)
-      let totalDocs = 0
-      for (const col of collections.slice(0, 5)) {
-        try {
-          const result = await documentsApi.query({ collection: col.name, limit: 100 })
-          totalDocs += result.documents.length
-          if (result.hasMore) totalDocs += 1 // Indicate more exist
-        } catch {
-          // Skip failed collections
-        }
-      }
-
-      // Fetch users count (admin only)
-      let usersCount = 0
-      if (isAdmin) {
-        try {
-          const users = await adminApi.listUsers(100, 0)
-          usersCount = users.length
-        } catch {
-          usersCount = 0
-        }
-      }
-
-      // Check health
-      let healthStatus: DashboardStats['healthStatus'] = 'unknown'
-      try {
-        const response = await api.get('/health')
-        healthStatus = response.status === 200 ? 'healthy' : 'unhealthy'
-      } catch {
-        healthStatus = 'unhealthy'
-      }
-
-      setStats({
-        collections: collections.length,
-        documents: totalDocs,
-        users: usersCount,
-        triggers: 0, // TODO: Add triggers API
-        healthStatus,
-        lastChecked: new Date(),
-      })
-    } catch (err) {
-      console.error('Failed to fetch stats:', err)
+      setData({ users, databases, rules, healthOk: healthRes, adminHealthOk })
+      setLastChecked(new Date())
+      setState('ready')
+    } catch {
+      setState('error')
     } finally {
-      setLoading(false)
       setRefreshing(false)
     }
-  }, [isAdmin])
+  }, [])
 
+  // Initial fetch + auto-refresh every 30s
   useEffect(() => {
-    fetchStats()
-  }, [fetchStats])
+    fetchAll()
+    timerRef.current = setInterval(() => fetchAll(true), AUTO_REFRESH_MS)
+    return () => {
+      if (timerRef.current) clearInterval(timerRef.current)
+    }
+  }, [fetchAll])
+
+  const rulesCount = data.rules
+    ? Object.keys(data.rules.match || {}).length
+    : 0
+
+  const isLoading = state === 'loading'
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 max-w-full overflow-hidden">
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Dashboard</h1>
+          <h1 className="text-2xl font-bold text-gray-900 dark:text-white">
+            Dashboard
+          </h1>
           <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
             Welcome back, {user?.username || 'User'}
           </p>
         </div>
         <Button
           variant="secondary"
-          onClick={() => fetchStats(true)}
+          onClick={() => fetchAll(true)}
           disabled={refreshing}
         >
-          <RefreshCw className={`w-4 h-4 mr-2 ${refreshing ? 'animate-spin' : ''}`} />
+          <RefreshCw
+            className={`w-4 h-4 mr-2 ${refreshing ? 'animate-spin' : ''}`}
+          />
           Refresh
         </Button>
       </div>
 
-      {/* Stats Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+      {/* Error state */}
+      {state === 'error' && (
+        <ErrorBanner
+          message="Failed to load dashboard data. The server may be unreachable."
+          onRetry={() => fetchAll()}
+        />
+      )}
+
+      {/* Stat cards */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-6">
         <StatCard
-          title="Collections"
-          value={stats.collections}
+          title="Users"
+          value={data.users.length}
+          icon={<Users className="w-6 h-6" />}
+          loading={isLoading}
+          color="purple"
+        />
+        <StatCard
+          title="Databases"
+          value={data.databases.length}
           icon={<Database className="w-6 h-6" />}
-          loading={loading}
+          loading={isLoading}
           color="blue"
         />
         <StatCard
-          title="Documents"
-          value={stats.documents > 100 ? '100+' : stats.documents}
-          icon={<FileText className="w-6 h-6" />}
-          loading={loading}
-          color="green"
-        />
-        {isAdmin && (
-          <StatCard
-            title="Users"
-            value={stats.users}
-            icon={<Users className="w-6 h-6" />}
-            loading={loading}
-            color="purple"
-          />
-        )}
-        <StatCard
-          title="Triggers"
-          value={stats.triggers || '-'}
-          icon={<Zap className="w-6 h-6" />}
-          loading={loading}
+          title="Security Rules"
+          value={rulesCount}
+          icon={<Shield className="w-6 h-6" />}
+          loading={isLoading}
           color="amber"
+        />
+        <StatCard
+          title="Health"
+          value={
+            isLoading
+              ? '-'
+              : data.healthOk && data.adminHealthOk
+                ? 'OK'
+                : 'Degraded'
+          }
+          icon={<Heart className="w-6 h-6" />}
+          loading={isLoading}
+          color="green"
         />
       </div>
 
-      {/* Health Status */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <HealthStatusCard 
-          status={stats.healthStatus} 
-          lastChecked={stats.lastChecked}
-          loading={loading}
+      {/* Health detail + databases */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6">
+        <HealthCard
+          healthOk={data.healthOk}
+          adminHealthOk={data.adminHealthOk}
+          lastChecked={lastChecked}
+          loading={isLoading}
         />
-        
-        {/* Quick Links */}
-        <div className="lg:col-span-2 bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 p-6">
-          <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-4">Quick Actions</h3>
-          <div className="grid grid-cols-2 gap-4">
-            <a 
-              href="/collections" 
-              className="flex items-center gap-3 p-4 rounded-lg bg-gray-50 dark:bg-gray-700/50 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
-            >
-              <Database className="w-5 h-5 text-blue-500" />
-              <span className="font-medium text-gray-700 dark:text-gray-300">Browse Data</span>
-            </a>
-            <a 
-              href="/triggers" 
-              className="flex items-center gap-3 p-4 rounded-lg bg-gray-50 dark:bg-gray-700/50 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
-            >
-              <Zap className="w-5 h-5 text-amber-500" />
-              <span className="font-medium text-gray-700 dark:text-gray-300">Manage Triggers</span>
-            </a>
-            {isAdmin && (
-              <>
-                <a 
-                  href="/users" 
-                  className="flex items-center gap-3 p-4 rounded-lg bg-gray-50 dark:bg-gray-700/50 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
-                >
-                  <Users className="w-5 h-5 text-purple-500" />
-                  <span className="font-medium text-gray-700 dark:text-gray-300">Manage Users</span>
-                </a>
-                <a 
-                  href="/security" 
-                  className="flex items-center gap-3 p-4 rounded-lg bg-gray-50 dark:bg-gray-700/50 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
-                >
-                  <Activity className="w-5 h-5 text-green-500" />
-                  <span className="font-medium text-gray-700 dark:text-gray-300">Security Rules</span>
-                </a>
-              </>
-            )}
-          </div>
-        </div>
+        <DatabasesTable databases={data.databases} loading={isLoading} />
       </div>
+
+      {/* Users table */}
+      <UsersTable users={data.users} loading={isLoading} />
     </div>
   )
 }

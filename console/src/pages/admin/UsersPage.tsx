@@ -13,8 +13,19 @@ export default function UsersPage() {
   const [filteredUsers, setFilteredUsers] = useState<User[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [searchQuery, setSearchQuery] = useState('')
+  const [debouncedQuery, setDebouncedQuery] = useState('')
   const [statusFilter, setStatusFilter] = useState<'all' | 'active' | 'disabled'>('all')
+  const [currentPage, setCurrentPage] = useState(1)
   const toast = useToast()
+
+  const PAGE_SIZE = 20
+  const totalPages = Math.ceil(filteredUsers.length / PAGE_SIZE)
+  const paginatedUsers = filteredUsers.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE)
+
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedQuery(searchQuery), 300)
+    return () => clearTimeout(timer)
+  }, [searchQuery])
 
   const fetchUsers = useCallback(async () => {
     setIsLoading(true)
@@ -37,9 +48,9 @@ export default function UsersPage() {
     let result = users
 
     // Search filter
-    if (searchQuery.trim()) {
-      const query = searchQuery.toLowerCase()
-      result = result.filter(user => 
+    if (debouncedQuery.trim()) {
+      const query = debouncedQuery.toLowerCase()
+      result = result.filter(user =>
         user.username.toLowerCase().includes(query) ||
         user.roles.some(role => role.toLowerCase().includes(query))
       )
@@ -53,7 +64,8 @@ export default function UsersPage() {
     }
 
     setFilteredUsers(result)
-  }, [users, searchQuery, statusFilter])
+    setCurrentPage(1)
+  }, [users, debouncedQuery, statusFilter])
 
   const handleError = (message: string) => {
     toast.error(message)
@@ -130,13 +142,25 @@ export default function UsersPage() {
           </div>
         ) : (
           <UserList
-            users={filteredUsers}
+            users={paginatedUsers}
             onUserUpdated={fetchUsers}
             onError={handleError}
             onSuccess={handleSuccess}
           />
         )}
       </div>
+
+      {totalPages > 1 && (
+        <div className="flex items-center justify-between px-4 py-3 bg-white dark:bg-gray-900 rounded-xl border border-gray-200 dark:border-gray-800">
+          <span className="text-sm text-gray-600 dark:text-gray-400">
+            Showing {(currentPage - 1) * PAGE_SIZE + 1}–{Math.min(currentPage * PAGE_SIZE, filteredUsers.length)} of {filteredUsers.length}
+          </span>
+          <div className="flex gap-2">
+            <Button variant="secondary" size="sm" onClick={() => setCurrentPage(p => p - 1)} disabled={currentPage <= 1}>Previous</Button>
+            <Button variant="secondary" size="sm" onClick={() => setCurrentPage(p => p + 1)} disabled={currentPage >= totalPages}>Next</Button>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
