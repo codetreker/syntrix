@@ -12,6 +12,7 @@ import { documentsApi } from '../lib/documents';
 
 export default function CollectionsPage() {
   const { success, error } = useToast();
+  const [selectedDatabase, setSelectedDatabase] = useState<string | null>(null);
   const [selectedCollection, setSelectedCollection] = useState<string | null>(null);
   const [selectedDocument, setSelectedDocument] = useState<Document | null>(null);
   const [editingDocument, setEditingDocument] = useState<Document | null | 'new'>(null);
@@ -50,7 +51,7 @@ export default function CollectionsPage() {
     if (!deletingDocument || !selectedCollection) return;
     
     try {
-      await documentsApi.delete(selectedCollection, deletingDocument.id);
+      await documentsApi.delete(selectedDatabase!, selectedCollection, deletingDocument.id);
       success('Document deleted successfully');
       setDeletingDocument(null);
       setSelectedDocument(null);
@@ -77,7 +78,9 @@ export default function CollectionsPage() {
       <div className="flex-1 flex overflow-hidden">
         {/* Collection Tree */}
         <CollectionTree
+          selectedDatabase={selectedDatabase}
           selectedCollection={selectedCollection}
+          onSelectDatabase={setSelectedDatabase}
           onSelectCollection={setSelectedCollection}
         />
 
@@ -86,6 +89,7 @@ export default function CollectionsPage() {
           {selectedCollection ? (
             <DocumentList
               key={`${selectedCollection}-${refreshKey}`}
+              database={selectedDatabase!}
               collection={selectedCollection}
               selectedDocumentId={selectedDocument?.id || null}
               onSelectDocument={handleSelectDocument}
@@ -112,6 +116,7 @@ export default function CollectionsPage() {
       {editingDocument && selectedCollection && (
         <DocumentEditor
           document={editingDocument === 'new' ? null : editingDocument}
+          database={selectedDatabase!}
           collection={selectedCollection}
           onClose={() => setEditingDocument(null)}
           onSave={handleSaveDocument}

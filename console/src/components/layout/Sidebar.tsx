@@ -1,6 +1,7 @@
 import { NavLink } from 'react-router-dom';
 import {
   Database,
+  HardDrive,
   Users,
   Activity,
   Shield,
@@ -23,6 +24,7 @@ const navItems: NavItem[] = [
   { label: 'Dashboard', path: '/', icon: BarChart3 },
   { label: 'Collections', path: '/collections', icon: Database },
   { label: 'Triggers', path: '/triggers', icon: Zap },
+  { label: 'Databases', path: '/databases', icon: HardDrive, adminOnly: true },
   { label: 'Users', path: '/users', icon: Users, adminOnly: true },
   { label: 'Security', path: '/security', icon: Shield, adminOnly: true },
   { label: 'Monitoring', path: '/settings', icon: Activity },

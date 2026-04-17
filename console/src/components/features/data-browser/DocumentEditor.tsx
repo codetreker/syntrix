@@ -6,12 +6,13 @@ import { Button, Input } from '../../ui';
 
 interface DocumentEditorProps {
   document: Document | null; // null for create mode
+  database: string;
   collection: string;
   onClose: () => void;
   onSave: (doc: Document) => void;
 }
 
-export function DocumentEditor({ document, collection, onClose, onSave }: DocumentEditorProps) {
+export function DocumentEditor({ document, database, collection, onClose, onSave }: DocumentEditorProps) {
   const isCreateMode = document === null;
   const [documentId, setDocumentId] = useState('');
   const [jsonContent, setJsonContent] = useState('');
@@ -53,9 +54,9 @@ export function DocumentEditor({ document, collection, onClose, onSave }: Docume
     try {
       let savedDoc: Document;
       if (isCreateMode) {
-        savedDoc = await documentsApi.create(collection, parsedData, documentId);
+        savedDoc = await documentsApi.create(database, collection, parsedData, documentId);
       } else {
-        savedDoc = await documentsApi.update(collection, document!.id, parsedData);
+        savedDoc = await documentsApi.update(database, collection, document!.id, parsedData);
       }
       onSave(savedDoc);
     } catch (err) {

@@ -17,6 +17,7 @@ export function UserList({ users, onUserUpdated, onError, onSuccess }: UserListP
   const [editRoles, setEditRoles] = useState<string[]>([])
   const [editDisabled, setEditDisabled] = useState(false)
   const [isUpdating, setIsUpdating] = useState(false)
+  const [showDisableConfirm, setShowDisableConfirm] = useState(false)
 
   const handleEditClick = (user: User) => {
     setEditingUser(user)
@@ -26,6 +27,13 @@ export function UserList({ users, onUserUpdated, onError, onSuccess }: UserListP
 
   const handleSave = async () => {
     if (!editingUser) return
+
+    // If disabling a currently active user, ask for confirmation first
+    if (editDisabled && !editingUser.disabled && !showDisableConfirm) {
+      setShowDisableConfirm(true)
+      return
+    }
+    setShowDisableConfirm(false)
 
     setIsUpdating(true)
     try {
@@ -231,6 +239,23 @@ export function UserList({ users, onUserUpdated, onError, onSuccess }: UserListP
             </div>
           </div>
         )}
+      </Modal>
+
+      {/* Disable Confirmation Modal */}
+      <Modal
+        isOpen={showDisableConfirm}
+        onClose={() => setShowDisableConfirm(false)}
+        title="Confirm Disable User"
+      >
+        <div className="space-y-4">
+          <p className="text-gray-700 dark:text-gray-300">
+            Are you sure you want to disable <strong>{editingUser?.username}</strong>? They will not be able to log in.
+          </p>
+          <div className="flex justify-end gap-2">
+            <Button variant="secondary" onClick={() => setShowDisableConfirm(false)}>Cancel</Button>
+            <Button variant="danger" onClick={handleSave}>Disable User</Button>
+          </div>
+        </div>
       </Modal>
     </>
   )

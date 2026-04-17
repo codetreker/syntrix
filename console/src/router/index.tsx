@@ -13,6 +13,7 @@ const CollectionsPage = lazy(() => import('../pages/CollectionsPage'));
 const TriggersPage = lazy(() => import('../pages/TriggersPage'));
 const UsersPage = lazy(() => import('../pages/admin/UsersPage'));
 const SecurityPage = lazy(() => import('../pages/admin/SecurityPage'));
+const DatabasesPage = lazy(() => import('../pages/admin/DatabasesPage'));
 const SettingsPage = lazy(() => import('../pages/SettingsPage'));
 
 // Suspense wrapper for lazy loaded components
@@ -54,7 +55,7 @@ function AppLayout() {
   
   const handleLogout = () => {
     logout();
-    window.location.href = '/login';
+    window.location.href = `${BASE_PATH}/login`;
   };
   
   return (
@@ -63,6 +64,8 @@ function AppLayout() {
     </Layout>
   );
 }
+
+const BASE_PATH = '/console';
 
 export const router = createBrowserRouter([
   // Auth routes
@@ -93,6 +96,14 @@ export const router = createBrowserRouter([
             element: (
               <SuspenseWrapper>
                 <DashboardPage />
+              </SuspenseWrapper>
+            ),
+          },
+          {
+            path: 'databases',
+            element: (
+              <SuspenseWrapper>
+                <DatabasesPage />
               </SuspenseWrapper>
             ),
           },
@@ -145,4 +156,4 @@ export const router = createBrowserRouter([
     path: '*',
     element: <Navigate to="/" replace />,
   },
-]);
+], { basename: BASE_PATH });
