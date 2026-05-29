@@ -12,7 +12,11 @@ on:
       - 'pkg/**'
       - 'config/**'
       - 'tests/**'
+      - 'scripts/coverage.sh'
+      - 'scripts/coverage.cmd'
+      - '.go-cov.toml'
       - '.github/workflows/syntrix-server.yml'
+      - '.github/workflows/scripts/test_and_coverage.sh'
 
 jobs:
   syntrix-server:
