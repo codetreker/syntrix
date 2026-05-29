@@ -1,0 +1,13 @@
+project = "syntrix"
+module_prefix = "github.com/syntrixbase/syntrix/"
+
+[exclude]
+packages = [
+  "syntrix/cmd/",
+  "syntrix/api/",
+  "syntrix/scripts/",
+  "syntrix/pkg/benchmark/",
+]
+
+[html]
+path = ".syntrix/test_coverage.html"
