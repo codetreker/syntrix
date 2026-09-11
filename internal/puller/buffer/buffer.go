@@ -320,6 +320,60 @@ func (b *Buffer) Delete(key string) error {
 func (b *Buffer) DeleteBefore(beforeKey string) (int, error) {
 	b.retentionMu.Lock()
 	defer b.retentionMu.Unlock()
+	return b.deleteBeforeLocked(beforeKey)
+}
+
+// PruneBefore applies capacity retention while preserving the entire newest
+// persisted timestamp group. Explicit Delete and DeleteBefore remain forceful.
+func (b *Buffer) PruneBefore(beforeKey string) (int, error) {
+	return b.pruneBefore(beforeKey, false)
+}
+
+// PruneExpired retains the newest complete persisted group before the age
+// cutoff and every later event, keeping an idle consumer's boundary available
+// while the first new group is being delivered.
+func (b *Buffer) PruneExpired(beforeKey string) (int, error) {
+	return b.pruneBefore(beforeKey, true)
+}
+
+func (b *Buffer) pruneBefore(beforeKey string, age bool) (int, error) {
+	b.retentionMu.Lock()
+	defer b.retentionMu.Unlock()
+	b.mu.RLock()
+	closed := b.closed
+	b.mu.RUnlock()
+	if closed {
+		return 0, fmt.Errorf("buffer is closed")
+	}
+	options := &pebble.IterOptions{}
+	if age {
+		options.UpperBound = []byte(beforeKey)
+	}
+	iter, err := b.db.NewIter(options)
+	if err != nil {
+		return 0, err
+	}
+	protectedGroup := ""
+	for iter.Last(); iter.Valid(); iter.Prev() {
+		if isMetadataKey(iter.Key()) {
+			continue
+		}
+		protectedGroup, err = timestampGroupStart(string(iter.Key()))
+		break
+	}
+	if err = errors.Join(err, iter.Error(), iter.Close()); err != nil {
+		return 0, err
+	}
+	if protectedGroup == "" {
+		return 0, nil
+	}
+	if beforeKey > protectedGroup {
+		beforeKey = protectedGroup
+	}
+	return b.deleteBeforeLocked(beforeKey)
+}
+
+func (b *Buffer) deleteBeforeLocked(beforeKey string) (int, error) {
 	b.mu.RLock()
 	closed := b.closed
 	b.mu.RUnlock()

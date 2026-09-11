@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/syntrixbase/syntrix/internal/core/storage"
 	"github.com/syntrixbase/syntrix/internal/puller/events"
 )
@@ -91,76 +92,28 @@ func TestCleaner_StartAndStop(t *testing.T) {
 
 func TestCleaner_CleanupNow(t *testing.T) {
 	t.Parallel()
-	dir, err := os.MkdirTemp("", "cleaner-test-*")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(dir)
-
-	buf, err := New(Options{
-		Path:          dir,
-		BatchInterval: 5 * time.Millisecond,
-	})
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	buf, err := New(Options{Path: t.TempDir(), BatchInterval: time.Hour})
+	require.NoError(t, err)
 	defer buf.Close()
-
-	// Write an old event (with very old timestamp)
-	oldEvt := &events.StoreChangeEvent{
-		EventID:  "old-evt",
-		MgoColl:  "testcoll",
-		MgoDocID: "doc-1",
-		OpType:   events.StoreOperationInsert,
-		ClusterTime: events.ClusterTime{
-			T: 1, // Very old timestamp
-			I: 1,
-		},
+	older := &events.StoreChangeEvent{EventID: "1-1-old", ClusterTime: events.ClusterTime{T: 1, I: 1}}
+	predecessor := &events.StoreChangeEvent{EventID: "2-1-predecessor", ClusterTime: events.ClusterTime{T: 2, I: 1}}
+	recent := &events.StoreChangeEvent{EventID: "recent", ClusterTime: events.ClusterTime{T: uint32(time.Now().Unix()), I: 1}}
+	for _, event := range []*events.StoreChangeEvent{older, predecessor, recent} {
+		require.NoError(t, buf.Write(ctx, event, testToken))
 	}
-	if err := buf.Write(context.Background(), oldEvt, testToken); err != nil {
-		t.Fatalf("Write() error = %v", err)
-	}
-
-	// Write a recent event
-	recentEvt := &events.StoreChangeEvent{
-		EventID:  "recent-evt",
-		MgoColl:  "testcoll",
-		MgoDocID: "doc-2",
-		OpType:   events.StoreOperationInsert,
-		ClusterTime: events.ClusterTime{
-			T: uint32(time.Now().Unix()),
-			I: 1,
-		},
-	}
-	if err := buf.Write(context.Background(), recentEvt, testToken); err != nil {
-		t.Fatalf("Write() error = %v", err)
-	}
-
-	// Wait for batch flush
-	time.Sleep(20 * time.Millisecond)
-
-	// Create cleaner with very short retention
-	cleaner := NewCleaner(CleanerOptions{
-		Buffer:    buf,
-		Retention: time.Second, // 1 second retention
-		Interval:  time.Hour,
-	})
-
-	// Run cleanup
-	ctx := context.Background()
-	err = cleaner.CleanupNow(ctx)
-	if err != nil {
-		t.Fatalf("CleanupNow() error = %v", err)
-	}
-
-	// Old event should be deleted, recent should remain
+	require.NoError(t, buf.Flush(ctx))
+	cleaner := NewCleaner(CleanerOptions{Buffer: buf, Retention: time.Second, Interval: time.Hour})
+	require.NoError(t, cleaner.CleanupNow(ctx))
 	count, err := buf.Count()
-	if err != nil {
-		t.Fatalf("Count() error = %v", err)
-	}
-	if count != 1 {
-		t.Errorf("Count() = %d, want 1", count)
-	}
+	require.NoError(t, err)
+	require.Equal(t, 2, count)
+	removed, err := buf.Read(older.BufferKey())
+	require.NoError(t, err)
+	require.Nil(t, removed)
+	require.NoError(t, buf.ValidatePosition(predecessor.BufferKey(), buf.Lineage()))
+	require.NoError(t, buf.ValidatePosition(recent.BufferKey(), buf.Lineage()))
 }
 
 func TestCleaner_ContextCancellation(t *testing.T) {
@@ -208,61 +161,24 @@ func TestCleaner_ContextCancellation(t *testing.T) {
 
 func TestCleaner_RunTriggersCleanup(t *testing.T) {
 	t.Parallel()
-	dir, err := os.MkdirTemp("", "cleaner-test-*")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(dir)
-
-	buf, err := New(Options{
-		Path:          dir,
-		BatchInterval: 5 * time.Millisecond,
-	})
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
-	defer buf.Close()
-
-	// Write an old event
-	oldEvt := &events.StoreChangeEvent{
-		EventID:  "old-evt",
-		MgoColl:  "testcoll",
-		MgoDocID: "doc-1",
-		OpType:   events.StoreOperationInsert,
-		ClusterTime: events.ClusterTime{
-			T: 1, // Very old timestamp
-			I: 1,
-		},
-	}
-	if err := buf.Write(context.Background(), oldEvt, testToken); err != nil {
-		t.Fatalf("Write() error = %v", err)
-	}
-
-	// Create cleaner with very short interval to trigger cleanup via ticker
-	cleaner := NewCleaner(CleanerOptions{
-		Buffer:    buf,
-		Retention: time.Millisecond, // Very short retention
-		Interval:  50 * time.Millisecond,
-	})
-
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-
+	buf, err := New(Options{Path: t.TempDir()})
+	require.NoError(t, err)
+	defer buf.Close()
+	old := &events.StoreChangeEvent{EventID: "1-1-old", ClusterTime: events.ClusterTime{T: 1, I: 1}}
+	tail := &events.StoreChangeEvent{EventID: "2-1-tail", ClusterTime: events.ClusterTime{T: 2, I: 1}}
+	require.NoError(t, buf.Write(ctx, old, testToken))
+	require.NoError(t, buf.Write(ctx, tail, testToken))
+	require.NoError(t, buf.Flush(ctx))
+	cleaner := NewCleaner(CleanerOptions{Buffer: buf, Retention: time.Millisecond, Interval: 10 * time.Millisecond})
 	cleaner.Start(ctx)
-
-	// Wait for at least one cleanup cycle
-	time.Sleep(200 * time.Millisecond)
-
-	cleaner.Stop()
-
-	// Old event should be deleted by the ticker-triggered cleanup
+	defer cleaner.Stop()
+	require.Eventually(t, func() bool { value, err := buf.Read(old.BufferKey()); return err == nil && value == nil }, time.Second, time.Millisecond)
+	require.NoError(t, buf.ValidatePosition(tail.BufferKey(), buf.Lineage()))
 	count, err := buf.Count()
-	if err != nil {
-		t.Fatalf("Count() error = %v", err)
-	}
-	if count != 0 {
-		t.Errorf("Count() = %d, want 0 (cleanup should have run)", count)
-	}
+	require.NoError(t, err)
+	require.Equal(t, 1, count)
 }
 
 func TestCleaner_CleanupError(t *testing.T) {
@@ -388,15 +304,11 @@ func TestCleaner_MaxSize(t *testing.T) {
 		t.Fatalf("Count() error = %v", err)
 	}
 
-	// Since MaxSize is 1, it should try to evict everything until empty or size < 0 (impossible)
-	// But it stops when buffer is empty.
-	// However, PebbleDB size might not update immediately or might not go down to 0.
-	// But the loop checks .
-	// If size stays high (due to overhead), it will keep deleting until empty.
-
-	if finalCount != 0 {
-		t.Errorf("Final count = %d, want 0 (evicted all)", finalCount)
+	// The newest durable timestamp group is retained even above the soft limit.
+	if finalCount != 1 {
+		t.Errorf("Final count = %d, want 1 retained tail event", finalCount)
 	}
+
 }
 
 func TestCleaner_StopBeforeContextCancel(t *testing.T) {
@@ -439,4 +351,28 @@ func TestCleaner_StopBeforeContextCancel(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Error("Stop() took too long - done channel may not be working")
 	}
+}
+
+func TestEmptyBufferSizePressureKeepsCaptureMetadataAndTerminates(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	buf, err := New(Options{Path: t.TempDir()})
+	require.NoError(t, err)
+	defer buf.Close()
+	require.NoError(t, buf.SaveCheckpoint(testToken))
+	lineage := buf.Lineage()
+	size, err := buf.Size()
+	require.NoError(t, err)
+	require.Greater(t, size, int64(1))
+	cleaner := NewCleaner(CleanerOptions{Buffer: buf, Retention: time.Hour, MaxSize: 1, Interval: time.Hour})
+	require.NoError(t, cleaner.CleanupNow(ctx))
+	count, err := buf.Count()
+	require.NoError(t, err)
+	require.Zero(t, count)
+	checkpoint, err := buf.LoadCheckpoint()
+	require.NoError(t, err)
+	require.Equal(t, testToken, checkpoint)
+	require.Equal(t, lineage, buf.Lineage())
+	require.NoError(t, buf.ValidatePosition("", lineage))
 }

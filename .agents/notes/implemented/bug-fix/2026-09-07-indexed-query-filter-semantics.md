@@ -123,6 +123,16 @@ are discarded when a newer timestamp is delivered. Verified resume rejects any
 pruning within its boundary group. Native checkpoint and progress formats remain
 unchanged; consumers must tolerate boundary-group redelivery.
 
+Age cleanup keeps all events within the retention window and the newest
+persisted timestamp group before its cutoff. This keeps an idle, caught-up
+subscription resumable and protects its old boundary while the first new event
+is committed but not yet delivered. Capacity cleanup retains at least the latest
+durable group; older history can still expire under pressure. Pending writes do
+not release a durable boundary. Selection, deletion, and pruning-floor publication
+share the retention lock. Explicit deletion remains capable of expiring a boundary;
+strict validation still rejects genuinely incomplete groups. Preserving the
+required group takes precedence over the soft buffer-size target.
+
 The complete encoded durable event is capped at 64 MiB and each complete Puller
 protobuf response at 65 MiB. Typed expansion means some legal source document
 shapes can exceed those limits. Capture fails visibly before admission/progress;
@@ -237,6 +247,13 @@ MongoDB can emit distinct changes at the same cluster timestamp. Timestamp-only
 deduplication drops them; an exclusive hash-ordered resume can also skip a later
 source event with a smaller hash. Identity-aware delivery and complete boundary
 group replay preserve those changes at the cost of possible redelivery on resume.
+
+**Retain only the newest group during age cleanup.** This protects a fully idle
+backend but releases its old recovery boundary as soon as the next group commits,
+before a subscriber necessarily consumes it. Keeping the retention window's
+predecessor group preserves that handoff without per-consumer pins or another
+checkpoint format. Capacity pressure can still evict older history while retaining
+the durable terminal group.
 
 **Use automatic online rebuilding for this initialization.** A concurrent scan and
 replay handoff needs additional fencing, history-gap recovery, and job lifecycle
