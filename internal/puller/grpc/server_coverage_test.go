@@ -13,7 +13,6 @@ import (
 	pullerv1 "github.com/syntrixbase/syntrix/api/gen/puller/v1"
 	"github.com/syntrixbase/syntrix/internal/core/storage"
 	"github.com/syntrixbase/syntrix/internal/puller/config"
-	"github.com/syntrixbase/syntrix/internal/puller/core"
 	"github.com/syntrixbase/syntrix/internal/puller/cursor"
 	"github.com/syntrixbase/syntrix/internal/puller/events"
 	"google.golang.org/grpc"
@@ -328,7 +327,7 @@ func TestServer_Subscribe_NilEvent(t *testing.T) {
 func TestServer_SendEvent_ConvertErrorPreservesProgress(t *testing.T) {
 	t.Parallel()
 	srv := NewServer(config.GRPCConfig{}, &mockEventSource{}, nil)
-	sub := core.NewSubscriber("consumer", cursor.NewProgressMarker(), false, 1)
+	sub := testSubscriber(t, "consumer", cursor.NewProgressMarker(), false, 1)
 	stream := &mockSubscribeServer{ctx: context.Background()}
 	doc := storage.NewStoredDoc("database", "users", "doc", map[string]any{"bad": make(chan int)})
 	err := srv.sendEvent(stream, sub, "backend", &events.StoreChangeEvent{EventID: "bad", FullDocument: &doc})
@@ -339,8 +338,9 @@ func TestServer_SendEvent_ConvertErrorPreservesProgress(t *testing.T) {
 func TestServer_ResponseSizeAdmissionPreservesProgress(t *testing.T) {
 	server := NewServer(config.GRPCConfig{}, &mockEventSource{}, nil)
 	position := cursor.NewProgressMarker()
-	position.SetPosition("other", strings.Repeat("x", events.MaxRPCBytes))
-	sub := core.NewSubscriber("bounded", position, false, 1)
+	position.SetPosition("other", "1-1-original")
+	position.Lineages = map[string]string{"other": strings.Repeat("x", events.MaxRPCBytes)}
+	sub := testSubscriber(t, "bounded", position, false, 1)
 	stream := &mockSubscribeServer{ctx: context.Background(), sendFunc: func(*pullerv1.PullerEvent) error {
 		t.Fatal("oversized response reached transport")
 		return nil
@@ -509,7 +509,7 @@ func TestServer_Subscribe_ReplayError(t *testing.T) {
 	// Request with after position to trigger replay mode
 	req := &pullerv1.SubscribeRequest{
 		ConsumerId: "c1",
-		After:      makeProgressMarker("backend1", "evt-123"),
+		After:      makeProgressMarker("backend1", "1-1-initial"),
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -580,7 +580,7 @@ func TestServer_Subscribe_IteratorError(t *testing.T) {
 
 	req := &pullerv1.SubscribeRequest{
 		ConsumerId: "c1",
-		After:      makeProgressMarker("backend1", "evt-123"),
+		After:      makeProgressMarker("backend1", "1-1-initial"),
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -662,7 +662,7 @@ func TestServer_Subscribe_SendEventError_DuringReplay(t *testing.T) {
 
 	req := &pullerv1.SubscribeRequest{
 		ConsumerId: "c1",
-		After:      makeProgressMarker("backend1", "evt-0"),
+		After:      makeProgressMarker("backend1", "1-1-initial"),
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()

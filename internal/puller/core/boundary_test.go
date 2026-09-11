@@ -227,7 +227,13 @@ func TestVerifiedNativeSubscriptionRecoversOverflowWithoutLosingHistory(t *testi
 				require.NoError(t, err)
 				marker.Positions["source"] = nativeBoundaryEvent(count).EventID
 				after = marker.Encode()
-				onReady = func(string) { close(entered); <-release }
+				onReady = func(string) {
+					close(entered)
+					select {
+					case <-release:
+					case <-ctx.Done():
+					}
+				}
 			}
 			stream := p.SubscribeReady(ctx, "indexer", after, onReady)
 			if phase == "replay" {
@@ -236,6 +242,13 @@ func TestVerifiedNativeSubscriptionRecoversOverflowWithoutLosingHistory(t *testi
 					p.subs.Broadcast(nativeBoundaryEvent(i))
 				}
 			} else {
+				select {
+				case replayed := <-stream:
+					require.NotNil(t, replayed.Change)
+					require.Equal(t, nativeBoundaryEvent(count).EventID, replayed.Change.EventID)
+				case <-ctx.Done():
+					t.Fatal(ctx.Err())
+				}
 				select {
 				case ready := <-stream:
 					require.True(t, ready.Ready)
@@ -324,10 +337,18 @@ func TestNativeSlowConsumerCancellationReleasesSubscription(t *testing.T) {
 				evt := nativeBoundaryEvent(count)
 				require.NoError(t, backend.buffer.Write(ctx, evt, bson.Raw{5, 0, 0, 0, 0}))
 				p.subs.Broadcast(evt)
+				var blocked *Subscriber
 				require.Eventually(t, func() bool {
 					subs := p.subs.All()
-					return len(subs) == 1 && subs[0].CurrentProgress().Positions["source"] == evt.EventID
+					if len(subs) != 1 {
+						return false
+					}
+					blocked = subs[0]
+					return len(blocked.Events()) == 0 && blocked.CurrentProgress().Positions["source"] == nativeBoundaryEvent(count-1).EventID
 				}, time.Second, time.Millisecond)
+				cancel()
+				require.Eventually(t, func() bool { return p.subs.Count() == 0 }, time.Second, time.Millisecond)
+				require.Equal(t, nativeBoundaryEvent(count-1).EventID, blocked.CurrentProgress().Positions["source"])
 			}
 			cancel()
 			require.Eventually(t, func() bool { return p.subs.Count() == 0 }, time.Second, time.Millisecond)

@@ -2,7 +2,10 @@
 package buffer
 
 import (
+	"errors"
 	"fmt"
+	"slices"
+	"strings"
 
 	"github.com/cockroachdb/pebble"
 	"github.com/syntrixbase/syntrix/internal/puller/events"
@@ -102,31 +105,25 @@ func (b *Buffer) newSnapshotIterator(afterKey string) Iterator {
 // Holding mu across the disk snapshot and queue copy prevents a committed batch
 // from disappearing from the queue before it becomes visible to that snapshot.
 func (b *Buffer) newSnapshotIteratorLocked(afterKey string) Iterator {
-	var evts []*events.StoreChangeEvent
-	var keys []string
-
-	// Helper to append matching events
-	appendEvents := func(reqs []*writeRequest) {
-		for _, req := range reqs {
-			k := string(req.key)
-			if afterKey == "" || k > afterKey {
-				if req.event != nil {
-					evts = append(evts, req.event)
-					keys = append(keys, k)
-				}
+	var requests []*writeRequest
+	for _, queue := range [][]*writeRequest{b.flushing, b.pending} {
+		for _, req := range queue {
+			if req.event != nil && string(req.key) > afterKey {
+				requests = append(requests, req)
 			}
 		}
 	}
-
-	// Order matters: flushing (older) then pending (newer)
-	appendEvents(b.flushing)
-	appendEvents(b.pending)
-
-	return &sliceIterator{
-		events: evts,
-		keys:   keys,
-		index:  -1,
+	// Arrival order within one cluster time need not match the event-ID suffix.
+	// Sort the copied queue without changing capture or checkpoint order.
+	slices.SortStableFunc(requests, func(a, b *writeRequest) int {
+		return strings.Compare(string(a.key), string(b.key))
+	})
+	iter := &sliceIterator{index: -1}
+	for _, req := range requests {
+		iter.events = append(iter.events, req.event)
+		iter.keys = append(iter.keys, string(req.key))
 	}
+	return iter
 }
 
 type sliceIterator struct {
@@ -165,48 +162,49 @@ func (i *sliceIterator) Close() error {
 	return nil
 }
 
+// deduplicatingIterator merges sorted sources and emits each full event key once.
+// A disk snapshot and its queue copy can overlap while a batch commits.
 type deduplicatingIterator struct {
-	iterators []Iterator
-	current   Iterator
-	currIdx   int
-	lastYield string
+	iterators   []Iterator
+	ready       []bool
+	initialized bool
+	current     Iterator
+	lastYield   string
+	err         error
 }
 
 func newDeduplicatingIterator(iters ...Iterator) *deduplicatingIterator {
-	return &deduplicatingIterator{
-		iterators: iters,
-		currIdx:   0,
-	}
+	return &deduplicatingIterator{iterators: iters, ready: make([]bool, len(iters))}
 }
 
 func (i *deduplicatingIterator) Next() bool {
-	for {
-		if i.current == nil {
-			if i.currIdx >= len(i.iterators) {
-				return false
+	i.current = nil
+	if i.err != nil {
+		return false
+	}
+	for n, iter := range i.iterators {
+		if !i.initialized {
+			i.ready[n] = iter.Next()
+		} else {
+			for i.ready[n] && iter.Key() == i.lastYield {
+				i.ready[n] = iter.Next()
 			}
-			i.current = i.iterators[i.currIdx]
-			i.currIdx++
 		}
-
-		if i.current.Next() {
-			key := i.current.Key()
-			// Skip duplicates or out of order events (must be strictly ascending)
-			if i.lastYield != "" && key <= i.lastYield {
-				continue
-			}
-			i.lastYield = key
-			return true
-		}
-
-		if i.current.Err() != nil {
+		if err := iter.Err(); err != nil {
+			i.err = err
+			i.current = nil
 			return false
 		}
-
-		// Current iterator exhausted, move to next
-		i.current.Close()
-		i.current = nil
+		if i.ready[n] && (i.current == nil || iter.Key() < i.current.Key()) {
+			i.current = iter
+		}
 	}
+	i.initialized = true
+	if i.current == nil {
+		return false
+	}
+	i.lastYield = i.current.Key()
+	return true
 }
 
 func (i *deduplicatingIterator) Event() *events.StoreChangeEvent {
@@ -224,20 +222,13 @@ func (i *deduplicatingIterator) Key() string {
 }
 
 func (i *deduplicatingIterator) Err() error {
-	for _, it := range i.iterators {
-		if err := it.Err(); err != nil {
-			return err
-		}
-	}
-	return nil
+	return i.err
 }
 
 func (i *deduplicatingIterator) Close() error {
 	var err error
 	for _, it := range i.iterators {
-		if e := it.Close(); e != nil {
-			err = e
-		}
+		err = errors.Join(err, it.Close())
 	}
 	i.iterators = nil
 	i.current = nil

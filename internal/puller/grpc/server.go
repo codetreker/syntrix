@@ -225,7 +225,11 @@ func (s *Server) Subscribe(req *pullerv1.SubscribeRequest, stream pullerv1.Pulle
 		channelSize = 10000
 	}
 
-	sub := core.NewSubscriber(req.GetConsumerId(), after, req.GetCoalesceOnCatchUp(), channelSize)
+	sub, err := core.NewSubscriber(req.GetConsumerId(), after, req.GetCoalesceOnCatchUp(), channelSize)
+	if err != nil {
+		s.mu.Unlock()
+		return status.Errorf(codes.InvalidArgument, "invalid subscription progress: %v", err)
+	}
 	s.subs.Add(sub)
 	s.mu.Unlock()
 	defer s.subs.Remove(sub)
@@ -311,7 +315,7 @@ func (s *Server) Subscribe(req *pullerv1.SubscribeRequest, stream pullerv1.Pulle
 
 				// Deduplication: check if event is already sent
 				// This is crucial if Replay restarts or if ScanFrom is inclusive
-				if !sub.ShouldSend(evt.Backend, evt.ClusterTime) {
+				if !sub.ShouldSend(evt.Backend, evt.EventID, evt.ClusterTime) {
 					s.logger.Debug("Skipping event (already sent)", "eventID", evt.EventID)
 					continue
 				}
@@ -381,7 +385,7 @@ func (s *Server) Subscribe(req *pullerv1.SubscribeRequest, stream pullerv1.Pulle
 				// If we switch immediately, 'evt' would be lost.
 				hasOverflow := sub.GetAndResetOverflow()
 
-				if evt != nil && sub.ShouldSend(evt.Backend, evt.ClusterTime) {
+				if evt != nil && sub.ShouldSend(evt.Backend, evt.EventID, evt.ClusterTime) {
 					if err := s.sendEvent(stream, sub, evt.Backend, evt); err != nil {
 						return err
 					}

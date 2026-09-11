@@ -319,7 +319,14 @@ func TestPuller_FullCycle_Resilience(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	// 6. Consume remaining 5
+	// Resume repeats the saved timestamp group before delivering later events.
+	boundary, err := stream2.Recv()
+	require.NoError(t, err)
+	require.NotNil(t, boundary.ChangeEvent)
+	require.Equal(t, lastToken, boundary.Progress)
+	require.Equal(t, storage.CalculateDatabase(coll.Database().Name(), coll.Name()+"/doc-4"), boundary.ChangeEvent.MgoDocId)
+
+	// Consume the remaining five distinct events.
 	for i := 5; i < 10; i++ {
 		evt, err := stream2.Recv()
 		if err != nil {

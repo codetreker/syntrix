@@ -2,11 +2,13 @@
 package core
 
 import (
+	"fmt"
 	"log/slog"
 	"sync"
 
 	"github.com/syntrixbase/syntrix/internal/puller/cursor"
 	"github.com/syntrixbase/syntrix/internal/puller/events"
+	"github.com/syntrixbase/syntrix/internal/puller/normalizer"
 )
 
 // Subscriber represents an active subscription to the event stream.
@@ -25,6 +27,7 @@ type Subscriber struct {
 
 	// lastClusterTime tracks the timestamp of the last sent event per backend.
 	lastClusterTime map[string]events.ClusterTime
+	deliveredIDs    map[string]map[string]struct{}
 
 	// mu protects currentPos.
 	mu sync.RWMutex
@@ -42,24 +45,36 @@ type Subscriber struct {
 }
 
 // NewSubscriber creates a new subscriber.
-func NewSubscriber(id string, after *cursor.ProgressMarker, coalesceOnCatchUp bool, channelSize int) *Subscriber {
+func NewSubscriber(id string, after *cursor.ProgressMarker, coalesceOnCatchUp bool, channelSize int) (*Subscriber, error) {
 	if after == nil {
 		after = cursor.NewProgressMarker()
 	}
 	if channelSize <= 0 {
 		channelSize = 10000
 	}
+	floors := make(map[string]events.ClusterTime, len(after.Positions))
+	for backend, eventID := range after.Positions {
+		if eventID == "" {
+			continue
+		}
+		timestamp, err := normalizer.ParseEventID(eventID)
+		if err != nil {
+			return nil, fmt.Errorf("invalid progress for backend %q: %w", backend, err)
+		}
+		floors[backend] = timestamp
+	}
 	return &Subscriber{
 		ID:                id,
 		After:             after,
 		CoalesceOnCatchUp: coalesceOnCatchUp,
 		currentPos:        after.Clone(),
-		lastClusterTime:   make(map[string]events.ClusterTime),
+		lastClusterTime:   floors,
+		deliveredIDs:      make(map[string]map[string]struct{}),
 		done:              make(chan struct{}),
 		// Increase buffer size to handle transient spikes and avoid flapping between live and catchup modes.
 		// 10000 events * ~1KB/event ~= 10MB memory per subscriber.
 		ch: make(chan *events.StoreChangeEvent, channelSize),
-	}
+	}, nil
 }
 
 // SetOverflow sets the overflow flag.
@@ -82,19 +97,33 @@ func (s *Subscriber) GetAndResetOverflow() bool {
 func (s *Subscriber) UpdatePosition(backend, eventID string, clusterTime events.ClusterTime) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	previous, exists := s.lastClusterTime[backend]
+	if !exists || clusterTime.Compare(previous) != 0 || s.deliveredIDs[backend] == nil {
+		s.deliveredIDs[backend] = make(map[string]struct{})
+	}
 	s.currentPos.SetPosition(backend, eventID)
 	s.lastClusterTime[backend] = clusterTime
+	s.deliveredIDs[backend][eventID] = struct{}{}
 }
 
-// ShouldSend checks if an event should be sent based on its timestamp.
-func (s *Subscriber) ShouldSend(backend string, clusterTime events.ClusterTime) bool {
+// ShouldSend distinguishes event identities within the current timestamp group.
+// A resumed boundary group starts with no acknowledged identities and is replayed.
+func (s *Subscriber) ShouldSend(backend, eventID string, clusterTime events.ClusterTime) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	last, ok := s.lastClusterTime[backend]
-	if !ok {
+	last, exists := s.lastClusterTime[backend]
+	if !exists {
 		return true
 	}
-	return clusterTime.Compare(last) > 0
+	switch clusterTime.Compare(last) {
+	case -1:
+		return false
+	case 1:
+		return true
+	default:
+		_, delivered := s.deliveredIDs[backend][eventID]
+		return !delivered
+	}
 }
 
 // CurrentProgress returns the current progress marker.

@@ -112,6 +112,17 @@ records. Existing native resume-token checkpoints, EventID, and BufferKey retain
 their meanings. The opaque progress marker adds per-backend buffer lineages and
 retention validation needed to prove bootstrap/replay continuity.
 
+Consumer deduplication distinguishes EventIDs within each backend's current
+cluster timestamp. [MongoDB change events](https://www.mongodb.com/docs/manual/reference/change-events/insert/)
+can share that timestamp across distinct changes. Delivery
+records identities and advances progress only after sending succeeds. A resume
+replays the complete boundary timestamp group, including previously delivered
+events, because the EventID hash suffix does not establish source order. Within
+one subscription, retained group identities suppress replay/live overlap; they
+are discarded when a newer timestamp is delivered. Verified resume rejects any
+pruning within its boundary group. Native checkpoint and progress formats remain
+unchanged; consumers must tolerate boundary-group redelivery.
+
 The complete encoded durable event is capped at 64 MiB and each complete Puller
 protobuf response at 65 MiB. Typed expansion means some legal source document
 shapes can exceed those limits. Capture fails visibly before admission/progress;
@@ -133,7 +144,9 @@ complete bootstrap inventory deliberately includes the database again.
 
 The supported rebuild is write-quiesced maintenance. Enumerate all configured,
 template, and metadata databases, including system scopes and tombstone-only
-collections. Establish a source-confirmed boundary in explicitly reset empty
+collections. Default capture includes both physical data and system namespaces;
+custom capture configuration must include the corresponding configured names.
+Establish a source-confirmed boundary in explicitly reset empty
 buffers, scan authoritative pages through the shared projection, flush, validate
 the boundary and unchanged inventory, then atomically publish every database
 catalog with one common generation/progress. Empty and future collections under
@@ -218,6 +231,12 @@ but preserve metadata and source values without arbitrary decimal support.
 **Expose raw index positions as public cursors.** This cannot bind query scope,
 branch strategy, route, or generation. A versioned opaque envelope gives all page
 routes one validation contract.
+
+**Deduplicate consumer events by cluster timestamp or resume by hash order.**
+MongoDB can emit distinct changes at the same cluster timestamp. Timestamp-only
+deduplication drops them; an exclusive hash-ordered resume can also skip a later
+source event with a smaller hash. Identity-aware delivery and complete boundary
+group replay preserve those changes at the cost of possible redelivery on resume.
 
 **Use automatic online rebuilding for this initialization.** A concurrent scan and
 replay handoff needs additional fencing, history-gap recovery, and job lifecycle

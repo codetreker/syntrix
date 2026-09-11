@@ -1,10 +1,12 @@
 package buffer
 
 import (
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/syntrixbase/syntrix/internal/puller/events"
 )
 
@@ -72,26 +74,12 @@ func TestSliceIterator_EdgeCases(t *testing.T) {
 }
 
 func TestNewSnapshotIterator_Methods(t *testing.T) {
-	// verify the creation logic uses flushing/pending
-	// easier to verify by behavior if we can't easily mock Buffer internals which are private.
-	// But we are in package buffer! we can access private fields.
-
-	b := &Buffer{} // empty buffer
-	b.pending = []*writeRequest{
+	b := &Buffer{pending: []*writeRequest{
 		{key: []byte("k1"), event: &events.StoreChangeEvent{EventID: "e1"}},
-		{key: []byte("k0"), event: nil}, // should be skipped (key check? or nil event check?)
+		{key: []byte("k0")},
 		{key: []byte("k2"), event: &events.StoreChangeEvent{EventID: "e2"}},
-	}
-
-	// pending isn't sorted by default?
-	// The implementation of newSnapshotIterator iterators over pending slice directly.
-	// It assumes time order?
-	// `appendEvents` iterates the slice.
-
-	iter := b.newSnapshotIterator("k1") // Should skip k1 (strictly greater?)
-	// Code: if afterKey == "" || k > afterKey
-	// "k1" > "k1" is false. "k2" > "k1" is true.
-
+	}}
+	iter := b.newSnapshotIterator("k1")
 	assert.True(t, iter.Next())
 	assert.Equal(t, "e2", iter.Event().EventID)
 	assert.False(t, iter.Next())
@@ -108,7 +96,7 @@ func TestDeduplicatingIterator_Coverage(t *testing.T) {
 		}
 		it2 := &sliceIterator{
 			events: []*events.StoreChangeEvent{{EventID: "2"}, {EventID: "3"}},
-			keys:   []string{"100", "200"}, // "100" is duplicate (le), "200" is new
+			keys:   []string{"100", "200"},
 			index:  -1,
 		}
 
@@ -119,7 +107,7 @@ func TestDeduplicatingIterator_Coverage(t *testing.T) {
 		assert.Equal(t, "1", dedup.Event().EventID)
 		assert.Equal(t, "100", dedup.Key())
 
-		// 2. from it2: key=100 -> SKIP (<= 100)
+		// The duplicate key is emitted once across both sources.
 		//    from it2: key=200 -> OK
 		assert.True(t, dedup.Next())
 		assert.Equal(t, "3", dedup.Event().EventID)
@@ -137,4 +125,64 @@ func TestDeduplicatingIterator_Coverage(t *testing.T) {
 	case <-time.After(100 * time.Millisecond):
 		t.Fatal("TestDeduplicatingIterator_Coverage timed out")
 	}
+}
+
+type failingMergeIterator struct {
+	*sliceIterator
+	readError  error
+	closeError error
+	err        error
+	closeCalls int
+}
+
+func (i *failingMergeIterator) Next() bool {
+	if i.sliceIterator.Next() {
+		return true
+	}
+	i.err = i.readError
+	return false
+}
+
+func (i *failingMergeIterator) Err() error { return i.err }
+
+func (i *failingMergeIterator) Close() error {
+	i.closeCalls++
+	return i.closeError
+}
+
+func TestMergedReplayStopsOnReadFailureAndClosesEverySource(t *testing.T) {
+	t.Parallel()
+	readErr := errors.New("unreadable queued event")
+	firstCloseErr := errors.New("disk snapshot close failure")
+	secondCloseErr := errors.New("queue snapshot close failure")
+	first := &failingMergeIterator{
+		sliceIterator: &sliceIterator{
+			events: []*events.StoreChangeEvent{{EventID: "a"}, {EventID: "c"}},
+			keys:   []string{"a", "c"}, index: -1,
+		},
+		closeError: firstCloseErr,
+	}
+	second := &failingMergeIterator{
+		sliceIterator: &sliceIterator{
+			events: []*events.StoreChangeEvent{{EventID: "b"}},
+			keys:   []string{"b"}, index: -1,
+		},
+		readError: readErr, closeError: secondCloseErr,
+	}
+	merged := newDeduplicatingIterator(first, second)
+	for _, key := range []string{"a", "b"} {
+		require.True(t, merged.Next())
+		require.Equal(t, key, merged.Key())
+	}
+	require.False(t, merged.Next())
+	require.ErrorIs(t, merged.Err(), readErr)
+	require.False(t, merged.Next())
+	require.Nil(t, merged.Event())
+	err := merged.Close()
+	require.ErrorIs(t, err, firstCloseErr)
+	require.ErrorIs(t, err, secondCloseErr)
+	require.ErrorIs(t, merged.Err(), readErr)
+	require.NoError(t, merged.Close())
+	require.Equal(t, 1, first.closeCalls)
+	require.Equal(t, 1, second.closeCalls)
 }

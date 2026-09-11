@@ -483,7 +483,7 @@ func (p *Puller) replay(ctx context.Context, after, lineages map[string]string, 
 	p.logger.Info("Replay called", "after", after, "coalesce", coalesce)
 
 	for name, backend := range p.backends {
-		startID := ""
+		startID, groupStart := "", ""
 		if after != nil {
 			eventID := after[name]
 			if eventID != "" {
@@ -496,6 +496,7 @@ func (p *Puller) replay(ctx context.Context, after, lineages map[string]string, 
 					return nil, fmt.Errorf("invalid event ID %q for backend %q: %w", eventID, name, err)
 				}
 				startID = events.FormatBufferKey(ct, eventID)
+				groupStart = events.FormatBufferKey(ct, "")
 				p.logger.Debug("Replay backend", "backend", name, "eventID", eventID, "startID", startID)
 			}
 		}
@@ -511,7 +512,7 @@ func (p *Puller) replay(ctx context.Context, after, lineages map[string]string, 
 		if lineages != nil {
 			iter, err = backend.buffer.ScanFromLineage(startID, lineages[name])
 		} else {
-			iter, err = backend.buffer.ScanFrom(startID)
+			iter, err = backend.buffer.ScanFrom(groupStart)
 		}
 		if err != nil {
 			// Close already opened iterators
@@ -564,7 +565,14 @@ func (p *Puller) subscribe(ctx context.Context, consumerID, after string, onRead
 		close(out)
 		return out
 	}
-	sub := NewSubscriber(consumerID, pm, false, 1000)
+	sub, err := NewSubscriber(consumerID, pm, false, 1000)
+	if err != nil {
+		if verified {
+			out <- &events.PullerEvent{Error: err}
+		}
+		close(out)
+		return out
+	}
 	p.subs.Add(sub)
 	go func() {
 		defer close(out)
@@ -585,12 +593,14 @@ func (p *Puller) subscribe(ctx context.Context, consumerID, after string, onRead
 			}
 		}
 		send := func(evt *events.StoreChangeEvent) bool {
-			if !sub.ShouldSend(evt.Backend, evt.ClusterTime) {
+			if !sub.ShouldSend(evt.Backend, evt.EventID, evt.ClusterTime) {
 				return true
 			}
-			sub.UpdatePosition(evt.Backend, evt.EventID, evt.ClusterTime)
+			position := sub.CurrentProgress()
+			position.SetPosition(evt.Backend, evt.EventID)
 			select {
-			case out <- &events.PullerEvent{Change: evt, Progress: sub.CurrentProgress().Encode()}:
+			case out <- &events.PullerEvent{Change: evt, Progress: position.Encode()}:
+				sub.UpdatePosition(evt.Backend, evt.EventID, evt.ClusterTime)
 				return true
 			case <-ctx.Done():
 				return false

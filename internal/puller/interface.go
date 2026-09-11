@@ -95,7 +95,9 @@ type LocalService interface {
 	// SetEventHandler sets the event handler for processing events.
 	SetEventHandler(handler func(ctx context.Context, backendName string, event *ChangeEvent) error)
 
-	// Replay returns an iterator that replays events from the given progress marker.
+	// Replay includes each backend position's complete timestamp group, then later
+	// events. Boundary-group events may repeat because EventID hashes do not encode
+	// source arrival order. An empty position starts at the beginning of retention.
 	Replay(ctx context.Context, after map[string]string, coalesce bool) (Iterator, error)
 }
 
