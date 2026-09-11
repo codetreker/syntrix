@@ -33,7 +33,7 @@ func (f *fakeDocumentStore) DeleteByDatabase(ctx context.Context, database strin
 func (f *fakeDocumentStore) Query(ctx context.Context, database string, q model.Query) ([]*types.StoredDoc, error) {
 	return nil, nil
 }
-func (f *fakeDocumentStore) GetMany(ctx context.Context, database string, paths []string) ([]*types.StoredDoc, error) {
+func (f *fakeDocumentStore) GetMany(ctx context.Context, database string, paths []string, opts ...types.ReadOptions) ([]*types.StoredDoc, error) {
 	return nil, nil
 }
 func (f *fakeDocumentStore) Watch(ctx context.Context, database string, collection string, after types.WatchCheckpoint, opts types.WatchOptions) (types.WatchStream, error) {

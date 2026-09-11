@@ -12,6 +12,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 )
 
 func TestHandleTriggerGet(t *testing.T) {
@@ -306,7 +307,7 @@ func TestHandleTriggerQuery(t *testing.T) {
 	docs := []model.Document{
 		{"id": "1", "collection": "users", "a": 1, "version": int64(1)},
 	}
-	mockEngine.On("ExecuteQuery", mock.Anything, "default", mock.Anything).Return(docs, nil)
+	mockEngine.On("ExecuteQueryPage", mock.Anything, "default", mock.Anything).Return(model.QueryPage{Documents: docs, EffectiveOrder: []model.Order{{Field: "id", Direction: "asc"}}}, nil)
 
 	// Request
 	q := model.Query{Collection: "users"}
@@ -320,13 +321,22 @@ func TestHandleTriggerQuery(t *testing.T) {
 	// Assert
 	assert.Equal(t, http.StatusOK, w.Code)
 
-	var resp []map[string]interface{}
-	err := json.Unmarshal(w.Body.Bytes(), &resp)
-	assert.NoError(t, err)
-	assert.Len(t, resp, 1)
-	assert.Equal(t, float64(1), resp[0]["a"])
-	assert.Equal(t, "1", resp[0]["id"])
-	assert.Equal(t, "users", resp[0]["collection"])
+	var resp struct {
+		Documents      []json.RawMessage `json:"documents"`
+		NextCursor     *string           `json:"nextCursor"`
+		EffectiveOrder []model.Order     `json:"effectiveOrder"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	require.Len(t, resp.Documents, 1)
+	value, err := model.DecodeTypedValue(resp.Documents[0])
+	require.NoError(t, err)
+	doc, ok := value.(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, int64(1), doc["a"])
+	assert.Equal(t, "1", doc["id"])
+	assert.Equal(t, "users", doc["collection"])
+	assert.Nil(t, resp.NextCursor)
+	assert.Equal(t, []model.Order{{Field: "id", Direction: "asc"}}, resp.EffectiveOrder)
 	mockEngine.AssertExpectations(t)
 }
 
@@ -361,7 +371,7 @@ func TestHandleTriggerQuery_Error(t *testing.T) {
 	server := createTestServer(mockEngine, nil, nil)
 
 	q := model.Query{Collection: "users"}
-	mockEngine.On("ExecuteQuery", mock.Anything, "default", q).Return(nil, assert.AnError)
+	mockEngine.On("ExecuteQueryPage", mock.Anything, "default", q).Return(nil, assert.AnError)
 
 	body, _ := json.Marshal(q)
 	req := httptest.NewRequest("POST", "/trigger/v1/databases/default/query", bytes.NewReader(body))

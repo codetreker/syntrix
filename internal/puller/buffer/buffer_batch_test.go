@@ -91,6 +91,7 @@ func TestBuffer_Write_CommitFailureStopsPendingBatch(t *testing.T) {
 
 			assert.Equal(t, 1, batchCount)
 			assert.ErrorIs(t, buf.Write(context.Background(), &events.StoreChangeEvent{EventID: "evt-3"}, token2), batchErr)
+			assert.ErrorIs(t, buf.Flush(context.Background()), batchErr)
 			_, err = buf.LoadCheckpoint()
 			assert.ErrorIs(t, err, batchErr)
 			if closeDuringCommit {
@@ -227,11 +228,17 @@ func (c *waitContext) Done() <-chan struct{} {
 	return c.Context.Done()
 }
 
-type marshalAction func()
+type cancelAfterEncodingContext struct {
+	context.Context
+	checks int
+}
 
-func (f marshalAction) MarshalJSON() ([]byte, error) {
-	f()
-	return []byte(`{}`), nil
+func (c *cancelAfterEncodingContext) Err() error {
+	c.checks++
+	if c.checks > 1 {
+		return context.Canceled
+	}
+	return nil
 }
 
 func TestBuffer_Write_WaitsBeforeEncodingAndHonorsCancellation(t *testing.T) {
@@ -258,9 +265,8 @@ func TestBuffer_Write_WaitsBeforeEncodingAndHonorsCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	observed := &waitContext{Context: ctx, waiting: make(chan struct{})}
-	encoded := make(chan struct{}, 1)
 	evt := &events.StoreChangeEvent{FullDocument: &storage.StoredDoc{Data: map[string]interface{}{
-		"probe": marshalAction(func() { encoded <- struct{}{} }),
+		"probe": make(chan int),
 	}}}
 	result := make(chan error, 1)
 	go func() { result <- buf.Write(observed, evt, testToken) }()
@@ -268,11 +274,6 @@ func TestBuffer_Write_WaitsBeforeEncodingAndHonorsCancellation(t *testing.T) {
 	case <-observed.waiting:
 	case <-time.After(5 * time.Second):
 		t.Fatal("write did not wait for capacity")
-	}
-	select {
-	case <-encoded:
-		t.Fatal("event encoded before capacity became available")
-	default:
 	}
 	buf.mu.RLock()
 	assert.Len(t, buf.pending, 0)
@@ -294,7 +295,6 @@ func TestBuffer_Write_WaitsBeforeEncodingAndHonorsCancellation(t *testing.T) {
 	}
 	releaseOnce.Do(func() { close(release) })
 	require.NoError(t, buf.Close())
-	assert.Empty(t, encoded)
 }
 
 func TestBuffer_Write_CancellationDuringEncodingDoesNotAdmit(t *testing.T) {
@@ -302,11 +302,8 @@ func TestBuffer_Write_CancellationDuringEncodingDoesNotAdmit(t *testing.T) {
 	buf, err := New(Options{Path: t.TempDir()})
 	require.NoError(t, err)
 	t.Cleanup(func() { buf.Close() })
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	evt := &events.StoreChangeEvent{FullDocument: &storage.StoredDoc{Data: map[string]interface{}{
-		"probe": marshalAction(cancel),
-	}}}
+	ctx := &cancelAfterEncodingContext{Context: context.Background()}
+	evt := &events.StoreChangeEvent{EventID: "canceled"}
 	require.ErrorIs(t, buf.Write(ctx, evt, testToken), context.Canceled)
 	buf.mu.RLock()
 	assert.Empty(t, buf.pending)

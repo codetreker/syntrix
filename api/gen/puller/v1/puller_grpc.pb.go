@@ -19,7 +19,9 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	PullerService_Subscribe_FullMethodName = "/syntrix.puller.v1.PullerService/Subscribe"
+	PullerService_Subscribe_FullMethodName         = "/syntrix.puller.v1.PullerService/Subscribe"
+	PullerService_BootstrapBoundary_FullMethodName = "/syntrix.puller.v1.PullerService/BootstrapBoundary"
+	PullerService_ValidateBoundary_FullMethodName  = "/syntrix.puller.v1.PullerService/ValidateBoundary"
 )
 
 // PullerServiceClient is the client API for PullerService service.
@@ -32,6 +34,10 @@ type PullerServiceClient interface {
 	// Subscribe to merged event stream from all backends.
 	// Events are delivered in order within each backend, merged across backends.
 	Subscribe(ctx context.Context, in *SubscribeRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[PullerEvent], error)
+	// Requires quiesced writers and explicitly reset buffers.
+	BootstrapBoundary(ctx context.Context, in *BootstrapBoundaryRequest, opts ...grpc.CallOption) (*BoundaryResponse, error)
+	// Rejects a different buffer lineage or unavailable replay history.
+	ValidateBoundary(ctx context.Context, in *ValidateBoundaryRequest, opts ...grpc.CallOption) (*BoundaryResponse, error)
 }
 
 type pullerServiceClient struct {
@@ -61,6 +67,26 @@ func (c *pullerServiceClient) Subscribe(ctx context.Context, in *SubscribeReques
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type PullerService_SubscribeClient = grpc.ServerStreamingClient[PullerEvent]
 
+func (c *pullerServiceClient) BootstrapBoundary(ctx context.Context, in *BootstrapBoundaryRequest, opts ...grpc.CallOption) (*BoundaryResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(BoundaryResponse)
+	err := c.cc.Invoke(ctx, PullerService_BootstrapBoundary_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *pullerServiceClient) ValidateBoundary(ctx context.Context, in *ValidateBoundaryRequest, opts ...grpc.CallOption) (*BoundaryResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(BoundaryResponse)
+	err := c.cc.Invoke(ctx, PullerService_ValidateBoundary_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // PullerServiceServer is the server API for PullerService service.
 // All implementations must embed UnimplementedPullerServiceServer
 // for forward compatibility.
@@ -71,6 +97,10 @@ type PullerServiceServer interface {
 	// Subscribe to merged event stream from all backends.
 	// Events are delivered in order within each backend, merged across backends.
 	Subscribe(*SubscribeRequest, grpc.ServerStreamingServer[PullerEvent]) error
+	// Requires quiesced writers and explicitly reset buffers.
+	BootstrapBoundary(context.Context, *BootstrapBoundaryRequest) (*BoundaryResponse, error)
+	// Rejects a different buffer lineage or unavailable replay history.
+	ValidateBoundary(context.Context, *ValidateBoundaryRequest) (*BoundaryResponse, error)
 	mustEmbedUnimplementedPullerServiceServer()
 }
 
@@ -83,6 +113,12 @@ type UnimplementedPullerServiceServer struct{}
 
 func (UnimplementedPullerServiceServer) Subscribe(*SubscribeRequest, grpc.ServerStreamingServer[PullerEvent]) error {
 	return status.Error(codes.Unimplemented, "method Subscribe not implemented")
+}
+func (UnimplementedPullerServiceServer) BootstrapBoundary(context.Context, *BootstrapBoundaryRequest) (*BoundaryResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method BootstrapBoundary not implemented")
+}
+func (UnimplementedPullerServiceServer) ValidateBoundary(context.Context, *ValidateBoundaryRequest) (*BoundaryResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ValidateBoundary not implemented")
 }
 func (UnimplementedPullerServiceServer) mustEmbedUnimplementedPullerServiceServer() {}
 func (UnimplementedPullerServiceServer) testEmbeddedByValue()                       {}
@@ -116,13 +152,58 @@ func _PullerService_Subscribe_Handler(srv interface{}, stream grpc.ServerStream)
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type PullerService_SubscribeServer = grpc.ServerStreamingServer[PullerEvent]
 
+func _PullerService_BootstrapBoundary_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(BootstrapBoundaryRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PullerServiceServer).BootstrapBoundary(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PullerService_BootstrapBoundary_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PullerServiceServer).BootstrapBoundary(ctx, req.(*BootstrapBoundaryRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _PullerService_ValidateBoundary_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ValidateBoundaryRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PullerServiceServer).ValidateBoundary(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PullerService_ValidateBoundary_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PullerServiceServer).ValidateBoundary(ctx, req.(*ValidateBoundaryRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // PullerService_ServiceDesc is the grpc.ServiceDesc for PullerService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
 var PullerService_ServiceDesc = grpc.ServiceDesc{
 	ServiceName: "syntrix.puller.v1.PullerService",
 	HandlerType: (*PullerServiceServer)(nil),
-	Methods:     []grpc.MethodDesc{},
+	Methods: []grpc.MethodDesc{
+		{
+			MethodName: "BootstrapBoundary",
+			Handler:    _PullerService_BootstrapBoundary_Handler,
+		},
+		{
+			MethodName: "ValidateBoundary",
+			Handler:    _PullerService_ValidateBoundary_Handler,
+		},
+	},
 	Streams: []grpc.StreamDesc{
 		{
 			StreamName:    "Subscribe",

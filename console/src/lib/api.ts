@@ -1,4 +1,7 @@
 import axios, { type AxiosInstance, type AxiosError, type AxiosResponse, type InternalAxiosRequestConfig } from 'axios';
+import type { FilterOp, QueryOrder, QueryPage } from '../../../sdk/syntrix-client-ts/src/api/types';
+import { encodeQueryValue } from '../../../sdk/syntrix-client-ts/src/api/value';
+import { decodeQueryPage } from '../../../sdk/syntrix-client-ts/src/internal/query-page';
 
 // API Base URL - defaults to same origin for production
 const API_BASE_URL = import.meta.env.VITE_API_URL || '';
@@ -119,10 +122,12 @@ export interface User {
 }
 
 export interface QueryRequest {
+  database: string;
   collection: string;
-  filter?: Record<string, unknown>;
+  filters?: { field: string; op: FilterOp; value: unknown }[];
   limit?: number;
-  offset?: number;
+  startAfter?: string;
+  orderBy?: QueryOrder[];
 }
 
 export interface Document {
@@ -131,9 +136,12 @@ export interface Document {
 }
 
 export const dataApi = {
-  query: async (request: QueryRequest): Promise<Document[]> => {
-    const response = await api.post('/api/v1/query', request);
-    return response.data.documents || [];
+  query: async ({ database, filters = [], ...request }: QueryRequest): Promise<QueryPage<Document>> => {
+    const response = await api.post(`/api/v1/databases/${encodeURIComponent(database)}/query`, {
+      ...request,
+      filters: filters.map(filter => ({ ...filter, value: encodeQueryValue(filter.value) })),
+    });
+    return decodeQueryPage<Document>(response.data);
   },
 
   create: async (collection: string, data: Record<string, unknown>): Promise<Document> => {

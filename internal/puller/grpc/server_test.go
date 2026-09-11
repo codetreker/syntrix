@@ -81,7 +81,7 @@ func TestServer_SubscriberCount_WithAdd(t *testing.T) {
 	}
 
 	// Add a subscriber
-	sub := core.NewSubscriber("consumer-1", nil, false, 100)
+	sub := testSubscriber(t, "consumer-1", nil, false, 100)
 	server.subs.Add(sub)
 
 	if server.SubscriberCount() != 1 {
@@ -124,7 +124,7 @@ func TestServer_ConvertEvent(t *testing.T) {
 			event: &events.StoreChangeEvent{
 				EventID:      "evt-456",
 				OpType:       events.StoreOperationUpdate,
-				FullDocument: &storage.StoredDoc{Data: map[string]any{"name": "test", "value": 123}},
+				FullDocument: &storage.StoredDoc{Id: storage.CalculateDatabase("database-1", "users/doc-1"), Database: "database-1", Collection: "users", Fullpath: "users/doc-1", Data: map[string]any{"name": "test", "value": 123}},
 			},
 			wantErr: false,
 		},
@@ -201,8 +201,8 @@ func TestServer_Shutdown_Initialized(t *testing.T) {
 	server.Init()
 
 	// Add some subscribers
-	sub1 := core.NewSubscriber("consumer-1", nil, false, 100)
-	sub2 := core.NewSubscriber("consumer-2", nil, false, 100)
+	sub1 := testSubscriber(t, "consumer-1", nil, false, 100)
+	sub2 := testSubscriber(t, "consumer-2", nil, false, 100)
 	server.subs.Add(sub1)
 	server.subs.Add(sub2)
 
@@ -267,9 +267,9 @@ func TestServer_SendHeartbeat(t *testing.T) {
 
 	// Create a subscriber with some progress
 	initialProgress := &cursor.ProgressMarker{
-		Positions: map[string]string{"backend-1": "evt-123"},
+		Positions: map[string]string{"backend-1": "100-1-abc"},
 	}
-	sub := core.NewSubscriber("test-consumer", initialProgress, false, 100)
+	sub := testSubscriber(t, "test-consumer", initialProgress, false, 100)
 
 	// Send heartbeat
 	err := server.sendHeartbeat(mockStream, sub)
@@ -306,7 +306,7 @@ func TestServer_SendHeartbeat_EmptyProgress(t *testing.T) {
 	}
 
 	// Create a subscriber with no progress (fresh subscriber)
-	sub := core.NewSubscriber("test-consumer", nil, false, 100)
+	sub := testSubscriber(t, "test-consumer", nil, false, 100)
 
 	// Send heartbeat
 	err := server.sendHeartbeat(mockStream, sub)
@@ -346,7 +346,7 @@ func TestServer_SendHeartbeat_Error(t *testing.T) {
 	source := &mockEventSource{}
 	server := NewServer(cfg, source, slog.Default())
 
-	sub := core.NewSubscriber("test-consumer", nil, false, 100)
+	sub := testSubscriber(t, "test-consumer", nil, false, 100)
 
 	// Use a stream that returns an error on Send
 	mockStream := &mockErrorStream{
@@ -395,4 +395,13 @@ func (m *mockSubscribeStream) Context() context.Context {
 		return m.ctx
 	}
 	return context.Background()
+}
+
+func testSubscriber(t *testing.T, id string, after *cursor.ProgressMarker, coalesce bool, size int) *core.Subscriber {
+	t.Helper()
+	sub, err := core.NewSubscriber(id, after, coalesce, size)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return sub
 }

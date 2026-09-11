@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	indexerv1 "github.com/syntrixbase/syntrix/api/gen/indexer/v1"
+	"github.com/syntrixbase/syntrix/internal/indexer/encoding"
 	"github.com/syntrixbase/syntrix/internal/indexer/manager"
 	"github.com/syntrixbase/syntrix/internal/indexer/mem_store"
 	"github.com/syntrixbase/syntrix/internal/indexer/store"
@@ -227,109 +228,117 @@ func TestServer_Health(t *testing.T) {
 	})
 }
 
+func stateTestManager(t *testing.T) *manager.Manager {
+	t.Helper()
+	st := mem_store.New()
+	t.Cleanup(func() { require.NoError(t, st.Close()) })
+	mgr := manager.New(st)
+	require.NoError(t, mgr.LoadTemplatesFromBytes([]byte(`templates:
+- name: chats_by_timestamp
+  collectionPattern: users/{uid}/chats
+  fields: [{field: timestamp, order: desc}]
+- name: chats_by_name
+  collectionPattern: users/{uid}/chats
+  fields: [{field: name, order: asc}]
+- name: messages_by_timestamp
+  collectionPattern: rooms/{rid}/messages
+  fields: [{field: timestamp, order: desc}]
+`)))
+	return mgr
+}
+func seedStateIndex(t *testing.T, mgr *manager.Manager, database, collection, templateName string) store.QueryIndexRef {
+	t.Helper()
+	for _, tmpl := range mgr.Templates() {
+		if tmpl.Name != templateName {
+			continue
+		}
+		ref := store.QueryIndexRef{Database: database, Collection: collection, TemplateFingerprint: tmpl.Fingerprint(), Generation: "active"}
+		field := encoding.Field{Value: int64(1), Direction: encoding.Desc}
+		if templateName == "chats_by_name" {
+			field = encoding.Field{Value: "Alice", Direction: encoding.Asc}
+		}
+		key, err := encoding.Encode([]encoding.Field{field}, "doc1")
+		require.NoError(t, err)
+		require.NoError(t, mgr.Store().ApplyDocumentProjection([]store.Projection{{Index: ref, DocumentID: "doc1", PostingKeys: [][]byte{key}}}, ""))
+		require.NoError(t, mgr.Store().PublishGeneration(ref, ""))
+		return ref
+	}
+	t.Fatalf("template %q not found", templateName)
+	return store.QueryIndexRef{}
+}
 func TestServer_GetState(t *testing.T) {
 	ctx := context.Background()
-
 	t.Run("returns actual state", func(t *testing.T) {
-		st := mem_store.New()
-		mgr := manager.New(st)
-		st.Upsert("db1", "users/*/chats", "ts:desc", "doc1", []byte{0x01}, "")
-		st.Upsert("db2", "rooms/*/messages", "ts:desc", "doc2", []byte{0x01}, "")
-
-		mock := &mockLocalService{mgr: mgr}
-		server := NewServer(mock)
-
+		mgr := stateTestManager(t)
+		seedStateIndex(t, mgr, "db1", "users/alice/chats", "chats_by_timestamp")
+		seedStateIndex(t, mgr, "db2", "rooms/main/messages", "messages_by_timestamp")
+		server := NewServer(&mockLocalService{mgr: mgr})
 		resp, err := server.GetState(ctx, &indexerv1.GetStateRequest{})
-
 		require.NoError(t, err)
-		assert.Len(t, resp.Actual, 2)
+		require.Len(t, resp.Actual, 2)
+		for _, actual := range resp.Actual {
+			assert.Equal(t, "healthy", actual.State)
+			assert.EqualValues(t, -1, actual.DocCount)
+		}
 	})
-
 	t.Run("filters by database", func(t *testing.T) {
-		st := mem_store.New()
-		mgr := manager.New(st)
-		st.Upsert("db1", "users/*/chats", "ts:desc", "doc1", []byte{0x01}, "")
-		st.Upsert("db2", "rooms/*/messages", "ts:desc", "doc2", []byte{0x01}, "")
-
-		mock := &mockLocalService{mgr: mgr}
-		server := NewServer(mock)
-
-		resp, err := server.GetState(ctx, &indexerv1.GetStateRequest{
-			Database: "db1",
-		})
-
+		mgr := stateTestManager(t)
+		seedStateIndex(t, mgr, "db1", "users/alice/chats", "chats_by_timestamp")
+		seedStateIndex(t, mgr, "db2", "rooms/main/messages", "messages_by_timestamp")
+		server := NewServer(&mockLocalService{mgr: mgr})
+		resp, err := server.GetState(ctx, &indexerv1.GetStateRequest{Database: "db1"})
 		require.NoError(t, err)
-		assert.Len(t, resp.Actual, 1)
+		require.Len(t, resp.Actual, 1)
 		assert.Equal(t, "db1", resp.Actual[0].Database)
 	})
-
 	t.Run("filters by pattern", func(t *testing.T) {
-		st := mem_store.New()
-		mgr := manager.New(st)
-		st.Upsert("db1", "users/*/chats", "ts:desc", "doc1", []byte{0x01}, "")
-		st.Upsert("db1", "rooms/*/messages", "ts:desc", "doc2", []byte{0x01}, "")
-
-		mock := &mockLocalService{mgr: mgr}
-		server := NewServer(mock)
-
-		resp, err := server.GetState(ctx, &indexerv1.GetStateRequest{
-			Pattern: "users/*/chats",
-		})
-
+		mgr := stateTestManager(t)
+		seedStateIndex(t, mgr, "db1", "users/alice/chats", "chats_by_timestamp")
+		seedStateIndex(t, mgr, "db1", "rooms/main/messages", "messages_by_timestamp")
+		server := NewServer(&mockLocalService{mgr: mgr})
+		resp, err := server.GetState(ctx, &indexerv1.GetStateRequest{Pattern: "users/*/chats"})
 		require.NoError(t, err)
-		assert.Len(t, resp.Actual, 1)
-		assert.Equal(t, "users/*/chats", resp.Actual[0].Pattern)
+		require.Len(t, resp.Actual, 1)
+		assert.Equal(t, "users/alice/chats", resp.Actual[0].Pattern)
+		assert.Equal(t, "chats_by_timestamp", resp.Actual[0].TemplateId)
 	})
 }
-
 func TestServer_InvalidateIndex(t *testing.T) {
 	ctx := context.Background()
-
 	t.Run("invalidates specific index", func(t *testing.T) {
-		st := mem_store.New()
-		mgr := manager.New(st)
-		st.Upsert("db1", "users/*/chats", "ts:desc", "doc1", []byte{0x01}, "")
-		st.Upsert("db1", "rooms/*/messages", "ts:desc", "doc2", []byte{0x01}, "")
-
-		mock := &mockLocalService{mgr: mgr}
-		server := NewServer(mock)
-
-		resp, err := server.InvalidateIndex(ctx, &indexerv1.InvalidateIndexRequest{
-			Database:   "db1",
-			Pattern:    "users/*/chats",
-			TemplateId: "ts:desc",
-		})
-
+		mgr := stateTestManager(t)
+		ref := seedStateIndex(t, mgr, "db1", "users/alice/chats", "chats_by_timestamp")
+		other := seedStateIndex(t, mgr, "db1", "rooms/main/messages", "messages_by_timestamp")
+		server := NewServer(&mockLocalService{mgr: mgr})
+		resp, err := server.InvalidateIndex(ctx, &indexerv1.InvalidateIndexRequest{Database: "db1", Pattern: "users/*/chats", TemplateId: "chats_by_timestamp"})
 		require.NoError(t, err)
-		assert.Equal(t, int32(1), resp.IndexesInvalidated)
-		state, err := st.GetState("db1", "users/*/chats", "ts:desc")
+		assert.EqualValues(t, 1, resp.IndexesInvalidated)
+		generation, found, err := mgr.Store().ReadGeneration(ref.Database, ref.Collection, ref.TemplateFingerprint)
 		require.NoError(t, err)
-		assert.NotEqual(t, store.IndexStateHealthy, state)
+		require.True(t, found)
+		assert.False(t, generation.Ready)
+		assert.NotEmpty(t, generation.Failure)
+		generation, found, err = mgr.Store().ReadGeneration(other.Database, other.Collection, other.TemplateFingerprint)
+		require.NoError(t, err)
+		require.True(t, found)
+		assert.True(t, generation.Ready)
 	})
-
 	t.Run("invalidates all indexes for pattern", func(t *testing.T) {
-		st := mem_store.New()
-		mgr := manager.New(st)
-		st.Upsert("db1", "users/*/chats", "ts:desc", "doc1", []byte{0x01}, "")
-		st.Upsert("db1", "users/*/chats", "name:asc", "doc2", []byte{0x01}, "")
-		st.Upsert("db1", "rooms/*/messages", "ts:desc", "doc3", []byte{0x01}, "")
-
-		mock := &mockLocalService{mgr: mgr}
-		server := NewServer(mock)
-
-		resp, err := server.InvalidateIndex(ctx, &indexerv1.InvalidateIndexRequest{
-			Database: "db1",
-			Pattern:  "users/*/chats",
-		})
-
+		mgr := stateTestManager(t)
+		first := seedStateIndex(t, mgr, "db1", "users/alice/chats", "chats_by_timestamp")
+		second := seedStateIndex(t, mgr, "db1", "users/alice/chats", "chats_by_name")
+		seedStateIndex(t, mgr, "db1", "rooms/main/messages", "messages_by_timestamp")
+		server := NewServer(&mockLocalService{mgr: mgr})
+		resp, err := server.InvalidateIndex(ctx, &indexerv1.InvalidateIndexRequest{Database: "db1", Pattern: "users/*/chats"})
 		require.NoError(t, err)
-		assert.Equal(t, int32(2), resp.IndexesInvalidated)
-		state1, err := st.GetState("db1", "users/*/chats", "ts:desc")
-		require.NoError(t, err)
-		assert.NotEqual(t, store.IndexStateHealthy, state1)
-		state2, err := st.GetState("db1", "users/*/chats", "name:asc")
-		require.NoError(t, err)
-		assert.NotEqual(t, store.IndexStateHealthy, state2)
+		assert.EqualValues(t, 2, resp.IndexesInvalidated)
+		for _, ref := range []store.QueryIndexRef{first, second} {
+			generation, found, err := mgr.Store().ReadGeneration(ref.Database, ref.Collection, ref.TemplateFingerprint)
+			require.NoError(t, err)
+			require.True(t, found)
+			assert.False(t, generation.Ready)
+			assert.NotEmpty(t, generation.Failure)
+		}
 	})
 }
 

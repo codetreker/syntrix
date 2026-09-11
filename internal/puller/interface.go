@@ -62,6 +62,20 @@ type Service interface {
 	Subscribe(ctx context.Context, consumerID string, after string) <-chan *Event
 }
 
+// BoundaryService supports an offline bootstrap and verified replay subscription.
+// SubscribeReady delivers an ordered Event.Ready barrier after replay. Consumers
+// must apply preceding events and flush before serving; onReady only means sent.
+// Writers remain quiesced until consumers have processed that barrier.
+type BoundaryService interface {
+	Service
+	BootstrapBoundary(ctx context.Context) (string, error)
+	ValidateBoundary(ctx context.Context, after string) error
+	SubscribeReady(ctx context.Context, consumerID, after string, onReady func(string)) <-chan *Event
+}
+
+// ErrCaptureUnavailable permits a verified retry from the last applied progress.
+var ErrCaptureUnavailable = core.ErrCaptureUnavailable
+
 // LocalService extends Service with methods only available for local (in-process) pullers.
 type LocalService interface {
 	Service
@@ -81,7 +95,9 @@ type LocalService interface {
 	// SetEventHandler sets the event handler for processing events.
 	SetEventHandler(handler func(ctx context.Context, backendName string, event *ChangeEvent) error)
 
-	// Replay returns an iterator that replays events from the given progress marker.
+	// Replay includes each backend position's complete timestamp group, then later
+	// events. Boundary-group events may repeat because EventID hashes do not encode
+	// source arrival order. An empty position starts at the beginning of retention.
 	Replay(ctx context.Context, after map[string]string, coalesce bool) (Iterator, error)
 }
 

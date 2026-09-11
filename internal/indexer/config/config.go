@@ -18,6 +18,12 @@ const (
 
 // Config holds the Indexer service configuration.
 type Config struct {
+	// Databases requires complete bootstrap coverage for these logical database IDs.
+	Databases          []string      `yaml:"databases"`
+	StartupTimeout     time.Duration `yaml:"startup_timeout"`
+	BootstrapBatchSize int           `yaml:"bootstrap_batch_size"`
+	BootstrapPageBytes int64         `yaml:"bootstrap_page_bytes"`
+
 	// PullerAddr is the address of the Puller gRPC service.
 	// Used in distributed mode to connect to Puller.
 	// Defaults to "localhost:9000".
@@ -73,13 +79,16 @@ type StoreConfig struct {
 // DefaultConfig returns the default Indexer configuration.
 func DefaultConfig() Config {
 	return Config{
-		PullerAddr:        "localhost:9000",
-		TemplatePath:      "index_templates",
-		ProgressPath:      "data/indexer/progress",
-		ConsumerID:        "indexer",
-		ReconcileInterval: 5 * time.Second,
-		StorageMode:       StorageModeMemory,
-		Store:             DefaultStoreConfig(),
+		PullerAddr:         "localhost:9000",
+		StartupTimeout:     30 * time.Second,
+		BootstrapBatchSize: 256,
+		BootstrapPageBytes: 8 << 20,
+		TemplatePath:       "index_templates",
+		ProgressPath:       "data/indexer/progress",
+		ConsumerID:         "indexer",
+		ReconcileInterval:  5 * time.Second,
+		StorageMode:        StorageModeMemory,
+		Store:              DefaultStoreConfig(),
 	}
 }
 
@@ -97,6 +106,15 @@ func DefaultStoreConfig() StoreConfig {
 // ApplyDefaults fills in zero values with defaults.
 func (c *Config) ApplyDefaults() {
 	defaults := DefaultConfig()
+	if c.StartupTimeout == 0 {
+		c.StartupTimeout = defaults.StartupTimeout
+	}
+	if c.BootstrapBatchSize == 0 {
+		c.BootstrapBatchSize = defaults.BootstrapBatchSize
+	}
+	if c.BootstrapPageBytes == 0 {
+		c.BootstrapPageBytes = defaults.BootstrapPageBytes
+	}
 	if c.PullerAddr == "" {
 		c.PullerAddr = defaults.PullerAddr
 	}
@@ -157,6 +175,15 @@ func (c *Config) ResolvePaths(configDir, dataDir string) {
 
 // Validate returns an error if the configuration is invalid.
 func (c *Config) Validate(mode services.DeploymentMode) error {
+	if c.StartupTimeout < 0 || c.BootstrapBatchSize < 0 || c.BootstrapPageBytes < 0 {
+		return fmt.Errorf("indexer maintenance limits must be positive")
+	}
+	for _, database := range c.Databases {
+		if database == "" {
+			return fmt.Errorf("indexer.databases cannot contain an empty database ID")
+		}
+	}
+
 	if mode.IsDistributed() && c.PullerAddr == "" {
 		return fmt.Errorf("indexer.puller_addr is required in distributed mode")
 	}

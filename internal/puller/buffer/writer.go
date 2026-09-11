@@ -3,7 +3,6 @@ package buffer
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"time"
 
@@ -50,7 +49,7 @@ func (b *Buffer) Write(ctx context.Context, evt *events.StoreChangeEvent, token 
 	}
 
 	key := []byte(evt.BufferKey())
-	value, err := json.Marshal(evt)
+	value, err := events.MarshalEvent(evt)
 	if err != nil {
 		return fmt.Errorf("failed to marshal event: %w", err)
 	}
@@ -187,6 +186,36 @@ func (b *Buffer) runBatcher() {
 		}
 		if err := flush(); err != nil {
 			return
+		}
+	}
+}
+
+// Flush waits until all admitted events and their raw checkpoints are durable.
+// The capture goroutine must remain the sole writer when establishing a boundary.
+func (b *Buffer) Flush(ctx context.Context) error {
+	for {
+		b.mu.RLock()
+		pending := len(b.pending) + len(b.flushing)
+		failed, closed, capacity := b.failure, b.closed, b.capacityCh
+		b.mu.RUnlock()
+		if failed != nil {
+			return failed
+		}
+		if closed {
+			return fmt.Errorf("buffer is closed")
+		}
+		if pending == 0 {
+			return nil
+		}
+		select {
+		case b.notifyCh <- struct{}{}:
+		default:
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-b.closeCh:
+		case <-capacity:
 		}
 	}
 }

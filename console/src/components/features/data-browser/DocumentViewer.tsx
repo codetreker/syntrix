@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { X, Copy, Check, Edit2, Trash2 } from 'lucide-react';
-import type { Document } from '../../../lib/documents';
+import { formatDocumentJson, formatDocumentDate, type Document } from '../../../lib/documents';
 import { Button } from '../../ui';
 
 interface DocumentViewerProps {
@@ -13,7 +13,7 @@ interface DocumentViewerProps {
 export function DocumentViewer({ document, onClose, onEdit, onDelete }: DocumentViewerProps) {
   const [copied, setCopied] = useState(false);
 
-  const jsonString = JSON.stringify(document, null, 2);
+  const jsonString = formatDocumentJson(document);
 
   const handleCopy = async () => {
     try {
@@ -33,8 +33,8 @@ export function DocumentViewer({ document, onClose, onEdit, onDelete }: Document
           <h3 className="font-medium text-gray-900 dark:text-white truncate" title={document.id}>
             {document.id}
           </h3>
-          {document._collection && (
-            <p className="text-xs text-gray-500 truncate">{document._collection}</p>
+          {typeof document.collection === 'string' && (
+            <p className="text-xs text-gray-500 truncate">{document.collection}</p>
           )}
         </div>
         <button
@@ -69,36 +69,25 @@ export function DocumentViewer({ document, onClose, onEdit, onDelete }: Document
       </div>
 
       {/* Metadata Footer */}
-      {(document._createdAt || document._updatedAt) && (
+      {(document.createdAt !== undefined || document.updatedAt !== undefined) && (
         <div className="px-4 py-2 border-t border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50 text-xs text-gray-500">
-          {document._createdAt && <div>Created: {formatDateTime(document._createdAt)}</div>}
-          {document._updatedAt && <div>Updated: {formatDateTime(document._updatedAt)}</div>}
+          {document.createdAt !== undefined && <div>Created: {formatDocumentDate(document.createdAt)}</div>}
+          {document.updatedAt !== undefined && <div>Updated: {formatDocumentDate(document.updatedAt)}</div>}
         </div>
       )}
     </div>
   );
 }
 
-// Simple JSON syntax highlighting component
-function JsonHighlight({ json }: { json: string }) {
-  // Basic syntax highlighting using regex
-  const highlighted = json
-    // String keys
-    .replace(/"([^"]+)":/g, '<span class="text-purple-600 dark:text-purple-400">"$1"</span>:')
-    // String values
-    .replace(/: "([^"]*)"/g, ': <span class="text-green-600 dark:text-green-400">"$1"</span>')
-    // Numbers
-    .replace(/: (\d+\.?\d*)/g, ': <span class="text-blue-600 dark:text-blue-400">$1</span>')
-    // Booleans and null
-    .replace(/: (true|false|null)/g, ': <span class="text-orange-600 dark:text-orange-400">$1</span>');
-
-  return <span dangerouslySetInnerHTML={{ __html: highlighted }} />;
-}
-
-function formatDateTime(dateStr: string): string {
-  try {
-    return new Date(dateStr).toLocaleString();
-  } catch {
-    return dateStr;
-  }
-}
+const JsonHighlight = ({ json }: { json: string }) => {
+  const tokens = json.split(/("(?:\\.|[^"\\])*"\s*:|"(?:\\.|[^"\\])*"|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?|true|false|null)/g);
+  return <>{tokens.map((token, index) => {
+    let className: string | undefined;
+    if (token.startsWith('"')) className = token.endsWith(':')
+      ? 'text-purple-600 dark:text-purple-400'
+      : 'text-green-600 dark:text-green-400';
+    else if (/^-?\d/.test(token)) className = 'text-blue-600 dark:text-blue-400';
+    else if (/^(true|false|null)$/.test(token)) className = 'text-orange-600 dark:text-orange-400';
+    return <span key={index} className={className}>{token}</span>;
+  })}</>;
+};

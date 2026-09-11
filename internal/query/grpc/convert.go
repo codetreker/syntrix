@@ -188,15 +188,6 @@ func protoToModelDoc(doc *pb.Document) model.Document {
 	return result
 }
 
-// modelDocsToProto converts a slice of model.Document to proto Documents.
-func modelDocsToProto(docs []model.Document) []*pb.Document {
-	result := make([]*pb.Document, 0, len(docs))
-	for _, doc := range docs {
-		result = append(result, modelDocToProto(doc))
-	}
-	return result
-}
-
 // ============================================================================
 // Filter conversions
 // ============================================================================
@@ -254,74 +245,6 @@ func protoToFilters(filters []*pb.Filter) model.Filters {
 // ============================================================================
 // OrderBy conversions
 // ============================================================================
-
-// orderToProto converts a model.Order to proto OrderBy.
-func orderToProto(o model.Order) *pb.OrderBy {
-	return &pb.OrderBy{
-		Field:     o.Field,
-		Direction: o.Direction,
-	}
-}
-
-// protoToOrder converts a proto OrderBy to model.Order.
-func protoToOrder(o *pb.OrderBy) model.Order {
-	if o == nil {
-		return model.Order{}
-	}
-	return model.Order{
-		Field:     o.Field,
-		Direction: o.Direction,
-	}
-}
-
-// ordersToProto converts a slice of model.Order to proto OrderBy.
-func ordersToProto(orders []model.Order) []*pb.OrderBy {
-	result := make([]*pb.OrderBy, 0, len(orders))
-	for _, o := range orders {
-		result = append(result, orderToProto(o))
-	}
-	return result
-}
-
-// protoToOrders converts a slice of proto OrderBy to model.Order.
-func protoToOrders(orders []*pb.OrderBy) []model.Order {
-	result := make([]model.Order, 0, len(orders))
-	for _, o := range orders {
-		result = append(result, protoToOrder(o))
-	}
-	return result
-}
-
-// ============================================================================
-// Query conversions
-// ============================================================================
-
-// queryToProto converts a model.Query to proto Query.
-func queryToProto(q model.Query) *pb.Query {
-	return &pb.Query{
-		Collection:  q.Collection,
-		Filters:     filtersToProto(q.Filters),
-		OrderBy:     ordersToProto(q.OrderBy),
-		Limit:       int32(q.Limit),
-		StartAfter:  q.StartAfter,
-		ShowDeleted: q.ShowDeleted,
-	}
-}
-
-// protoToQuery converts a proto Query to model.Query.
-func protoToQuery(q *pb.Query) model.Query {
-	if q == nil {
-		return model.Query{}
-	}
-	return model.Query{
-		Collection:  q.Collection,
-		Filters:     protoToFilters(q.Filters),
-		OrderBy:     protoToOrders(q.OrderBy),
-		Limit:       int(q.Limit),
-		StartAfter:  q.StartAfter,
-		ShowDeleted: q.ShowDeleted,
-	}
-}
 
 // ============================================================================
 // Replication conversions

@@ -209,39 +209,6 @@ func filtersToProto(filters model.Filters) []*pb.Filter {
 // OrderBy conversions
 // ============================================================================
 
-// orderToProto converts a model.Order to proto OrderBy.
-func orderToProto(o model.Order) *pb.OrderBy {
-	return &pb.OrderBy{
-		Field:     o.Field,
-		Direction: o.Direction,
-	}
-}
-
-// ordersToProto converts a slice of model.Order to proto OrderBy.
-func ordersToProto(orders []model.Order) []*pb.OrderBy {
-	result := make([]*pb.OrderBy, 0, len(orders))
-	for _, o := range orders {
-		result = append(result, orderToProto(o))
-	}
-	return result
-}
-
-// ============================================================================
-// Query conversions
-// ============================================================================
-
-// queryToProto converts a model.Query to proto Query.
-func queryToProto(q model.Query) *pb.Query {
-	return &pb.Query{
-		Collection:  q.Collection,
-		Filters:     filtersToProto(q.Filters),
-		OrderBy:     ordersToProto(q.OrderBy),
-		Limit:       int32(q.Limit),
-		StartAfter:  q.StartAfter,
-		ShowDeleted: q.ShowDeleted,
-	}
-}
-
 // ============================================================================
 // Push change conversion
 // ============================================================================

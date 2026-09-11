@@ -81,7 +81,7 @@ puller:
     channel_size: 10000
   backends:
     - name: "default_mongo"
-      collections: ["documents"]
+      collections: ["documents", "sys"]
   buffer:
     path: "puller/events"      # Relative to data_dir
     max_size: "10GiB"

@@ -642,3 +642,28 @@ func TestDatabaseTemplates_Databases(t *testing.T) {
 	dbs := dt.Databases()
 	assert.Equal(t, []string{"adb", "mdb", "zdb"}, dbs)
 }
+
+func TestMembershipTemplateSemantics(t *testing.T) {
+	valid := Template{CollectionPattern: "users/{uid}/docs", Fields: []Field{{Field: "tenant", Order: Asc}, {Field: "tags", Mode: Membership}, {Field: "createdAt", Order: Desc}}}
+	require.NoError(t, ValidateTemplate(&valid))
+	for _, fields := range [][]Field{
+		{{Field: "tags", Mode: Membership}, {Field: "labels", Mode: Membership}},
+		{{Field: "tags", Mode: Membership, Order: Desc}},
+		{{Field: "createdAt", Mode: Membership}},
+		{{Field: "profile.name", Order: Asc}},
+		{{Field: "tags", Mode: "unknown", Order: Asc}},
+	} {
+		candidate := valid
+		candidate.Fields = fields
+		require.Error(t, ValidateTemplate(&candidate))
+	}
+	renamed := valid
+	renamed.Name = "display-only"
+	assert.Equal(t, valid.Fingerprint(), renamed.Fingerprint())
+	changed := valid
+	changed.IncludeDeleted = true
+	assert.NotEqual(t, valid.Fingerprint(), changed.Fingerprint())
+	concrete := valid
+	concrete.CollectionPattern = "users/alice/docs"
+	assert.NotEqual(t, valid.Fingerprint(), concrete.Fingerprint())
+}

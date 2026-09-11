@@ -2,6 +2,7 @@ package mongo
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -468,4 +469,281 @@ func TestDocumentStoreGetReadPreference(t *testing.T) {
 		assert.Nil(t, doc)
 		assert.ErrorIs(t, err, model.ErrNotFound)
 	})
+}
+
+func TestDocumentStoreSourceScan(t *testing.T) {
+	env := setupTestEnv(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	// Collection defaults must not alter source identity or seek order.
+	require.NoError(t, env.DB.CreateCollection(ctx, "scan_data", options.CreateCollection().SetCollation(&options.Collation{Locale: "en", Strength: 2})))
+	require.NoError(t, env.DB.CreateCollection(ctx, "scan_sys", options.CreateCollection().SetCollation(&options.Collation{Locale: "en", Strength: 2})))
+	store := NewDocumentStore(env.Client, env.DB, "scan_data", "scan_sys", time.Hour).(*documentStore)
+	const exactInteger int64 = 9007199254740993
+	for _, scope := range []struct{ database, collection string }{{"app", "users"}, {"APP", "users"}, {"app", "Users"}, {"app", "users/a/children"}, {"app", "sys/settings"}} {
+		ids := []string{"z", "a", "A"}
+		if scope.database == "APP" {
+			ids = []string{"foreign"}
+		}
+		for _, id := range ids {
+			doc := types.NewStoredDoc(scope.database, scope.collection, id, map[string]interface{}{"large": exactInteger})
+			doc.Data["id"] = "untrusted"
+			require.NoError(t, store.Create(ctx, scope.database, doc))
+		}
+	}
+	// Use the storage deletion path to prove that a tombstone's empty data retains identity.
+	require.NoError(t, store.Delete(ctx, "app", "users/a", nil))
+	for _, collection := range []string{"users", "sys/settings"} {
+		request := types.SourceScanRequest{Collection: collection, Limit: 2, Consistency: types.ReadAuthoritative}
+		page, err := store.ScanDocuments(ctx, "app", request)
+		require.NoError(t, err)
+		require.Len(t, page.Documents, 2)
+		assert.Equal(t, collection+"/A", page.Documents[0].Fullpath)
+		assert.Equal(t, collection+"/a", page.Documents[1].Fullpath)
+		assert.Equal(t, "a", page.NextAfter)
+		assert.False(t, page.Exhausted)
+		assert.Positive(t, page.Bytes)
+		assert.Equal(t, exactInteger, page.Documents[0].Data["large"])
+		if collection == "users" {
+			assert.True(t, page.Documents[1].Deleted)
+			assert.Empty(t, page.Documents[1].Data)
+		}
+		request.AfterID = page.NextAfter
+		page, err = store.ScanDocuments(ctx, "app", request)
+		require.NoError(t, err)
+		require.Len(t, page.Documents, 1)
+		assert.Equal(t, collection+"/z", page.Documents[0].Fullpath)
+		assert.True(t, page.Exhausted)
+		assert.Equal(t, "z", page.NextAfter)
+		request.AfterID = "z"
+		page, err = store.ScanDocuments(ctx, "app", request)
+		require.NoError(t, err)
+		assert.Empty(t, page.Documents)
+		assert.True(t, page.Exhausted)
+		assert.Equal(t, "z", page.NextAfter)
+	}
+	limited := types.SourceScanRequest{Collection: "users", Limit: 1, MaxBytes: 1}
+	page, err := store.ScanDocuments(ctx, "app", limited)
+	assert.ErrorIs(t, err, types.ErrSourceScanBudget)
+	assert.Empty(t, page.Documents)
+	// Tombstones spend the entire raw-candidate page budget.
+	page, err = store.ScanDocuments(ctx, "app", types.SourceScanRequest{Collection: "users", AfterID: "A", Limit: 1})
+	require.NoError(t, err)
+	require.Len(t, page.Documents, 1)
+	assert.True(t, page.Documents[0].Deleted)
+	assert.False(t, page.Exhausted)
+	assert.Equal(t, "a", page.NextAfter)
+}
+
+func TestDocumentStoreSourceScanExplain(t *testing.T) {
+	env := setupTestEnv(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	store := NewDocumentStore(env.Client, env.DB, "scan_data", "scan_sys", time.Hour).(*documentStore)
+	require.NoError(t, store.EnsureIndexes(ctx))
+	for _, collection := range []string{"users", "sys/settings"} {
+		for _, id := range []string{"a", "b", "c"} {
+			require.NoError(t, store.Create(ctx, "app", types.NewStoredDoc("app", collection, id, nil)))
+		}
+		physical := store.getCollection(collection).Name()
+		var explain bson.M
+		err := env.DB.RunCommand(ctx, bson.D{{Key: "explain", Value: bson.D{
+			{Key: "find", Value: physical},
+			{Key: "filter", Value: bson.D{{Key: "database", Value: "app"}, {Key: "collection", Value: collection}, {Key: "fullpath", Value: bson.M{"$gt": collection + "/a"}}}},
+			{Key: "sort", Value: bson.D{{Key: "fullpath", Value: 1}}},
+			{Key: "hint", Value: sourceScanIndexName},
+			{Key: "collation", Value: bson.M{"locale": "simple"}},
+			{Key: "limit", Value: 1},
+		}}, {Key: "verbosity", Value: "executionStats"}}).Decode(&explain)
+		require.NoError(t, err)
+		encoded, err := bson.MarshalExtJSON(explain, false, false)
+		require.NoError(t, err)
+		assert.NotContains(t, string(encoded), `"stage":"SORT"`)
+		assert.NotContains(t, string(encoded), `"stage":"COLLSCAN"`)
+		assert.Contains(t, string(encoded), sourceScanIndexName)
+		stats := explain["executionStats"].(bson.M)
+		assert.EqualValues(t, 1, stats["nReturned"])
+		assert.LessOrEqual(t, stats["totalDocsExamined"].(int32), int32(1))
+	}
+}
+
+func TestDocumentStoreGetManyReadOptions(t *testing.T) {
+	env := setupTestEnv(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	store := NewDocumentStore(env.Client, env.DB, "batch_data", "batch_sys", time.Hour)
+	for _, scope := range []struct{ db, collection, id string }{{"app", "users", "a"}, {"app", "users", "b"}, {"app", "sys/settings", "a"}, {"other", "users", "missing"}} {
+		require.NoError(t, store.Create(ctx, scope.db, types.NewStoredDoc(scope.db, scope.collection, scope.id, nil)))
+	}
+	require.NoError(t, store.Delete(ctx, "app", "users/b", nil))
+	paths := []string{"users/a", "sys/settings/a", "users/missing", "users/b", "users/a"}
+	for _, showDeleted := range []bool{false, true} {
+		docs, err := store.GetMany(ctx, "app", paths, types.ReadOptions{Consistency: types.ReadAuthoritative, ShowDeleted: showDeleted})
+		require.NoError(t, err)
+		require.Len(t, docs, len(paths))
+		assert.Equal(t, paths[0], docs[0].Fullpath)
+		assert.Equal(t, paths[1], docs[1].Fullpath)
+		assert.Nil(t, docs[2])
+		if showDeleted {
+			require.NotNil(t, docs[3])
+			assert.True(t, docs[3].Deleted)
+		} else {
+			assert.Nil(t, docs[3])
+		}
+		assert.Same(t, docs[0], docs[4])
+	}
+	_, err := store.Get(ctx, "app", "users/b")
+	assert.ErrorIs(t, err, model.ErrNotFound)
+	doc, err := store.Get(ctx, "app", "users/b", types.ReadOptions{ShowDeleted: true})
+	require.NoError(t, err)
+	assert.True(t, doc.Deleted)
+	_, err = store.GetMany(ctx, "app", nil, types.ReadOptions{Consistency: -1})
+	assert.Error(t, err)
+}
+
+func TestDocumentStoreSourceScanRejectsCorruptIdentity(t *testing.T) {
+	env := setupTestEnv(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	store := NewDocumentStore(env.Client, env.DB, "scan_data", "scan_sys", time.Hour).(*documentStore)
+	doc := types.NewStoredDoc("app", "users", "a", nil)
+	doc.Fullpath = "other/a"
+	_, err := env.DB.Collection("scan_data").InsertOne(ctx, doc)
+	require.NoError(t, err)
+	_, err = store.ScanDocuments(ctx, "app", types.SourceScanRequest{Collection: "users", Limit: 10})
+	assert.ErrorContains(t, err, "fullpath does not belong")
+}
+
+func TestDocumentStoreSourceScanRequiresSourceIndex(t *testing.T) {
+	env := setupTestEnv(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	store := NewDocumentStore(env.Client, env.DB, "scan_data", "scan_sys", time.Hour).(*documentStore)
+	require.NoError(t, store.EnsureIndexes(ctx))
+	require.NoError(t, store.Create(ctx, "app", types.NewStoredDoc("app", "users", "a", nil)))
+	_, err := env.DB.Collection("scan_data").Indexes().DropOne(ctx, sourceScanIndexName)
+	require.NoError(t, err)
+
+	// Removing a ready source index invalidates the bounded-scan guarantee.
+	page, err := store.ScanDocuments(ctx, "app", types.SourceScanRequest{Collection: "users", Limit: 1})
+	require.ErrorContains(t, err, "hint")
+	assert.Empty(t, page.Documents)
+	assert.Empty(t, page.NextAfter)
+	assert.False(t, page.Exhausted)
+}
+
+func TestDocumentStoreEnumerateCollections(t *testing.T) {
+	env := setupTestEnv(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	store := NewDocumentStore(env.Client, env.DB, "enumeration_data", "enumeration_sys", time.Hour).(*documentStore)
+	for _, collection := range []string{"z", "a", "nested/a/items", "sys/settings", "sys/users"} {
+		for _, id := range []string{"a", "b", "c"} {
+			require.NoError(t, store.Create(ctx, "app", types.NewStoredDoc("app", collection, id, nil)))
+		}
+	}
+	for _, id := range []string{"a", "b", "c"} {
+		require.NoError(t, store.Delete(ctx, "app", "a/"+id, nil))
+	}
+	require.NoError(t, store.Create(ctx, "other", types.NewStoredDoc("other", "foreign", "a", nil)))
+	first, err := store.EnumerateCollections(ctx, "app", "", 2)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"a", "nested/a/items"}, first)
+	second, err := store.EnumerateCollections(ctx, "app", first[1], 2)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"z"}, second)
+	all, err := store.EnumerateCollections(ctx, "app", "", 10, types.CollectionEnumerationOptions{IncludeSystem: true})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"a", "nested/a/items", "sys/settings", "sys/users", "z"}, all)
+	for _, physical := range []string{"enumeration_data", "enumeration_sys"} {
+		var explain bson.M
+		err := env.DB.RunCommand(ctx, bson.D{{Key: "explain", Value: bson.D{
+			{Key: "find", Value: physical},
+			{Key: "filter", Value: bson.D{{Key: "database", Value: "app"}, {Key: "collection", Value: bson.M{"$gt": "a"}}}},
+			{Key: "sort", Value: bson.D{{Key: "collection", Value: 1}, {Key: "fullpath", Value: 1}}},
+			{Key: "hint", Value: sourceScanIndexName}, {Key: "collation", Value: bson.M{"locale": "simple"}},
+			{Key: "projection", Value: bson.M{"_id": 0, "collection": 1}}, {Key: "limit", Value: 1},
+		}}, {Key: "verbosity", Value: "executionStats"}}).Decode(&explain)
+		require.NoError(t, err)
+		encoded, err := bson.MarshalExtJSON(explain, false, false)
+		require.NoError(t, err)
+		assert.NotContains(t, string(encoded), `"stage":"SORT"`)
+		assert.NotContains(t, string(encoded), `"stage":"COLLSCAN"`)
+		stats := explain["executionStats"].(bson.M)
+		assert.EqualValues(t, 1, stats["nReturned"])
+		assert.LessOrEqual(t, stats["totalKeysExamined"].(int32), int32(1))
+	}
+}
+
+func TestDocumentStoreReadByteBudget(t *testing.T) {
+	env := setupTestEnv(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	store := NewDocumentStore(env.Client, env.DB, "bounded_data", "bounded_sys", time.Hour)
+	a := types.NewStoredDoc("app", "items", "a", map[string]interface{}{"body": strings.Repeat("a", 2048)})
+	b := types.NewStoredDoc("app", "sys/settings", "b", map[string]interface{}{"body": "system"})
+	require.NoError(t, store.Create(ctx, "app", a))
+	require.NoError(t, store.Create(ctx, "app", b))
+	aBytes, err := types.StoredDocumentBytes(&a)
+	require.NoError(t, err)
+	bBytes, err := types.StoredDocumentBytes(&b)
+	require.NoError(t, err)
+	for _, limit := range []int64{aBytes, aBytes - 1} {
+		doc, err := store.Get(ctx, "app", a.Fullpath, types.ReadOptions{Consistency: types.ReadAuthoritative, MaxBytes: limit})
+		if limit == aBytes {
+			require.NoError(t, err)
+			assert.Equal(t, a.Data, doc.Data)
+		} else {
+			assert.ErrorIs(t, err, types.ErrReadBudget)
+			assert.Nil(t, doc)
+		}
+	}
+	paths := []string{a.Fullpath, "items/missing", b.Fullpath, a.Fullpath}
+	total := 2*aBytes + bBytes
+	for _, limit := range []int64{total, total - 1} {
+		docs, err := store.GetMany(ctx, "app", paths, types.ReadOptions{Consistency: types.ReadAuthoritative, MaxBytes: limit})
+		if limit == total {
+			require.NoError(t, err)
+			require.Len(t, docs, 4)
+			assert.Equal(t, a.Fullpath, docs[0].Fullpath)
+			assert.Nil(t, docs[1])
+			assert.Equal(t, b.Fullpath, docs[2].Fullpath)
+			assert.Same(t, docs[0], docs[3])
+		} else {
+			assert.ErrorIs(t, err, types.ErrReadBudget)
+			assert.Nil(t, docs)
+		}
+	}
+	docs, err := store.GetMany(ctx, "app", []string{"items/missing"}, types.ReadOptions{MaxBytes: 1})
+	require.NoError(t, err)
+	assert.Equal(t, []*types.StoredDoc{nil}, docs)
+	require.NoError(t, store.Delete(ctx, "app", a.Fullpath, nil))
+	docs, err = store.GetMany(ctx, "app", []string{a.Fullpath}, types.ReadOptions{MaxBytes: 1})
+	require.NoError(t, err)
+	assert.Equal(t, []*types.StoredDoc{nil}, docs)
+	docs, err = store.GetMany(ctx, "app", []string{a.Fullpath}, types.ReadOptions{ShowDeleted: true, MaxBytes: 1})
+	assert.ErrorIs(t, err, types.ErrReadBudget)
+	assert.Nil(t, docs)
+	_, err = store.Get(ctx, "app", "items/missing", types.ReadOptions{MaxBytes: 1})
+	assert.ErrorIs(t, err, model.ErrNotFound)
+}
+
+func TestDocumentStoreReadBudgetChargesCanonicalMetadata(t *testing.T) {
+	env := setupTestEnv(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	store := NewDocumentStore(env.Client, env.DB, "bounded_data", "bounded_sys", time.Hour)
+	path := "items/a"
+	raw := bson.M{"_id": types.CalculateDatabase("app", path), "database": "app", "collection": "items", "fullpath": path, "version": int32(1)}
+	_, err := env.DB.Collection("bounded_data").InsertOne(ctx, raw)
+	require.NoError(t, err)
+	encoded, err := bson.Marshal(raw)
+	require.NoError(t, err)
+	opts := types.ReadOptions{MaxBytes: int64(len(encoded))}
+	doc, err := store.Get(ctx, "app", path, opts)
+	assert.ErrorIs(t, err, types.ErrReadBudget)
+	assert.Nil(t, doc)
+	docs, err := store.GetMany(ctx, "app", []string{path}, opts)
+	assert.ErrorIs(t, err, types.ErrReadBudget)
+	assert.Nil(t, docs)
 }

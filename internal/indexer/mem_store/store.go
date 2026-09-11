@@ -9,15 +9,24 @@ import (
 
 // Store implements store.Store interface using in-memory data structures.
 type Store struct {
-	mu        sync.RWMutex
-	databases map[string]*Database // key: db name
-	progress  string
+	mu                        sync.RWMutex
+	databases                 map[string]*Database // key: db name
+	progress                  string
+	partitions                map[store.QueryIndexRef]*projectionIndex
+	generations               map[generationKey]store.Generation
+	catalogs                  map[string]store.BootstrapCatalog
+	catalogInventoryPublished bool
+	retiredDatabases          map[string]struct{}
 }
 
 // New creates a new in-memory Store.
 func New() *Store {
 	return &Store{
-		databases: make(map[string]*Database),
+		databases:        make(map[string]*Database),
+		partitions:       make(map[store.QueryIndexRef]*projectionIndex),
+		generations:      make(map[generationKey]store.Generation),
+		catalogs:         make(map[string]store.BootstrapCatalog),
+		retiredDatabases: make(map[string]struct{}),
 	}
 }
 
@@ -148,9 +157,28 @@ func (s *Store) DeleteIndex(db, pattern, tmplID string) error {
 func (s *Store) DeleteDatabase(db string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.retiredDatabases[db] = struct{}{}
 
 	delete(s.databases, db)
+	delete(s.catalogs, db)
+	for ref := range s.partitions {
+		if ref.Database == db {
+			delete(s.partitions, ref)
+		}
+	}
+	for key := range s.generations {
+		if key.database == db {
+			delete(s.generations, key)
+		}
+	}
 	return nil
+}
+
+func (s *Store) IsDatabaseRetired(db string) (bool, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	_, retired := s.retiredDatabases[db]
+	return retired, nil
 }
 
 // SetState sets the state of an index.

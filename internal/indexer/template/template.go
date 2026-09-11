@@ -2,6 +2,9 @@
 package template
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -10,6 +13,8 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/syntrixbase/syntrix/internal/indexer/encoding"
+	"github.com/syntrixbase/syntrix/pkg/model"
 	"gopkg.in/yaml.v3"
 )
 
@@ -21,10 +26,18 @@ const (
 	Desc Direction = "desc"
 )
 
-// Field represents an indexed field with its sort direction.
+type Mode string
+
+const (
+	Scalar     Mode = "scalar"
+	Membership Mode = "membership"
+)
+
+// Field represents a scalar ordering or immediate array membership dimension.
 type Field struct {
 	Field string    `yaml:"field"`
 	Order Direction `yaml:"order"`
+	Mode  Mode      `yaml:"mode,omitempty"`
 }
 
 // Template defines an index template.
@@ -44,9 +57,34 @@ func (t *Template) Identity() string {
 	// Generate from fields
 	var parts []string
 	for _, f := range t.Fields {
-		parts = append(parts, fmt.Sprintf("%s:%s", f.Field, f.Order))
+		if f.Mode == Membership {
+			parts = append(parts, fmt.Sprintf("%s:membership", f.Field))
+		} else {
+			parts = append(parts, fmt.Sprintf("%s:%s", f.Field, f.Order))
+		}
 	}
 	return strings.Join(parts, ",")
+}
+
+// Fingerprint binds the full admitted template semantics to the scalar codec.
+func (t *Template) Fingerprint() string {
+	fields := append([]Field(nil), t.Fields...)
+	for i := range fields {
+		if fields[i].Mode == "" {
+			fields[i].Mode = Scalar
+		}
+		if fields[i].Mode == Membership {
+			fields[i].Order = Asc
+		}
+	}
+	payload, _ := json.Marshal(struct {
+		Pattern        string
+		Fields         []Field
+		IncludeDeleted bool
+		Codec          byte
+	}{t.NormalizedPattern(), fields, t.IncludeDeleted, encoding.Version})
+	sum := sha256.Sum256(payload)
+	return hex.EncodeToString(sum[:])
 }
 
 // NormalizedPattern returns the pattern with variables replaced by *.
@@ -133,12 +171,30 @@ func ValidateTemplate(t *Template) error {
 	}
 
 	seen := make(map[string]bool)
+	membershipFields := 0
 	for _, f := range t.Fields {
-		if f.Field == "" {
-			return fmt.Errorf("field name cannot be empty")
+		if err := model.ValidateQueryField(f.Field); err != nil {
+			return err
 		}
-		if f.Order != Asc && f.Order != Desc {
-			return fmt.Errorf("field %q: %w", f.Field, ErrInvalidDirection)
+		switch f.Mode {
+		case "", Scalar:
+			if f.Order != Asc && f.Order != Desc {
+				return fmt.Errorf("field %q: %w", f.Field, ErrInvalidDirection)
+			}
+		case Membership:
+			membershipFields++
+			if membershipFields > 1 {
+				return fmt.Errorf("template allows at most one membership field")
+			}
+			if f.Order != "" && f.Order != Asc {
+				return fmt.Errorf("membership field %q requires ascending encoding", f.Field)
+			}
+			switch f.Field {
+			case "id", "collection", "version", "createdAt", "updatedAt", "deleted":
+				return fmt.Errorf("metadata field %q cannot be a membership dimension", f.Field)
+			}
+		default:
+			return fmt.Errorf("field %q: invalid mode %q", f.Field, f.Mode)
 		}
 		if seen[f.Field] {
 			return fmt.Errorf("field %q: %w", f.Field, ErrDuplicateField)
@@ -153,6 +209,7 @@ func ValidateTemplate(t *Template) error {
 // Duplicate = same (normalizedPattern, templateIdentity).
 func ValidateTemplates(templates []Template) error {
 	seen := make(map[string]*Template)
+	fingerprints := make(map[string]bool)
 	for i := range templates {
 		t := &templates[i]
 		norm := t.NormalizedPattern()
@@ -163,6 +220,10 @@ func ValidateTemplates(templates []Template) error {
 			return fmt.Errorf("%w: %q and %q have same pattern and identity",
 				ErrDuplicateTemplate, existing.Name, t.Name)
 		}
+		if fingerprints[t.Fingerprint()] {
+			return fmt.Errorf("%w: duplicate template semantics", ErrDuplicateTemplate)
+		}
+		fingerprints[t.Fingerprint()] = true
 		seen[key] = t
 	}
 	return nil

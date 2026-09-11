@@ -14,10 +14,10 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	pullerv1 "github.com/syntrixbase/syntrix/api/gen/puller/v1"
+	"github.com/syntrixbase/syntrix/internal/core/storage"
 	"github.com/syntrixbase/syntrix/internal/puller/config"
 	"github.com/syntrixbase/syntrix/internal/puller/core"
 	pullergrpc "github.com/syntrixbase/syntrix/internal/puller/grpc"
-	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 	"google.golang.org/grpc"
@@ -121,14 +121,14 @@ func TestPuller_GRPC_Integration(t *testing.T) {
 		require.NoError(t, err)
 
 		// Insert document
-		_, err = coll.InsertOne(ctx, bson.M{"_id": "doc1", "val": 1})
+		_, err = coll.InsertOne(ctx, storage.NewStoredDoc(dbName, collName, "doc1", map[string]any{"val": 1}))
 		require.NoError(t, err)
 
 		// Receive event
 		evt, err := stream.Recv()
 		require.NoError(t, err)
 		assert.Equal(t, "insert", evt.ChangeEvent.OpType)
-		assert.Equal(t, "doc1", evt.ChangeEvent.MgoDocId)
+		assert.Equal(t, storage.CalculateDatabase(dbName, collName+"/doc1"), evt.ChangeEvent.MgoDocId)
 
 		// Verify progress marker
 		assert.NotEmpty(t, evt.Progress)
@@ -140,7 +140,7 @@ func TestPuller_GRPC_Integration(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 
 		// Insert another document
-		_, err = coll.InsertOne(ctx, bson.M{"_id": "doc2", "val": 2})
+		_, err = coll.InsertOne(ctx, storage.NewStoredDoc(dbName, collName, "doc2", map[string]any{"val": 2}))
 		require.NoError(t, err)
 
 		// Wait for doc2 to be buffered
@@ -159,12 +159,12 @@ func TestPuller_GRPC_Integration(t *testing.T) {
 		// Should receive doc1
 		evt1, err := stream.Recv()
 		require.NoError(t, err)
-		assert.Equal(t, "doc1", evt1.ChangeEvent.MgoDocId)
+		assert.Equal(t, storage.CalculateDatabase(dbName, collName+"/doc1"), evt1.ChangeEvent.MgoDocId)
 
 		// Should receive doc2
 		evt2, err := stream.Recv()
 		require.NoError(t, err)
-		assert.Equal(t, "doc2", evt2.ChangeEvent.MgoDocId)
+		assert.Equal(t, storage.CalculateDatabase(dbName, collName+"/doc2"), evt2.ChangeEvent.MgoDocId)
 	})
 }
 

@@ -66,6 +66,7 @@ func (idx *Index) Upsert(id string, orderKey []byte) {
 		idx.tree.Delete(btreeItem{orderKey: oldKey, id: id})
 	}
 
+	orderKey = bytes.Clone(orderKey)
 	// Insert new entry
 	idx.tree.ReplaceOrInsert(btreeItem{orderKey: orderKey, id: id})
 	idx.byID[id] = orderKey
@@ -105,7 +106,7 @@ func (idx *Index) Search(opts SearchOptions) []DocRef {
 	// Determine starting point
 	startKey := opts.Lower
 	isStartAfter := false
-	if opts.StartAfter != nil {
+	if opts.StartAfter != nil && bytes.Compare(opts.StartAfter, startKey) >= 0 {
 		startKey = opts.StartAfter
 		isStartAfter = true
 	}
@@ -126,7 +127,7 @@ func (idx *Index) Search(opts SearchOptions) []DocRef {
 
 		results = append(results, DocRef{
 			ID:       item.id,
-			OrderKey: item.orderKey,
+			OrderKey: bytes.Clone(item.orderKey),
 		})
 
 		return len(results) < limit
@@ -140,7 +141,7 @@ func (idx *Index) Search(opts SearchOptions) []DocRef {
 func (idx *Index) Get(id string) []byte {
 	idx.mu.RLock()
 	defer idx.mu.RUnlock()
-	return idx.byID[id]
+	return bytes.Clone(idx.byID[id])
 }
 
 // Len returns the number of documents in the index.

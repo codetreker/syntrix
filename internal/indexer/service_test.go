@@ -13,10 +13,13 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/syntrixbase/syntrix/internal/core/storage"
+	"github.com/syntrixbase/syntrix/internal/core/storage/types"
 	"github.com/syntrixbase/syntrix/internal/indexer/config"
+	"github.com/syntrixbase/syntrix/internal/indexer/encoding"
 	"github.com/syntrixbase/syntrix/internal/indexer/manager"
 	"github.com/syntrixbase/syntrix/internal/indexer/mem_store"
 	"github.com/syntrixbase/syntrix/internal/indexer/store"
+	"github.com/syntrixbase/syntrix/internal/indexer/template"
 	"github.com/syntrixbase/syntrix/internal/puller"
 	"github.com/syntrixbase/syntrix/internal/puller/events"
 )
@@ -181,218 +184,127 @@ func TestService_StartStop(t *testing.T) {
 	})
 }
 
+func publishTestGeneration(t *testing.T, svc LocalService, database, collection string) []store.QueryIndexRef {
+	t.Helper()
+	var refs []store.QueryIndexRef
+	for _, match := range svc.Manager().MatchTemplatesForCollection(collection) {
+		ref := store.QueryIndexRef{Database: database, Collection: collection, TemplateFingerprint: match.Template.Fingerprint(), Generation: "test-generation"}
+		require.NoError(t, svc.Manager().Store().PublishGeneration(ref, ""))
+		refs = append(refs, ref)
+	}
+	return refs
+}
+
+func readProjectionRows(t *testing.T, st store.Store, ref store.QueryIndexRef) []store.DocRef {
+	t.Helper()
+	view, err := st.ReadView(context.Background(), ref, store.ReadBudget{MaxOverlayReplacements: 1000, MaxOverlayBytes: 4 << 20})
+	require.NoError(t, err)
+	defer view.Close()
+	iterator, err := view.Scan(context.Background(), store.SearchOptions{})
+	require.NoError(t, err)
+	defer iterator.Close()
+	var rows []store.DocRef
+	for {
+		row, ok, err := iterator.Next()
+		require.NoError(t, err)
+		if !ok {
+			break
+		}
+		rows = append(rows, row)
+	}
+	return rows
+}
+
 func TestService_ApplyEvent(t *testing.T) {
-	t.Run("nil event", func(t *testing.T) {
-		svc := newTestService(config.Config{}, nil, testLogger())
-		err := svc.Start(context.Background())
+	svc := newTestService(config.Config{}, nil, testLogger())
+	defer svc.Manager().Store().Close()
+	ctx := context.Background()
+	require.NoError(t, svc.ApplyEvent(ctx, nil, ""))
+	require.Error(t, svc.ApplyEvent(ctx, &ChangeEvent{Database: "db"}, "bad"))
+	require.NoError(t, svc.Manager().LoadTemplatesFromBytes([]byte(`templates:
+- name: by_tags
+  collectionPattern: users/{uid}/docs
+  fields:
+  - { field: tags, mode: membership }
+  - { field: createdAt, order: desc }
+- name: by_created
+  collectionPattern: users/{uid}/docs
+  fields:
+  - { field: createdAt, order: desc }
+`)))
+	refs := publishTestGeneration(t, svc, "db", "users/alice/docs")
+	doc := types.NewStoredDoc("db", "users/alice/docs", "aa", map[string]any{"tags": []any{"one", "one", "two"}})
+	event := &ChangeEvent{Database: "db", FullDocument: &doc}
+	require.NoError(t, svc.ApplyEvent(ctx, event, "p1"))
+	assert.Len(t, readProjectionRows(t, svc.Manager().Store(), refs[0]), 2)
+	assert.Len(t, readProjectionRows(t, svc.Manager().Store(), refs[1]), 1)
+	doc.Data["tags"] = []any{}
+	require.NoError(t, svc.ApplyEvent(ctx, event, "p2"))
+	assert.Empty(t, readProjectionRows(t, svc.Manager().Store(), refs[0]))
+	assert.Len(t, readProjectionRows(t, svc.Manager().Store(), refs[1]), 1)
+	doc.Deleted = true
+	require.NoError(t, svc.ApplyEvent(ctx, event, "p3"))
+	for _, ref := range refs {
+		assert.Empty(t, readProjectionRows(t, svc.Manager().Store(), ref))
+	}
+	progress, err := svc.Manager().Store().LoadProgress()
+	require.NoError(t, err)
+	assert.Equal(t, "p3", progress)
+}
+
+func TestBuildDocumentProjection(t *testing.T) {
+	tmpl := template.Template{CollectionPattern: "docs", IncludeDeleted: true, Fields: []template.Field{{Field: "tags", Mode: template.Membership}, {Field: "createdAt", Order: template.Desc}}}
+	doc := types.NewStoredDoc("db", "docs", "aa", map[string]any{"id": "shadow", "createdAt": int64(999), "tags": []any{int64(1), float64(1), nil, "x", []any{"x"}, map[string]any{"tag": "x"}}})
+	doc.CreatedAt = 42
+	projection, err := BuildDocumentProjection(&doc, &tmpl, "gen", DefaultProjectionLimits())
+	require.NoError(t, err)
+	assert.Equal(t, "aa", projection.DocumentID)
+	assert.Len(t, projection.PostingKeys, 3)
+	for _, member := range []any{nil, int64(1), "x"} {
+		expected, err := encoding.Encode([]encoding.Field{{Value: member}, {Value: int64(42), Direction: encoding.Desc}}, "aa")
 		require.NoError(t, err)
-		defer svc.Stop(context.Background())
-
-		err = svc.ApplyEvent(context.Background(), nil, "")
+		assert.Contains(t, projection.PostingKeys, expected)
+	}
+	for _, value := range []any{nil, "x", []any{}} {
+		doc.Data["tags"] = value
+		projection, err := BuildDocumentProjection(&doc, &tmpl, "gen", DefaultProjectionLimits())
 		require.NoError(t, err)
-	})
+		assert.Empty(t, projection.PostingKeys)
+	}
+	doc.Data["tags"] = []any{"kept"}
+	doc.Deleted = true
+	projection, err = BuildDocumentProjection(&doc, &tmpl, "gen", DefaultProjectionLimits())
+	require.NoError(t, err)
+	assert.Empty(t, projection.PostingKeys)
+	tmpl.Fields = []template.Field{{Field: "deleted", Order: template.Asc}, {Field: "business", Order: template.Asc}, {Field: "id", Order: template.Asc}}
+	projection, err = BuildDocumentProjection(&doc, &tmpl, "gen", DefaultProjectionLimits())
+	require.NoError(t, err)
+	expected, err := encoding.Encode([]encoding.Field{{Value: true}, {Missing: true}, {Value: "aa"}}, "aa")
+	require.NoError(t, err)
+	assert.Equal(t, [][]byte{expected}, projection.PostingKeys)
+	doc.Deleted = false
+	doc.Data["business"] = nil
+	explicitNull, err := BuildDocumentProjection(&doc, &tmpl, "gen", DefaultProjectionLimits())
+	require.NoError(t, err)
+	delete(doc.Data, "business")
+	missing, err := BuildDocumentProjection(&doc, &tmpl, "gen", DefaultProjectionLimits())
+	require.NoError(t, err)
+	assert.NotEqual(t, explicitNull.PostingKeys, missing.PostingKeys)
+	doc.Data["business"] = []any{}
+	_, err = BuildDocumentProjection(&doc, &tmpl, "gen", DefaultProjectionLimits())
+	require.Error(t, err)
+}
 
-	t.Run("event without FullDocument", func(t *testing.T) {
-		svc := newTestService(config.Config{}, nil, testLogger())
-		err := svc.Start(context.Background())
-		require.NoError(t, err)
-		defer svc.Stop(context.Background())
-
-		evt := &ChangeEvent{
-			EventID:      "evt1",
-			Database:     "testdb",
-			FullDocument: nil,
-		}
-		err = svc.ApplyEvent(context.Background(), evt, "")
-		require.NoError(t, err)
-	})
-
-	t.Run("event with empty collection", func(t *testing.T) {
-		svc := newTestService(config.Config{}, nil, testLogger())
-		err := svc.Start(context.Background())
-		require.NoError(t, err)
-		defer svc.Stop(context.Background())
-
-		evt := &ChangeEvent{
-			EventID:  "evt1",
-			Database: "testdb",
-			FullDocument: &storage.StoredDoc{
-				Id:         "doc1",
-				Collection: "",
-			},
-		}
-		err = svc.ApplyEvent(context.Background(), evt, "")
-		require.NoError(t, err)
-	})
-
-	t.Run("event with no matching template", func(t *testing.T) {
-		svc := newTestService(config.Config{}, nil, testLogger())
-		err := svc.Start(context.Background())
-		require.NoError(t, err)
-		defer svc.Stop(context.Background())
-
-		evt := &ChangeEvent{
-			EventID:  "evt1",
-			Database: "testdb",
-			FullDocument: &storage.StoredDoc{
-				Id:         "doc1",
-				Collection: "unknown/collection",
-			},
-		}
-		err = svc.ApplyEvent(context.Background(), evt, "")
-		require.NoError(t, err)
-	})
-
-	t.Run("event with matching template", func(t *testing.T) {
-		svc := newTestService(config.Config{}, nil, testLogger())
-		s := svc.(*service)
-
-		// Load templates
-		templateYAML := `
-templates:
-  - name: chats_by_timestamp
-    collectionPattern: users/{uid}/chats
-    fields:
-      - { field: timestamp, order: desc }
-`
-		err := s.manager.LoadTemplatesFromBytes([]byte(templateYAML))
-		require.NoError(t, err)
-
-		err = svc.Start(context.Background())
-		require.NoError(t, err)
-		defer svc.Stop(context.Background())
-
-		evt := &ChangeEvent{
-			EventID:  "evt1",
-			Database: "testdb",
-			FullDocument: &storage.StoredDoc{
-				Id:         "doc1",
-				Collection: "users/alice/chats",
-				Fullpath:   "users/alice/chats/doc1",
-				Data: map[string]any{
-					"id":        "doc1",
-					"timestamp": float64(1000),
-				},
-			},
-		}
-		err = svc.ApplyEvent(context.Background(), evt, "")
-		require.NoError(t, err)
-
-		// Verify document was indexed
-		stats, err := svc.Stats(context.Background())
-		require.NoError(t, err)
-		assert.Equal(t, int64(1), stats.EventsApplied)
-	})
-
-	t.Run("deleted document without includeDeleted", func(t *testing.T) {
-		svc := newTestService(config.Config{}, nil, testLogger())
-		s := svc.(*service)
-
-		templateYAML := `
-templates:
-  - name: chats_by_timestamp
-    collectionPattern: users/{uid}/chats
-    fields:
-      - { field: timestamp, order: desc }
-    includeDeleted: false
-`
-		err := s.manager.LoadTemplatesFromBytes([]byte(templateYAML))
-		require.NoError(t, err)
-
-		err = svc.Start(context.Background())
-		require.NoError(t, err)
-		defer svc.Stop(context.Background())
-
-		// First, insert a document
-		evt1 := &ChangeEvent{
-			EventID:  "evt1",
-			Database: "testdb",
-			FullDocument: &storage.StoredDoc{
-				Id:         "doc1",
-				Collection: "users/alice/chats",
-				Fullpath:   "users/alice/chats/doc1",
-				Data: map[string]any{
-					"id":        "doc1",
-					"timestamp": float64(1000),
-				},
-				Deleted: false,
-			},
-		}
-		err = svc.ApplyEvent(context.Background(), evt1, "")
-		require.NoError(t, err)
-
-		// Verify indexed
-		st := s.manager.Store().(*mem_store.Store)
-		orderKey, found := st.Get("testdb", "users/*/chats", "chats_by_timestamp", "doc1")
-		require.True(t, found, "document should be indexed")
-		require.NotNil(t, orderKey)
-
-		// Now mark as deleted
-		evt2 := &ChangeEvent{
-			EventID:  "evt2",
-			Database: "testdb",
-			FullDocument: &storage.StoredDoc{
-				Id:         "doc1",
-				Collection: "users/alice/chats",
-				Fullpath:   "users/alice/chats/doc1",
-				Data: map[string]any{
-					"id":        "doc1",
-					"timestamp": float64(1000),
-				},
-				Deleted: true,
-			},
-		}
-		err = svc.ApplyEvent(context.Background(), evt2, "")
-		require.NoError(t, err)
-
-		// Verify deleted from index
-		_, found = st.Get("testdb", "users/*/chats", "chats_by_timestamp", "doc1")
-		assert.False(t, found, "document should be deleted from index")
-	})
-
-	t.Run("deleted document with includeDeleted", func(t *testing.T) {
-		svc := newTestService(config.Config{}, nil, testLogger())
-		s := svc.(*service)
-
-		templateYAML := `
-templates:
-  - name: chats_by_timestamp
-    collectionPattern: users/{uid}/chats
-    fields:
-      - { field: timestamp, order: desc }
-    includeDeleted: true
-`
-		err := s.manager.LoadTemplatesFromBytes([]byte(templateYAML))
-		require.NoError(t, err)
-
-		err = svc.Start(context.Background())
-		require.NoError(t, err)
-		defer svc.Stop(context.Background())
-
-		// Insert a deleted document
-		evt := &ChangeEvent{
-			EventID:  "evt1",
-			Database: "testdb",
-			FullDocument: &storage.StoredDoc{
-				Id:         "doc1",
-				Collection: "users/alice/chats",
-				Fullpath:   "users/alice/chats/doc1",
-				Data: map[string]any{
-					"id":        "doc1",
-					"timestamp": float64(1000),
-				},
-				Deleted: true,
-			},
-		}
-		err = svc.ApplyEvent(context.Background(), evt, "")
-		require.NoError(t, err)
-
-		// Verify still in index (includeDeleted = true)
-		st := s.manager.Store().(*mem_store.Store)
-		orderKey, found := st.Get("testdb", "users/*/chats", "chats_by_timestamp", "doc1")
-		require.True(t, found, "document should still be in index with includeDeleted=true")
-		assert.NotNil(t, orderKey)
-	})
+func TestProjectionExpansionLimits(t *testing.T) {
+	doc := types.NewStoredDoc("db", "docs", "id", map[string]any{"tags": []any{"a", "b", "c"}})
+	tmpl := template.Template{CollectionPattern: "docs", Fields: []template.Field{{Field: "tags", Mode: template.Membership}}}
+	for _, limits := range []ProjectionLimits{{2, 10, 1000, 4096}, {10, 2, 1000, 4096}, {10, 10, 3, 4096}, {10, 10, 1000, 3}} {
+		_, err := BuildDocumentProjection(&doc, &tmpl, "gen", limits)
+		require.ErrorIs(t, err, store.ErrWorkLimit)
+	}
+	doc.Data["tags"] = []any{uint64(1)}
+	_, err := BuildDocumentProjection(&doc, &tmpl, "gen", DefaultProjectionLimits())
+	require.Error(t, err)
 }
 
 func TestService_Search(t *testing.T) {
@@ -420,6 +332,7 @@ templates:
 			EventID:  "evt" + string(rune('0'+i)),
 			Database: "testdb",
 			FullDocument: &storage.StoredDoc{
+				Database:   "testdb",
 				Id:         docID,
 				Collection: "users/alice/chats",
 				Fullpath:   "users/alice/chats/" + docID,
@@ -429,6 +342,7 @@ templates:
 				},
 			},
 		}
+		publishTestGeneration(t, svc, "testdb", evt.FullDocument.Collection)
 		err := svc.ApplyEvent(context.Background(), evt, "")
 		require.NoError(t, err)
 	}
@@ -464,8 +378,7 @@ templates:
 				{Field: "timestamp", Direction: 1},
 			},
 		})
-		// Returns empty results since no documents have been indexed yet
-		assert.NoError(t, err)
+		assert.ErrorIs(t, err, ErrIndexNotReady)
 		assert.Empty(t, results)
 	})
 }
@@ -519,6 +432,7 @@ templates:
 		EventID:  "evt1",
 		Database: "testdb",
 		FullDocument: &storage.StoredDoc{
+			Database:   "testdb",
 			Id:         "doc1",
 			Collection: "users/alice/chats",
 			Fullpath:   "users/alice/chats/doc1",
@@ -528,6 +442,7 @@ templates:
 			},
 		},
 	}
+	publishTestGeneration(t, svc, "testdb", evt.FullDocument.Collection)
 	err = svc.ApplyEvent(context.Background(), evt, "")
 	require.NoError(t, err)
 
@@ -568,12 +483,14 @@ templates:
 		// Give subscription loop time to start
 		time.Sleep(50 * time.Millisecond)
 
+		publishTestGeneration(t, svc, "testdb", "users/alice/chats")
 		// Send an event through puller
 		mockPuller.SendEvent(&puller.Event{
 			Change: &events.StoreChangeEvent{
 				EventID:  "evt1",
 				Database: "testdb",
 				FullDocument: &storage.StoredDoc{
+					Database:   "testdb",
 					Id:         "doc1",
 					Collection: "users/alice/chats",
 					Fullpath:   "users/alice/chats/doc1",
@@ -599,24 +516,6 @@ templates:
 		progress := s.progress
 		s.mu.RUnlock()
 		assert.Equal(t, "progress-1", progress)
-	})
-}
-
-func TestExtractFieldValue(t *testing.T) {
-	t.Run("simple field", func(t *testing.T) {
-		data := map[string]any{
-			"name":  "Alice",
-			"count": 42,
-		}
-		assert.Equal(t, "Alice", extractFieldValue(data, "name"))
-		assert.Equal(t, 42, extractFieldValue(data, "count"))
-	})
-
-	t.Run("missing field", func(t *testing.T) {
-		data := map[string]any{
-			"name": "Alice",
-		}
-		assert.Nil(t, extractFieldValue(data, "unknown"))
 	})
 }
 
@@ -785,187 +684,41 @@ func (r *reconnectablePullerService) CloseCurrentChannel() {
 	}
 }
 
-func TestService_ApplyEventWithUnsupportedType(t *testing.T) {
-	t.Run("unsupported field type logs error", func(t *testing.T) {
-		svc := newTestService(config.Config{}, nil, testLogger())
-		s := svc.(*service)
-
-		templateYAML := `
-templates:
-  - name: test_template
-    collectionPattern: users/{uid}/docs
-    fields:
-      - { field: data, order: asc }
-`
-		err := s.manager.LoadTemplatesFromBytes([]byte(templateYAML))
-		require.NoError(t, err)
-
-		err = svc.Start(context.Background())
-		require.NoError(t, err)
-		defer svc.Stop(context.Background())
-
-		// Event with unsupported type (slice)
-		evt := &ChangeEvent{
-			EventID:  "evt1",
-			Database: "testdb",
-			FullDocument: &storage.StoredDoc{
-				Id:         "doc1",
-				Collection: "users/alice/docs",
-				Fullpath:   "users/alice/docs/doc1",
-				Data: map[string]any{
-					"id":   "doc1",
-					"data": []string{"a", "b", "c"}, // Unsupported type
-				},
-			},
-		}
-
-		// Should not return error (error is logged, not returned)
-		err = svc.ApplyEvent(context.Background(), evt, "")
-		require.NoError(t, err)
-
-		// But the document should not be indexed
-		st := s.manager.Store().(*mem_store.Store)
-		_, found := st.Get("testdb", "users/*/docs", "test_template", "doc1")
-		assert.False(t, found, "document with unsupported field type should not be indexed")
-	})
-}
-
-func TestService_BuildOrderKey(t *testing.T) {
+func TestService_ProjectionFailurePreservesEventBoundary(t *testing.T) {
 	svc := newTestService(config.Config{}, nil, testLogger())
-	s := svc.(*service)
-
-	t.Run("asc direction", func(t *testing.T) {
-		templateYAML := `
-templates:
-  - name: test_asc
-    collectionPattern: test/docs
-    fields:
-      - { field: value, order: asc }
-`
-		err := s.manager.LoadTemplatesFromBytes([]byte(templateYAML))
-		require.NoError(t, err)
-
-		tmpl := s.manager.Templates()[0]
-		data := map[string]any{"value": float64(100)}
-
-		key, err := s.buildOrderKey(data, &tmpl)
-		require.NoError(t, err)
-		assert.NotEmpty(t, key)
-	})
-
-	t.Run("desc direction", func(t *testing.T) {
-		templateYAML := `
-templates:
-  - name: test_desc
-    collectionPattern: test/docs
-    fields:
-      - { field: value, order: desc }
-`
-		err := s.manager.LoadTemplatesFromBytes([]byte(templateYAML))
-		require.NoError(t, err)
-
-		templates := s.manager.Templates()
-		tmpl := templates[len(templates)-1] // Get the last loaded template
-		data := map[string]any{"value": float64(100)}
-
-		key, err := s.buildOrderKey(data, &tmpl)
-		require.NoError(t, err)
-		assert.NotEmpty(t, key)
-	})
-
-	t.Run("unsupported type returns error", func(t *testing.T) {
-		templateYAML := `
-templates:
-  - name: test_unsupported
-    collectionPattern: test/unsupported
-    fields:
-      - { field: value, order: asc }
-`
-		err := s.manager.LoadTemplatesFromBytes([]byte(templateYAML))
-		require.NoError(t, err)
-
-		templates := s.manager.Templates()
-		tmpl := templates[len(templates)-1]
-		data := map[string]any{"value": struct{}{}} // Unsupported type
-
-		_, err = s.buildOrderKey(data, &tmpl)
-		require.Error(t, err)
-	})
-}
-
-func TestService_ApplyEventToTemplate_NilDoc(t *testing.T) {
-	svc := newTestService(config.Config{}, nil, testLogger())
-	s := svc.(*service)
-
-	templateYAML := `
-templates:
-  - name: test_template
-    collectionPattern: users/{uid}/docs
-    fields:
-      - { field: timestamp, order: desc }
-`
-	err := s.manager.LoadTemplatesFromBytes([]byte(templateYAML))
-	require.NoError(t, err)
-
-	err = svc.Start(context.Background())
-	require.NoError(t, err)
-	defer svc.Stop(context.Background())
-
-	tmpl := s.manager.Templates()[0]
-
-	// Event with nil FullDocument
-	evt := &ChangeEvent{
-		EventID:      "evt1",
-		Database:     "testdb",
-		FullDocument: nil,
+	defer svc.Manager().Store().Close()
+	require.NoError(t, svc.Manager().LoadTemplatesFromBytes([]byte(`templates:
+- name: first
+  collectionPattern: docs
+  fields: [{field: value, order: asc}]
+- name: second
+  collectionPattern: docs
+  fields: [{field: other, order: asc}]
+`)))
+	refs := publishTestGeneration(t, svc, "db", "docs")
+	doc := types.NewStoredDoc("db", "docs", "id", map[string]any{"value": 1, "other": 2})
+	event := &ChangeEvent{Database: "db", FullDocument: &doc}
+	require.NoError(t, svc.ApplyEvent(context.Background(), event, "good"))
+	before := make([][]store.DocRef, len(refs))
+	for i, ref := range refs {
+		before[i] = readProjectionRows(t, svc.Manager().Store(), ref)
 	}
-
-	err = s.applyEventToTemplate(context.Background(), evt, &tmpl, "")
+	doc.Data["value"] = 3
+	doc.Data["other"] = []any{4}
+	require.Error(t, svc.ApplyEvent(context.Background(), event, "bad"))
+	progress, err := svc.Manager().Store().LoadProgress()
 	require.NoError(t, err)
-}
-
-func TestService_ApplyEventToTemplate_DocIDFromFullpath(t *testing.T) {
-	svc := newTestService(config.Config{}, nil, testLogger())
-	s := svc.(*service)
-
-	templateYAML := `
-templates:
-  - name: test_template
-    collectionPattern: users
-    fields:
-      - { field: name, order: asc }
-`
-	err := s.manager.LoadTemplatesFromBytes([]byte(templateYAML))
-	require.NoError(t, err)
-
-	err = svc.Start(context.Background())
-	require.NoError(t, err)
-	defer svc.Stop(context.Background())
-
-	tmpl := s.manager.Templates()[0]
-
-	// Event with FullDocument that has no "id" in Data but has Fullpath
-	evt := &ChangeEvent{
-		EventID:  "evt1",
-		Database: "testdb",
-		FullDocument: &storage.StoredDoc{
-			Fullpath:   "users/user123", // ID should be extracted from here
-			Collection: "users",
-			Data: map[string]any{
-				"name": "John",
-				// No "id" field - should fallback to Fullpath
-			},
-		},
+	assert.Equal(t, "good", progress)
+	for i, ref := range refs {
+		assert.Equal(t, before[i], readProjectionRows(t, svc.Manager().Store(), ref))
+		generation, found, err := svc.Manager().Store().ReadGeneration(ref.Database, ref.Collection, ref.TemplateFingerprint)
+		require.NoError(t, err)
+		require.True(t, found)
+		assert.NotEmpty(t, generation.Failure)
 	}
-
-	err = s.applyEventToTemplate(context.Background(), evt, &tmpl, "")
+	stats, err := svc.Stats(context.Background())
 	require.NoError(t, err)
-
-	// Verify the document was indexed
-	st := s.manager.Store().(*mem_store.Store)
-	orderKey, found := st.Get("testdb", "users", tmpl.Identity(), "user123")
-	assert.True(t, found, "document should be indexed with ID extracted from Fullpath")
-	assert.NotNil(t, orderKey)
+	assert.EqualValues(t, 1, stats.EventsApplied)
 }
 
 func TestService_SubscriptionReconnect_ContextCanceled(t *testing.T) {
@@ -1142,6 +895,7 @@ templates:
 		EventID:  "evt1",
 		Database: "testdb",
 		FullDocument: &storage.StoredDoc{
+			Database:   "testdb",
 			Id:         "doc1",
 			Collection: "users/alice/chats",
 			Fullpath:   "users/alice/chats/doc1",
@@ -1151,6 +905,7 @@ templates:
 			},
 		},
 	}
+	publishTestGeneration(t, svc, "testdb", evt.FullDocument.Collection)
 	err = svc.ApplyEvent(context.Background(), evt, "event-progress-1")
 	require.NoError(t, err)
 
@@ -1206,6 +961,7 @@ templates:
 			EventID:  "evt1",
 			Database: "testdb",
 			FullDocument: &storage.StoredDoc{
+				Database:   "testdb",
 				Id:         "doc1",
 				Collection: "users/alice/chats",
 				Fullpath:   "users/alice/chats/doc1",
@@ -1215,6 +971,7 @@ templates:
 				},
 			},
 		}
+		publishTestGeneration(t, svc, "testdb", evt.FullDocument.Collection)
 		err = svc.ApplyEvent(context.Background(), evt, "persist-test-progress")
 		require.NoError(t, err)
 
@@ -1369,24 +1126,49 @@ func TestService_Stats_DoesNotReadStore(t *testing.T) {
 }
 
 func TestService_Stats_EventCounting(t *testing.T) {
-	ctx := context.Background()
 	svc := newTestService(config.Config{}, nil, testLogger())
-	require.NoError(t, svc.Manager().LoadTemplatesFromBytes([]byte(statsTemplates)))
-	unmatched := statsEvent("alpha", 0)
-	unmatched.FullDocument.Collection = "unmatched"
-	for _, event := range []*ChangeEvent{nil, {}, unmatched} {
-		require.NoError(t, svc.ApplyEvent(ctx, event, ""))
-	}
-	skipped, err := svc.Stats(ctx)
+	defer svc.Manager().Store().Close()
+	require.NoError(t, svc.ApplyEvent(context.Background(), nil, ""))
+	require.Error(t, svc.ApplyEvent(context.Background(), &ChangeEvent{}, ""))
+	doc := types.NewStoredDoc("db", "unmatched", "id", nil)
+	require.NoError(t, svc.ApplyEvent(context.Background(), &ChangeEvent{Database: "db", FullDocument: &doc}, "p1"))
+	counted, err := svc.Stats(context.Background())
 	require.NoError(t, err)
-	assert.Zero(t, skipped.EventsApplied)
-	assert.Zero(t, skipped.LastEventTime)
-	invalid := statsEvent("alpha", 1)
-	invalid.FullDocument.Data["timestamp"] = make(chan int)
-	invalid.FullDocument.Data["priority"] = make(chan int)
-	require.NoError(t, svc.ApplyEvent(ctx, invalid, ""))
-	counted, err := svc.Stats(ctx)
-	require.NoError(t, err)
-	assert.Equal(t, int64(1), counted.EventsApplied)
+	assert.EqualValues(t, 1, counted.EventsApplied)
 	assert.Positive(t, counted.LastEventTime)
+}
+
+func TestSubscriptionStopsBeforeFailedProgress(t *testing.T) {
+	source := newMockPullerService()
+	svc := newTestService(config.Config{}, source, testLogger())
+	require.NoError(t, svc.Manager().LoadTemplatesFromBytes([]byte(`templates:
+- name: by_value
+  collectionPattern: docs
+  fields: [{field: value, order: asc}]
+`)))
+	refs := publishTestGeneration(t, svc, "db", "docs")
+	good := types.NewStoredDoc("db", "docs", "id", map[string]any{"value": 1})
+	require.NoError(t, svc.ApplyEvent(context.Background(), &ChangeEvent{Database: "db", FullDocument: &good}, "good"))
+	require.NoError(t, svc.Start(context.Background()))
+	defer svc.Stop(context.Background())
+	bad := types.NewStoredDoc("db", "docs", "id", map[string]any{"value": []any{2}})
+	source.SendEvent(&puller.Event{Change: &ChangeEvent{Database: "db", FullDocument: &bad}, Progress: "bad"})
+	source.SendEvent(&puller.Event{Change: &ChangeEvent{Database: "db", FullDocument: &good}, Progress: "later"})
+	require.Eventually(t, func() bool {
+		generation, _, err := svc.Manager().Store().ReadGeneration("db", "docs", refs[0].TemplateFingerprint)
+		return err == nil && generation.Failure != ""
+	}, time.Second, time.Millisecond)
+	finished := make(chan struct{})
+	go func() { svc.(*service).wg.Wait(); close(finished) }()
+	select {
+	case <-finished:
+	case <-time.After(time.Second):
+		t.Fatal("consumer continued after failed event")
+	}
+	progress, err := svc.Manager().Store().LoadProgress()
+	require.NoError(t, err)
+	assert.Equal(t, "good", progress)
+	stats, err := svc.Stats(context.Background())
+	require.NoError(t, err)
+	assert.EqualValues(t, 1, stats.EventsApplied)
 }

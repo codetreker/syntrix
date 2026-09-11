@@ -159,14 +159,14 @@ func (x *Document) GetDeleted() bool {
 }
 
 // Filter defines a single match condition.
-// Operators: eq (==), ne (!=), gt (>), gte (>=), lt (<), lte (<=), in, contains
+// Operators: ==, !=, >, >=, <, <=, in, contains
 type Filter struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Field path to match (e.g., "_id", "status", "nested.field").
 	Field string `protobuf:"bytes,1,opt,name=field,proto3" json:"field,omitempty"`
 	// Comparison operator.
 	Op string `protobuf:"bytes,2,opt,name=op,proto3" json:"op,omitempty"`
-	// Value to compare against (JSON-encoded).
+	// Query v2 uses a typed value node. Mutation predicates retain ordinary JSON.
 	Value         []byte `protobuf:"bytes,3,opt,name=value,proto3" json:"value,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -289,7 +289,7 @@ type Query struct {
 	OrderBy []*OrderBy `protobuf:"bytes,3,rep,name=order_by,json=orderBy,proto3" json:"order_by,omitempty"`
 	// Maximum number of results to return.
 	Limit int32 `protobuf:"varint,4,opt,name=limit,proto3" json:"limit,omitempty"`
-	// Pagination cursor (start after this document path).
+	// Opaque continuation returned by the preceding query page.
 	StartAfter string `protobuf:"bytes,5,opt,name=start_after,json=startAfter,proto3" json:"start_after,omitempty"`
 	// Whether to include soft-deleted documents.
 	ShowDeleted   bool `protobuf:"varint,6,opt,name=show_deleted,json=showDeleted,proto3" json:"show_deleted,omitempty"`
@@ -878,7 +878,9 @@ type ExecuteQueryRequest struct {
 	// Database identifier.
 	Database string `protobuf:"bytes,1,opt,name=database,proto3" json:"database,omitempty"`
 	// Query specification.
-	Query         *Query `protobuf:"bytes,2,opt,name=query,proto3" json:"query,omitempty"`
+	Query *Query `protobuf:"bytes,2,opt,name=query,proto3" json:"query,omitempty"`
+	// Version 2 requires typed query literals and typed query document responses.
+	WireVersion   uint32 `protobuf:"varint,3,opt,name=wire_version,json=wireVersion,proto3" json:"wire_version,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -927,12 +929,23 @@ func (x *ExecuteQueryRequest) GetQuery() *Query {
 	return nil
 }
 
+func (x *ExecuteQueryRequest) GetWireVersion() uint32 {
+	if x != nil {
+		return x.WireVersion
+	}
+	return 0
+}
+
 type ExecuteQueryResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// Matching documents.
-	Documents     []*Document `protobuf:"bytes,1,rep,name=documents,proto3" json:"documents,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	// Each data payload is a typed value object containing the full public document.
+	Documents      []*Document `protobuf:"bytes,1,rep,name=documents,proto3" json:"documents,omitempty"`
+	NextCursor     string      `protobuf:"bytes,2,opt,name=next_cursor,json=nextCursor,proto3" json:"next_cursor,omitempty"`
+	HasMore        bool        `protobuf:"varint,3,opt,name=has_more,json=hasMore,proto3" json:"has_more,omitempty"`
+	EffectiveOrder []*OrderBy  `protobuf:"bytes,4,rep,name=effective_order,json=effectiveOrder,proto3" json:"effective_order,omitempty"`
+	WireVersion    uint32      `protobuf:"varint,5,opt,name=wire_version,json=wireVersion,proto3" json:"wire_version,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *ExecuteQueryResponse) Reset() {
@@ -970,6 +983,34 @@ func (x *ExecuteQueryResponse) GetDocuments() []*Document {
 		return x.Documents
 	}
 	return nil
+}
+
+func (x *ExecuteQueryResponse) GetNextCursor() string {
+	if x != nil {
+		return x.NextCursor
+	}
+	return ""
+}
+
+func (x *ExecuteQueryResponse) GetHasMore() bool {
+	if x != nil {
+		return x.HasMore
+	}
+	return false
+}
+
+func (x *ExecuteQueryResponse) GetEffectiveOrder() []*OrderBy {
+	if x != nil {
+		return x.EffectiveOrder
+	}
+	return nil
+}
+
+func (x *ExecuteQueryResponse) GetWireVersion() uint32 {
+	if x != nil {
+		return x.WireVersion
+	}
+	return 0
 }
 
 type PullRequest struct {
@@ -1325,12 +1366,18 @@ const file_query_proto_rawDesc = "" +
 	"\bdatabase\x18\x01 \x01(\tR\bdatabase\x12\x12\n" +
 	"\x04path\x18\x02 \x01(\tR\x04path\x122\n" +
 	"\afilters\x18\x03 \x03(\v2\x18.syntrix.query.v1.FilterR\afilters\"\x18\n" +
-	"\x16DeleteDocumentResponse\"`\n" +
+	"\x16DeleteDocumentResponse\"\x83\x01\n" +
 	"\x13ExecuteQueryRequest\x12\x1a\n" +
 	"\bdatabase\x18\x01 \x01(\tR\bdatabase\x12-\n" +
-	"\x05query\x18\x02 \x01(\v2\x17.syntrix.query.v1.QueryR\x05query\"P\n" +
+	"\x05query\x18\x02 \x01(\v2\x17.syntrix.query.v1.QueryR\x05query\x12!\n" +
+	"\fwire_version\x18\x03 \x01(\rR\vwireVersion\"\xf3\x01\n" +
 	"\x14ExecuteQueryResponse\x128\n" +
-	"\tdocuments\x18\x01 \x03(\v2\x1a.syntrix.query.v1.DocumentR\tdocuments\"\x7f\n" +
+	"\tdocuments\x18\x01 \x03(\v2\x1a.syntrix.query.v1.DocumentR\tdocuments\x12\x1f\n" +
+	"\vnext_cursor\x18\x02 \x01(\tR\n" +
+	"nextCursor\x12\x19\n" +
+	"\bhas_more\x18\x03 \x01(\bR\ahasMore\x12B\n" +
+	"\x0feffective_order\x18\x04 \x03(\v2\x19.syntrix.query.v1.OrderByR\x0eeffectiveOrder\x12!\n" +
+	"\fwire_version\x18\x05 \x01(\rR\vwireVersion\"\x7f\n" +
 	"\vPullRequest\x12\x1a\n" +
 	"\bdatabase\x18\x01 \x01(\tR\bdatabase\x12\x1e\n" +
 	"\n" +
@@ -1417,31 +1464,32 @@ var file_query_proto_depIdxs = []int32{
 	1,  // 10: syntrix.query.v1.DeleteDocumentRequest.filters:type_name -> syntrix.query.v1.Filter
 	3,  // 11: syntrix.query.v1.ExecuteQueryRequest.query:type_name -> syntrix.query.v1.Query
 	0,  // 12: syntrix.query.v1.ExecuteQueryResponse.documents:type_name -> syntrix.query.v1.Document
-	0,  // 13: syntrix.query.v1.PullResponse.documents:type_name -> syntrix.query.v1.Document
-	0,  // 14: syntrix.query.v1.PushChange.document:type_name -> syntrix.query.v1.Document
-	18, // 15: syntrix.query.v1.PushRequest.changes:type_name -> syntrix.query.v1.PushChange
-	0,  // 16: syntrix.query.v1.PushResponse.conflicts:type_name -> syntrix.query.v1.Document
-	4,  // 17: syntrix.query.v1.QueryService.GetDocument:input_type -> syntrix.query.v1.GetDocumentRequest
-	6,  // 18: syntrix.query.v1.QueryService.CreateDocument:input_type -> syntrix.query.v1.CreateDocumentRequest
-	8,  // 19: syntrix.query.v1.QueryService.ReplaceDocument:input_type -> syntrix.query.v1.ReplaceDocumentRequest
-	10, // 20: syntrix.query.v1.QueryService.PatchDocument:input_type -> syntrix.query.v1.PatchDocumentRequest
-	12, // 21: syntrix.query.v1.QueryService.DeleteDocument:input_type -> syntrix.query.v1.DeleteDocumentRequest
-	14, // 22: syntrix.query.v1.QueryService.ExecuteQuery:input_type -> syntrix.query.v1.ExecuteQueryRequest
-	16, // 23: syntrix.query.v1.QueryService.Pull:input_type -> syntrix.query.v1.PullRequest
-	19, // 24: syntrix.query.v1.QueryService.Push:input_type -> syntrix.query.v1.PushRequest
-	5,  // 25: syntrix.query.v1.QueryService.GetDocument:output_type -> syntrix.query.v1.GetDocumentResponse
-	7,  // 26: syntrix.query.v1.QueryService.CreateDocument:output_type -> syntrix.query.v1.CreateDocumentResponse
-	9,  // 27: syntrix.query.v1.QueryService.ReplaceDocument:output_type -> syntrix.query.v1.ReplaceDocumentResponse
-	11, // 28: syntrix.query.v1.QueryService.PatchDocument:output_type -> syntrix.query.v1.PatchDocumentResponse
-	13, // 29: syntrix.query.v1.QueryService.DeleteDocument:output_type -> syntrix.query.v1.DeleteDocumentResponse
-	15, // 30: syntrix.query.v1.QueryService.ExecuteQuery:output_type -> syntrix.query.v1.ExecuteQueryResponse
-	17, // 31: syntrix.query.v1.QueryService.Pull:output_type -> syntrix.query.v1.PullResponse
-	20, // 32: syntrix.query.v1.QueryService.Push:output_type -> syntrix.query.v1.PushResponse
-	25, // [25:33] is the sub-list for method output_type
-	17, // [17:25] is the sub-list for method input_type
-	17, // [17:17] is the sub-list for extension type_name
-	17, // [17:17] is the sub-list for extension extendee
-	0,  // [0:17] is the sub-list for field type_name
+	2,  // 13: syntrix.query.v1.ExecuteQueryResponse.effective_order:type_name -> syntrix.query.v1.OrderBy
+	0,  // 14: syntrix.query.v1.PullResponse.documents:type_name -> syntrix.query.v1.Document
+	0,  // 15: syntrix.query.v1.PushChange.document:type_name -> syntrix.query.v1.Document
+	18, // 16: syntrix.query.v1.PushRequest.changes:type_name -> syntrix.query.v1.PushChange
+	0,  // 17: syntrix.query.v1.PushResponse.conflicts:type_name -> syntrix.query.v1.Document
+	4,  // 18: syntrix.query.v1.QueryService.GetDocument:input_type -> syntrix.query.v1.GetDocumentRequest
+	6,  // 19: syntrix.query.v1.QueryService.CreateDocument:input_type -> syntrix.query.v1.CreateDocumentRequest
+	8,  // 20: syntrix.query.v1.QueryService.ReplaceDocument:input_type -> syntrix.query.v1.ReplaceDocumentRequest
+	10, // 21: syntrix.query.v1.QueryService.PatchDocument:input_type -> syntrix.query.v1.PatchDocumentRequest
+	12, // 22: syntrix.query.v1.QueryService.DeleteDocument:input_type -> syntrix.query.v1.DeleteDocumentRequest
+	14, // 23: syntrix.query.v1.QueryService.ExecuteQuery:input_type -> syntrix.query.v1.ExecuteQueryRequest
+	16, // 24: syntrix.query.v1.QueryService.Pull:input_type -> syntrix.query.v1.PullRequest
+	19, // 25: syntrix.query.v1.QueryService.Push:input_type -> syntrix.query.v1.PushRequest
+	5,  // 26: syntrix.query.v1.QueryService.GetDocument:output_type -> syntrix.query.v1.GetDocumentResponse
+	7,  // 27: syntrix.query.v1.QueryService.CreateDocument:output_type -> syntrix.query.v1.CreateDocumentResponse
+	9,  // 28: syntrix.query.v1.QueryService.ReplaceDocument:output_type -> syntrix.query.v1.ReplaceDocumentResponse
+	11, // 29: syntrix.query.v1.QueryService.PatchDocument:output_type -> syntrix.query.v1.PatchDocumentResponse
+	13, // 30: syntrix.query.v1.QueryService.DeleteDocument:output_type -> syntrix.query.v1.DeleteDocumentResponse
+	15, // 31: syntrix.query.v1.QueryService.ExecuteQuery:output_type -> syntrix.query.v1.ExecuteQueryResponse
+	17, // 32: syntrix.query.v1.QueryService.Pull:output_type -> syntrix.query.v1.PullResponse
+	20, // 33: syntrix.query.v1.QueryService.Push:output_type -> syntrix.query.v1.PushResponse
+	26, // [26:34] is the sub-list for method output_type
+	18, // [18:26] is the sub-list for method input_type
+	18, // [18:18] is the sub-list for extension type_name
+	18, // [18:18] is the sub-list for extension extendee
+	0,  // [0:18] is the sub-list for field type_name
 }
 
 func init() { file_query_proto_init() }

@@ -10,6 +10,7 @@ import (
 type ProgressMarker struct {
 	// Positions maps backend name to last event ID for that backend.
 	Positions map[string]string `json:"p"`
+	Lineages  map[string]string `json:"l,omitempty"`
 }
 
 // NewProgressMarker creates an empty progress marker.
@@ -74,6 +75,12 @@ func (pm *ProgressMarker) Clone() *ProgressMarker {
 	}
 
 	clone := NewProgressMarker()
+	if pm.Lineages != nil {
+		clone.Lineages = make(map[string]string, len(pm.Lineages))
+		for k, v := range pm.Lineages {
+			clone.Lineages[k] = v
+		}
+	}
 	for k, v := range pm.Positions {
 		clone.Positions[k] = v
 	}

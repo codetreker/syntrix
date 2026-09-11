@@ -21,6 +21,130 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+type BootstrapBoundaryRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *BootstrapBoundaryRequest) Reset() {
+	*x = BootstrapBoundaryRequest{}
+	mi := &file_puller_proto_msgTypes[0]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *BootstrapBoundaryRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*BootstrapBoundaryRequest) ProtoMessage() {}
+
+func (x *BootstrapBoundaryRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_puller_proto_msgTypes[0]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use BootstrapBoundaryRequest.ProtoReflect.Descriptor instead.
+func (*BootstrapBoundaryRequest) Descriptor() ([]byte, []int) {
+	return file_puller_proto_rawDescGZIP(), []int{0}
+}
+
+type ValidateBoundaryRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Progress      string                 `protobuf:"bytes,1,opt,name=progress,proto3" json:"progress,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ValidateBoundaryRequest) Reset() {
+	*x = ValidateBoundaryRequest{}
+	mi := &file_puller_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ValidateBoundaryRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ValidateBoundaryRequest) ProtoMessage() {}
+
+func (x *ValidateBoundaryRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_puller_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ValidateBoundaryRequest.ProtoReflect.Descriptor instead.
+func (*ValidateBoundaryRequest) Descriptor() ([]byte, []int) {
+	return file_puller_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *ValidateBoundaryRequest) GetProgress() string {
+	if x != nil {
+		return x.Progress
+	}
+	return ""
+}
+
+type BoundaryResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Progress      string                 `protobuf:"bytes,1,opt,name=progress,proto3" json:"progress,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *BoundaryResponse) Reset() {
+	*x = BoundaryResponse{}
+	mi := &file_puller_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *BoundaryResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*BoundaryResponse) ProtoMessage() {}
+
+func (x *BoundaryResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_puller_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use BoundaryResponse.ProtoReflect.Descriptor instead.
+func (*BoundaryResponse) Descriptor() ([]byte, []int) {
+	return file_puller_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *BoundaryResponse) GetProgress() string {
+	if x != nil {
+		return x.Progress
+	}
+	return ""
+}
+
 // SubscribeRequest configures a subscription to the event stream.
 type SubscribeRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -35,13 +159,15 @@ type SubscribeRequest struct {
 	// When enabled and consumer is catching up, multiple events
 	// for the same document may be merged.
 	CoalesceOnCatchUp bool `protobuf:"varint,3,opt,name=coalesce_on_catch_up,json=coalesceOnCatchUp,proto3" json:"coalesce_on_catch_up,omitempty"`
-	unknownFields     protoimpl.UnknownFields
-	sizeCache         protoimpl.SizeCache
+	// Require source readiness and verified replay; receive a ready control frame.
+	RequireReady  bool `protobuf:"varint,4,opt,name=require_ready,json=requireReady,proto3" json:"require_ready,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *SubscribeRequest) Reset() {
 	*x = SubscribeRequest{}
-	mi := &file_puller_proto_msgTypes[0]
+	mi := &file_puller_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -53,7 +179,7 @@ func (x *SubscribeRequest) String() string {
 func (*SubscribeRequest) ProtoMessage() {}
 
 func (x *SubscribeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_puller_proto_msgTypes[0]
+	mi := &file_puller_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -66,7 +192,7 @@ func (x *SubscribeRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SubscribeRequest.ProtoReflect.Descriptor instead.
 func (*SubscribeRequest) Descriptor() ([]byte, []int) {
-	return file_puller_proto_rawDescGZIP(), []int{0}
+	return file_puller_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *SubscribeRequest) GetConsumerId() string {
@@ -90,6 +216,13 @@ func (x *SubscribeRequest) GetCoalesceOnCatchUp() bool {
 	return false
 }
 
+func (x *SubscribeRequest) GetRequireReady() bool {
+	if x != nil {
+		return x.RequireReady
+	}
+	return false
+}
+
 // PullerEvent is the top-level wrapper for events emitted by the Puller service.
 type PullerEvent struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -98,14 +231,16 @@ type PullerEvent struct {
 	// Current progress marker (opaque string).
 	// Consumer should save this value and pass it as 'after'
 	// when reconnecting to resume from this position.
-	Progress      string `protobuf:"bytes,2,opt,name=progress,proto3" json:"progress,omitempty"`
+	Progress string `protobuf:"bytes,2,opt,name=progress,proto3" json:"progress,omitempty"`
+	// Set only after registration and validated catch-up have reached live mode.
+	Ready         bool `protobuf:"varint,3,opt,name=ready,proto3" json:"ready,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *PullerEvent) Reset() {
 	*x = PullerEvent{}
-	mi := &file_puller_proto_msgTypes[1]
+	mi := &file_puller_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -117,7 +252,7 @@ func (x *PullerEvent) String() string {
 func (*PullerEvent) ProtoMessage() {}
 
 func (x *PullerEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_puller_proto_msgTypes[1]
+	mi := &file_puller_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -130,7 +265,7 @@ func (x *PullerEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PullerEvent.ProtoReflect.Descriptor instead.
 func (*PullerEvent) Descriptor() ([]byte, []int) {
-	return file_puller_proto_rawDescGZIP(), []int{1}
+	return file_puller_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *PullerEvent) GetChangeEvent() *ChangeEvent {
@@ -147,6 +282,13 @@ func (x *PullerEvent) GetProgress() string {
 	return ""
 }
 
+func (x *PullerEvent) GetReady() bool {
+	if x != nil {
+		return x.Ready
+	}
+	return false
+}
+
 // ChangeEvent represents a normalized change event from the database.
 type ChangeEvent struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -160,10 +302,10 @@ type ChangeEvent struct {
 	MgoDocId string `protobuf:"bytes,4,opt,name=mgo_doc_id,json=mgoDocId,proto3" json:"mgo_doc_id,omitempty"`
 	// Operation type: "insert", "update", "replace", or "delete".
 	OpType string `protobuf:"bytes,5,opt,name=op_type,json=opType,proto3" json:"op_type,omitempty"`
-	// Full document after the change (JSON encoded storage.StoredDoc).
+	// Full document after the change (typed BSON encoded storage.StoredDoc).
 	// Empty for delete operations.
 	FullDoc []byte `protobuf:"bytes,6,opt,name=full_doc,json=fullDoc,proto3" json:"full_doc,omitempty"`
-	// Description of update changes (JSON encoded).
+	// Description of update changes (typed BSON encoded).
 	// Only present for update operations.
 	UpdateDesc []byte `protobuf:"bytes,7,opt,name=update_desc,json=updateDesc,proto3" json:"update_desc,omitempty"`
 	// MongoDB cluster timestamp.
@@ -180,7 +322,7 @@ type ChangeEvent struct {
 
 func (x *ChangeEvent) Reset() {
 	*x = ChangeEvent{}
-	mi := &file_puller_proto_msgTypes[2]
+	mi := &file_puller_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -192,7 +334,7 @@ func (x *ChangeEvent) String() string {
 func (*ChangeEvent) ProtoMessage() {}
 
 func (x *ChangeEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_puller_proto_msgTypes[2]
+	mi := &file_puller_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -205,7 +347,7 @@ func (x *ChangeEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ChangeEvent.ProtoReflect.Descriptor instead.
 func (*ChangeEvent) Descriptor() ([]byte, []int) {
-	return file_puller_proto_rawDescGZIP(), []int{2}
+	return file_puller_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *ChangeEvent) GetEventId() string {
@@ -298,7 +440,7 @@ type ClusterTime struct {
 
 func (x *ClusterTime) Reset() {
 	*x = ClusterTime{}
-	mi := &file_puller_proto_msgTypes[3]
+	mi := &file_puller_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -310,7 +452,7 @@ func (x *ClusterTime) String() string {
 func (*ClusterTime) ProtoMessage() {}
 
 func (x *ClusterTime) ProtoReflect() protoreflect.Message {
-	mi := &file_puller_proto_msgTypes[3]
+	mi := &file_puller_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -323,7 +465,7 @@ func (x *ClusterTime) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ClusterTime.ProtoReflect.Descriptor instead.
 func (*ClusterTime) Descriptor() ([]byte, []int) {
-	return file_puller_proto_rawDescGZIP(), []int{3}
+	return file_puller_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *ClusterTime) GetT() uint32 {
@@ -344,15 +486,22 @@ var File_puller_proto protoreflect.FileDescriptor
 
 const file_puller_proto_rawDesc = "" +
 	"\n" +
-	"\fpuller.proto\x12\x11syntrix.puller.v1\"z\n" +
+	"\fpuller.proto\x12\x11syntrix.puller.v1\"\x1a\n" +
+	"\x18BootstrapBoundaryRequest\"5\n" +
+	"\x17ValidateBoundaryRequest\x12\x1a\n" +
+	"\bprogress\x18\x01 \x01(\tR\bprogress\".\n" +
+	"\x10BoundaryResponse\x12\x1a\n" +
+	"\bprogress\x18\x01 \x01(\tR\bprogress\"\x9f\x01\n" +
 	"\x10SubscribeRequest\x12\x1f\n" +
 	"\vconsumer_id\x18\x01 \x01(\tR\n" +
 	"consumerId\x12\x14\n" +
 	"\x05after\x18\x02 \x01(\tR\x05after\x12/\n" +
-	"\x14coalesce_on_catch_up\x18\x03 \x01(\bR\x11coalesceOnCatchUp\"l\n" +
+	"\x14coalesce_on_catch_up\x18\x03 \x01(\bR\x11coalesceOnCatchUp\x12#\n" +
+	"\rrequire_ready\x18\x04 \x01(\bR\frequireReady\"\x82\x01\n" +
 	"\vPullerEvent\x12A\n" +
 	"\fchange_event\x18\x01 \x01(\v2\x1e.syntrix.puller.v1.ChangeEventR\vchangeEvent\x12\x1a\n" +
-	"\bprogress\x18\x02 \x01(\tR\bprogress\"\xec\x02\n" +
+	"\bprogress\x18\x02 \x01(\tR\bprogress\x12\x14\n" +
+	"\x05ready\x18\x03 \x01(\bR\x05ready\"\xec\x02\n" +
 	"\vChangeEvent\x12\x19\n" +
 	"\bevent_id\x18\x01 \x01(\tR\aeventId\x12\x1a\n" +
 	"\bdatabase\x18\x02 \x01(\tR\bdatabase\x12\x19\n" +
@@ -371,9 +520,11 @@ const file_puller_proto_rawDesc = "" +
 	"\abackend\x18\v \x01(\tR\abackend\")\n" +
 	"\vClusterTime\x12\f\n" +
 	"\x01t\x18\x01 \x01(\rR\x01t\x12\f\n" +
-	"\x01i\x18\x02 \x01(\rR\x01i2c\n" +
+	"\x01i\x18\x02 \x01(\rR\x01i2\xaf\x02\n" +
 	"\rPullerService\x12R\n" +
-	"\tSubscribe\x12#.syntrix.puller.v1.SubscribeRequest\x1a\x1e.syntrix.puller.v1.PullerEvent0\x01B;Z9github.com/syntrixbase/syntrix/api/gen/puller/v1;pullerv1b\x06proto3"
+	"\tSubscribe\x12#.syntrix.puller.v1.SubscribeRequest\x1a\x1e.syntrix.puller.v1.PullerEvent0\x01\x12e\n" +
+	"\x11BootstrapBoundary\x12+.syntrix.puller.v1.BootstrapBoundaryRequest\x1a#.syntrix.puller.v1.BoundaryResponse\x12c\n" +
+	"\x10ValidateBoundary\x12*.syntrix.puller.v1.ValidateBoundaryRequest\x1a#.syntrix.puller.v1.BoundaryResponseB;Z9github.com/syntrixbase/syntrix/api/gen/puller/v1;pullerv1b\x06proto3"
 
 var (
 	file_puller_proto_rawDescOnce sync.Once
@@ -387,20 +538,27 @@ func file_puller_proto_rawDescGZIP() []byte {
 	return file_puller_proto_rawDescData
 }
 
-var file_puller_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
+var file_puller_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
 var file_puller_proto_goTypes = []any{
-	(*SubscribeRequest)(nil), // 0: syntrix.puller.v1.SubscribeRequest
-	(*PullerEvent)(nil),      // 1: syntrix.puller.v1.PullerEvent
-	(*ChangeEvent)(nil),      // 2: syntrix.puller.v1.ChangeEvent
-	(*ClusterTime)(nil),      // 3: syntrix.puller.v1.ClusterTime
+	(*BootstrapBoundaryRequest)(nil), // 0: syntrix.puller.v1.BootstrapBoundaryRequest
+	(*ValidateBoundaryRequest)(nil),  // 1: syntrix.puller.v1.ValidateBoundaryRequest
+	(*BoundaryResponse)(nil),         // 2: syntrix.puller.v1.BoundaryResponse
+	(*SubscribeRequest)(nil),         // 3: syntrix.puller.v1.SubscribeRequest
+	(*PullerEvent)(nil),              // 4: syntrix.puller.v1.PullerEvent
+	(*ChangeEvent)(nil),              // 5: syntrix.puller.v1.ChangeEvent
+	(*ClusterTime)(nil),              // 6: syntrix.puller.v1.ClusterTime
 }
 var file_puller_proto_depIdxs = []int32{
-	2, // 0: syntrix.puller.v1.PullerEvent.change_event:type_name -> syntrix.puller.v1.ChangeEvent
-	3, // 1: syntrix.puller.v1.ChangeEvent.cluster_time:type_name -> syntrix.puller.v1.ClusterTime
-	0, // 2: syntrix.puller.v1.PullerService.Subscribe:input_type -> syntrix.puller.v1.SubscribeRequest
-	1, // 3: syntrix.puller.v1.PullerService.Subscribe:output_type -> syntrix.puller.v1.PullerEvent
-	3, // [3:4] is the sub-list for method output_type
-	2, // [2:3] is the sub-list for method input_type
+	5, // 0: syntrix.puller.v1.PullerEvent.change_event:type_name -> syntrix.puller.v1.ChangeEvent
+	6, // 1: syntrix.puller.v1.ChangeEvent.cluster_time:type_name -> syntrix.puller.v1.ClusterTime
+	3, // 2: syntrix.puller.v1.PullerService.Subscribe:input_type -> syntrix.puller.v1.SubscribeRequest
+	0, // 3: syntrix.puller.v1.PullerService.BootstrapBoundary:input_type -> syntrix.puller.v1.BootstrapBoundaryRequest
+	1, // 4: syntrix.puller.v1.PullerService.ValidateBoundary:input_type -> syntrix.puller.v1.ValidateBoundaryRequest
+	4, // 5: syntrix.puller.v1.PullerService.Subscribe:output_type -> syntrix.puller.v1.PullerEvent
+	2, // 6: syntrix.puller.v1.PullerService.BootstrapBoundary:output_type -> syntrix.puller.v1.BoundaryResponse
+	2, // 7: syntrix.puller.v1.PullerService.ValidateBoundary:output_type -> syntrix.puller.v1.BoundaryResponse
+	5, // [5:8] is the sub-list for method output_type
+	2, // [2:5] is the sub-list for method input_type
 	2, // [2:2] is the sub-list for extension type_name
 	2, // [2:2] is the sub-list for extension extendee
 	0, // [0:2] is the sub-list for field type_name
@@ -417,7 +575,7 @@ func file_puller_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_puller_proto_rawDesc), len(file_puller_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   4,
+			NumMessages:   7,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

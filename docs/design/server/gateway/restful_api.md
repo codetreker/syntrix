@@ -134,9 +134,19 @@ Response (204 No Content)
 ```json
 {
   "documents": [ ... ],
-  "nextCursor": "cursor-string-for-next-page"
+  "nextCursor": "cursor-string-for-next-page",
+  "effectiveOrder": [
+    {"field": "timestamp", "direction": "desc"},
+    {"field": "id", "direction": "asc"}
+  ]
 }
 ```
+
+`documents` contains complete [typed object nodes](../../../reference/filters.md#typed-values),
+including metadata. `nextCursor` is null at exhaustion; a non-null cursor may lead
+to an empty terminal page. The envelope replaces array-only query responses.
+See the [Query API](../../../reference/api.md#query-operations) for numeric values,
+continuation binding, limits, and failure categories.
 
 ### 1.3 Trigger API
 

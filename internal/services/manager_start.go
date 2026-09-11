@@ -9,8 +9,12 @@ import (
 )
 
 func (m *Manager) Start(bgCtx context.Context) {
+	if m.opts.BootstrapIndexes && !m.bootstrapReady {
+		slog.Error("Cannot start services before index bootstrap readiness")
+		return
+	}
 	// Start Unified Server Service
-	if s := server.Default(); s != nil {
+	if s := server.Default(); s != nil && !m.serverStarted {
 		m.wg.Add(1)
 		go func() {
 			defer m.wg.Done()
@@ -92,20 +96,22 @@ func (m *Manager) Start(bgCtx context.Context) {
 
 	// Start Change Stream Puller
 	if m.pullerService != nil {
-		slog.Info("Starting Change Stream Puller...")
-		if err := m.pullerService.Start(bgCtx); err != nil {
-			slog.Error("Failed to start Change Stream Puller", "error", err)
+		if !m.pullerStarted {
+			slog.Info("Starting Change Stream Puller...")
+			if err := m.pullerService.Start(bgCtx); err != nil {
+				slog.Error("Failed to start Change Stream Puller", "error", err)
+			}
 		}
 
 		// Initialize gRPC Server event handler (server is registered with unified server)
-		if m.pullerGRPC != nil {
+		if m.pullerGRPC != nil && !m.pullerGRPCInitialized {
 			slog.Info("Initializing Puller gRPC Service...")
 			m.pullerGRPC.Init()
 		}
 	}
 
 	// Start Indexer Service
-	if m.indexerService != nil {
+	if m.indexerService != nil && !m.indexerStarted {
 		slog.Info("Starting Indexer Service...")
 		if err := m.indexerService.Start(bgCtx); err != nil {
 			slog.Error("Failed to start Indexer Service", "error", err)

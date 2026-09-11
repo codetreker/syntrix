@@ -536,3 +536,23 @@ func TestParseTokenClaims(t *testing.T) {
 	_, err = parseTokenClaims("header." + badPayload + ".signature")
 	assert.Error(t, err)
 }
+
+func decodeQueryDocuments(t *testing.T, resp *http.Response) []map[string]interface{} {
+	t.Helper()
+	defer resp.Body.Close()
+	var page struct {
+		Documents      []json.RawMessage `json:"documents"`
+		EffectiveOrder []model.Order     `json:"effectiveOrder"`
+	}
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&page))
+	require.NotEmpty(t, page.EffectiveOrder)
+	documents := make([]map[string]interface{}, 0, len(page.Documents))
+	for _, raw := range page.Documents {
+		value, err := model.DecodeTypedValue(raw)
+		require.NoError(t, err)
+		document, ok := value.(map[string]interface{})
+		require.True(t, ok, "query document must be a typed object")
+		documents = append(documents, document)
+	}
+	return documents
+}

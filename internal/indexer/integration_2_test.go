@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"sort"
 	"testing"
-	"time"
 
 	"github.com/syntrixbase/syntrix/internal/indexer"
 )
@@ -26,7 +25,7 @@ func TestIntegration_Pagination(t *testing.T) {
 		mockPullerSvc.pushEvent(evt, fmt.Sprintf("p%d", i))
 	}
 
-	time.Sleep(200 * time.Millisecond)
+	waitIntegrationEvents(t, svc, mockPullerSvc)
 
 	// Fetch first page
 	plan := indexer.Plan{
@@ -112,7 +111,7 @@ func TestIntegration_HealthCheck(t *testing.T) {
 		mockPullerSvc.pushEvent(evt, fmt.Sprintf("p%d", i))
 	}
 
-	time.Sleep(50 * time.Millisecond)
+	waitIntegrationEvents(t, svc, mockPullerSvc)
 
 	health, err = svc.Health(ctx)
 	if err != nil {
@@ -154,7 +153,7 @@ func TestIntegration_StatsAccumulation(t *testing.T) {
 			totalEvents++
 		}
 
-		time.Sleep(50 * time.Millisecond)
+		waitIntegrationEvents(t, svc, mockPullerSvc)
 
 		stats, err = svc.Stats(ctx)
 		if err != nil {
@@ -188,7 +187,7 @@ func TestIntegration_AscendingOrder(t *testing.T) {
 		mockPullerSvc.pushEvent(evt, fmt.Sprintf("p%d", i))
 	}
 
-	time.Sleep(200 * time.Millisecond)
+	waitIntegrationEvents(t, svc, mockPullerSvc)
 
 	// Search products ordered by price ascending
 	plan := indexer.Plan{
@@ -232,7 +231,7 @@ func TestIntegration_DuplicateEventIdempotency(t *testing.T) {
 		mockPullerSvc.pushEvent(evt, fmt.Sprintf("p%d", i))
 	}
 
-	time.Sleep(50 * time.Millisecond)
+	waitIntegrationEvents(t, svc, mockPullerSvc)
 
 	// Search - should only have one document
 	plan := indexer.Plan{
@@ -271,7 +270,7 @@ func TestIntegration_EmptyCollection(t *testing.T) {
 		mockPullerSvc.pushEvent(evt, fmt.Sprintf("p%d", i))
 	}
 
-	time.Sleep(50 * time.Millisecond)
+	waitIntegrationEvents(t, svc, mockPullerSvc)
 
 	// Search orders - template exists but no documents have been indexed yet
 	// This returns empty results because no documents match
@@ -295,7 +294,7 @@ func TestIntegration_EmptyCollection(t *testing.T) {
 	})
 	mockPullerSvc.pushEvent(evt, "order-1")
 
-	time.Sleep(50 * time.Millisecond)
+	waitIntegrationEvents(t, svc, mockPullerSvc)
 
 	// Search again - should now work and return the one document
 	results, err = svc.Search(ctx, "db1", plan)
@@ -327,7 +326,7 @@ func TestIntegration_LargeDocumentBatch(t *testing.T) {
 	}
 
 	// Wait for processing
-	time.Sleep(1 * time.Second)
+	waitIntegrationEvents(t, svc, mockPullerSvc)
 
 	// Verify all events processed
 	stats, err := svc.Stats(ctx)
@@ -378,7 +377,7 @@ func TestIntegration_TieBreakingByID(t *testing.T) {
 		mockPullerSvc.pushEvent(evt, fmt.Sprintf("p%d", i))
 	}
 
-	time.Sleep(200 * time.Millisecond)
+	waitIntegrationEvents(t, svc, mockPullerSvc)
 
 	// Search - all should be returned, order determined by doc ID as tie-breaker
 	plan := indexer.Plan{
@@ -443,7 +442,7 @@ func TestIntegration_DynamicTemplateReload(t *testing.T) {
 		mockPullerSvc.pushEvent(evt, fmt.Sprintf("p%d", i))
 	}
 
-	time.Sleep(100 * time.Millisecond)
+	waitIntegrationEvents(t, svc, mockPullerSvc)
 
 	// Verify initial template works (ordered by timestamp desc)
 	plan := indexer.Plan{
@@ -463,7 +462,7 @@ func TestIntegration_DynamicTemplateReload(t *testing.T) {
 		t.Errorf("expected user049 first, got %s", results[0].ID)
 	}
 
-	// Now dynamically add a new template for ordering by score
+	// Rebuild with an additional template for ordering by score.
 	newTemplateYAML := `
 templates:
   - name: users_by_timestamp
@@ -500,13 +499,10 @@ templates:
 `
 
 	// Reload templates via manager
-	mgr := svc.Manager()
-	err = mgr.LoadTemplatesFromBytes([]byte(newTemplateYAML))
-	if err != nil {
-		t.Fatalf("failed to reload templates: %v", err)
-	}
+	svc, ctx, cancel = reloadIntegrationTemplates(t, svc, mockPullerSvc, newTemplateYAML)
+	defer cancel()
 
-	// Insert more documents to populate the new index
+	// Continue ingesting after the complete rebuild.
 	for i := 50; i < 100; i++ {
 		evt := createTestEvent("db1", "users", fmt.Sprintf("user%03d", i), map[string]any{
 			"name":      fmt.Sprintf("User %d", i),
@@ -516,7 +512,7 @@ templates:
 		mockPullerSvc.pushEvent(evt, fmt.Sprintf("p%d", i))
 	}
 
-	time.Sleep(100 * time.Millisecond)
+	waitIntegrationEvents(t, svc, mockPullerSvc)
 
 	// Search using the new score-based template
 	scorePlan := indexer.Plan{
@@ -567,7 +563,7 @@ func TestIntegration_TemplateAddNewCollection(t *testing.T) {
 		mockPullerSvc.pushEvent(evt, fmt.Sprintf("comment-%d", i))
 	}
 
-	time.Sleep(100 * time.Millisecond)
+	waitIntegrationEvents(t, svc, mockPullerSvc)
 
 	// Search comments - should fail with no matching index
 	commentPlan := indexer.Plan{
@@ -617,11 +613,8 @@ templates:
         order: desc
 `
 
-	mgr := svc.Manager()
-	err = mgr.LoadTemplatesFromBytes([]byte(newTemplateYAML))
-	if err != nil {
-		t.Fatalf("failed to reload templates with comments: %v", err)
-	}
+	svc, ctx, cancel = reloadIntegrationTemplates(t, svc, mockPullerSvc, newTemplateYAML)
+	defer cancel()
 
 	// Insert more comments - these will be indexed with the new template
 	for i := 20; i < 40; i++ {
@@ -632,9 +625,9 @@ templates:
 		mockPullerSvc.pushEvent(evt, fmt.Sprintf("comment-%d", i))
 	}
 
-	time.Sleep(100 * time.Millisecond)
+	waitIntegrationEvents(t, svc, mockPullerSvc)
 
-	// Now search should work for new comments
+	// The rebuilt index includes earlier comments and subsequent events.
 	results, err := svc.Search(ctx, "db1", commentPlan)
 	if err != nil {
 		t.Fatalf("search for comments failed after template add: %v", err)
@@ -666,7 +659,7 @@ func TestIntegration_TemplateModifyFields(t *testing.T) {
 		mockPullerSvc.pushEvent(evt, fmt.Sprintf("prod-%d", i))
 	}
 
-	time.Sleep(100 * time.Millisecond)
+	waitIntegrationEvents(t, svc, mockPullerSvc)
 
 	// Initial template orders by price asc
 	pricePlan := indexer.Plan{
@@ -721,13 +714,10 @@ templates:
         order: asc
 `
 
-	mgr := svc.Manager()
-	err = mgr.LoadTemplatesFromBytes([]byte(newTemplateYAML))
-	if err != nil {
-		t.Fatalf("failed to reload templates: %v", err)
-	}
+	svc, ctx, cancel = reloadIntegrationTemplates(t, svc, mockPullerSvc, newTemplateYAML)
+	defer cancel()
 
-	// Insert more products to populate the new rating-based index
+	// Continue ingesting products into the rebuilt rating index.
 	for i := 50; i < 100; i++ {
 		evt := createTestEvent("db1", "products", fmt.Sprintf("prod%03d", i), map[string]any{
 			"name":   fmt.Sprintf("Product %d", i),
@@ -737,7 +727,7 @@ templates:
 		mockPullerSvc.pushEvent(evt, fmt.Sprintf("prod-%d", i))
 	}
 
-	time.Sleep(100 * time.Millisecond)
+	waitIntegrationEvents(t, svc, mockPullerSvc)
 
 	// Search by rating desc, price asc
 	ratingPlan := indexer.Plan{
@@ -757,12 +747,9 @@ templates:
 		t.Fatalf("expected 20 results, got %d", len(ratingResults))
 	}
 
-	// Verify ordering: highest rating (5.0) products should be first
-	// Only prod050-prod099 are in the new rating index (prod000-prod049 were indexed before template was added)
-	// Products with rating 5.0: i % 5 == 0 -> prod050, prod055, prod060, ...
-	// Among those, ordered by price asc -> prod050 has lowest price (500)
-	if ratingResults[0].ID != "prod050" {
-		t.Errorf("expected prod050 (rating 5.0, price 500) first, got %s", ratingResults[0].ID)
+	// Maintenance rebuild includes documents created before the template existed.
+	if ratingResults[0].ID != "prod000" {
+		t.Errorf("expected prod000 (rating 5.0, price 0) first, got %s", ratingResults[0].ID)
 	}
 
 	stopService(t, svc, mockPullerSvc)
@@ -783,7 +770,7 @@ func TestIntegration_TemplateRemoveAndReAdd(t *testing.T) {
 		mockPullerSvc.pushEvent(evt, fmt.Sprintf("user-%d", i))
 	}
 
-	time.Sleep(100 * time.Millisecond)
+	waitIntegrationEvents(t, svc, mockPullerSvc)
 
 	// Verify users can be searched
 	userPlan := indexer.Plan{
@@ -824,11 +811,8 @@ templates:
         order: asc
 `
 
-	mgr := svc.Manager()
-	err = mgr.LoadTemplatesFromBytes([]byte(reducedTemplateYAML))
-	if err != nil {
-		t.Fatalf("failed to reload reduced templates: %v", err)
-	}
+	svc, ctx, cancel = reloadIntegrationTemplates(t, svc, mockPullerSvc, reducedTemplateYAML)
+	defer cancel()
 
 	// Search for users should now fail with no matching index
 	_, err = svc.Search(ctx, "db1", userPlan)
@@ -866,12 +850,10 @@ templates:
         order: asc
 `
 
-	err = mgr.LoadTemplatesFromBytes([]byte(fullTemplateYAML))
-	if err != nil {
-		t.Fatalf("failed to reload full templates: %v", err)
-	}
+	svc, ctx, cancel = reloadIntegrationTemplates(t, svc, mockPullerSvc, fullTemplateYAML)
+	defer cancel()
 
-	// Insert more users to repopulate the index
+	// Continue ingesting after rebuilding the restored template.
 	for i := 30; i < 50; i++ {
 		evt := createTestEvent("db1", "users", fmt.Sprintf("user%03d", i), map[string]any{
 			"name":      fmt.Sprintf("User %d", i),
@@ -880,9 +862,9 @@ templates:
 		mockPullerSvc.pushEvent(evt, fmt.Sprintf("user-%d", i))
 	}
 
-	time.Sleep(100 * time.Millisecond)
+	waitIntegrationEvents(t, svc, mockPullerSvc)
 
-	// Search should work again for newly inserted users
+	// Query the rebuilt index after subsequent insertions.
 	results, err = svc.Search(ctx, "db1", userPlan)
 	if err != nil {
 		t.Fatalf("search after template re-add failed: %v", err)
@@ -890,7 +872,7 @@ templates:
 	if len(results) != 10 {
 		t.Fatalf("expected 10 results after re-add, got %d", len(results))
 	}
-	// user049 should be first (highest timestamp among newly inserted)
+	// user049 has the highest timestamp.
 	if results[0].ID != "user049" {
 		t.Errorf("expected user049 first after re-add, got %s", results[0].ID)
 	}
@@ -948,11 +930,8 @@ templates:
         order: asc
 `
 
-	mgr := svc.Manager()
-	err := mgr.LoadTemplatesFromBytes([]byte(multiTemplateYAML))
-	if err != nil {
-		t.Fatalf("failed to load multi-templates: %v", err)
-	}
+	svc, ctx, cancel = reloadIntegrationTemplates(t, svc, mockPullerSvc, multiTemplateYAML)
+	defer cancel()
 
 	// Insert users with name, timestamp, and level
 	names := []string{"Alice", "Bob", "Charlie", "David", "Eve"}
@@ -965,7 +944,7 @@ templates:
 		mockPullerSvc.pushEvent(evt, fmt.Sprintf("user-%d", i))
 	}
 
-	time.Sleep(200 * time.Millisecond)
+	waitIntegrationEvents(t, svc, mockPullerSvc)
 
 	// Search by timestamp desc
 	timestampPlan := indexer.Plan{
@@ -1042,7 +1021,7 @@ func TestIntegration_TemplatePatternChange(t *testing.T) {
 		}
 	}
 
-	time.Sleep(100 * time.Millisecond)
+	waitIntegrationEvents(t, svc, mockPullerSvc)
 
 	// Search using the pattern template
 	chatPlan := indexer.Plan{
@@ -1098,11 +1077,8 @@ templates:
         order: asc
 `
 
-	mgr := svc.Manager()
-	err = mgr.LoadTemplatesFromBytes([]byte(specificTemplateYAML))
-	if err != nil {
-		t.Fatalf("failed to reload templates with specific pattern: %v", err)
-	}
+	svc, ctx, cancel = reloadIntegrationTemplates(t, svc, mockPullerSvc, specificTemplateYAML)
+	defer cancel()
 
 	// Insert more chats for user00
 	for c := 20; c < 30; c++ {
@@ -1115,7 +1091,7 @@ templates:
 		mockPullerSvc.pushEvent(evt, fmt.Sprintf("chat-specific-%d", c))
 	}
 
-	time.Sleep(100 * time.Millisecond)
+	waitIntegrationEvents(t, svc, mockPullerSvc)
 
 	// Search user00's chats with timestamp order - should use the more specific template
 	specificPlan := indexer.Plan{
@@ -1131,7 +1107,7 @@ templates:
 	if len(specificResults) != 10 {
 		t.Fatalf("expected 10 results for specific pattern, got %d", len(specificResults))
 	}
-	// chat-u00-c029 should be first (highest timestamp among newly inserted)
+	// chat-u00-c029 has the highest timestamp.
 	if specificResults[0].ID != "chat-u00-c029" {
 		t.Errorf("expected chat-u00-c029 first, got %s", specificResults[0].ID)
 	}

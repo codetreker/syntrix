@@ -1,5 +1,6 @@
 import { StorageClient } from '../internal/storage-client';
-import { CollectionReference, DocumentReference, Query, FilterOp } from './types';
+import { CollectionReference, DocumentReference, Query, FilterOp, QueryPage, QueryOrder } from './types';
+import { encodeQueryValue } from './value';
 
 export class DocumentReferenceImpl<T> implements DocumentReference<T> {
   protected _ifMatch: any[] = [];
@@ -37,8 +38,8 @@ export class DocumentReferenceImpl<T> implements DocumentReference<T> {
 }
 
 export class QueryImpl<T> implements Query<T> {
-  protected filters: any[] = [];
-  protected sort: any[] = [];
+  protected filters: { field: string; op: FilterOp; value: unknown }[] = [];
+  protected sort: QueryOrder[] = [];
   protected limitVal?: number;
   protected startAfterVal?: string;
   protected showDeletedVal?: boolean;
@@ -71,9 +72,13 @@ export class QueryImpl<T> implements Query<T> {
   }
 
   async get(): Promise<T[]> {
+    return (await this.getPage()).documents;
+  }
+
+  async getPage(): Promise<QueryPage<T>> {
     const query: any = {
       collection: this.path,
-      filters: this.filters,
+      filters: this.filters.map(filter => ({ ...filter, value: encodeQueryValue(filter.value) })),
       orderBy: this.sort,
     };
     if (this.limitVal !== undefined) {
@@ -85,7 +90,7 @@ export class QueryImpl<T> implements Query<T> {
     if (this.showDeletedVal !== undefined) {
       query.showDeleted = this.showDeletedVal;
     }
-    return this.storage.query<T>('/api/v1/query', query);
+    return this.storage.queryPage<T>('/api/v1/query', query);
   }
 
   async update(data: Partial<T>): Promise<void> {

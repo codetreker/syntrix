@@ -1,6 +1,7 @@
 package cursor
 
 import (
+	"encoding/base64"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -80,4 +81,32 @@ func TestProgressMarker(t *testing.T) {
 		pm.SetPosition("backend1", "pos1")
 		assert.Equal(t, "pos1", pm.GetPosition("backend1"))
 	})
+}
+
+func TestBootstrapMarkerCloneKeepsIndependentCaptureLineages(t *testing.T) {
+	original := &ProgressMarker{Positions: map[string]string{"source-a": "", "source-b": ""}, Lineages: map[string]string{"source-a": "epoch-a", "source-b": "epoch-b"}}
+	encoded := original.Encode()
+	require.NotEmpty(t, encoded)
+	restored, err := DecodeProgressMarker(encoded)
+	require.NoError(t, err)
+	require.Equal(t, original, restored)
+	consumer := restored.Clone()
+	consumer.Positions["source-a"] = "applied-event"
+	consumer.Lineages["source-a"] = "replacement-epoch"
+	require.Equal(t, "", restored.Positions["source-a"])
+	require.Equal(t, "epoch-a", restored.Lineages["source-a"])
+	require.Equal(t, encoded, original.Encode())
+}
+
+func TestProgressDecodeRejectsMalformedPayloadAndOwnsEmptyPositionMap(t *testing.T) {
+	for _, payload := range []string{`{`, `{"p":12}`, `{"l":["wrong-shape"]}`} {
+		marker, err := DecodeProgressMarker(base64.RawURLEncoding.EncodeToString([]byte(payload)))
+		require.Error(t, err)
+		require.Nil(t, marker)
+	}
+	marker, err := DecodeProgressMarker(base64.RawURLEncoding.EncodeToString([]byte(`{"l":{"source":"epoch"}}`)))
+	require.NoError(t, err)
+	marker.SetPosition("source", "event")
+	require.Equal(t, "epoch", marker.Lineages["source"])
+	require.Equal(t, "event", marker.GetPosition("source"))
 }

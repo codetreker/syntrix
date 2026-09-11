@@ -343,7 +343,7 @@ func (f *fakeDocumentStore) Delete(ctx context.Context, database, path string, p
 func (f *fakeDocumentStore) Query(ctx context.Context, database string, q model.Query) ([]*storage.StoredDoc, error) {
 	return nil, nil
 }
-func (f *fakeDocumentStore) GetMany(ctx context.Context, database string, paths []string) ([]*storage.StoredDoc, error) {
+func (f *fakeDocumentStore) GetMany(ctx context.Context, database string, paths []string, _ ...storage.ReadOptions) ([]*storage.StoredDoc, error) {
 	return nil, nil
 }
 func (f *fakeDocumentStore) Watch(ctx context.Context, database, collection string, after storage.WatchCheckpoint, opts storage.WatchOptions) (storage.WatchStream, error) {

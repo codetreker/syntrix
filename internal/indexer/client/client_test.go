@@ -25,12 +25,20 @@ import (
 // mockServer implements IndexerServiceServer for testing.
 type mockServer struct {
 	indexerv1.UnimplementedIndexerServiceServer
+	candidatesFn      func(*indexerv1.CandidateRequest, indexerv1.IndexerService_OpenCandidatesServer) error
 	statsFn           func(context.Context, *indexerv1.StatsRequest) (*indexerv1.StatsResponse, error)
 	searchFn          func(ctx context.Context, req *indexerv1.SearchRequest) (*indexerv1.SearchResponse, error)
 	healthFn          func(ctx context.Context, req *indexerv1.HealthRequest) (*indexerv1.HealthResponse, error)
 	getStateFn        func(ctx context.Context, req *indexerv1.GetStateRequest) (*indexerv1.IndexerState, error)
 	reloadFn          func(ctx context.Context, req *indexerv1.ReloadRequest) (*indexerv1.ReloadResponse, error)
 	invalidateIndexFn func(ctx context.Context, req *indexerv1.InvalidateIndexRequest) (*indexerv1.InvalidateIndexResponse, error)
+}
+
+func (m *mockServer) OpenCandidates(req *indexerv1.CandidateRequest, stream indexerv1.IndexerService_OpenCandidatesServer) error {
+	if m.candidatesFn != nil {
+		return m.candidatesFn(req, stream)
+	}
+	return m.UnimplementedIndexerServiceServer.OpenCandidates(req, stream)
 }
 
 func (m *mockServer) Stats(ctx context.Context, req *indexerv1.StatsRequest) (*indexerv1.StatsResponse, error) {

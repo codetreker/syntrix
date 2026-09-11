@@ -2,8 +2,9 @@
 package buffer
 
 import (
-	"encoding/json"
 	"fmt"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/cockroachdb/pebble"
@@ -28,23 +29,22 @@ func (b *Buffer) Read(key string) (*events.StoreChangeEvent, error) {
 	}
 	defer closer.Close()
 
-	var evt events.StoreChangeEvent
-	if err := json.Unmarshal(value, &evt); err != nil {
+	evt, err := events.UnmarshalEvent(value)
+	if err != nil {
 		return nil, fmt.Errorf("failed to unmarshal event: %w", err)
 	}
 
-	return &evt, nil
+	return evt, nil
 }
 
 // ScanFrom returns an iterator starting from the given key (exclusive).
 // If afterKey is empty, starts from the beginning.
 func (b *Buffer) ScanFrom(afterKey string) (Iterator, error) {
 	b.mu.RLock()
+	defer b.mu.RUnlock()
 	if b.closed {
-		b.mu.RUnlock()
 		return nil, fmt.Errorf("buffer is closed")
 	}
-	b.mu.RUnlock()
 
 	iterOpts := &pebble.IterOptions{}
 	if afterKey != "" {
@@ -62,10 +62,8 @@ func (b *Buffer) ScanFrom(afterKey string) (Iterator, error) {
 		first: true,
 	}
 
-	// Create snapshot iterator over pending events
-	snapshotIter := b.newSnapshotIterator(afterKey)
+	snapshotIter := b.newSnapshotIteratorLocked(afterKey)
 
-	// Return a deduplicating iterator that reads from DB then snapshot
 	return newDeduplicatingIterator(dbIter, snapshotIter), nil
 }
 
@@ -85,7 +83,7 @@ func (b *Buffer) Head() (string, error) {
 	defer iter.Close()
 
 	for iter.Last(); iter.Valid(); iter.Prev() {
-		if isCheckpointKey(iter.Key()) {
+		if isMetadataKey(iter.Key()) {
 			continue
 		}
 		return string(iter.Key()), nil
@@ -109,7 +107,7 @@ func (b *Buffer) First() (string, error) {
 	defer iter.Close()
 
 	for iter.First(); iter.Valid(); iter.Next() {
-		if isCheckpointKey(iter.Key()) {
+		if isMetadataKey(iter.Key()) {
 			continue
 		}
 		return string(iter.Key()), nil
@@ -145,7 +143,7 @@ func (b *Buffer) Count() (int, error) {
 	defer iter.Close()
 
 	for iter.First(); iter.Valid(); iter.Next() {
-		if isCheckpointKey(iter.Key()) {
+		if isMetadataKey(iter.Key()) {
 			continue
 		}
 		count++
@@ -176,7 +174,7 @@ func (b *Buffer) CountAfter(afterKey string) (int, error) {
 	defer iter.Close()
 
 	for iter.First(); iter.Valid(); iter.Next() {
-		if isCheckpointKey(iter.Key()) {
+		if isMetadataKey(iter.Key()) {
 			continue
 		}
 		count++
@@ -189,4 +187,86 @@ func (b *Buffer) CountAfter(afterKey string) (int, error) {
 func (b *Buffer) Revalidate(ctx time.Duration) error {
 	// Not implemented for now, but placeholder if needed to check consistency
 	return nil
+}
+
+// ValidatePosition requires the saved event and its complete cluster-time group
+// in the same buffer incarnation. Any pruning within that group invalidates replay.
+func (b *Buffer) ValidatePosition(afterKey, lineage string) error {
+	b.retentionMu.Lock()
+	defer b.retentionMu.Unlock()
+	_, err := b.validatePosition(afterKey, lineage)
+	return err
+}
+
+func timestampGroupStart(key string) (string, error) {
+	if key == "" {
+		return "", nil
+	}
+	parts := strings.SplitN(key, "-", 3)
+	if len(parts) != 3 || len(parts[0]) != 10 || len(parts[1]) != 10 || parts[2] == "" {
+		return "", fmt.Errorf("invalid event position; offline rebuild required")
+	}
+	t, tErr := strconv.ParseUint(parts[0], 10, 32)
+	i, iErr := strconv.ParseUint(parts[1], 10, 32)
+	prefix := events.FormatBufferKey(events.ClusterTime{T: uint32(t), I: uint32(i)}, "")
+	if tErr != nil || iErr != nil || prefix != key[:22] {
+		return "", fmt.Errorf("invalid event position; offline rebuild required")
+	}
+	return prefix, nil
+}
+
+func (b *Buffer) validatePosition(afterKey, lineage string) (string, error) {
+	b.mu.RLock()
+	closed := b.closed
+	b.mu.RUnlock()
+	if closed {
+		return "", fmt.Errorf("buffer is closed")
+	}
+	if lineage == "" || lineage != b.lineage {
+		return "", fmt.Errorf("buffer lineage changed; offline rebuild required")
+	}
+	group, err := timestampGroupStart(afterKey)
+	if err != nil {
+		return "", err
+	}
+	floor, err := b.pruningFloor()
+	if err != nil {
+		return "", err
+	}
+	if floor != "" && floor >= group {
+		return "", fmt.Errorf("event history expired; offline rebuild required")
+	}
+	if afterKey == "" {
+		return "", nil
+	}
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	_, closer, err := b.db.Get([]byte(afterKey))
+	if err == nil {
+		return group, closer.Close()
+	}
+	if err != pebble.ErrNotFound {
+		return "", err
+	}
+	for _, queue := range [][]*writeRequest{b.pending, b.flushing} {
+		for _, req := range queue {
+			if string(req.key) == afterKey {
+				return group, nil
+			}
+		}
+	}
+	return "", fmt.Errorf("unknown event position; offline rebuild required")
+}
+
+// ScanFromLineage validates the saved event and replays its entire cluster-time
+// group, including the saved event, then all later events. Validation and snapshot
+// creation share the retention lock so pruning cannot invalidate the boundary.
+func (b *Buffer) ScanFromLineage(afterKey, lineage string) (Iterator, error) {
+	b.retentionMu.Lock()
+	defer b.retentionMu.Unlock()
+	group, err := b.validatePosition(afterKey, lineage)
+	if err != nil {
+		return nil, err
+	}
+	return b.ScanFrom(group)
 }

@@ -14,10 +14,14 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	pullerv1 "github.com/syntrixbase/syntrix/api/gen/puller/v1"
+	"github.com/syntrixbase/syntrix/internal/core/storage"
+	storagemongo "github.com/syntrixbase/syntrix/internal/core/storage/mongo"
 	"github.com/syntrixbase/syntrix/internal/puller/config"
 	"github.com/syntrixbase/syntrix/internal/puller/core"
+	"github.com/syntrixbase/syntrix/internal/puller/events"
 	pullergrpc "github.com/syntrixbase/syntrix/internal/puller/grpc"
 	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 	"google.golang.org/grpc"
@@ -161,7 +165,9 @@ func TestPuller_FullCycle_DataIntegrity(t *testing.T) {
 	// Insert 50 documents
 	count := 50
 	for i := 0; i < count; i++ {
-		_, err := coll.InsertOne(ctx, bson.M{"_id": fmt.Sprintf("doc-%d", i), "val": i})
+		doc := storage.NewStoredDoc(coll.Database().Name(), coll.Name(), fmt.Sprintf("doc-%d", i), map[string]any{"val": i, "exact": int64(9007199254740991) + int64(i)})
+		doc.Data["id"] = "business-id"
+		_, err := coll.InsertOne(ctx, doc)
 		require.NoError(t, err)
 	}
 
@@ -170,8 +176,31 @@ func TestPuller_FullCycle_DataIntegrity(t *testing.T) {
 		evt, err := stream.Recv()
 		require.NoError(t, err)
 		assert.Equal(t, "insert", evt.ChangeEvent.OpType)
-		assert.Equal(t, fmt.Sprintf("doc-%d", i), evt.ChangeEvent.MgoDocId)
+		assert.Equal(t, storage.CalculateDatabase(coll.Database().Name(), coll.Name()+"/"+fmt.Sprintf("doc-%d", i)), evt.ChangeEvent.MgoDocId)
+		doc, err := events.UnmarshalDocument(evt.ChangeEvent.FullDoc)
+		require.NoError(t, err)
+		require.Equal(t, coll.Name()+"/"+fmt.Sprintf("doc-%d", i), doc.Fullpath)
+		require.Equal(t, "business-id", doc.Data["id"])
+		require.Equal(t, int64(9007199254740991)+int64(i), doc.Data["exact"])
 	}
+
+	store := storagemongo.NewDocumentStore(coll.Database().Client(), coll.Database(), coll.Name(), coll.Name(), 24*time.Hour)
+	path := coll.Name() + "/doc-0"
+	require.NoError(t, store.Delete(ctx, coll.Database().Name(), path, nil))
+	deleted, err := stream.Recv()
+	require.NoError(t, err)
+	doc, err := events.UnmarshalDocument(deleted.ChangeEvent.FullDoc)
+	require.NoError(t, err)
+	require.True(t, doc.Deleted)
+	require.Equal(t, path, doc.Fullpath)
+	require.Empty(t, doc.Data)
+	delta, err := events.UnmarshalUpdateDescription(deleted.ChangeEvent.UpdateDesc)
+	require.NoError(t, err)
+	var stored struct {
+		Expiry primitive.DateTime `bson:"sys_expires_at"`
+	}
+	require.NoError(t, coll.FindOne(ctx, bson.M{"_id": doc.Id}).Decode(&stored))
+	require.Equal(t, int64(stored.Expiry), delta.UpdatedFields["sys_expires_at"])
 }
 
 func TestPuller_FullCycle_Resilience(t *testing.T) {
@@ -247,7 +276,7 @@ func TestPuller_FullCycle_Resilience(t *testing.T) {
 
 	// Insert 10 docs
 	for i := 0; i < 10; i++ {
-		_, err := coll.InsertOne(ctx, bson.M{"_id": fmt.Sprintf("doc-%d", i)})
+		_, err := coll.InsertOne(ctx, storage.NewStoredDoc(coll.Database().Name(), coll.Name(), fmt.Sprintf("doc-%d", i), nil))
 		require.NoError(t, err)
 	}
 
@@ -256,7 +285,7 @@ func TestPuller_FullCycle_Resilience(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		evt, err := stream1.Recv()
 		require.NoError(t, err)
-		assert.Equal(t, fmt.Sprintf("doc-%d", i), evt.ChangeEvent.MgoDocId)
+		assert.Equal(t, storage.CalculateDatabase(coll.Database().Name(), coll.Name()+"/"+fmt.Sprintf("doc-%d", i)), evt.ChangeEvent.MgoDocId)
 		lastToken = evt.Progress
 	}
 	t.Logf("[DEBUG] Phase 1: Consumed 5 events, lastToken=%s", lastToken)
@@ -290,13 +319,20 @@ func TestPuller_FullCycle_Resilience(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	// 6. Consume remaining 5
+	// Resume repeats the saved timestamp group before delivering later events.
+	boundary, err := stream2.Recv()
+	require.NoError(t, err)
+	require.NotNil(t, boundary.ChangeEvent)
+	require.Equal(t, lastToken, boundary.Progress)
+	require.Equal(t, storage.CalculateDatabase(coll.Database().Name(), coll.Name()+"/doc-4"), boundary.ChangeEvent.MgoDocId)
+
+	// Consume the remaining five distinct events.
 	for i := 5; i < 10; i++ {
 		evt, err := stream2.Recv()
 		if err != nil {
 			t.Fatalf("[DEBUG] Failed to receive event doc-%d: %v", i, err)
 		}
-		assert.Equal(t, fmt.Sprintf("doc-%d", i), evt.ChangeEvent.MgoDocId)
+		assert.Equal(t, storage.CalculateDatabase(coll.Database().Name(), coll.Name()+"/"+fmt.Sprintf("doc-%d", i)), evt.ChangeEvent.MgoDocId)
 	}
 }
 
@@ -315,7 +351,7 @@ func TestPuller_FullCycle_SlowConsumer(t *testing.T) {
 
 	// Insert 20 docs fast
 	for i := 0; i < 20; i++ {
-		_, err := coll.InsertOne(ctx, bson.M{"_id": fmt.Sprintf("doc-%d", i)})
+		_, err := coll.InsertOne(ctx, storage.NewStoredDoc(coll.Database().Name(), coll.Name(), fmt.Sprintf("doc-%d", i), nil))
 		require.NoError(t, err)
 	}
 
@@ -324,6 +360,6 @@ func TestPuller_FullCycle_SlowConsumer(t *testing.T) {
 		time.Sleep(10 * time.Millisecond) // Simulate processing time
 		evt, err := stream.Recv()
 		require.NoError(t, err)
-		assert.Equal(t, fmt.Sprintf("doc-%d", i), evt.ChangeEvent.MgoDocId)
+		assert.Equal(t, storage.CalculateDatabase(coll.Database().Name(), coll.Name()+"/"+fmt.Sprintf("doc-%d", i)), evt.ChangeEvent.MgoDocId)
 	}
 }

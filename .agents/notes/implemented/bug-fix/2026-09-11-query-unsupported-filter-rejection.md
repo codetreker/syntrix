@@ -12,10 +12,16 @@ can implement an operator.
 
 ## Decision
 
-The Query planner returns an error for an operator it cannot translate. The
-indexed query fails before index search and returns no partial result.
+The [complete indexed-query decision](2026-09-07-indexed-query-filter-semantics.md)
+supersedes the operator restriction recorded here. All eight operators now have
+execution strategies for admitted plans; explicit rejection remains necessary
+when no complete plan exists. The following records the earlier bug fix and its
+original limits.
 
-| Query shape | Behavior |
+The Query planner returned an error for an operator it could not translate. The
+indexed query failed before index search and returned no partial result.
+
+| Query shape | Behavior at adoption |
 |---|---|
 | No filters and no ordering | Preserve direct Store execution |
 | All filters target `id` with `==` or `in`, without ordering | Preserve direct Store execution |
@@ -32,7 +38,7 @@ HTTP 400 `BAD_REQUEST` and the generic message `Invalid query parameters`.
 
 The check belongs to indexed Query planning. Shared model and SDK operator types,
 write conditions, Store filtering, and realtime filtering retain their existing
-contracts. The [Query integration design](../../../../docs/design/server/query/02.indexer-integration.md#filter-planning)
+contracts. The [Query integration design](../../../../docs/design/server/query/02.indexer-integration.md#filter-planning-and-page-coordination)
 and [filter reference](../../../../docs/reference/filters.md#query-availability)
 describe the execution rules.
 
@@ -41,9 +47,8 @@ describe the execution rules.
 **Implement every shared operator in indexed queries.** Membership unions,
 disjoint inequality ranges, array index entries, deduplication, and correct
 ordering and limits require broader execution and index changes. The existing
-[indexed filter proposal](../../proposed/bug-fix/2026-09-07-indexed-query-filter-semantics.md)
-retains this work; unsupported indexed queries fail explicitly while it remains
-unimplemented.
+[complete indexed-query decision](2026-09-07-indexed-query-filter-semantics.md)
+now supplies those strategies; they were deliberately deferred from this repair.
 
 **Reject the operators in shared validation.** This would also remove valid
 ID-only membership queries and affect other consumers of the shared filter
@@ -55,19 +60,14 @@ The existing explicit Store routes remain the only exceptions.
 
 ## Consequences
 
-- Unsupported indexed filters produce an actionable error instead of a widened
-  result. Applications must handle the rejection; the filter reference marks
-  affected query examples as unavailable.
-- Query-based SDK updates and deletes stop when their initial query rejects.
-- The change introduces no index representation, storage format, or public
-  operator-type change. Existing supported translations and index selection
-  behavior remain subject to their current limitations.
-- This check does not establish correct execution for every conjunction of
-  otherwise supported operators. [Same-field intersection](2026-09-11-indexed-filter-intersection.md)
-  owns repeated equality and range conditions on usable index fields. Full
-  operator semantics, residual filtering, ordering, and pagination remain owned
-  by the linked proposal.
-- Adding the missing operators still requires the execution and index work
-  recorded there. Keeping the shared operator vocabulary and explicit planner
-  error preserves the ability to add a strategy without changing other filter
-  consumers or weakening rejection of the remaining unsupported operators.
+- The repair stopped silent predicate omission before full operator execution was
+  available. Applications initially received explicit unsupported-query errors.
+- Shared operators, ID-only membership, conditional writes, and realtime filtering
+  retained their contracts; restriction at shared validation would have affected
+  those independent consumers.
+- Query-based SDK updates/deletes stopped when their initial query was rejected.
+- [Same-field intersection](2026-09-11-indexed-filter-intersection.md) addressed
+  repeated equality/range bounds separately. The
+  [complete indexed-query decision](2026-09-07-indexed-query-filter-semantics.md)
+  owns current access/residual execution, exact numeric values, pages, and storage
+  changes. This note preserves why executor-specific errors were required.

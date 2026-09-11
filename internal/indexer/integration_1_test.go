@@ -7,7 +7,6 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/syntrixbase/syntrix/internal/core/storage"
 	"github.com/syntrixbase/syntrix/internal/indexer"
 	"github.com/syntrixbase/syntrix/internal/puller"
 )
@@ -94,7 +93,7 @@ func TestIntegration_ConcurrentUpdates(t *testing.T) {
 		mockPullerSvc.pushEvent(evt, fmt.Sprintf("insert-%d", i))
 	}
 
-	time.Sleep(50 * time.Millisecond)
+	waitIntegrationEvents(t, svc, mockPullerSvc)
 
 	// Update documents multiple times
 	for round := 0; round < updateRounds; round++ {
@@ -104,17 +103,11 @@ func TestIntegration_ConcurrentUpdates(t *testing.T) {
 				EventID:  fmt.Sprintf("evt-update-%d-%d", round, i),
 				Database: "db1",
 				OpType:   puller.OperationUpdate,
-				FullDocument: &storage.StoredDoc{
-					Id:         docID,
-					Database:   "db1",
-					Collection: "users",
-					Fullpath:   "users/" + docID,
-					Data: map[string]any{
-						"id":        docID,
-						"name":      fmt.Sprintf("User %d (v%d)", i, round+2),
-						"timestamp": int64((round+1)*docCount + i),
-					},
-				},
+				FullDocument: testStoredDoc("db1", "users", docID, map[string]any{
+					"id":        docID,
+					"name":      fmt.Sprintf("User %d (v%d)", i, round+2),
+					"timestamp": int64((round+1)*docCount + i),
+				}),
 				ClusterTime: puller.ClusterTime{T: uint32(time.Now().Unix()), I: uint32(round*docCount + i)},
 				Timestamp:   time.Now().UnixMilli(),
 			}
@@ -122,7 +115,7 @@ func TestIntegration_ConcurrentUpdates(t *testing.T) {
 		}
 	}
 
-	time.Sleep(200 * time.Millisecond)
+	waitIntegrationEvents(t, svc, mockPullerSvc)
 
 	// Verify final order - after all updates, the order should be based on final timestamps
 	plan := indexer.Plan{
@@ -192,7 +185,7 @@ func TestIntegration_MultipleCollections(t *testing.T) {
 		mockPullerSvc.pushEvent(evt, fmt.Sprintf("product-%d", i))
 	}
 
-	time.Sleep(200 * time.Millisecond)
+	waitIntegrationEvents(t, svc, mockPullerSvc)
 
 	// Verify stats
 	stats, err := svc.Stats(ctx)
@@ -276,7 +269,7 @@ func TestIntegration_BulkDeletes(t *testing.T) {
 		mockPullerSvc.pushEvent(evt, fmt.Sprintf("insert-%d", i))
 	}
 
-	time.Sleep(100 * time.Millisecond)
+	waitIntegrationEvents(t, svc, mockPullerSvc)
 
 	// Verify all documents are indexed
 	plan := indexer.Plan{
@@ -299,25 +292,18 @@ func TestIntegration_BulkDeletes(t *testing.T) {
 			EventID:  fmt.Sprintf("evt-delete-%d", i),
 			Database: "db1",
 			OpType:   puller.OperationUpdate,
-			FullDocument: &storage.StoredDoc{
-				Id:         docID,
-				Database:   "db1",
-				Collection: "users",
-				Fullpath:   "users/" + docID,
-				Data: map[string]any{
-					"id":        docID,
-					"name":      fmt.Sprintf("User %d", i),
-					"timestamp": int64(i),
-				},
-				Deleted: true,
-			},
+			FullDocument: testDeletedDoc("db1", "users", docID, map[string]any{
+				"id":        docID,
+				"name":      fmt.Sprintf("User %d", i),
+				"timestamp": int64(i),
+			}),
 			ClusterTime: puller.ClusterTime{T: uint32(time.Now().Unix()), I: uint32(i)},
 			Timestamp:   time.Now().UnixMilli(),
 		}
 		mockPullerSvc.pushEvent(deleteEvt, fmt.Sprintf("delete-%d", i))
 	}
 
-	time.Sleep(100 * time.Millisecond)
+	waitIntegrationEvents(t, svc, mockPullerSvc)
 
 	// Verify only odd-numbered documents remain
 	results, err = svc.Search(ctx, "db1", plan)
@@ -364,7 +350,7 @@ func TestIntegration_PatternWithManyUsers(t *testing.T) {
 		}
 	}
 
-	time.Sleep(200 * time.Millisecond)
+	waitIntegrationEvents(t, svc, mockPullerSvc)
 
 	// Verify stats
 	stats, err := svc.Stats(ctx)
@@ -375,9 +361,8 @@ func TestIntegration_PatternWithManyUsers(t *testing.T) {
 		t.Errorf("expected %d events applied, got %d", totalEvents, stats.EventsApplied)
 	}
 
-	// Search - all chats from all users are in the same index
 	plan := indexer.Plan{
-		Collection: "users/user00/chats", // Any user works, pattern matches all
+		Collection: "users/user00/chats",
 		OrderBy: []indexer.OrderField{
 			{Field: "priority", Direction: indexer.Desc},
 			{Field: "timestamp", Direction: indexer.Desc},
@@ -390,8 +375,8 @@ func TestIntegration_PatternWithManyUsers(t *testing.T) {
 		t.Fatalf("search failed: %v", err)
 	}
 
-	if len(results) != 100 {
-		t.Fatalf("expected 100 results, got %d", len(results))
+	if len(results) != chatsPerUser {
+		t.Fatalf("expected %d results in user00's collection, got %d", chatsPerUser, len(results))
 	}
 
 	// Verify ordering: priority desc, then timestamp desc
@@ -403,6 +388,9 @@ func TestIntegration_PatternWithManyUsers(t *testing.T) {
 		// Extract priority and timestamp from chat ID
 		var u, c int
 		fmt.Sscanf(ref.ID, "chat-u%02d-c%03d", &u, &c)
+		if u != 0 {
+			t.Errorf("result[%d] belongs to another collection: %s", i, ref.ID)
+		}
 		priority := int64(c % 5)
 		timestamp := int64(u*1000 + c)
 
@@ -442,7 +430,7 @@ func TestIntegration_MultiDatabaseLargeScale(t *testing.T) {
 		}
 	}
 
-	time.Sleep(200 * time.Millisecond)
+	waitIntegrationEvents(t, svc, mockPullerSvc)
 
 	// Verify stats
 	stats, err := svc.Stats(ctx)
@@ -499,7 +487,7 @@ func TestIntegration_MixedOperations(t *testing.T) {
 		mockPullerSvc.pushEvent(evt, fmt.Sprintf("insert-%d", i))
 	}
 
-	time.Sleep(200 * time.Millisecond)
+	waitIntegrationEvents(t, svc, mockPullerSvc)
 
 	// Phase 2: Mixed operations - update some, delete some, insert new
 	// Update users 0-19 (bump their timestamps)
@@ -509,17 +497,11 @@ func TestIntegration_MixedOperations(t *testing.T) {
 			EventID:  fmt.Sprintf("evt-update-%d", i),
 			Database: "db1",
 			OpType:   puller.OperationUpdate,
-			FullDocument: &storage.StoredDoc{
-				Id:         docID,
-				Database:   "db1",
-				Collection: "users",
-				Fullpath:   "users/" + docID,
-				Data: map[string]any{
-					"id":        docID,
-					"name":      fmt.Sprintf("User %d (Updated)", i),
-					"timestamp": int64(1000 + i), // Bump to top
-				},
-			},
+			FullDocument: testStoredDoc("db1", "users", docID, map[string]any{
+				"id":        docID,
+				"name":      fmt.Sprintf("User %d (Updated)", i),
+				"timestamp": int64(1000 + i), // Bump to top
+			}),
 			ClusterTime: puller.ClusterTime{T: uint32(time.Now().Unix()), I: uint32(i)},
 			Timestamp:   time.Now().UnixMilli(),
 		}
@@ -530,19 +512,12 @@ func TestIntegration_MixedOperations(t *testing.T) {
 	for i := 80; i < 100; i++ {
 		docID := fmt.Sprintf("user%03d", i)
 		deleteEvt := &puller.ChangeEvent{
-			EventID:  fmt.Sprintf("evt-delete-%d", i),
-			Database: "db1",
-			OpType:   puller.OperationUpdate,
-			FullDocument: &storage.StoredDoc{
-				Id:         docID,
-				Database:   "db1",
-				Collection: "users",
-				Fullpath:   "users/" + docID,
-				Data:       map[string]any{"id": docID, "timestamp": int64(i)},
-				Deleted:    true,
-			},
-			ClusterTime: puller.ClusterTime{T: uint32(time.Now().Unix()), I: uint32(100 + i)},
-			Timestamp:   time.Now().UnixMilli(),
+			EventID:      fmt.Sprintf("evt-delete-%d", i),
+			Database:     "db1",
+			OpType:       puller.OperationUpdate,
+			FullDocument: testDeletedDoc("db1", "users", docID, map[string]any{"id": docID, "timestamp": int64(i)}),
+			ClusterTime:  puller.ClusterTime{T: uint32(time.Now().Unix()), I: uint32(100 + i)},
+			Timestamp:    time.Now().UnixMilli(),
 		}
 		mockPullerSvc.pushEvent(deleteEvt, fmt.Sprintf("delete-%d", i))
 	}
@@ -556,7 +531,7 @@ func TestIntegration_MixedOperations(t *testing.T) {
 		mockPullerSvc.pushEvent(evt, fmt.Sprintf("new-insert-%d", i))
 	}
 
-	time.Sleep(100 * time.Millisecond)
+	waitIntegrationEvents(t, svc, mockPullerSvc)
 
 	// Verify final state
 	plan := indexer.Plan{
@@ -635,7 +610,7 @@ func TestIntegration_EventIndexing(t *testing.T) {
 	}
 
 	// Wait for events to be processed
-	time.Sleep(50 * time.Millisecond)
+	waitIntegrationEvents(t, svc, mockPullerSvc)
 
 	// Verify stats
 	stats, err := svc.Stats(ctx)
@@ -702,11 +677,8 @@ func TestIntegration_PatternMatching(t *testing.T) {
 		mockPullerSvc.pushEvent(evt, "p-"+string(rune('a'+i)))
 	}
 
-	time.Sleep(50 * time.Millisecond)
+	waitIntegrationEvents(t, svc, mockPullerSvc)
 
-	// Search for chats - the pattern "users/{userId}/chats" matches all users' chats.
-	// All documents matching the pattern are stored in the same index.
-	// When searching for "users/alice/chats", we get all chats from the pattern index.
 	plan := indexer.Plan{
 		Collection: "users/alice/chats",
 		OrderBy: []indexer.OrderField{
@@ -721,18 +693,21 @@ func TestIntegration_PatternMatching(t *testing.T) {
 		t.Fatalf("search failed: %v", err)
 	}
 
-	// All chats from the pattern index are returned, ordered by priority desc, then timestamp desc.
-	// chat2 (priority=3), chat3 (priority=2), chat1 (priority=1)
-	if len(results) != 3 {
-		t.Fatalf("expected 3 results for pattern-matched chats, got %d", len(results))
+	if len(results) != 2 {
+		t.Fatalf("expected 2 results in Alice's collection, got %d", len(results))
 	}
 
-	expectedOrder := []string{"chat2", "chat3", "chat1"}
+	expectedOrder := []string{"chat2", "chat1"}
 	for i, ref := range results {
 		if ref.ID != expectedOrder[i] {
 			t.Errorf("result[%d]: expected %s, got %s", i, expectedOrder[i], ref.ID)
 		}
 	}
+	plan.Collection = "users/bob/chats"
+	results, err = svc.Search(ctx, "db1", plan)
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	require.Equal(t, "chat3", results[0].ID)
 
 	stopService(t, svc, mockPullerSvc)
 }
@@ -772,24 +747,18 @@ func TestIntegration_DocumentUpdate(t *testing.T) {
 		"timestamp": int64(1000),
 	}), "p1")
 
-	time.Sleep(50 * time.Millisecond)
+	waitIntegrationEvents(t, svc, mockPullerSvc)
 
 	// Update the document with a new timestamp
 	updateEvt := &puller.ChangeEvent{
 		EventID:  "evt-update1",
 		Database: "db1",
 		OpType:   puller.OperationUpdate,
-		FullDocument: &storage.StoredDoc{
-			Id:         "user1",
-			Database:   "db1",
-			Collection: "users",
-			Fullpath:   "users/user1",
-			Data: map[string]any{
-				"id":        "user1",
-				"name":      "Alice Updated",
-				"timestamp": int64(3000), // Higher timestamp, should move to first position
-			},
-		},
+		FullDocument: testStoredDoc("db1", "users", "user1", map[string]any{
+			"id":        "user1",
+			"name":      "Alice Updated",
+			"timestamp": int64(3000), // Higher timestamp, should move to first position
+		}),
 		ClusterTime: puller.ClusterTime{T: uint32(time.Now().Unix()), I: 2},
 		Timestamp:   time.Now().UnixMilli(),
 	}
@@ -801,7 +770,7 @@ func TestIntegration_DocumentUpdate(t *testing.T) {
 		"timestamp": int64(2000),
 	}), "p3")
 
-	time.Sleep(50 * time.Millisecond)
+	waitIntegrationEvents(t, svc, mockPullerSvc)
 
 	// Search - user1 should now be first due to higher timestamp
 	plan := indexer.Plan{
@@ -849,31 +818,24 @@ func TestIntegration_DocumentDelete(t *testing.T) {
 		"timestamp": int64(2000),
 	}), "p2")
 
-	time.Sleep(50 * time.Millisecond)
+	waitIntegrationEvents(t, svc, mockPullerSvc)
 
 	// Delete user2 (soft delete)
 	deleteEvt := &puller.ChangeEvent{
 		EventID:  "evt-delete1",
 		Database: "db1",
 		OpType:   puller.OperationUpdate,
-		FullDocument: &storage.StoredDoc{
-			Id:         "user2",
-			Database:   "db1",
-			Collection: "users",
-			Fullpath:   "users/user2",
-			Data: map[string]any{
-				"id":        "user2",
-				"name":      "Bob",
-				"timestamp": int64(2000),
-			},
-			Deleted: true, // Soft deleted
-		},
+		FullDocument: testDeletedDoc("db1", "users", "user2", map[string]any{
+			"id":        "user2",
+			"name":      "Bob",
+			"timestamp": int64(2000),
+		}),
 		ClusterTime: puller.ClusterTime{T: uint32(time.Now().Unix()), I: 3},
 		Timestamp:   time.Now().UnixMilli(),
 	}
 	mockPullerSvc.pushEvent(deleteEvt, "p3")
 
-	time.Sleep(50 * time.Millisecond)
+	waitIntegrationEvents(t, svc, mockPullerSvc)
 
 	// Search - only user1 should remain
 	plan := indexer.Plan{
@@ -922,7 +884,7 @@ func TestIntegration_MultipleDatabase(t *testing.T) {
 		"timestamp": int64(3000),
 	}), "p3")
 
-	time.Sleep(50 * time.Millisecond)
+	waitIntegrationEvents(t, svc, mockPullerSvc)
 
 	plan := indexer.Plan{
 		Collection: "users",

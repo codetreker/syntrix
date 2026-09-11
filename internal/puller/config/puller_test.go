@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
 	services "github.com/syntrixbase/syntrix/internal/services/config"
 )
 
@@ -14,9 +15,7 @@ func TestDefaultPullerConfig(t *testing.T) {
 		t.Errorf("GRPC.MaxConnections = %d, want %d", cfg.GRPC.MaxConnections, 100)
 	}
 
-	if len(cfg.Backends) != 1 || cfg.Backends[0].Name != "default_mongo" {
-		t.Errorf("Backends = %v, want single 'default_mongo'", cfg.Backends)
-	}
+	require.Equal(t, []PullerBackendConfig{{Name: "default_mongo", Collections: []string{"documents", "sys"}}}, cfg.Backends)
 
 	if cfg.Consumer.CatchUpThreshold != 100000 {
 		t.Errorf("Consumer.CatchUpThreshold = %d, want %d", cfg.Consumer.CatchUpThreshold, 100000)
@@ -235,7 +234,7 @@ func TestConfig_ApplyDefaults(t *testing.T) {
 					HeartbeatInterval: 30 * time.Second,
 				},
 				Backends: []PullerBackendConfig{
-					{Name: "default_mongo", Collections: []string{"documents"}},
+					{Name: "default_mongo", Collections: []string{"documents", "sys"}},
 				},
 				Buffer: BufferConfig{
 					Path:          "data/puller/events",
@@ -360,7 +359,7 @@ func TestConfig_ApplyDefaults(t *testing.T) {
 					HeartbeatInterval: 30 * time.Second,
 				},
 				Backends: []PullerBackendConfig{
-					{Name: "default_mongo", Collections: []string{"documents"}},
+					{Name: "default_mongo", Collections: []string{"documents", "sys"}},
 				},
 				Buffer: BufferConfig{
 					Path:          "/my/path",
@@ -402,9 +401,7 @@ func TestConfig_ApplyDefaults(t *testing.T) {
 			if cfg.GRPC.HeartbeatInterval != tt.expected.GRPC.HeartbeatInterval {
 				t.Errorf("GRPC.HeartbeatInterval = %v, want %v", cfg.GRPC.HeartbeatInterval, tt.expected.GRPC.HeartbeatInterval)
 			}
-			if len(cfg.Backends) != len(tt.expected.Backends) {
-				t.Errorf("len(Backends) = %d, want %d", len(cfg.Backends), len(tt.expected.Backends))
-			}
+			require.Equal(t, tt.expected.Backends, cfg.Backends)
 			if cfg.Buffer.Path != tt.expected.Buffer.Path {
 				t.Errorf("Buffer.Path = %q, want %q", cfg.Buffer.Path, tt.expected.Buffer.Path)
 			}

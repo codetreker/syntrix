@@ -4,9 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/syntrixbase/syntrix/internal/indexer"
+	"github.com/syntrixbase/syntrix/internal/query/wire"
+	"google.golang.org/genproto/googleapis/rpc/errdetails"
 
 	pb "github.com/syntrixbase/syntrix/api/gen/query/v1"
 	"github.com/syntrixbase/syntrix/internal/core/storage"
+	"github.com/syntrixbase/syntrix/internal/ctxkeys"
 	"github.com/syntrixbase/syntrix/pkg/model"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -31,7 +35,7 @@ func New(address string) (*Client, error) {
 
 // NewWithOptions creates a new Query Service gRPC Client with additional options.
 func NewWithOptions(address string, opts ...grpc.DialOption) (*Client, error) {
-	defaultOpts := []grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())}
+	defaultOpts := []grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(wire.MaxGRPCBytes))}
 	allOpts := append(defaultOpts, opts...)
 
 	conn, err := newClientFunc(address, allOpts...)
@@ -121,19 +125,20 @@ func (c *Client) DeleteDocument(ctx context.Context, database string, path strin
 
 // ExecuteQuery executes a query and returns matching documents.
 func (c *Client) ExecuteQuery(ctx context.Context, database string, q model.Query) ([]model.Document, error) {
-	resp, err := c.client.ExecuteQuery(ctx, &pb.ExecuteQueryRequest{
-		Database: database,
-		Query:    queryToProto(q),
-	})
-	if err != nil {
-		return nil, statusToError(err)
-	}
+	page, err := c.ExecuteQueryPage(ctx, database, q)
+	return page.Documents, err
+}
 
-	docs := make([]model.Document, 0, len(resp.Documents))
-	for _, d := range resp.Documents {
-		docs = append(docs, protoToModelDoc(d))
+func (c *Client) ExecuteQueryPage(ctx context.Context, database string, q model.Query) (model.QueryPage, error) {
+	encoded, err := wire.EncodeQuery(q)
+	if err != nil {
+		return model.QueryPage{}, err
 	}
-	return docs, nil
+	response, err := c.client.ExecuteQuery(ctxkeys.OutgoingRequestContext(ctx), &pb.ExecuteQueryRequest{Database: database, Query: encoded, WireVersion: wire.Version})
+	if err != nil {
+		return model.QueryPage{}, statusToError(err)
+	}
+	return wire.DecodePage(response)
 }
 
 // Pull retrieves documents for replication.
@@ -212,7 +217,27 @@ func statusToError(err error) error {
 		return err
 	}
 
+	for _, detail := range st.Details() {
+		if info, ok := detail.(*errdetails.ErrorInfo); ok && info.Domain == "syntrix.query" {
+			switch info.Reason {
+			case "STALE_CURSOR":
+				return model.ErrStaleCursor
+			case "QUERY_WORK_LIMIT":
+				return model.ErrQueryWorkLimit
+			case "NO_MATCHING_INDEX":
+				return indexer.ErrNoMatchingIndex
+			case "INDEX_UNAVAILABLE":
+				return indexer.ErrIndexNotReady
+			}
+		}
+	}
 	switch st.Code() {
+	case codes.Canceled:
+		return context.Canceled
+	case codes.DeadlineExceeded:
+		return context.DeadlineExceeded
+	case codes.ResourceExhausted:
+		return model.ErrQueryWorkLimit
 	case codes.NotFound:
 		return model.ErrNotFound
 	case codes.FailedPrecondition:

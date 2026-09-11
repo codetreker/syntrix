@@ -131,7 +131,7 @@ func (s *Store) List(ctx context.Context, opts database.ListOptions) ([]*databas
 		FROM databases
 		WHERE ($1::VARCHAR IS NULL OR owner_id = $1)
 		  AND ($2::VARCHAR IS NULL OR status = $2)
-		ORDER BY created_at DESC
+		ORDER BY created_at DESC, id
 		LIMIT $3 OFFSET $4
 	`
 

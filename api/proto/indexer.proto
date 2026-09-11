@@ -20,6 +20,10 @@ service IndexerService {
   // plan's OrderBy and Filters using Query-to-Index matching rules.
   rpc Search(SearchRequest) returns (SearchResponse);
 
+  // OpenCandidates sends metadata, complete candidate groups, then completion.
+  // Each message is limited to 1 MiB; cancellation releases the index snapshot.
+  rpc OpenCandidates(CandidateRequest) returns (stream CandidateResponse);
+
   // Health returns the current health status of the indexer.
   rpc Health(HealthRequest) returns (HealthResponse);
 
@@ -42,6 +46,76 @@ service IndexerService {
 }
 
 // --- Query Messages ---
+
+message CandidateRequest {
+  string database = 1;
+  string collection = 2;
+  repeated CandidateFilter filters = 3;
+  repeated OrderByField order_by = 4;
+  bytes after_position = 5;
+  string template_fingerprint = 6;
+  string generation = 7;
+  string branch_hash = 8;
+  int64 max_examined = 9;
+  bool show_deleted = 10;
+}
+
+message CandidateFilter {
+  string field = 1;
+  string op = 2;
+  // model.EncodeTypedValue format preserves int64 and binary64 domains.
+  bytes typed_value = 3;
+}
+
+message CandidateTemplateField {
+  string field = 1;
+  string direction = 2;
+  string mode = 3;
+}
+
+message CandidateMetadata {
+  string template_name = 1;
+  string collection_pattern = 2;
+  repeated CandidateTemplateField fields = 3;
+  bool include_deleted = 4;
+  string template_fingerprint = 5;
+  string generation = 6;
+  string branch_hash = 7;
+  repeated OrderByField effective_order = 8;
+  repeated CandidateBranch branches = 9;
+  repeated PredicateAssignment assignments = 10;
+}
+
+message PredicateAssignment {
+  int32 predicate = 1;
+  bool access = 2;
+  bool residual = 3;
+}
+
+message CandidateBranch {
+  bytes prefix = 1;
+  int32 fixed_fields = 2;
+  bytes lower = 3;
+  bytes upper = 4;
+}
+
+message CandidateGroup {
+  string id = 1;
+  bytes position = 2;
+  repeated int32 branches = 3;
+}
+
+message CandidateComplete {}
+
+message CandidateResponse {
+  oneof payload {
+    CandidateMetadata metadata = 1;
+    CandidateGroup group = 2;
+    CandidateComplete complete = 3;
+  }
+  // Cumulative entries examined when this message was produced.
+  int64 examined = 4;
+}
 
 // SearchRequest represents a search query plan.
 message SearchRequest {

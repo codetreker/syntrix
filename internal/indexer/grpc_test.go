@@ -197,21 +197,22 @@ templates:
 
 func statsEvent(database string, id int) *ChangeEvent {
 	docID := fmt.Sprintf("doc-%d", id)
-	return &ChangeEvent{Database: database, FullDocument: &storage.StoredDoc{
-		Id: docID, Database: database, Collection: "messages", Fullpath: "messages/" + docID,
-		Data: map[string]any{"id": docID, "timestamp": id, "priority": id},
-	}}
+	doc := storage.NewStoredDoc(database, "messages", docID, map[string]any{"timestamp": id, "priority": id})
+	return &ChangeEvent{Database: database, FullDocument: &doc}
 }
 
 func TestRemoteStats_ServiceLifecycle(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	svc := newTestService(config.Config{}, nil, testLogger())
+	svc := newTestService(config.Config{}, &bootstrapPuller{marker: "stats-bootstrap"}, testLogger())
+	t.Cleanup(func() { require.NoError(t, svc.Stop(context.Background())) })
 	remote := statsRemoteClient(t, svc)
 	empty, err := remote.Stats(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, Stats{}, empty)
 	require.NoError(t, svc.Manager().LoadTemplatesFromBytes([]byte(statsTemplates)))
+	source := &bootstrapDocuments{}
+	require.NoError(t, svc.(BootstrapService).Bootstrap(ctx, BootstrapRequest{Databases: []string{"alpha", "beta"}, Scanner: source, Enumerator: source, WritesQuiesced: true}))
 	loaded, err := remote.Stats(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, Stats{TemplateCount: 2}, loaded)
@@ -248,8 +249,11 @@ func TestRemoteStats_ServiceLifecycle(t *testing.T) {
 func TestRemoteStats_ConcurrentApplyEvent(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	svc := newTestService(config.Config{}, nil, testLogger())
+	svc := newTestService(config.Config{}, &bootstrapPuller{marker: "stats-bootstrap"}, testLogger())
+	t.Cleanup(func() { require.NoError(t, svc.Stop(context.Background())) })
 	require.NoError(t, svc.Manager().LoadTemplatesFromBytes([]byte(statsTemplates)))
+	source := &bootstrapDocuments{}
+	require.NoError(t, svc.(BootstrapService).Bootstrap(ctx, BootstrapRequest{Databases: []string{"alpha", "beta"}, Scanner: source, Enumerator: source, WritesQuiesced: true}))
 	remote := statsRemoteClient(t, svc)
 	const count = 200
 	start := make(chan struct{})

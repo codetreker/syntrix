@@ -3,7 +3,9 @@ package mongo
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/syntrixbase/syntrix/internal/core/storage/types"
@@ -16,6 +18,8 @@ import (
 )
 
 type documentStore struct {
+	sourceIndexMu       sync.Mutex
+	sourceIndexesReady  bool
 	client              *mongo.Client
 	db                  *mongo.Database
 	dataCollection      string
@@ -58,50 +62,272 @@ func (m *documentStore) Get(ctx context.Context, database string, fullpath strin
 	id := types.CalculateDatabase(database, fullpath)
 
 	var doc types.StoredDoc
-	err = collection.FindOne(ctx, bson.M{"_id": id, "database": database, "deleted": bson.M{"$ne": true}}).Decode(&doc)
+	filter := bson.M{"_id": id, "database": database}
+	if !readOpts.ShowDeleted {
+		filter["deleted"] = bson.M{"$ne": true}
+	}
+	result := collection.FindOne(ctx, filter)
+	if readOpts.MaxBytes > 0 {
+		raw, rawErr := result.Raw()
+		if rawErr == nil && int64(len(raw)) > readOpts.MaxBytes {
+			return nil, types.ErrReadBudget
+		}
+	}
+	err = result.Decode(&doc)
 	if err != nil {
 		if errors.Is(err, mongo.ErrNoDocuments) {
 			return nil, model.ErrNotFound
 		}
 		return nil, err
 	}
+	if readOpts.MaxBytes > 0 {
+		size, err := types.StoredDocumentBytes(&doc)
+		if err != nil {
+			return nil, err
+		}
+		if size > readOpts.MaxBytes {
+			return nil, types.ErrReadBudget
+		}
+	}
 
 	return &doc, nil
 }
 
-func (m *documentStore) GetMany(ctx context.Context, database string, paths []string) ([]*types.StoredDoc, error) {
-	if len(paths) == 0 {
-		return []*types.StoredDoc{}, nil
-	}
-	ids := make([]string, len(paths))
-	for i, path := range paths {
-		ids[i] = types.CalculateDatabase(database, path)
-	}
-	collection := m.getCollection(paths[0])
-	filter := bson.M{
-		"_id":      bson.M{"$in": ids},
-		"database": database,
-		"deleted":  bson.M{"$ne": true},
-	}
-	cursor, err := collection.Find(ctx, filter)
+func (m *documentStore) GetMany(ctx context.Context, database string, paths []string, opts ...types.ReadOptions) ([]*types.StoredDoc, error) {
+	readOpts, err := types.ResolveReadOptions(opts)
 	if err != nil {
 		return nil, err
 	}
-	defer cursor.Close(ctx)
-	docMap := make(map[string]*types.StoredDoc)
-	for cursor.Next(ctx) {
-		var doc types.StoredDoc
-		if err := cursor.Decode(&doc); err != nil {
+	result := make([]*types.StoredDoc, len(paths))
+	groups := make(map[string][]string)
+	multiplicity := make(map[string]int64, len(paths))
+	ids := make([]string, len(paths))
+	for i, path := range paths {
+		ids[i] = types.CalculateDatabase(database, path)
+		multiplicity[ids[i]]++
+		name := m.getCollection(path).Name()
+		groups[name] = append(groups[name], ids[i])
+	}
+	documents := make(map[string]*types.StoredDoc, len(paths))
+	remainingBytes := readOpts.MaxBytes
+	for name, groupIDs := range groups {
+		collection := m.db.Collection(name)
+		if readOpts.Consistency == types.ReadAuthoritative {
+			collection, err = collection.Clone(options.Collection().SetReadPreference(readpref.Primary()))
+			if err != nil {
+				return nil, err
+			}
+		}
+		filter := bson.M{"_id": bson.M{"$in": groupIDs}, "database": database}
+		if !readOpts.ShowDeleted {
+			filter["deleted"] = bson.M{"$ne": true}
+		}
+		cursor, err := collection.Find(ctx, filter)
+		if err != nil {
 			return nil, err
 		}
-		docMap[doc.Id] = &doc
+		err = func() error {
+			defer cursor.Close(ctx)
+			for cursor.Next(ctx) {
+				if readOpts.MaxBytes > 0 {
+					id, ok := cursor.Current.Lookup("_id").StringValueOK()
+					if !ok {
+						return fmt.Errorf("source read document has a non-string storage key")
+					}
+					count := multiplicity[id]
+					if count == 0 {
+						return fmt.Errorf("source read returned an unrequested document")
+					}
+					size := int64(len(cursor.Current))
+					if size > remainingBytes/count {
+						return types.ErrReadBudget
+					}
+					remainingBytes -= size * count
+				}
+				var doc types.StoredDoc
+				if err := cursor.Decode(&doc); err != nil {
+					return err
+				}
+				if readOpts.MaxBytes > 0 {
+					size, err := types.StoredDocumentBytes(&doc)
+					if err != nil {
+						return err
+					}
+					// Decoding typed metadata can expand its canonical encoding.
+					if extra := size - int64(len(cursor.Current)); extra > 0 {
+						count := multiplicity[doc.Id]
+						if extra > remainingBytes/count {
+							return types.ErrReadBudget
+						}
+						remainingBytes -= extra * count
+					}
+				}
+				documents[doc.Id] = &doc
+			}
+			return cursor.Err()
+		}()
+		if err != nil {
+			return nil, err
+		}
+	}
+	for i, id := range ids {
+		result[i] = documents[id]
+	}
+	return result, nil
+}
+
+const sourceScanIndexName = "source_database_collection_fullpath"
+
+func (m *documentStore) ensureSourceIndexes(ctx context.Context) error {
+	m.sourceIndexMu.Lock()
+	defer m.sourceIndexMu.Unlock()
+	if m.sourceIndexesReady {
+		return nil
+	}
+	for _, name := range []string{m.dataCollection, m.sysCollection} {
+		_, err := m.db.Collection(name).Indexes().CreateOne(ctx, mongo.IndexModel{
+			Keys:    bson.D{{Key: "database", Value: 1}, {Key: "collection", Value: 1}, {Key: "fullpath", Value: 1}},
+			Options: options.Index().SetName(sourceScanIndexName).SetCollation(&options.Collation{Locale: "simple"}),
+		})
+		if err != nil {
+			return fmt.Errorf("ensure source scan index: %w", err)
+		}
+	}
+	m.sourceIndexesReady = true
+	return nil
+}
+
+func (m *documentStore) ScanDocuments(ctx context.Context, database string, request types.SourceScanRequest) (types.SourceScanPage, error) {
+	if err := request.Validate(database); err != nil {
+		return types.SourceScanPage{}, err
+	}
+	if err := m.ensureSourceIndexes(ctx); err != nil {
+		return types.SourceScanPage{}, err
+	}
+	collection := m.getCollection(request.Collection)
+	var err error
+	if request.Consistency == types.ReadAuthoritative {
+		collection, err = collection.Clone(options.Collection().SetReadPreference(readpref.Primary()))
+		if err != nil {
+			return types.SourceScanPage{}, err
+		}
+	}
+	filter := bson.D{{Key: "database", Value: database}, {Key: "collection", Value: request.Collection}}
+	if request.AfterID != "" {
+		filter = append(filter, bson.E{Key: "fullpath", Value: bson.M{"$gt": request.Collection + "/" + request.AfterID}})
+	}
+	// A required index hint and simple collation prevent hidden blocking sorts.
+	findOptions := options.Find().SetSort(bson.D{{Key: "fullpath", Value: 1}}).
+		SetHint(sourceScanIndexName).SetCollation(&options.Collation{Locale: "simple"}).
+		SetLimit(int64(request.Limit)).SetBatchSize(int32(request.Limit)).SetAllowDiskUse(false)
+	cursor, err := collection.Find(ctx, filter, findOptions)
+	if err != nil {
+		return types.SourceScanPage{}, err
+	}
+	defer cursor.Close(ctx)
+	page := types.SourceScanPage{Documents: make([]*types.StoredDoc, 0), NextAfter: request.AfterID}
+	for cursor.Next(ctx) {
+		page.Bytes += int64(len(cursor.Current))
+		if request.MaxBytes > 0 && page.Bytes > request.MaxBytes {
+			return types.SourceScanPage{}, types.ErrSourceScanBudget
+		}
+		var doc types.StoredDoc
+		if err := cursor.Decode(&doc); err != nil {
+			return types.SourceScanPage{}, err
+		}
+		if doc.Database != database || doc.Collection != request.Collection {
+			return types.SourceScanPage{}, fmt.Errorf("source candidate escaped requested scope")
+		}
+		id, err := types.LogicalDocumentID(&doc)
+		if err != nil {
+			return types.SourceScanPage{}, err
+		}
+		if id <= page.NextAfter {
+			return types.SourceScanPage{}, fmt.Errorf("source candidates are not strictly ordered")
+		}
+		page.Documents = append(page.Documents, &doc)
+		page.NextAfter = id
 	}
 	if err := cursor.Err(); err != nil {
+		return types.SourceScanPage{}, err
+	}
+	page.Exhausted = len(page.Documents) < request.Limit
+	return page, nil
+}
+
+func (m *documentStore) EnumerateCollections(ctx context.Context, database, afterCollection string, limit int, opts ...types.CollectionEnumerationOptions) ([]string, error) {
+	resolved, err := types.ResolveCollectionEnumerationOptions(database, afterCollection, limit, opts)
+	if err != nil {
 		return nil, err
 	}
-	result := make([]*types.StoredDoc, len(paths))
-	for i, id := range ids {
-		result[i] = docMap[id]
+	if err := m.ensureSourceIndexes(ctx); err != nil {
+		return nil, err
+	}
+	names := []string{m.dataCollection}
+	if resolved.IncludeSystem && m.sysCollection != m.dataCollection {
+		names = append(names, m.sysCollection)
+	}
+	collections := make([]*mongo.Collection, len(names))
+	heads := make([]string, len(names))
+	next := func(i int, after string) error {
+		filter := bson.D{{Key: "database", Value: database}}
+		if after != "" {
+			filter = append(filter, bson.E{Key: "collection", Value: bson.M{"$gt": after}})
+		}
+		var row struct {
+			Collection string `bson:"collection"`
+		}
+		err := collections[i].FindOne(ctx, filter, options.FindOne().
+			SetSort(bson.D{{Key: "collection", Value: 1}, {Key: "fullpath", Value: 1}}).
+			SetHint(sourceScanIndexName).SetCollation(&options.Collation{Locale: "simple"}).
+			SetProjection(bson.D{{Key: "_id", Value: 0}, {Key: "collection", Value: 1}})).Decode(&row)
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			heads[i] = ""
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if err := types.ValidateConcreteCollection(row.Collection); err != nil {
+			return err
+		}
+		if row.Collection <= after {
+			return fmt.Errorf("source collections are not strictly ordered")
+		}
+		heads[i] = row.Collection
+		return nil
+	}
+	for i, name := range names {
+		collections[i], err = m.db.Collection(name).Clone(options.Collection().SetReadPreference(readpref.Primary()))
+		if err != nil {
+			return nil, err
+		}
+		if err := next(i, afterCollection); err != nil {
+			return nil, err
+		}
+	}
+	result := make([]string, 0)
+	for len(result) < limit {
+		smallest := ""
+		for _, head := range heads {
+			if head != "" && (smallest == "" || head < smallest) {
+				smallest = head
+			}
+		}
+		if smallest == "" {
+			break
+		}
+		result = append(result, smallest)
+		if len(result) == limit {
+			break
+		}
+		for i, head := range heads {
+			if head == smallest {
+				if err := next(i, smallest); err != nil {
+					return nil, err
+				}
+			}
+		}
 	}
 	return result, nil
 }
@@ -379,6 +605,9 @@ func (m *documentStore) Query(ctx context.Context, database string, q model.Quer
 
 // EnsureIndexes creates necessary indexes
 func (s *documentStore) EnsureIndexes(ctx context.Context) error {
+	if err := s.ensureSourceIndexes(ctx); err != nil {
+		return err
+	}
 	coll := s.getCollection("")
 
 	// (database, collection_hash)

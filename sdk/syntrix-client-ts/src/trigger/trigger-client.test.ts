@@ -122,7 +122,7 @@ describe('TriggerClient', () => {
   it('should map query() to POST /query', async () => {
     const client = new TriggerClient('http://localhost', 'token');
     const query = { collection: 'users', filters: [] };
-    mockAxiosInstance.post.mockResolvedValue({ data: { docs: [{ id: '1' }] } });
+    mockAxiosInstance.post.mockResolvedValue({ data: { documents: [{ type: 'object', value: { id: { type: 'string', value: '1' } } }], nextCursor: null, effectiveOrder: [] } });
 
     // The path argument is ignored by TriggerClient implementation
     const result = await client.query('/api/v1/query', query);
@@ -182,7 +182,7 @@ describe('TriggerClient', () => {
 
   it('should support chainable query via collection()', async () => {
     const client = new TriggerClient('http://localhost', 'token');
-    mockAxiosInstance.post.mockResolvedValue({ data: { docs: [{ id: '1' }] } });
+    mockAxiosInstance.post.mockResolvedValue({ data: { documents: [{ type: 'object', value: { id: { type: 'string', value: '1' } } }], nextCursor: null, effectiveOrder: [] } });
 
     await client.collection('users')
       .where('age', '>', 18)
@@ -192,7 +192,7 @@ describe('TriggerClient', () => {
 
     expect(mockAxiosInstance.post).toHaveBeenCalledWith('/query', {
       collection: 'users',
-      filters: [{ field: 'age', op: '>', value: 18 }],
+      filters: [{ field: 'age', op: '>', value: { type: 'float64', value: 18 } }],
       orderBy: [{ field: 'age', direction: 'desc' }],
       limit: 10
     });

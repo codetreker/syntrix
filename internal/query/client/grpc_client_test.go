@@ -2,14 +2,19 @@ package client
 
 import (
 	"context"
+	"math"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 	pb "github.com/syntrixbase/syntrix/api/gen/query/v1"
 	grpctesting "github.com/syntrixbase/syntrix/api/gen/testing"
 	"github.com/syntrixbase/syntrix/internal/core/storage"
+	"github.com/syntrixbase/syntrix/internal/indexer"
+	"github.com/syntrixbase/syntrix/internal/query/wire"
 	"github.com/syntrixbase/syntrix/pkg/model"
+	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -26,6 +31,9 @@ func TestStatusToError(t *testing.T) {
 		{"already exists", codes.AlreadyExists, model.ErrExists},
 		{"invalid argument", codes.InvalidArgument, model.ErrInvalidQuery},
 		{"permission denied", codes.PermissionDenied, model.ErrPermissionDenied},
+		{"canceled", codes.Canceled, context.Canceled},
+		{"deadline", codes.DeadlineExceeded, context.DeadlineExceeded},
+		{"resource exhausted", codes.ResourceExhausted, model.ErrQueryWorkLimit},
 	}
 
 	for _, tt := range tests {
@@ -248,85 +256,58 @@ func TestClient_DeleteDocument(t *testing.T) {
 }
 
 func TestClient_ExecuteQuery(t *testing.T) {
-	t.Run("success", func(t *testing.T) {
-		mockClient := grpctesting.NewMockQueryServiceClient()
-		client := newTestClient(mockClient)
+	expected := model.QueryPage{Documents: []model.Document{{"id": "doc1", "version": int64(9007199254740993), "age": int64(25)}}, EffectiveOrder: []model.Order{{Field: "age", Direction: "asc"}}}
+	cursor := "opaque-cursor"
+	expected.NextCursor = &cursor
+	q := model.Query{Collection: "users", Filters: model.Filters{{Field: "age", Op: model.OpGte, Value: int64(18)}}, OrderBy: expected.EffectiveOrder, Limit: 100, ShowDeleted: true}
+	mockClient := grpctesting.NewMockQueryServiceClient()
+	client := newTestClient(mockClient)
+	encoded, err := wire.EncodePage(expected)
+	require.NoError(t, err)
+	mockClient.On("ExecuteQuery", mock.Anything, mock.MatchedBy(func(req *pb.ExecuteQueryRequest) bool {
+		decoded, err := wire.DecodeQuery(req.Query)
+		return err == nil && req.WireVersion == wire.Version && req.Database == "database1" && assert.ObjectsAreEqual(q, decoded)
+	})).Return(encoded, nil).Twice()
+	page, err := client.ExecuteQueryPage(context.Background(), "database1", q)
+	require.NoError(t, err)
+	assert.Equal(t, expected, page)
+	docs, err := client.ExecuteQuery(context.Background(), "database1", q)
+	require.NoError(t, err)
+	assert.Equal(t, expected.Documents, docs)
+	mockClient.AssertExpectations(t)
+}
 
-		mockClient.On("ExecuteQuery", mock.Anything, mock.Anything).Return(&pb.ExecuteQueryResponse{
-			Documents: []*pb.Document{
-				{Id: "doc1", Collection: "users", Data: []byte(`{"name":"Alice"}`)},
-				{Id: "doc2", Collection: "users", Data: []byte(`{"name":"Bob"}`)},
-			},
-		}, nil)
-
-		docs, err := client.ExecuteQuery(context.Background(), "database1", model.Query{
-			Collection: "users",
-			Limit:      10,
+func TestClient_ExecuteQueryRejectsMalformedResponse(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		response *pb.ExecuteQueryResponse
+	}{
+		{"unknown version", &pb.ExecuteQueryResponse{WireVersion: 99}},
+		{"legacy response", &pb.ExecuteQueryResponse{Documents: []*pb.Document{{Id: "legacy", Data: []byte(`{"name":"Alice"}`)}}}},
+		{"plain document", &pb.ExecuteQueryResponse{WireVersion: wire.Version, Documents: []*pb.Document{{Id: "legacy", Data: []byte(`{"name":"Alice"}`)}}}},
+		{"invalid typed value", &pb.ExecuteQueryResponse{WireVersion: wire.Version, Documents: []*pb.Document{{Data: []byte(`{"type":"unknown","value":1}`)}}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mockClient := grpctesting.NewMockQueryServiceClient()
+			mockClient.On("ExecuteQuery", mock.Anything, mock.Anything).Return(tc.response, nil).Once()
+			page, err := newTestClient(mockClient).ExecuteQueryPage(context.Background(), "database1", model.Query{Collection: "users"})
+			require.Error(t, err)
+			assert.Empty(t, page.Documents)
+			mockClient.AssertExpectations(t)
 		})
-		assert.NoError(t, err)
-		assert.Len(t, docs, 2)
-		assert.Equal(t, "doc1", docs[0]["id"])
-		assert.Equal(t, "doc2", docs[1]["id"])
-		mockClient.AssertExpectations(t)
-	})
+	}
+}
 
-	t.Run("unsupported indexed operator", func(t *testing.T) {
-		mockClient := grpctesting.NewMockQueryServiceClient()
-		client := newTestClient(mockClient)
-		message := `invalid query: operator "in" is not supported by indexed queries`
-		mockClient.On("ExecuteQuery", mock.Anything, mock.Anything).
-			Return(nil, status.Error(codes.InvalidArgument, message)).Once()
-
-		docs, err := client.ExecuteQuery(context.Background(), "database1", model.Query{
-			Collection: "users",
-			Filters:    model.Filters{{Field: "role", Op: model.OpIn, Value: []string{"admin"}}},
-		})
-
-		assert.Nil(t, docs)
-		assert.ErrorIs(t, err, model.ErrInvalidQuery)
-		assert.EqualError(t, err, message)
-		mockClient.AssertExpectations(t)
-	})
-
-	t.Run("empty results", func(t *testing.T) {
-		mockClient := grpctesting.NewMockQueryServiceClient()
-		client := newTestClient(mockClient)
-
-		mockClient.On("ExecuteQuery", mock.Anything, mock.Anything).Return(&pb.ExecuteQueryResponse{
-			Documents: []*pb.Document{},
-		}, nil)
-
-		docs, err := client.ExecuteQuery(context.Background(), "database1", model.Query{
-			Collection: "users",
-		})
-		assert.NoError(t, err)
-		assert.Empty(t, docs)
-	})
-
-	t.Run("with filters and order", func(t *testing.T) {
-		mockClient := grpctesting.NewMockQueryServiceClient()
-		client := newTestClient(mockClient)
-
-		mockClient.On("ExecuteQuery", mock.Anything, mock.Anything).Return(&pb.ExecuteQueryResponse{
-			Documents: []*pb.Document{
-				{Id: "doc1", Data: []byte(`{"age":25}`)},
-			},
-		}, nil)
-
-		docs, err := client.ExecuteQuery(context.Background(), "database1", model.Query{
-			Collection: "users",
-			Filters: model.Filters{
-				{Field: "age", Op: "gte", Value: 18},
-			},
-			OrderBy: []model.Order{
-				{Field: "age", Direction: "asc"},
-			},
-			Limit:       100,
-			ShowDeleted: true,
-		})
-		assert.NoError(t, err)
-		assert.Len(t, docs, 1)
-	})
+func TestClient_ExecuteQueryEmptyPage(t *testing.T) {
+	mockClient := grpctesting.NewMockQueryServiceClient()
+	encoded, err := wire.EncodePage(model.QueryPage{Documents: []model.Document{}, EffectiveOrder: []model.Order{}})
+	require.NoError(t, err)
+	mockClient.On("ExecuteQuery", mock.Anything, mock.Anything).Return(encoded, nil).Once()
+	page, err := newTestClient(mockClient).ExecuteQueryPage(context.Background(), "database1", model.Query{Collection: "users"})
+	require.NoError(t, err)
+	assert.NotNil(t, page.Documents)
+	assert.Nil(t, page.NextCursor)
+	mockClient.AssertExpectations(t)
 }
 
 func TestClient_Pull(t *testing.T) {
@@ -432,4 +413,55 @@ func TestClient_Push(t *testing.T) {
 		assert.Len(t, resp.Conflicts, 1)
 		assert.Equal(t, "doc1", resp.Conflicts[0].Id)
 	})
+}
+
+func TestClient_ExecuteQueryPageErrorDetails(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		code     codes.Code
+		domain   string
+		reason   string
+		expected error
+	}{
+		{"stale cursor", codes.FailedPrecondition, "syntrix.query", "STALE_CURSOR", model.ErrStaleCursor},
+		{"work limit", codes.ResourceExhausted, "syntrix.query", "QUERY_WORK_LIMIT", model.ErrQueryWorkLimit},
+		{"missing index", codes.FailedPrecondition, "syntrix.query", "NO_MATCHING_INDEX", indexer.ErrNoMatchingIndex},
+		{"index unavailable", codes.Unavailable, "syntrix.query", "INDEX_UNAVAILABLE", indexer.ErrIndexNotReady},
+		{"foreign domain uses status code", codes.FailedPrecondition, "foreign.service", "STALE_CURSOR", model.ErrPreconditionFailed},
+		{"unknown reason uses status code", codes.FailedPrecondition, "syntrix.query", "FUTURE_REASON", model.ErrPreconditionFailed},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rpcStatus, err := status.New(tc.code, "query failed").WithDetails(&errdetails.ErrorInfo{Domain: tc.domain, Reason: tc.reason})
+			require.NoError(t, err)
+			rpc := grpctesting.NewMockQueryServiceClient()
+			rpc.On("ExecuteQuery", mock.Anything, mock.Anything).Return(nil, rpcStatus.Err()).Once()
+			page, err := newTestClient(rpc).ExecuteQueryPage(context.Background(), "database1", model.Query{Collection: "users"})
+			require.ErrorIs(t, err, tc.expected)
+			assert.Equal(t, model.QueryPage{}, page)
+			rpc.AssertExpectations(t)
+		})
+	}
+	t.Run("unrelated detail uses status code", func(t *testing.T) {
+		rpcStatus, err := status.New(codes.DeadlineExceeded, "timed out").WithDetails(&errdetails.RetryInfo{})
+		require.NoError(t, err)
+		require.ErrorIs(t, statusToError(rpcStatus.Err()), context.DeadlineExceeded)
+	})
+}
+
+func TestClient_ExecuteQueryPageRejectsUnencodableRequest(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		query model.Query
+	}{
+		{"limit outside wire domain", model.Query{Collection: "users", Limit: 1001}},
+		{"nonfinite filter", model.Query{Collection: "users", Filters: model.Filters{{Field: "amount", Op: model.OpEq, Value: math.NaN()}}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rpc := grpctesting.NewMockQueryServiceClient()
+			page, err := newTestClient(rpc).ExecuteQueryPage(context.Background(), "database1", tc.query)
+			require.ErrorIs(t, err, model.ErrInvalidQuery)
+			assert.Equal(t, model.QueryPage{}, page)
+			rpc.AssertNotCalled(t, "ExecuteQuery", mock.Anything, mock.Anything)
+		})
+	}
 }

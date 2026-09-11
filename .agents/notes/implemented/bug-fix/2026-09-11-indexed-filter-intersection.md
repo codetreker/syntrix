@@ -12,8 +12,13 @@ return documents even though no value satisfies the query.
 
 ## Decision
 
-Indexer intersects supported predicates on each field usable by the selected
-index, using the existing encoded-value comparison semantics.
+The [complete indexed-query decision](2026-09-07-indexed-query-filter-semantics.md)
+extends this intersection rule with exact int64/binary64 values, membership
+strategies, and full residual evaluation. This note records the preceding local
+bound repair and why conjunctions cannot use last-write-wins selection.
+
+Indexer intersects supported predicates on each usable field. The original repair
+used the then-existing encoded-value comparison semantics.
 
 | Constraint | Rule |
 |---|---|
@@ -36,7 +41,7 @@ limits, cursor protocol, and backend search for nonempty bounds remain unchanged
 The [index design](../../../../docs/design/server/indexer/02.index.md#same-field-constraints)
 owns the bound rules; the [filter reference](../../../../docs/reference/filters.md#multiple-conditions-on-one-indexed-field)
 owns caller examples. [Unsupported-operator rejection](2026-09-11-query-unsupported-filter-rejection.md)
-continues to reject indexed `!=`, `in`, and `contains`.
+was the preceding restriction; complete execution now supersedes it.
 
 ## Alternatives
 
@@ -47,21 +52,17 @@ All supported predicates on that field need one intersection rule.
 **Complete all indexed predicate semantics together.** Membership unions, array
 index entries, cross-field residual evaluation, and cursor correctness require
 broader execution and index changes. The existing
-[indexed filter proposal](../../proposed/bug-fix/2026-09-07-indexed-query-filter-semantics.md)
-owns those requirements and their costs.
+[complete indexed-query decision](2026-09-07-indexed-query-filter-semantics.md)
+now supplies those requirements; they were outside the original bound repair.
 
 ## Consequences
 
-- Repeated equality and range conditions on usable fields retain AND semantics
-  regardless of predicate order, including strict endpoint ties and descending
-  keys. Contradictions produce an empty result after index selection and cursor
-  decoding, without searching the backend index.
-- No storage or index representation change is required. Number encoding and
-  existing comparisons involving missing or null values are not redefined.
-- Fields outside the usable index prefix do not acquire residual filtering.
-  This decision does not establish correct execution of every cross-field
-  conjunction or add indexed `!=`, `in`, or `contains`.
-- Full predicate execution remains deferred to the linked proposal. Its union,
-  residual traversal, ordering, and index-representation work is still required;
-  the same-field intersection rule remains applicable when those strategies are
-  introduced.
+- Repeated equality and range conditions retain AND semantics independent of
+  predicate order, strict endpoint ties, or descending encoding.
+- The original repair did not change numeric encoding or add cross-field residual
+  evaluation. It established a reusable intersection rule without claiming those
+  broader guarantees.
+- Current exact values, full predicate evaluation, generation checks, and page
+  production are owned by the [complete indexed-query decision](2026-09-07-indexed-query-filter-semantics.md).
+  The earlier repair remains relevant because additional execution strategies
+  must retain same-field intersection before expanding branches.

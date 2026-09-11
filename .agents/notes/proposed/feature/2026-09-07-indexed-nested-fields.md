@@ -4,9 +4,17 @@ Status: proposed
 
 ## Problem
 
-The [Indexer field extractor](../../../../internal/indexer/service.go) claims support for paths such as `user.name`, but its implementation is `return data[field]`. A document shaped as `{"user":{"name":"Ada"}}` therefore does not yield `"Ada"` for that indexed path. The template can appear usable while its keys represent a missing value. This incomplete capability is established by source inspection.
+The original field extractor advertised paths such as `user.name` while reading
+only a literal top-level key. A nested document could therefore appear indexed
+while its key represented a missing value. The
+[completed indexed-query decision](../../implemented/bug-fix/2026-09-07-indexed-query-filter-semantics.md)
+now rejects dotted template/query fields explicitly and shares top-level metadata
+resolution across source scan and live projection. This prevents ambiguous
+interpretation but does not provide nested-field queries.
 
-The [index design](../../../../docs/design/server/indexer/02.index.md) derives ordered keys from template fields. Live events and future rebuilds must interpret those fields identically or a rebuild will change query results.
+Nested objects remain valid stored data. A shared path contract is needed before
+accepting their fields for index access, residual filtering, or ordering. Rebuild
+and live projection must agree so reconstruction cannot change field meaning.
 
 ## Proposal
 
@@ -20,7 +28,9 @@ Reuse existing scalar order encoding after value resolution. Mark indexes affect
 
 **Flatten documents before storage.** This simplifies lookup but changes stored user-data shape and creates collisions between literal dotted names and nested objects. Field interpretation belongs at the indexing boundary.
 
-**Restrict indexes to top-level fields.** This makes the current implementation honest and avoids extraction rules, but withdraws the stated nested-field capability. It remains viable only if that requirement is explicitly changed.
+**Restrict indexes to top-level fields.** This is the implemented validation
+boundary while path semantics remain unresolved. It makes unsupported queries
+fail explicitly but does not satisfy the nested-field requirement retained here.
 
 ## Acceptance Criteria
 
@@ -35,4 +45,4 @@ Resolving previously missing values changes ordering and index membership. Incon
 
 ## Dependencies
 
-[Indexer recovery](../architecture/2026-09-07-indexer-recovery-lifecycle.md) owns reconstruction, and [query cursor pagination](2026-09-07-query-cursor-pagination.md) owns invalidation of old continuation formats and generations.
+[Indexer recovery](../architecture/2026-09-07-indexer-recovery-lifecycle.md) owns reconstruction, and [query cursor pagination](../../implemented/feature/2026-09-07-query-cursor-pagination.md) owns invalidation of old continuation formats and generations.

@@ -1,6 +1,7 @@
 import { describe, it, expect, mock, beforeEach, afterEach } from 'bun:test';
 import { TriggerClient } from './trigger-client';
 import axios from 'axios';
+import { encodeQueryValue } from '../api/value';
 
 // Mock axios
 const originalCreate = axios.create;
@@ -24,19 +25,24 @@ describe('TriggerClient Query Operations', () => {
 
   it('should support chainable update by query', async () => {
     const client = new TriggerClient('http://localhost', 'token');
-    mockAxiosInstance.post.mockResolvedValue({ data: { docs: [{ id: '1' }, { id: '2' }] } });
+    mockAxiosInstance.post.mockResolvedValue({ data: { documents: [encodeQueryValue({ id: '1' }), encodeQueryValue({ id: '2' })], nextCursor: 'next-page', effectiveOrder: [] } });
 
     await client.collection('users')
       .where('age', '>', 18)
+      .startAfter('selected-page')
+      .limit(2)
       .update({ active: true });
 
     // First, it queries
     expect(mockAxiosInstance.post).toHaveBeenCalledWith('/query', {
       collection: 'users',
-      filters: [{ field: 'age', op: '>', value: 18 }],
+      filters: [{ field: 'age', op: '>', value: { type: 'float64', value: 18 } }],
       orderBy: [],
-      limit: undefined
+      startAfter: 'selected-page',
+      limit: 2
     });
+
+    expect(mockAxiosInstance.post).toHaveBeenCalledTimes(3);
 
     // Then it updates each doc
     expect(mockAxiosInstance.post).toHaveBeenCalledWith('/write', {
@@ -49,7 +55,7 @@ describe('TriggerClient Query Operations', () => {
 
   it('should support chainable delete by query', async () => {
     const client = new TriggerClient('http://localhost', 'token');
-    mockAxiosInstance.post.mockResolvedValue({ data: { docs: [{ id: '1' }] } });
+    mockAxiosInstance.post.mockResolvedValue({ data: { documents: [encodeQueryValue({ id: '1' })], nextCursor: 'next-page', effectiveOrder: [] } });
 
     await client.collection('users')
       .where('status', '==', 'inactive')
@@ -58,10 +64,11 @@ describe('TriggerClient Query Operations', () => {
     // First, it queries
     expect(mockAxiosInstance.post).toHaveBeenCalledWith('/query', {
       collection: 'users',
-      filters: [{ field: 'status', op: '==', value: 'inactive' }],
-      orderBy: [],
-      limit: undefined
+      filters: [{ field: 'status', op: '==', value: { type: 'string', value: 'inactive' } }],
+      orderBy: []
     });
+
+    expect(mockAxiosInstance.post).toHaveBeenCalledTimes(2);
 
     // Then it deletes
     expect(mockAxiosInstance.post).toHaveBeenCalledWith('/write', {
@@ -71,7 +78,7 @@ describe('TriggerClient Query Operations', () => {
 
   it('should support multiple where clauses', async () => {
     const client = new TriggerClient('http://localhost', 'token');
-    mockAxiosInstance.post.mockResolvedValue({ data: { docs: [] } });
+    mockAxiosInstance.post.mockResolvedValue({ data: { documents: [], nextCursor: null, effectiveOrder: [] } });
 
     await client.collection('users')
       .where('age', '>', 18)
@@ -81,11 +88,10 @@ describe('TriggerClient Query Operations', () => {
     expect(mockAxiosInstance.post).toHaveBeenCalledWith('/query', {
       collection: 'users',
       filters: [
-        { field: 'age', op: '>', value: 18 },
-        { field: 'status', op: '==', value: 'active' }
+        { field: 'age', op: '>', value: { type: 'float64', value: 18 } },
+        { field: 'status', op: '==', value: { type: 'string', value: 'active' } }
       ],
-      orderBy: [],
-      limit: undefined
+      orderBy: []
     });
   });
 });

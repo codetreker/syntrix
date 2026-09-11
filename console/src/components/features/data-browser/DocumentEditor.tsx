@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { X, Save } from 'lucide-react';
 import type { Document } from '../../../lib/documents';
-import { documentsApi } from '../../../lib/documents';
+import { documentsApi, documentData, hasInt64Value, formatDocumentJson } from '../../../lib/documents';
 import { Button, Input } from '../../ui';
 
 interface DocumentEditorProps {
@@ -14,6 +14,7 @@ interface DocumentEditorProps {
 
 export function DocumentEditor({ document, database, collection, onClose, onSave }: DocumentEditorProps) {
   const isCreateMode = document === null;
+  const readOnly = document !== null && hasInt64Value(documentData(document));
   const [documentId, setDocumentId] = useState('');
   const [jsonContent, setJsonContent] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -21,10 +22,8 @@ export function DocumentEditor({ document, database, collection, onClose, onSave
 
   useEffect(() => {
     if (document) {
-      // Edit mode - prepare JSON without metadata fields
-      const { id, _collection, _createdAt, _updatedAt, ...rest } = document;
-      setDocumentId(id);
-      setJsonContent(JSON.stringify(rest, null, 2));
+      setDocumentId(document.id);
+      setJsonContent(formatDocumentJson(documentData(document)));
     } else {
       // Create mode
       setDocumentId('');
@@ -33,6 +32,7 @@ export function DocumentEditor({ document, database, collection, onClose, onSave
   }, [document]);
 
   const handleSave = async () => {
+    if (readOnly) return;
     setError(null);
     
     // Validate JSON
@@ -126,6 +126,7 @@ export function DocumentEditor({ document, database, collection, onClose, onSave
               </label>
               <button
                 onClick={handleFormat}
+                disabled={readOnly}
                 className="text-xs text-blue-600 hover:text-blue-700 dark:text-blue-400"
               >
                 Format JSON
@@ -133,12 +134,19 @@ export function DocumentEditor({ document, database, collection, onClose, onSave
             </div>
             <textarea
               value={jsonContent}
+              readOnly={readOnly}
               onChange={(e) => setJsonContent(e.target.value)}
               rows={15}
               className="w-full px-3 py-2 font-mono text-sm rounded-md border border-gray-300 dark:border-gray-600 bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-gray-100 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
               placeholder="Enter JSON document data"
             />
           </div>
+
+          {readOnly && (
+            <p className="text-sm text-amber-700 dark:text-amber-400">
+              This document contains int64 fields and is read-only here. The JSON editor cannot preserve their integer type and precision when saving.
+            </p>
+          )}
 
           {/* Error */}
           {error && (
@@ -153,7 +161,7 @@ export function DocumentEditor({ document, database, collection, onClose, onSave
           <Button variant="secondary" onClick={onClose} disabled={saving}>
             Cancel
           </Button>
-          <Button variant="primary" onClick={handleSave} loading={saving}>
+          <Button variant="primary" onClick={handleSave} loading={saving} disabled={readOnly}>
             <Save className="w-4 h-4 mr-2" />
             {isCreateMode ? 'Create' : 'Save Changes'}
           </Button>

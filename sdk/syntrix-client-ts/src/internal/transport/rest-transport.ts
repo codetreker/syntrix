@@ -1,5 +1,7 @@
 import { AxiosInstance } from 'axios';
 import { StorageClient } from '../storage-client';
+import { QueryPage } from '../../api/types';
+import { decodeQueryPage } from '../query-page';
 
 export class RestTransport implements StorageClient {
   private database: string;
@@ -66,10 +68,11 @@ export class RestTransport implements StorageClient {
   }
 
   async query<T>(path: string, query: any): Promise<T[]> {
+    return (await this.queryPage<T>(path, query)).documents;
+  }
+
+  async queryPage<T>(path: string, query: any): Promise<QueryPage<T>> {
     const response = await this.axios.post(this.buildPath(path), query);
-    if (response.data && Array.isArray(response.data.docs)) {
-        return response.data.docs;
-    }
-    return response.data;
+    return decodeQueryPage<T>(response.data);
   }
 }

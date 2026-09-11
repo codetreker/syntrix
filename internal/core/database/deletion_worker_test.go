@@ -100,7 +100,7 @@ type fullMockDocStore struct {
 func (m *fullMockDocStore) Get(ctx context.Context, database string, path string, _ ...types.ReadOptions) (*types.StoredDoc, error) {
 	return nil, nil
 }
-func (m *fullMockDocStore) GetMany(ctx context.Context, database string, paths []string) ([]*types.StoredDoc, error) {
+func (m *fullMockDocStore) GetMany(ctx context.Context, database string, paths []string, _ ...types.ReadOptions) ([]*types.StoredDoc, error) {
 	return nil, nil
 }
 func (m *fullMockDocStore) Create(ctx context.Context, database string, doc types.StoredDoc) error {

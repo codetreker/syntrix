@@ -52,6 +52,14 @@ func (m *MockQueryService) DeleteDocument(ctx context.Context, database string, 
 	return args.Error(0)
 }
 
+func (m *MockQueryService) ExecuteQueryPage(ctx context.Context, database string, q model.Query) (model.QueryPage, error) {
+	args := m.Called(ctx, database, q)
+	if args.Get(0) == nil {
+		return model.QueryPage{}, args.Error(1)
+	}
+	return args.Get(0).(model.QueryPage), args.Error(1)
+}
+
 func (m *MockQueryService) ExecuteQuery(ctx context.Context, database string, q model.Query) ([]model.Document, error) {
 	args := m.Called(ctx, database, q)
 	if args.Get(0) == nil {

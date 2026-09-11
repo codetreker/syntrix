@@ -32,6 +32,35 @@ const client = new TriggerClient('http://localhost:8080', 'pre-issued-token');
 await client.collection('users').doc('123').set({ name: 'Alice' });
 ```
 
+## Query Pages
+
+```typescript
+const query = client.collection('messages')
+  .where('version', '>=', 9007199254740993n)
+  .orderBy('version', 'asc')
+  .limit(20);
+
+const page = await query.getPage();
+console.log(page.documents, page.effectiveOrder);
+if (page.nextCursor !== null) {
+  const next = await query.startAfter(page.nextCursor).getPage();
+  console.log(next.documents);
+}
+```
+
+`getPage()` returns `{ documents, nextCursor, effectiveOrder }`. `get()` returns
+only the selected page's documents; query `update()` and `delete()` likewise
+operate on one page. Standard and Trigger clients use the same query contract.
+Queries require a compatible index plan except for unordered listing and ID-only
+lookups. See the [filter guide](../../docs/reference/filters.md).
+
+Query values preserve int64 as `bigint` and finite binary64 as `number`, including
+nested document fields and metadata. Query pages replace legacy array responses.
+CRUD and conditional-write methods still use ordinary JSON bodies. Cursors are
+opaque; they do not establish a snapshot across pages. See
+[query pages](../../docs/reference/typescript_sdk.md#query-pages) for continuation,
+errors, and numeric limits.
+
 ## Realtime Subscriptions
 
 ```typescript

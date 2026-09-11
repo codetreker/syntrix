@@ -250,3 +250,14 @@ func TestConfig_Validate_DistributedMode(t *testing.T) {
 	err = cfg.Validate(services.ModeDistributed)
 	assert.NoError(t, err)
 }
+
+func TestMaintenanceConfigBounds(t *testing.T) {
+	defaults := Config{}
+	defaults.ApplyDefaults()
+	assert.Equal(t, 30*time.Second, defaults.StartupTimeout)
+	assert.Equal(t, 256, defaults.BootstrapBatchSize)
+	assert.Equal(t, int64(8<<20), defaults.BootstrapPageBytes)
+	for _, cfg := range []Config{{StartupTimeout: -time.Second}, {BootstrapBatchSize: -1}, {BootstrapPageBytes: -1}, {Databases: []string{""}}} {
+		assert.Error(t, cfg.Validate(services.ModeStandalone))
+	}
+}

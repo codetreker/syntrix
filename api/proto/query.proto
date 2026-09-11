@@ -74,7 +74,7 @@ message Document {
 }
 
 // Filter defines a single match condition.
-// Operators: eq (==), ne (!=), gt (>), gte (>=), lt (<), lte (<=), in, contains
+// Operators: ==, !=, >, >=, <, <=, in, contains
 message Filter {
   // Field path to match (e.g., "_id", "status", "nested.field").
   string field = 1;
@@ -82,7 +82,7 @@ message Filter {
   // Comparison operator.
   string op = 2;
 
-  // Value to compare against (JSON-encoded).
+  // Query v2 uses a typed value node. Mutation predicates retain ordinary JSON.
   bytes value = 3;
 }
 
@@ -109,7 +109,7 @@ message Query {
   // Maximum number of results to return.
   int32 limit = 4;
 
-  // Pagination cursor (start after this document path).
+  // Opaque continuation returned by the preceding query page.
   string start_after = 5;
 
   // Whether to include soft-deleted documents.
@@ -218,11 +218,17 @@ message ExecuteQueryRequest {
 
   // Query specification.
   Query query = 2;
+  // Version 2 requires typed query literals and typed query document responses.
+  uint32 wire_version = 3;
 }
 
 message ExecuteQueryResponse {
-  // Matching documents.
+  // Each data payload is a typed value object containing the full public document.
   repeated Document documents = 1;
+  string next_cursor = 2;
+  bool has_more = 3;
+  repeated OrderBy effective_order = 4;
+  uint32 wire_version = 5;
 }
 
 // ============================================================================

@@ -107,8 +107,8 @@ func TestBuffer_WriteAndRead(t *testing.T) {
 		},
 		Timestamp: time.Now().UnixMilli(),
 		FullDocument: &storage.StoredDoc{
-			Id:       "doc-1",
-			Database: "database-1",
+			Id:       storage.CalculateDatabase("database-1", "testcoll/doc-1"),
+			Database: "database-1", Collection: "testcoll", Fullpath: "testcoll/doc-1",
 		},
 	}
 
@@ -957,7 +957,7 @@ func TestBuffer_Size(t *testing.T) {
 		EventID:     "1",
 		ClusterTime: events.ClusterTime{T: 1, I: 1},
 		FullDocument: &storage.StoredDoc{
-			Id: string(make([]byte, 1024*10)),
+			Id: storage.CalculateDatabase("database-1", "testcoll/doc-1"), Database: "database-1", Collection: "testcoll", Fullpath: "testcoll/doc-1", Data: map[string]any{"payload": string(make([]byte, 1024*10))},
 		},
 	}
 	require.NoError(t, buf.Write(context.Background(), evt, testToken))

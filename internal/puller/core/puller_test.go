@@ -12,6 +12,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/syntrixbase/syntrix/internal/core/storage"
 	"github.com/syntrixbase/syntrix/internal/puller/buffer"
 	"github.com/syntrixbase/syntrix/internal/puller/config"
 	"github.com/syntrixbase/syntrix/internal/puller/cursor"
@@ -400,7 +401,7 @@ func TestPuller_watchChangeStream_ProcessesEvent(t *testing.T) {
 	// Wait briefly for stream to open
 	time.Sleep(150 * time.Millisecond)
 
-	_, err := backend.db.Collection("users").InsertOne(ctx, bson.M{"u": "v"})
+	_, err := backend.db.Collection("users").InsertOne(ctx, storage.NewStoredDoc(env.DBName, "users", "test-user", map[string]any{"u": "v"}))
 	require.NoError(t, err)
 
 	assert.Eventually(t, func() bool {
@@ -655,7 +656,7 @@ func TestPuller_watchChangeStream_PublishesBeforeBatchFlush(t *testing.T) {
 	go func() { done <- p.watchChangeStream(context.Background(), backend, p.logger) }()
 	select {
 	case err := <-done:
-		require.NoError(t, err)
+		require.ErrorContains(t, err, "change stream closed")
 	case <-time.After(time.Second):
 		t.Fatal("live publication waited for a batch flush")
 	}
@@ -828,7 +829,9 @@ type fakeChangeStream struct {
 	closed atomic.Bool
 }
 
-func (f *fakeChangeStream) Next(context.Context) bool { return false }
+func (f *fakeChangeStream) TryNext(context.Context) bool { return false }
+func (f *fakeChangeStream) ID() int64                    { return 0 }
+func (f *fakeChangeStream) ResumeToken() bson.Raw        { return nil }
 
 func (f *fakeChangeStream) Decode(any) error { return nil }
 
@@ -847,7 +850,7 @@ type captureTestStream struct {
 	beforeDecode func()
 }
 
-func (s *captureTestStream) Next(context.Context) bool {
+func (s *captureTestStream) TryNext(context.Context) bool {
 	if s.nextCalls == len(s.raw) {
 		return false
 	}

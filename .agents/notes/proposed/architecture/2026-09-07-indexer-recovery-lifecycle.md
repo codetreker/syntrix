@@ -4,13 +4,27 @@ Status: proposed
 
 ## Problem
 
-The [Indexer service](../../../../internal/indexer/service.go) loads templates and saved progress, then subscribes to events. Its production construction path does not instantiate the existing [reconciler](../../../../internal/indexer/reconciler/reconciler.go) or [rebuild orchestrator](../../../../internal/indexer/rebuild/rebuild.go), and no production caller supplies their storage scanner and event replayer. Existing documents, newly configured indexes, and a lost memory index therefore lack a complete recovery path. This is an integration finding from static call-site inspection, not a restart test result.
+The [completed indexed-query decision](../../implemented/bug-fix/2026-09-07-indexed-query-filter-semantics.md)
+provides write-quiesced offline bootstrap, complete database catalogs, validated
+native Puller replay boundaries, and applied/flush readiness. Persistent complete
+generations can resume after validation; memory-index loss requires maintenance
+rebuilding. Source scanning and collection enumeration now use Store abstractions.
 
-The [storage design](../../../../docs/design/server/indexer/04.storage.md) requires memory reconstruction and persistent-index checkpoint recovery. These requirements cannot be satisfied by processing only subsequent changes.
+Automatic online recovery remains incomplete. Production does not own the full
+reconciler/rebuild job lifecycle needed for concurrent source writes, new template
+reconciliation, obsolete-job fencing, history-gap reconstruction, and resumable
+jobs. Offline bootstrap requires writer downtime and explicit derived reset, so it
+does not fulfill these online guarantees. The original call-site inspection found
+no production scan/replay integration; the bounded maintenance path now resolves
+initialization while leaving this broader lifecycle open.
 
 ## Proposal
 
-Make the Indexer service own reconciliation, rebuild jobs, and their shutdown. Supply storage-scanning and Puller-replay adapters in both deployment modes. Discover desired database/collection indexes from configuration and storage metadata, including collections with no recent events.
+Make the Indexer service own reconciliation, online rebuild jobs, and their
+shutdown. Extend the supplied source scanning, collection enumeration, and verified
+Puller replay boundaries to concurrent rebuilds in both deployment modes. Discover
+desired database/collection indexes from configuration and source metadata,
+including collections with no recent events.
 
 For each rebuild, capture a durable replay position before scanning, scan with stable pagination, apply replay through a known boundary, and switch to live consumption without a gap. Apply one document-ID, pattern-matching, ordering-key, and tombstone policy across scan, replay, and live updates. Fence obsolete jobs when templates change. Mark an index ready only after every required write and checkpoint succeeds; persist enough generation and state information to resume safely or deliberately restart reconstruction.
 
@@ -35,4 +49,12 @@ Long scans may outlive retained replay history and require a visible retry or fa
 
 ## Dependencies
 
-[History-gap recovery](2026-09-07-puller-history-gap-recovery.md), [local replay](2026-09-07-local-puller-subscription-replay.md), and [query cursor pagination](../feature/2026-09-07-query-cursor-pagination.md) track the proposed recovery boundaries and scan traversal. The [publication proposal](../../rejected/architecture/2026-09-07-puller-persist-before-publish.md) is rejected; a usable replay boundary remains an unresolved prerequisite. [Management RPCs](../feature/2026-09-07-indexer-management-rpcs.md) expose this lifecycle.
+[History-gap recovery](2026-09-07-puller-history-gap-recovery.md) and
+[local replay](2026-09-07-local-puller-subscription-replay.md) retain their proposed
+recovery guarantees. [Query pagination](../../implemented/feature/2026-09-07-query-cursor-pagination.md)
+supplies the public page contract; offline bootstrap uses bounded source scans.
+The [publication proposal](../../rejected/architecture/2026-09-07-puller-persist-before-publish.md)
+is rejected. Verified retained replay boundaries are supplied by the completed
+query decision; a gap-free concurrent scan/replay handoff remains required.
+[Management RPCs](../feature/2026-09-07-indexer-management-rpcs.md) expose the
+broader lifecycle.

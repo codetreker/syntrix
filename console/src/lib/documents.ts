@@ -1,4 +1,6 @@
-import { api } from './api';
+import { api, dataApi, type QueryRequest } from './api';
+import type { FilterOp, QueryPage } from '../../../sdk/syntrix-client-ts/src/api/types';
+import { encodeQueryValue } from '../../../sdk/syntrix-client-ts/src/api/value';
 
 export interface Document {
   id: string;
@@ -10,23 +12,12 @@ export interface Document {
 
 export interface Filter {
   field: string;
-  op: 'eq' | 'ne' | 'gt' | 'gte' | 'lt' | 'lte' | 'in' | 'contains';
+  op: FilterOp;
   value: unknown;
 }
 
-export interface QueryOptions {
-  database: string;
-  collection: string;
-  filters?: Filter[];
-  limit?: number;
-  startAfter?: string;
-  orderBy?: { field: string; dir: 'asc' | 'desc' }[];
-}
-
-export interface QueryResponse {
-  documents: Document[];
-  hasMore: boolean;
-}
+export type QueryOptions = QueryRequest;
+export type QueryResponse = QueryPage<Document>;
 
 export interface CollectionInfo {
   name: string;
@@ -38,25 +29,7 @@ export const documentsApi = {
    * Query documents using POST /api/v1/databases/{db}/query
    */
   query: async (options: QueryOptions): Promise<QueryResponse> => {
-    const limit = options.limit || 20;
-    const response = await api.post<Document[]>(
-      `/api/v1/databases/${encodeURIComponent(options.database)}/query`,
-      {
-        collection: options.collection,
-        filters: options.filters || [],
-        limit: limit + 1,
-        startAfter: options.startAfter,
-        orderBy: options.orderBy || [],
-      }
-    );
-
-    const docs = response.data || [];
-    const hasMore = docs.length > limit;
-
-    return {
-      documents: hasMore ? docs.slice(0, limit) : docs,
-      hasMore,
-    };
+    return dataApi.query({ limit: 20, orderBy: [], ...options });
   },
 
   /**
@@ -111,14 +84,10 @@ export const documentsApi = {
     try {
       // Query with no collection filter to discover what exists
       // The backend may return documents from various collections
-      const response = await api.post<Document[]>(
-        `/api/v1/databases/${encodeURIComponent(database)}/query`,
-        { collection: '', filters: [], limit: 100, orderBy: [] }
-      );
-      const docs = response.data || [];
+      const { documents: docs } = await dataApi.query({ database, collection: '', filters: [], limit: 100, orderBy: [] });
       const collectionSet = new Set<string>();
       for (const doc of docs) {
-        if (doc._collection) {
+        if (typeof doc._collection === 'string') {
           collectionSet.add(doc._collection);
         }
       }
@@ -127,4 +96,60 @@ export const documentsApi = {
       return [];
     }
   },
+};
+
+export const parseFilterValue = (input: string): unknown => {
+  let value: unknown = input;
+  if (input === 'null') value = null;
+  else if (input === 'true') value = true;
+  else if (input === 'false') value = false;
+  else if (/^-?(0|[1-9][0-9]*)$/.test(input)) value = BigInt(input);
+  else if (/^-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?$/.test(input)) value = Number(input);
+  encodeQueryValue(value);
+  return value;
+};
+
+/** Serializes int64 values as exact JSON integer tokens for display and copying. */
+export const formatDocumentJson = (value: unknown, indent = 2): string => {
+  const format = (item: unknown, depth: number): string => {
+    if (typeof item === 'bigint') return item.toString();
+    if (item === null || typeof item !== 'object') {
+      const encoded = JSON.stringify(item);
+      if (encoded === undefined) throw new TypeError('Document contains an unsupported JSON value');
+      return encoded;
+    }
+    const array = Array.isArray(item);
+    const entries = array
+      ? item.map(child => format(child, depth + 1))
+      : Object.entries(item).map(([key, child]) => `${JSON.stringify(key)}:${indent ? ' ' : ''}${format(child, depth + 1)}`);
+    const [open, close] = array ? ['[', ']'] : ['{', '}'];
+    if (entries.length === 0) return open + close;
+    if (!indent) return open + entries.join(',') + close;
+    const padding = ' '.repeat(indent * (depth + 1));
+    return `${open}\n${padding}${entries.join(`,\n${padding}`)}\n${' '.repeat(indent * depth)}${close}`;
+  };
+  return format(value, 0);
+};
+
+export const documentData = (document: Document): Record<string, unknown> => {
+  const metadata = new Set(['id', 'collection', 'createdAt', 'updatedAt', 'version', 'deleted', '_collection', '_createdAt', '_updatedAt']);
+  return Object.fromEntries(Object.entries(document).filter(([key]) => !metadata.has(key)));
+};
+
+export const hasInt64Value = (value: unknown): boolean => {
+  if (typeof value === 'bigint') return true;
+  if (value === null || typeof value !== 'object') return false;
+  return Object.values(value).some(hasInt64Value);
+};
+
+export const formatDocumentDate = (value: unknown): string => {
+  if (typeof value === 'bigint') {
+    // The Date domain is within the exact-integer range of a JavaScript number.
+    if (value < -8640000000000000n || value > 8640000000000000n) return '-';
+    value = Number(value);
+  }
+  if (typeof value !== 'number' && typeof value !== 'string') return '-';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '-';
+  return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 };

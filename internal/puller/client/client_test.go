@@ -4,6 +4,7 @@ import (
 	"log/slog"
 	"testing"
 
+	"github.com/stretchr/testify/require"
 	pullerv1 "github.com/syntrixbase/syntrix/api/gen/puller/v1"
 	"github.com/syntrixbase/syntrix/internal/core/storage"
 	"github.com/syntrixbase/syntrix/internal/puller/events"
@@ -15,10 +16,16 @@ func TestConvertEvent(t *testing.T) {
 		logger: slog.Default(),
 	}
 
+	doc := storage.NewStoredDoc("database-1", "users", "doc-1", map[string]any{"name": "test"})
+	fullDoc, err := events.MarshalDocument(&doc)
+	require.NoError(t, err)
+	updateDesc, err := events.MarshalUpdateDescription(&events.UpdateDescription{UpdatedFields: map[string]any{"name": "new"}, RemovedFields: []string{"old"}})
+	require.NoError(t, err)
 	tests := []struct {
 		name     string
 		input    *pullerv1.PullerEvent
 		expected *events.PullerEvent
+		wantErr  bool
 	}{
 		{
 			name: "basic event",
@@ -96,16 +103,13 @@ func TestConvertEvent(t *testing.T) {
 			input: &pullerv1.PullerEvent{
 				ChangeEvent: &pullerv1.ChangeEvent{
 					EventId: "evt-full",
-					FullDoc: []byte(`{"_id":"doc-1","data":{"name":"test"}}`),
+					FullDoc: fullDoc,
 				},
 			},
 			expected: &events.PullerEvent{
 				Change: &events.StoreChangeEvent{
-					EventID: "evt-full",
-					FullDocument: &storage.StoredDoc{
-						Id:   "doc-1",
-						Data: map[string]interface{}{"name": "test"},
-					},
+					EventID:      "evt-full",
+					FullDocument: &doc,
 				},
 			},
 		},
@@ -114,7 +118,7 @@ func TestConvertEvent(t *testing.T) {
 			input: &pullerv1.PullerEvent{
 				ChangeEvent: &pullerv1.ChangeEvent{
 					EventId:    "evt-update",
-					UpdateDesc: []byte(`{"updatedFields":{"name":"new"},"removedFields":["old"]}`),
+					UpdateDesc: updateDesc,
 				},
 			},
 			expected: &events.PullerEvent{
@@ -128,7 +132,8 @@ func TestConvertEvent(t *testing.T) {
 			},
 		},
 		{
-			name: "event with invalid full document",
+			name:    "event with invalid full document",
+			wantErr: true,
 			input: &pullerv1.PullerEvent{
 				ChangeEvent: &pullerv1.ChangeEvent{
 					EventId: "evt-invalid-doc",
@@ -142,7 +147,8 @@ func TestConvertEvent(t *testing.T) {
 			},
 		},
 		{
-			name: "event with invalid update description",
+			name:    "event with invalid update description",
+			wantErr: true,
 			input: &pullerv1.PullerEvent{
 				ChangeEvent: &pullerv1.ChangeEvent{
 					EventId:    "evt-invalid-desc",
@@ -159,7 +165,13 @@ func TestConvertEvent(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := c.convertEvent(tt.input)
+			result, err := c.convertEvent(tt.input)
+			if tt.wantErr {
+				require.Error(t, err)
+				require.Nil(t, result)
+				return
+			}
+			require.NoError(t, err)
 
 			if result.Progress != tt.expected.Progress {
 				t.Errorf("Progress = %v, want %v", result.Progress, tt.expected.Progress)
@@ -175,6 +187,8 @@ func TestConvertEvent(t *testing.T) {
 
 			change := result.Change
 			expChange := tt.expected.Change
+			require.Equal(t, expChange.FullDocument, change.FullDocument)
+			require.Equal(t, expChange.UpdateDesc, change.UpdateDesc)
 
 			if change.EventID != expChange.EventID {
 				t.Errorf("EventID = %v, want %v", change.EventID, expChange.EventID)

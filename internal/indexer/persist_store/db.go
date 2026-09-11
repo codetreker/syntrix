@@ -6,7 +6,14 @@ import (
 	"github.com/cockroachdb/pebble"
 )
 
+type Snapshot interface {
+	NewIter(o *pebble.IterOptions) (Iterator, error)
+	Close() error
+}
+
 type DB interface {
+	NewSnapshot() Snapshot
+
 	// Get gets the value for the given key. It returns ErrNotFound if the DB
 	// does not contain the key.
 	//
@@ -20,12 +27,6 @@ type DB interface {
 	// return false). The iterator can be positioned via a call to SeekGE,
 	// SeekLT, First or Last.
 	NewIter(o *pebble.IterOptions) (Iterator, error)
-
-	// Delete deletes the value for the given key. Deletes are blind all will
-	// succeed even if the given key does not exist.
-	//
-	// It is safe to modify the contents of the arguments after Delete returns.
-	Delete(key []byte, o *pebble.WriteOptions) error
 
 	// Set sets the value for the given key. It overwrites any previous value
 	// for that key; a DB is not a multi-map.
@@ -101,10 +102,6 @@ func (p *PebbleDB) NewIter(o *pebble.IterOptions) (iter Iterator, err error) {
 	return p.db.NewIter(o)
 }
 
-func (p *PebbleDB) Delete(key []byte, o *pebble.WriteOptions) error {
-	return p.db.Delete(key, o)
-}
-
 func (p *PebbleDB) Set(key, value []byte, o *pebble.WriteOptions) error {
 	return p.db.Set(key, value, o)
 }
@@ -116,3 +113,17 @@ func (p *PebbleDB) NewBatch() Batch {
 func (p *PebbleDB) Close() error {
 	return p.db.Close()
 }
+
+func (p *PebbleDB) NewSnapshot() Snapshot {
+	return &pebbleSnapshot{snapshot: p.db.NewSnapshot()}
+}
+
+type pebbleSnapshot struct {
+	snapshot *pebble.Snapshot
+}
+
+func (s *pebbleSnapshot) NewIter(o *pebble.IterOptions) (Iterator, error) {
+	return s.snapshot.NewIter(o)
+}
+
+func (s *pebbleSnapshot) Close() error { return s.snapshot.Close() }

@@ -45,7 +45,11 @@ type Backend struct {
 	cleaner         *buffer.Cleaner
 
 	// eventChan receives normalized events from the change stream
-	eventChan chan *events.StoreChangeEvent
+	eventChan      chan *events.StoreChangeEvent
+	captureMu      sync.Mutex
+	captureChanged chan struct{}
+	captureActive  bool
+	captureError   error
 }
 
 // Puller is the main puller service that watches MongoDB change streams
@@ -108,7 +112,9 @@ func New(cfg config.Config, logger *slog.Logger) *Puller {
 
 // changeStream defines the subset of mongo.ChangeStream used by the puller.
 type changeStream interface {
-	Next(context.Context) bool
+	TryNext(context.Context) bool
+	ID() int64
+	ResumeToken() bson.Raw
 	Decode(any) error
 	Err() error
 	Close(context.Context) error
@@ -198,6 +204,7 @@ func (p *Puller) AddBackend(name string, client *mongo.Client, dbName string, cf
 		backpressure:    bpMonitor,
 		cleaner:         cleaner,
 		eventChan:       make(chan *events.StoreChangeEvent, 1000),
+		captureChanged:  make(chan struct{}),
 	}
 
 	p.logger.Info("added backend", "name", name, "database", dbName)
@@ -294,6 +301,7 @@ func (p *Puller) runBackend(ctx context.Context, name string, backend *Backend) 
 			action := backend.recoveryHandler.HandleError(err)
 			switch action {
 			case recovery.ActionRestart, recovery.ActionFatal:
+				backend.setCaptureState(false, err)
 				logger.Error("fatal error, stopping backend", "error", err)
 				return
 			case recovery.ActionReconnect:
@@ -312,7 +320,14 @@ func (p *Puller) runBackend(ctx context.Context, name string, backend *Backend) 
 }
 
 // watchChangeStream watches the MongoDB change stream for a backend.
-func (p *Puller) watchChangeStream(ctx context.Context, backend *Backend, logger *slog.Logger) error {
+func (p *Puller) watchChangeStream(ctx context.Context, backend *Backend, logger *slog.Logger) (result error) {
+	defer func() {
+		stateErr := result
+		if stateErr != nil && !errors.Is(stateErr, errCaptureFailed) {
+			stateErr = fmt.Errorf("%w: %w", ErrCaptureUnavailable, stateErr)
+		}
+		backend.setCaptureState(false, stateErr)
+	}()
 	// Load resume token if exists
 	resumeToken, err := backend.buffer.LoadCheckpoint()
 	if err != nil {
@@ -324,7 +339,7 @@ func (p *Puller) watchChangeStream(ctx context.Context, backend *Backend, logger
 
 	// Configure watch options
 	opts := options.ChangeStream().
-		SetFullDocument(options.UpdateLookup)
+		SetFullDocument(options.UpdateLookup).SetMaxAwaitTime(time.Second)
 
 	if resumeToken != nil {
 		opts.SetResumeAfter(resumeToken)
@@ -345,8 +360,37 @@ func (p *Puller) watchChangeStream(ctx context.Context, backend *Backend, logger
 
 	logger.Info("change stream opened")
 
-	// Process events
-	for stream.Next(ctx) {
+	// Only an empty live batch establishes that the native cursor has caught up.
+	// A cached ResumeAfter token alone can precede an unconsumed initial batch.
+	ready := false
+	for {
+		if !stream.TryNext(ctx) {
+			if err := stream.Err(); err != nil {
+				return fmt.Errorf("change stream error: %w", err)
+			}
+			if stream.ID() == 0 {
+				return fmt.Errorf("change stream closed")
+			}
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if !ready {
+				token := stream.ResumeToken()
+				if len(token) == 0 {
+					return fmt.Errorf("%w: source returned no resume boundary", errCaptureFailed)
+				}
+				if err := backend.buffer.Flush(ctx); err != nil {
+					return fmt.Errorf("%w: flush source boundary: %w", errCaptureFailed, err)
+				}
+				if err := backend.buffer.SaveCheckpoint(token); err != nil {
+					return fmt.Errorf("%w: save source boundary: %w", errCaptureFailed, err)
+				}
+				backend.setCaptureState(true, nil)
+				ready = true
+			}
+			continue
+		}
+
 		var raw normalizer.RawEvent
 		if err := stream.Decode(&raw); err != nil {
 			return fmt.Errorf("%w: failed to decode event: %w", errCaptureFailed, err)
@@ -376,11 +420,6 @@ func (p *Puller) watchChangeStream(ctx context.Context, backend *Backend, logger
 		p.invokeHandlerWithBackpressure(ctx, backend, evt)
 	}
 
-	if err := stream.Err(); err != nil {
-		return fmt.Errorf("change stream error: %w", err)
-	}
-
-	return nil
 }
 
 func (p *Puller) invokeHandlerWithBackpressure(ctx context.Context, backend *Backend, evt *events.StoreChangeEvent) {
@@ -435,12 +474,16 @@ func (p *Puller) BackendNames() []string {
 // Replay returns an iterator that replays events from the given progress marker.
 // If the marker is empty, it replays from the beginning of the buffer.
 func (p *Puller) Replay(ctx context.Context, after map[string]string, coalesce bool) (events.Iterator, error) {
+	return p.replay(ctx, after, nil, coalesce)
+}
+
+func (p *Puller) replay(ctx context.Context, after, lineages map[string]string, coalesce bool) (events.Iterator, error) {
 	var iters []events.Iterator
 
 	p.logger.Info("Replay called", "after", after, "coalesce", coalesce)
 
 	for name, backend := range p.backends {
-		startID := ""
+		startID, groupStart := "", ""
 		if after != nil {
 			eventID := after[name]
 			if eventID != "" {
@@ -453,6 +496,7 @@ func (p *Puller) Replay(ctx context.Context, after map[string]string, coalesce b
 					return nil, fmt.Errorf("invalid event ID %q for backend %q: %w", eventID, name, err)
 				}
 				startID = events.FormatBufferKey(ct, eventID)
+				groupStart = events.FormatBufferKey(ct, "")
 				p.logger.Debug("Replay backend", "backend", name, "eventID", eventID, "startID", startID)
 			}
 		}
@@ -463,7 +507,13 @@ func (p *Puller) Replay(ctx context.Context, after map[string]string, coalesce b
 		head, _ := backend.buffer.Head()
 		p.logger.Info("Buffer state before ScanFrom", "backend", name, "count", count, "first", first, "head", head, "startID", startID)
 
-		iter, err := backend.buffer.ScanFrom(startID)
+		var iter buffer.Iterator
+		var err error
+		if lineages != nil {
+			iter, err = backend.buffer.ScanFromLineage(startID, lineages[name])
+		} else {
+			iter, err = backend.buffer.ScanFrom(groupStart)
+		}
 		if err != nil {
 			// Close already opened iterators
 			for _, it := range iters {
@@ -500,51 +550,146 @@ func (i *backendInjectingIterator) Event() *events.StoreChangeEvent {
 // Subscribe subscribes to events from the puller with the given progress marker.
 // Returns a channel of events that will be closed when the context is canceled.
 func (p *Puller) Subscribe(ctx context.Context, consumerID string, after string) <-chan *events.PullerEvent {
-	pm := cursor.NewProgressMarker()
+	return p.subscribe(ctx, consumerID, after, nil, false)
+}
 
-	// Initialize progress marker from 'after' if provided
-	if after != "" {
-		decoded, err := cursor.DecodeProgressMarker(after)
-		if err == nil {
-			pm = decoded
-		}
+func (p *Puller) SubscribeReady(ctx context.Context, consumerID, after string, onReady func(string)) <-chan *events.PullerEvent {
+	return p.subscribe(ctx, consumerID, after, onReady, true)
+}
+
+func (p *Puller) subscribe(ctx context.Context, consumerID, after string, onReady func(string), verified bool) <-chan *events.PullerEvent {
+	out := make(chan *events.PullerEvent, 1000)
+	pm, err := cursor.DecodeProgressMarker(after)
+	if err != nil {
+		p.logger.Error("invalid subscription progress", "error", err)
+		close(out)
+		return out
 	}
-
-	// Create subscriber
-	sub := NewSubscriber(consumerID, pm, false, 1000)
+	sub, err := NewSubscriber(consumerID, pm, false, 1000)
+	if err != nil {
+		if verified {
+			out <- &events.PullerEvent{Error: err}
+		}
+		close(out)
+		return out
+	}
 	p.subs.Add(sub)
-
-	outCh := make(chan *events.PullerEvent, 1000)
-
 	go func() {
-		defer close(outCh)
+		defer close(out)
 		defer p.subs.Remove(sub)
-
+		fail := func(err error, retryable bool) {
+			if verified {
+				select {
+				case out <- &events.PullerEvent{Error: err, Retryable: retryable}:
+				case <-ctx.Done():
+				}
+			}
+		}
+		if verified {
+			if err := p.ValidateBoundary(ctx, after); err != nil {
+				p.logger.Error("subscription boundary rejected", "error", err)
+				fail(err, errors.Is(err, ErrCaptureUnavailable))
+				return
+			}
+		}
+		send := func(evt *events.StoreChangeEvent) bool {
+			if !sub.ShouldSend(evt.Backend, evt.EventID, evt.ClusterTime) {
+				return true
+			}
+			position := sub.CurrentProgress()
+			position.SetPosition(evt.Backend, evt.EventID)
+			select {
+			case out <- &events.PullerEvent{Change: evt, Progress: position.Encode()}:
+				sub.UpdatePosition(evt.Backend, evt.EventID, evt.ClusterTime)
+				return true
+			case <-ctx.Done():
+				return false
+			}
+		}
+		catchup := after != ""
+		ready := false
+		healthTicker := time.NewTicker(time.Second)
+		defer healthTicker.Stop()
 		for {
+			if catchup {
+				sub.GetAndResetOverflow()
+				var iter events.Iterator
+				var err error
+				if verified {
+					iter, err = p.ReplayBoundary(ctx, sub.CurrentProgress().Encode(), false)
+				} else {
+					iter, err = p.Replay(ctx, sub.CurrentProgress().Positions, false)
+				}
+				if err != nil {
+					p.logger.Error("subscription replay failed", "error", err)
+					fail(err, false)
+					return
+				}
+				for iter.Next() {
+					if !send(iter.Event()) {
+						iter.Close()
+						return
+					}
+				}
+				replayErr := iter.Err()
+				closeErr := iter.Close()
+				if replayErr != nil || closeErr != nil {
+					p.logger.Error("subscription replay failed", "error", errors.Join(replayErr, closeErr))
+					fail(errors.Join(replayErr, closeErr), false)
+					return
+				}
+				if sub.GetAndResetOverflow() {
+					for len(sub.Events()) > 0 {
+						<-sub.Events()
+					}
+					continue
+				}
+				catchup = false
+			}
+			if !ready {
+				if ctx.Err() != nil {
+					return
+				}
+				if verified {
+					select {
+					case out <- &events.PullerEvent{Ready: true, Progress: sub.CurrentProgress().Encode()}:
+					case <-ctx.Done():
+						return
+					}
+				}
+				if onReady != nil {
+					onReady(sub.CurrentProgress().Encode())
+				}
+				ready = true
+			}
 			select {
 			case <-ctx.Done():
 				return
 			case <-sub.Done():
 				return
-			case evt := <-sub.Events():
-				// Update subscriber's progress
-				sub.UpdatePosition(evt.Backend, evt.EventID, evt.ClusterTime)
-
-				wrapper := &events.PullerEvent{
-					Change:   evt,
-					Progress: sub.CurrentProgress().Encode(),
+			case <-healthTicker.C:
+				if verified {
+					if err := p.ValidateBoundary(ctx, sub.CurrentProgress().Encode()); err != nil {
+						p.logger.Error("subscription boundary unavailable", "error", err)
+						fail(err, errors.Is(err, ErrCaptureUnavailable))
+						return
+					}
 				}
-
-				select {
-				case outCh <- wrapper:
-				case <-ctx.Done():
+			case evt := <-sub.Events():
+				overflow := sub.GetAndResetOverflow()
+				if !send(evt) {
 					return
+				}
+				if overflow {
+					catchup = true
+					for len(sub.Events()) > 0 {
+						<-sub.Events()
+					}
 				}
 			}
 		}
 	}()
-
-	return outCh
+	return out
 }
 
 func parseSize(s string) (int64, error) {

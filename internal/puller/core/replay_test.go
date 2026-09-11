@@ -116,7 +116,7 @@ func TestPuller_Replay(t *testing.T) {
 	})
 
 	t.Run("ReplayFrom", func(t *testing.T) {
-		// Replay after evt1
+		// Replaying a progress marker includes its entire timestamp group.
 		after := map[string]string{
 			backendName: evt1.EventID,
 		}
@@ -124,6 +124,8 @@ func TestPuller_Replay(t *testing.T) {
 		require.NoError(t, err)
 		defer iter.Close()
 
+		assert.True(t, iter.Next())
+		assert.Equal(t, "1-1-hash1", iter.Event().EventID)
 		assert.True(t, iter.Next())
 		assert.Equal(t, "2-2-hash2", iter.Event().EventID)
 

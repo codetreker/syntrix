@@ -1,7 +1,8 @@
 import axios, { AxiosInstance } from 'axios';
 import { StorageClient } from '../internal/storage-client';
-import { CollectionReference, DocumentReference } from '../api/types';
+import { CollectionReference, DocumentReference, QueryPage } from '../api/types';
 import { CollectionReferenceImpl, DocumentReferenceImpl } from '../api/reference';
+import { decodeQueryPage } from '../internal/query-page';
 
 export interface WriteOp {
   type: 'create' | 'update' | 'set' | 'delete';
@@ -84,11 +85,12 @@ export class TriggerClient implements StorageClient {
   }
 
   async query<T>(path: string, query: any): Promise<T[]> {
-      // Maps to POST /trigger/v1/databases/{database}/query
-      // Note: We ignore the `path` argument here because QueryImpl passes the generic '/api/v1/query' path.
-      // The actual collection to query is inside the `query` object (query.from).
+      return (await this.queryPage<T>(path, query)).documents;
+  }
+
+  async queryPage<T>(_path: string, query: any): Promise<QueryPage<T>> {
       const res = await this.axios.post('/query', query);
-      return res.data.docs || [];
+      return decodeQueryPage<T>(res.data);
   }
 
   // --- Public API Extensions ---

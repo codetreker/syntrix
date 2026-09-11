@@ -365,10 +365,12 @@ func TestStandaloneMode_BasicCRUD(t *testing.T) {
 
 		assert.Equal(t, http.StatusOK, resp.StatusCode)
 
-		var result []map[string]interface{}
+		var result struct {
+			Documents []json.RawMessage `json:"documents"`
+		}
 		err = json.NewDecoder(resp.Body).Decode(&result)
 		require.NoError(t, err)
-		assert.GreaterOrEqual(t, len(result), 1, "Should have at least one document")
+		assert.GreaterOrEqual(t, len(result.Documents), 1, "Should have at least one document")
 	})
 }
 

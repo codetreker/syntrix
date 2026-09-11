@@ -13,7 +13,7 @@ import (
 )
 
 var (
-	ErrIndexerRequired = errors.New("indexer is required")
+	ErrIndexerRequired = fmt.Errorf("%w: indexer is required", indexer.ErrIndexNotReady)
 )
 
 // Engine handles all business logic and coordinates with the storage backend.
@@ -139,161 +139,41 @@ func (e *Engine) DeleteDocument(ctx context.Context, database string, path strin
 	return e.storage.Delete(ctx, database, path, pred)
 }
 
-// ExecuteQuery executes a structured query.
-// Falls back to storage scan when no filters/orderBy, otherwise uses indexer.
+// ExecuteQuery returns the documents from one page.
 func (e *Engine) ExecuteQuery(ctx context.Context, database string, q model.Query) ([]model.Document, error) {
-	// If no filters and no orderBy, go directly to storage
-	// This handles simple "list all" queries and ShowDeleted properly
-	if len(q.Filters) == 0 && len(q.OrderBy) == 0 {
-		return e.executeWithStorage(ctx, database, q)
-	}
-
-	// If filters only contain id == or id in, go directly to storage
-	// These can be resolved by direct document lookups without indexer
-	if e.isIDOnlyQuery(q) {
-		return e.executeWithStorage(ctx, database, q)
-	}
-
-	// Indexer is required for filtered/ordered queries
-	if e.indexer == nil {
-		return nil, ErrIndexerRequired
-	}
-
-	docs, err := e.executeWithIndexer(ctx, database, q)
-	if err != nil {
-		return nil, err
-	}
-
-	return docs, nil
+	page, err := e.ExecuteQueryPage(ctx, database, q)
+	return page.Documents, err
 }
 
-// isIDOnlyQuery returns true if the query only filters by id (== or in).
 func (e *Engine) isIDOnlyQuery(q model.Query) bool {
-	// Must have no orderBy to be an ID-only query
-	if len(q.OrderBy) > 0 {
+	if len(q.OrderBy) > 0 || len(q.Filters) == 0 {
 		return false
 	}
-
-	// Must have at least one filter
-	if len(q.Filters) == 0 {
-		return false
-	}
-
-	// All filters must be on "id" field with == or in operator
 	for _, f := range q.Filters {
-		if f.Field != "id" {
-			return false
-		}
-		if f.Op != "==" && f.Op != "in" {
+		if f.Field != "id" || (f.Op != model.OpEq && f.Op != model.OpIn) {
 			return false
 		}
 	}
-
 	return true
 }
 
-// executeWithStorage uses storage directly for simple queries without filters/orderBy.
-func (e *Engine) executeWithStorage(ctx context.Context, database string, q model.Query) ([]model.Document, error) {
-	storedDocs, err := e.storage.Query(ctx, database, q)
-	if err != nil {
-		return nil, err
-	}
-
-	// Convert to model.Document
-	flatDocs := make([]model.Document, 0, len(storedDocs))
-	for _, d := range storedDocs {
-		if d != nil {
-			flatDocs = append(flatDocs, helper.FlattenStorageDocument(d))
-		}
-	}
-
-	return flatDocs, nil
-}
-
-// executeWithIndexer uses the indexer to find document IDs and fetches them.
-func (e *Engine) executeWithIndexer(ctx context.Context, database string, q model.Query) ([]model.Document, error) {
-	plan, err := e.queryToPlan(q)
-	if err != nil {
-		return nil, err
-	}
-
-	refs, err := e.indexer.Search(ctx, database, plan)
-	if err != nil {
-		return nil, err
-	}
-
-	if len(refs) == 0 {
-		return []model.Document{}, nil
-	}
-
-	// Build full paths from IDs
-	paths := make([]string, len(refs))
-	for i, ref := range refs {
-		paths[i] = q.Collection + "/" + ref.ID
-	}
-
-	// Fetch documents by path
-	storedDocs, err := e.storage.GetMany(ctx, database, paths)
-	if err != nil {
-		return nil, err
-	}
-
-	// Filter out nils and convert to model.Document
-	flatDocs := make([]model.Document, 0, len(storedDocs))
-	for _, d := range storedDocs {
-		if d != nil {
-			flatDocs = append(flatDocs, helper.FlattenStorageDocument(d))
-		}
-	}
-
-	return flatDocs, nil
-}
-
-// queryToPlan converts a model.Query to an indexer.Plan.
 func (e *Engine) queryToPlan(q model.Query) (indexer.Plan, error) {
-	plan := indexer.Plan{
-		Collection:  q.Collection,
-		Limit:       q.Limit,
-		StartAfter:  q.StartAfter,
-		ShowDeleted: q.ShowDeleted,
-	}
-
-	// Convert filters
+	plan := indexer.Plan{Collection: q.Collection, Limit: q.Limit, ShowDeleted: q.ShowDeleted}
+	operators := map[model.FilterOp]indexer.FilterOp{model.OpEq: indexer.FilterEq, model.OpNe: indexer.FilterNe, model.OpGt: indexer.FilterGt, model.OpGte: indexer.FilterGte, model.OpLt: indexer.FilterLt, model.OpLte: indexer.FilterLte, model.OpIn: indexer.FilterIn, model.OpContains: indexer.FilterContains}
 	for _, f := range q.Filters {
-		var op indexer.FilterOp
-		switch f.Op {
-		case "==":
-			op = indexer.FilterEq
-		case ">":
-			op = indexer.FilterGt
-		case "<":
-			op = indexer.FilterLt
-		case ">=":
-			op = indexer.FilterGte
-		case "<=":
-			op = indexer.FilterLte
-		default:
-			return indexer.Plan{}, fmt.Errorf("%w: operator %q is not supported by indexed queries", model.ErrInvalidQuery, f.Op)
+		op, ok := operators[f.Op]
+		if !ok {
+			return indexer.Plan{}, fmt.Errorf("%w: invalid operator", model.ErrInvalidQuery)
 		}
-		plan.Filters = append(plan.Filters, indexer.Filter{
-			Field: f.Field,
-			Op:    op,
-			Value: f.Value,
-		})
+		plan.Filters = append(plan.Filters, indexer.Filter{Field: f.Field, Op: op, Value: f.Value})
 	}
-
-	// Convert order by
-	for _, o := range q.OrderBy {
+	for _, order := range q.OrderBy {
 		dir := indexer.Asc
-		if o.Direction == "desc" {
+		if order.Direction == "desc" {
 			dir = indexer.Desc
 		}
-		plan.OrderBy = append(plan.OrderBy, indexer.OrderField{
-			Field:     o.Field,
-			Direction: dir,
-		})
+		plan.OrderBy = append(plan.OrderBy, indexer.OrderField{Field: order.Field, Direction: dir})
 	}
-
 	return plan, nil
 }
 

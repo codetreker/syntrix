@@ -1,5 +1,16 @@
 export type FilterOp = '==' | '!=' | '>' | '>=' | '<' | '<=' | 'in' | 'contains';
 
+export interface QueryOrder {
+  field: string;
+  direction: 'asc' | 'desc';
+}
+
+export interface QueryPage<T> {
+  documents: T[];
+  nextCursor: string | null;
+  effectiveOrder: QueryOrder[];
+}
+
 export interface DocumentReference<T> {
   id: string;
   path: string;
@@ -17,8 +28,12 @@ export interface Query<T> {
   limit(n: number): Query<T>;
   startAfter(cursor: string): Query<T>;
   showDeleted(show?: boolean): Query<T>;
+  getPage(): Promise<QueryPage<T>>;
+  /** Returns the selected page. Use getPage() to retain its continuation cursor. */
   get(): Promise<T[]>;
+  /** Updates only documents in the selected page. */
   update(data: Partial<T>): Promise<void>;
+  /** Deletes only documents in the selected page. */
   delete(): Promise<void>;
 }
 

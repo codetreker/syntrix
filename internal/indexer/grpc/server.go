@@ -6,6 +6,8 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"sort"
+	"strings"
 
 	indexerv1 "github.com/syntrixbase/syntrix/api/gen/indexer/v1"
 	"github.com/syntrixbase/syntrix/internal/indexer/encoding"
@@ -106,6 +108,9 @@ func (s *Server) Stats(ctx context.Context, req *indexerv1.StatsRequest) (*index
 
 // GetState returns the complete index state including desired, actual, and pending operations.
 func (s *Server) GetState(ctx context.Context, req *indexerv1.GetStateRequest) (*indexerv1.IndexerState, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, s.adminError(err)
+	}
 	mgr := s.svc.Manager()
 	if mgr == nil {
 		return nil, status.Error(codes.Internal, "manager not available")
@@ -115,7 +120,10 @@ func (s *Server) GetState(ctx context.Context, req *indexerv1.GetStateRequest) (
 	desired := s.buildDesiredState(mgr, req.Database, req.Pattern)
 
 	// Build actual state from indexes
-	actual := s.buildActualState(mgr, req.Database, req.Pattern)
+	actual, err := s.buildActualState(ctx, mgr, req.Database, req.Pattern)
+	if err != nil {
+		return nil, s.adminError(err)
+	}
 
 	// TODO: Get pending operations from reconciler when implemented
 	pendingOps := []*indexerv1.PendingOperation{}
@@ -144,39 +152,91 @@ func (s *Server) Reload(ctx context.Context, req *indexerv1.ReloadRequest) (*ind
 	}, nil
 }
 
-// InvalidateIndex marks index(es) for rebuild.
+// InvalidateIndex fences matching active concrete generations until maintenance
+// bootstrap. Broad requests cover the finite inventory; a concrete collection
+// also resolves an empty generation certified by the bootstrap catalog.
 func (s *Server) InvalidateIndex(ctx context.Context, req *indexerv1.InvalidateIndexRequest) (*indexerv1.InvalidateIndexResponse, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, s.adminError(err)
+	}
 	mgr := s.svc.Manager()
 	if mgr == nil {
 		return nil, status.Error(codes.Internal, "manager not available")
 	}
-
-	st := mgr.Store()
-	count := 0
-
-	indexes, err := st.ListIndexes(req.Database)
-	if err != nil {
-		return nil, status.Errorf(codes.Internal, "failed to list indexes: %v", err)
+	if req.Database == "" {
+		return nil, status.Error(codes.InvalidArgument, "database is required")
 	}
-
-	for _, idx := range indexes {
-		// Match by pattern
-		if req.Pattern != "" && idx.Pattern != req.Pattern {
+	refs, err := mgr.Store().ListQueryIndexes()
+	if err != nil {
+		return nil, s.adminError(err)
+	}
+	if req.Pattern != "" && !strings.ContainsAny(req.Pattern, "*{}") {
+		for _, match := range template.MatchTemplates(req.Pattern, adminTemplates(mgr, req.Database)) {
+			refs = append(refs, store.QueryIndexRef{Database: req.Database, Collection: req.Pattern, TemplateFingerprint: match.Template.Fingerprint()})
+		}
+	}
+	count := 0
+	seen := make(map[store.QueryIndexRef]bool)
+	for _, ref := range refs {
+		if err := ctx.Err(); err != nil {
+			return nil, s.adminError(err)
+		}
+		if ref.Database != req.Database {
 			continue
 		}
-		// Match by template ID if specified
-		if req.TemplateId != "" && idx.TemplateID != req.TemplateId {
+		tmpl := findAdminTemplate(mgr, ref.Database, ref.TemplateFingerprint)
+		if !matchesAdminPattern(req.Pattern, ref, tmpl) {
 			continue
 		}
-
-		// Mark as failed to trigger rebuild
-		st.SetState(req.Database, idx.Pattern, idx.TemplateID, store.IndexStateFailed)
+		if req.TemplateId != "" && (tmpl == nil || tmpl.Identity() != req.TemplateId) {
+			continue
+		}
+		generation, found, err := mgr.Store().ReadGeneration(ref.Database, ref.Collection, ref.TemplateFingerprint)
+		if err != nil {
+			return nil, s.adminError(err)
+		}
+		if !found || (ref.Generation != "" && ref.Generation != generation.ID) {
+			continue
+		}
+		ref.Generation = generation.ID
+		if seen[ref] {
+			continue
+		}
+		seen[ref] = true
+		if err := mgr.Store().SetFailure(ref, "index invalidated; maintenance bootstrap required"); err != nil {
+			return nil, s.adminError(err)
+		}
 		count++
 	}
+	return &indexerv1.InvalidateIndexResponse{IndexesInvalidated: int32(count)}, nil
+}
 
-	return &indexerv1.InvalidateIndexResponse{
-		IndexesInvalidated: int32(count),
-	}, nil
+func (s *Server) adminError(err error) error {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return status.FromContextError(err).Err()
+	}
+	return status.Errorf(codes.Internal, "index administration failed: %v", err)
+}
+
+func adminTemplates(mgr *manager.Manager, database string) []template.Template {
+	if len(mgr.DatabaseTemplates()) > 0 {
+		return mgr.TemplatesForDatabase(database)
+	}
+	return mgr.Templates()
+}
+
+func findAdminTemplate(mgr *manager.Manager, database, fingerprint string) *template.Template {
+	templates := adminTemplates(mgr, database)
+	for i := range templates {
+		if templates[i].Fingerprint() == fingerprint {
+			return &templates[i]
+		}
+	}
+	return nil
+}
+
+func matchesAdminPattern(pattern string, ref store.QueryIndexRef, tmpl *template.Template) bool {
+	return pattern == "" || pattern == ref.Collection || (tmpl != nil && template.NormalizePattern(pattern) == tmpl.NormalizedPattern())
 }
 
 // requestToPlan converts a gRPC SearchRequest to a manager.Plan.
@@ -261,11 +321,14 @@ func (s *Server) convertError(err error) error {
 // buildDesiredState builds the desired index specs from templates.
 func (s *Server) buildDesiredState(mgr *manager.Manager, filterDB, filterPattern string) []*indexerv1.IndexSpec {
 	templates := mgr.Templates()
+	if filterDB != "" {
+		templates = adminTemplates(mgr, filterDB)
+	}
 	specs := make([]*indexerv1.IndexSpec, 0, len(templates))
 
 	for _, tmpl := range templates {
 		// Apply pattern filter
-		if filterPattern != "" && tmpl.NormalizedPattern() != filterPattern {
+		if filterPattern != "" && tmpl.NormalizedPattern() != template.NormalizePattern(filterPattern) && len(template.MatchTemplates(filterPattern, []template.Template{tmpl})) == 0 {
 			continue
 		}
 
@@ -291,42 +354,55 @@ func (s *Server) buildDesiredState(mgr *manager.Manager, filterDB, filterPattern
 	return specs
 }
 
-// buildActualState builds the actual index info from in-memory indexes.
-func (s *Server) buildActualState(mgr *manager.Manager, filterDB, filterPattern string) []*indexerv1.IndexInfo {
-	var infos []*indexerv1.IndexInfo
-	st := mgr.Store()
-
-	databases, err := st.ListDatabases()
+// buildActualState reports the active generation for each concrete partition.
+// DocCount=-1 means unavailable: administration never scans postings to count
+// documents, and the generation inventory does not maintain this aggregate.
+func (s *Server) buildActualState(ctx context.Context, mgr *manager.Manager, filterDB, filterPattern string) ([]*indexerv1.IndexInfo, error) {
+	refs, err := mgr.Store().ListQueryIndexes()
 	if err != nil {
-		return nil
+		return nil, err
 	}
-
-	for _, dbName := range databases {
-		// Apply database filter
-		if filterDB != "" && dbName != filterDB {
+	var infos []*indexerv1.IndexInfo
+	seen := make(map[store.QueryIndexRef]bool)
+	for _, ref := range refs {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if filterDB != "" && filterDB != ref.Database {
 			continue
 		}
-
-		indexes, err := st.ListIndexes(dbName)
+		tmpl := findAdminTemplate(mgr, ref.Database, ref.TemplateFingerprint)
+		if !matchesAdminPattern(filterPattern, ref, tmpl) {
+			continue
+		}
+		generation, found, err := mgr.Store().ReadGeneration(ref.Database, ref.Collection, ref.TemplateFingerprint)
 		if err != nil {
-			continue // Skip database on error
+			return nil, err
 		}
-
-		for _, idx := range indexes {
-			// Apply pattern filter
-			if filterPattern != "" && idx.Pattern != filterPattern {
-				continue
-			}
-
-			infos = append(infos, &indexerv1.IndexInfo{
-				Database:   dbName,
-				Pattern:    idx.Pattern,
-				TemplateId: idx.TemplateID,
-				State:      string(idx.State),
-				DocCount:   int64(idx.DocCount),
-			})
+		if !found || generation.ID != ref.Generation || seen[ref] {
+			continue
 		}
+		seen[ref] = true
+		state := store.IndexStateRebuilding
+		if generation.Failure != "" {
+			state = store.IndexStateFailed
+		} else if generation.Ready {
+			state = store.IndexStateHealthy
+		}
+		identity := ref.TemplateFingerprint
+		if tmpl != nil {
+			identity = tmpl.Identity()
+		}
+		infos = append(infos, &indexerv1.IndexInfo{Database: ref.Database, Pattern: ref.Collection, TemplateId: identity, State: string(state), DocCount: -1})
 	}
-
-	return infos
+	sort.Slice(infos, func(i, j int) bool {
+		if infos[i].Database != infos[j].Database {
+			return infos[i].Database < infos[j].Database
+		}
+		if infos[i].Pattern != infos[j].Pattern {
+			return infos[i].Pattern < infos[j].Pattern
+		}
+		return infos[i].TemplateId < infos[j].TemplateId
+	})
+	return infos, nil
 }

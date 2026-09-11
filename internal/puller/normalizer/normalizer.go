@@ -206,6 +206,7 @@ func convertUpdateDescription(m bson.M) *events.UpdateDescription {
 	desc := &events.UpdateDescription{}
 
 	if updatedFields, ok := m["updatedFields"].(bson.M); ok {
+		fixTimestamps(updatedFields)
 		desc.UpdatedFields = convertBsonM(updatedFields)
 	}
 
@@ -235,10 +236,11 @@ func convertUpdateDescription(m bson.M) *events.UpdateDescription {
 	return desc
 }
 
-// fixTimestamps converts Date/Time types to int64 milliseconds in known fields.
-// This allows uniform unmarshaling into storage.StoredDoc which expects int64.
+// Storage timestamps use millisecond precision. BSON dates in document metadata
+// and update deltas share this int64 representation, including the TTL deadline
+// written by soft deletion. Business fields retain their own value domains.
 func fixTimestamps(doc bson.M) {
-	for _, field := range []string{"created_at", "updated_at"} {
+	for _, field := range []string{"created_at", "updated_at", "sys_expires_at"} {
 		if val, ok := doc[field]; ok {
 			switch v := val.(type) {
 			case primitive.DateTime:

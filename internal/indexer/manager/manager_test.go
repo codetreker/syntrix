@@ -266,6 +266,7 @@ templates:
     collectionPattern: test/{id}/items
     fields:
       - { field: name, order: asc }
+    includeDeleted: true
 `
 	st := mem_store.New()
 	m := New(st)

@@ -81,7 +81,7 @@ func (m *MockDocumentStore) Query(ctx context.Context, database string, q model.
 	return args.Get(0).([]*storage.StoredDoc), args.Error(1)
 }
 
-func (m *MockDocumentStore) GetMany(ctx context.Context, database string, paths []string) ([]*storage.StoredDoc, error) {
+func (m *MockDocumentStore) GetMany(ctx context.Context, database string, paths []string, opts ...storage.ReadOptions) ([]*storage.StoredDoc, error) {
 	args := m.Called(ctx, database, paths)
 	if args.Get(0) == nil {
 		return nil, args.Error(1)

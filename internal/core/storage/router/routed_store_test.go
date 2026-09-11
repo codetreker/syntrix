@@ -3,6 +3,7 @@ package router
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -72,8 +73,8 @@ func (m *mockDocumentStore) Query(ctx context.Context, database string, q model.
 	return args.Get(0).([]*types.StoredDoc), args.Error(1)
 }
 
-func (m *mockDocumentStore) GetMany(ctx context.Context, database string, paths []string) ([]*types.StoredDoc, error) {
-	args := m.Called(ctx, database, paths)
+func (m *mockDocumentStore) GetMany(ctx context.Context, database string, paths []string, opts ...types.ReadOptions) ([]*types.StoredDoc, error) {
+	args := m.Called(ctx, database, paths, opts)
 	if args.Get(0) == nil {
 		return nil, args.Error(1)
 	}
@@ -241,7 +242,7 @@ func TestRoutedDocumentStore(t *testing.T) {
 		}
 
 		router.On("Select", database, types.OpRead).Return(store, nil)
-		store.On("GetMany", ctx, database, paths).Return(expectedDocs, nil)
+		store.On("GetMany", ctx, database, paths, []types.ReadOptions(nil)).Return(expectedDocs, nil)
 
 		rs := NewRoutedDocumentStore(router)
 		docs, err := rs.GetMany(ctx, database, paths)
@@ -826,4 +827,154 @@ func TestRoutedDocumentStoreGetAuthoritativeDatabaseIsolation(t *testing.T) {
 	overridePrimary.AssertExpectations(t)
 	assert.Empty(t, defaultReplica.Calls)
 	assert.Empty(t, overrideReplica.Calls)
+}
+
+func TestRoutedDocumentStoreGetManyReadOptions(t *testing.T) {
+	ctx := context.Background()
+	paths := []string{"users/a", "sys/config/a", "users/missing", "users/a"}
+	for _, consistency := range []types.ReadConsistency{types.ReadDefault, types.ReadAuthoritative} {
+		for _, database := range []string{"default", "override"} {
+			t.Run(fmt.Sprintf("%s/%d", database, consistency), func(t *testing.T) {
+				primary, replica := new(mockDocumentStore), new(mockDocumentStore)
+				otherPrimary, otherReplica := new(mockDocumentStore), new(mockDocumentStore)
+				selected := replica
+				if consistency == types.ReadAuthoritative {
+					selected = primary
+				}
+				if database == "override" {
+					selected = otherReplica
+					if consistency == types.ReadAuthoritative {
+						selected = otherPrimary
+					}
+				}
+				opts := types.ReadOptions{Consistency: consistency, ShowDeleted: true, MaxBytes: 1024}
+				doc := &types.StoredDoc{Deleted: true}
+				expected := []*types.StoredDoc{doc, doc, nil, doc}
+				selected.On("GetMany", ctx, database, paths, []types.ReadOptions{opts}).Return(expected, nil).Once()
+				routed := NewRoutedDocumentStore(NewDatabaseDocumentRouter(NewSplitDocumentRouter(primary, replica), map[string]types.DocumentRouter{"override": NewSplitDocumentRouter(otherPrimary, otherReplica)}))
+				actual, err := routed.GetMany(ctx, database, paths, opts)
+				require.NoError(t, err)
+				assert.Equal(t, expected, actual)
+				for _, store := range []*mockDocumentStore{primary, replica, otherPrimary, otherReplica} {
+					store.AssertExpectations(t)
+					if store != selected {
+						assert.Empty(t, store.Calls)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestRoutedDocumentStoreGetManyErrors(t *testing.T) {
+	ctx := context.Background()
+	for _, opts := range [][]types.ReadOptions{{{}, {}}, {{Consistency: -1}}, {{MaxBytes: -1}}} {
+		router := new(mockDocRouter)
+		_, err := NewRoutedDocumentStore(router).GetMany(ctx, "app", nil, opts...)
+		require.Error(t, err)
+		assert.Empty(t, router.Calls)
+	}
+	primary, replica := new(mockDocumentStore), new(mockDocumentStore)
+	opts := types.ReadOptions{Consistency: types.ReadAuthoritative, ShowDeleted: true}
+	expected := errors.New("source unavailable")
+	primary.On("GetMany", ctx, "app", []string{"users/a"}, []types.ReadOptions{opts}).Return(nil, expected).Once()
+	_, err := NewRoutedDocumentStore(NewSplitDocumentRouter(primary, replica)).GetMany(ctx, "app", []string{"users/a"}, opts)
+	assert.ErrorIs(t, err, expected)
+	assert.Empty(t, replica.Calls)
+}
+
+type scanningDocumentStore struct {
+	*mockDocumentStore
+	request  types.SourceScanRequest
+	database string
+	page     types.SourceScanPage
+	err      error
+}
+
+func (s *scanningDocumentStore) ScanDocuments(_ context.Context, database string, request types.SourceScanRequest) (types.SourceScanPage, error) {
+	s.database = database
+	s.request = request
+	return s.page, s.err
+}
+func TestRoutedDocumentStoreScan(t *testing.T) {
+	ctx := context.Background()
+	primary, replica := &scanningDocumentStore{mockDocumentStore: new(mockDocumentStore)}, &scanningDocumentStore{mockDocumentStore: new(mockDocumentStore)}
+	sourceErr := errors.New("scan failed")
+	primary.err = sourceErr
+	routed := NewRoutedDocumentStore(NewSplitDocumentRouter(primary, replica)).(types.DocumentScanner)
+	request := types.SourceScanRequest{Collection: "users", Limit: 2, Consistency: types.ReadAuthoritative}
+	_, err := routed.ScanDocuments(ctx, "app", request)
+	assert.ErrorIs(t, err, sourceErr)
+	assert.Equal(t, request, primary.request)
+	assert.Equal(t, "app", primary.database)
+	assert.Empty(t, replica.database)
+	request.Consistency = types.ReadDefault
+	_, err = routed.ScanDocuments(ctx, "other", request)
+	assert.NoError(t, err)
+	assert.Equal(t, "other", replica.database)
+	unsupported := NewRoutedDocumentStore(NewSingleDocumentRouter(new(mockDocumentStore))).(types.DocumentScanner)
+	_, err = unsupported.ScanDocuments(ctx, "app", request)
+	assert.ErrorContains(t, err, "does not support bounded scanning")
+	request.Collection = "*"
+	_, err = routed.ScanDocuments(ctx, "app", request)
+	assert.Error(t, err)
+}
+
+type enumeratingDocumentStore struct {
+	*mockDocumentStore
+	called          bool
+	database, after string
+	limit           int
+	opts            []types.CollectionEnumerationOptions
+	err             error
+}
+
+func (s *enumeratingDocumentStore) EnumerateCollections(_ context.Context, database, after string, limit int, opts ...types.CollectionEnumerationOptions) ([]string, error) {
+	s.called = true
+	s.database = database
+	s.after = after
+	s.limit = limit
+	s.opts = opts
+	return []string{"users"}, s.err
+}
+func TestRoutedDocumentStoreEnumerateCollections(t *testing.T) {
+	ctx := context.Background()
+	primary, replica := &enumeratingDocumentStore{mockDocumentStore: new(mockDocumentStore)}, &enumeratingDocumentStore{mockDocumentStore: new(mockDocumentStore)}
+	routed := NewRoutedDocumentStore(NewSplitDocumentRouter(primary, replica)).(types.DocumentCollectionEnumerator)
+	opts := types.CollectionEnumerationOptions{IncludeSystem: true}
+	result, err := routed.EnumerateCollections(ctx, "app", "items", 10, opts)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"users"}, result)
+	assert.True(t, primary.called)
+	assert.False(t, replica.called)
+	assert.Equal(t, "app", primary.database)
+	assert.Equal(t, "items", primary.after)
+	assert.Equal(t, 10, primary.limit)
+	assert.Equal(t, []types.CollectionEnumerationOptions{opts}, primary.opts)
+	primary.err = errors.New("enumeration failed")
+	_, err = routed.EnumerateCollections(ctx, "app", "", 10)
+	assert.ErrorIs(t, err, primary.err)
+	assert.False(t, replica.called)
+	_, err = routed.EnumerateCollections(ctx, "app", "", 0)
+	assert.Error(t, err)
+	unsupported := NewRoutedDocumentStore(NewSingleDocumentRouter(new(mockDocumentStore))).(types.DocumentCollectionEnumerator)
+	_, err = unsupported.EnumerateCollections(ctx, "app", "", 1)
+	assert.ErrorContains(t, err, "does not support collection enumeration")
+}
+
+func TestRoutedDocumentStoreReadBudgetError(t *testing.T) {
+	ctx := context.Background()
+	primary, replica := new(mockDocumentStore), new(mockDocumentStore)
+	opts := types.ReadOptions{Consistency: types.ReadAuthoritative, ShowDeleted: true, MaxBytes: 1}
+	primary.On("Get", ctx, "app", "items/a", []types.ReadOptions{opts}).Return(nil, types.ErrReadBudget).Once()
+	primary.On("GetMany", ctx, "app", []string{"items/a", "items/b"}, []types.ReadOptions{opts}).Return(nil, types.ErrReadBudget).Once()
+	routed := NewRoutedDocumentStore(NewSplitDocumentRouter(primary, replica))
+	doc, err := routed.Get(ctx, "app", "items/a", opts)
+	assert.Nil(t, doc)
+	assert.ErrorIs(t, err, types.ErrReadBudget)
+	docs, err := routed.GetMany(ctx, "app", []string{"items/a", "items/b"}, opts)
+	assert.Nil(t, docs)
+	assert.ErrorIs(t, err, types.ErrReadBudget)
+	primary.AssertExpectations(t)
+	assert.Empty(t, replica.Calls)
 }

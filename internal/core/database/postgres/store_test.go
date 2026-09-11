@@ -152,7 +152,7 @@ func TestStore_List(t *testing.T) {
 		now, now, int64(0), int64(0), "active",
 	)
 
-	mock.ExpectQuery(`SELECT .+ FROM databases`).
+	mock.ExpectQuery(`SELECT .+ FROM databases .+ ORDER BY created_at DESC, id LIMIT`).
 		WithArgs(nil, nil, 20, 0).
 		WillReturnRows(listRows)
 

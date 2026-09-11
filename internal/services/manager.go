@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"sync"
+	"time"
 
 	"github.com/syntrixbase/syntrix/internal/config"
 	"github.com/syntrixbase/syntrix/internal/core/database"
@@ -25,6 +26,10 @@ type Options struct {
 	RunTriggerWorker    bool
 	RunPuller           bool
 	RunIndexer          bool
+	BootstrapIndexes    bool
+	WritesQuiesced      bool
+	ResetDerived        bool
+	BootstrapTimeout    time.Duration
 
 	// Mode specifies the deployment mode (distributed or standalone).
 	Mode services_config.DeploymentMode
@@ -58,17 +63,22 @@ type Manager struct {
 	storageFactoryOnce sync.Once
 	storageFactoryErr  error
 
-	authService     identity.AuthN
-	gatewayServer   *gateway.Server
-	rtServer        *realtime.Server
-	streamerService streamer.StreamerServer // local Streamer service (when RunStreamer=true)
-	streamerClient  streamer.Service        // remote Streamer client (for Gateway in distributed mode)
-	triggerConsumer triggerConsumer
-	triggerService  triggerService
-	pubsubProvider  pubsub.Provider // Unified pubsub provider (NATS or memory)
-	pullerService   puller.LocalService
-	pullerGRPC      *puller.GRPCServer
-	indexerService  indexer.LocalService
+	authService           identity.AuthN
+	gatewayServer         *gateway.Server
+	rtServer              *realtime.Server
+	streamerService       streamer.StreamerServer // local Streamer service (when RunStreamer=true)
+	streamerClient        streamer.Service        // remote Streamer client (for Gateway in distributed mode)
+	triggerConsumer       triggerConsumer
+	triggerService        triggerService
+	pubsubProvider        pubsub.Provider // Unified pubsub provider (NATS or memory)
+	pullerService         puller.LocalService
+	pullerGRPC            *puller.GRPCServer
+	indexerService        indexer.LocalService
+	pullerStarted         bool
+	indexerStarted        bool
+	serverStarted         bool
+	pullerGRPCInitialized bool
+	bootstrapReady        bool
 
 	// Database management
 	databaseService database.Service
@@ -78,6 +88,10 @@ type Manager struct {
 }
 
 func NewManager(cfg *config.Config, opts Options) *Manager {
+	if opts.BootstrapIndexes {
+		opts.RunPuller = true
+		opts.RunIndexer = true
+	}
 	return &Manager{
 		cfg:  cfg,
 		opts: opts,

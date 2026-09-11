@@ -89,8 +89,8 @@ exits. Consumers must not equate connection health with synchronized membership.
 
 ## Dependencies
 
-[Query cursor pagination](../feature/2026-09-07-query-cursor-pagination.md) and
-[indexed filter semantics](2026-09-07-indexed-query-filter-semantics.md) supply
+[Query cursor pagination](../../implemented/feature/2026-09-07-query-cursor-pagination.md) and
+[indexed filter semantics](../../implemented/bug-fix/2026-09-07-indexed-query-filter-semantics.md) supply
 query behavior. [Client resume](../feature/2026-09-07-realtime-client-resume.md)
 owns continuity cursors and transports this membership/removal/resynchronization
 contract across reconnects.

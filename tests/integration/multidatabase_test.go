@@ -56,10 +56,7 @@ func TestMultiDatabase_DataIsolation(t *testing.T) {
 	}
 	resp = env.MakeRequest(t, "POST", fmt.Sprintf("/api/v1/databases/%s/query", databaseB), queryAll, tokenB)
 	require.Equal(t, http.StatusOK, resp.StatusCode)
-	var listRes []interface{}
-	err = json.NewDecoder(resp.Body).Decode(&listRes)
-	require.NoError(t, err)
-	resp.Body.Close()
+	listRes := decodeQueryDocuments(t, resp)
 
 	assert.Empty(t, listRes, "Database B should see no documents")
 
@@ -85,10 +82,7 @@ func TestMultiDatabase_DataIsolation(t *testing.T) {
 	}
 	resp = env.MakeRequest(t, "POST", fmt.Sprintf("/api/v1/databases/%s/query", databaseB), query, tokenB)
 	require.Equal(t, http.StatusOK, resp.StatusCode)
-	var queryResults []interface{}
-	err = json.NewDecoder(resp.Body).Decode(&queryResults)
-	require.NoError(t, err)
-	resp.Body.Close()
+	queryResults := decodeQueryDocuments(t, resp)
 	assert.Empty(t, queryResults, "Database B query should return empty")
 
 	// 7. Database A can see the document

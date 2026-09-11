@@ -77,7 +77,7 @@ describe('RestTransport', () => {
 
   it('should query resources', async () => {
     const mockAxios = {
-      post: mock(async () => ({ data: { docs: [{ id: '1' }] } })),
+      post: mock(async () => ({ data: { documents: [{ type: 'object', value: { id: { type: 'string', value: '1' } } }], nextCursor: null, effectiveOrder: [] } })),
     } as any;
     const transport = new RestTransport(mockAxios, TEST_DB);
     const result = await transport.query('/api/v1/query', {});
@@ -85,13 +85,10 @@ describe('RestTransport', () => {
     expect(mockAxios.post).toHaveBeenCalledWith('/api/v1/databases/test-db/query', {});
   });
 
-  it('should query resources returning raw array', async () => {
-    const mockAxios = {
+  it('should reject a legacy raw array response', async () => {
+    const transport = new RestTransport({
       post: mock(async () => ({ data: [{ id: '1' }] })),
-    } as any;
-    const transport = new RestTransport(mockAxios, TEST_DB);
-    const result = await transport.query('/api/v1/query', {});
-    expect(result).toEqual([{ id: '1' }]);
-    expect(mockAxios.post).toHaveBeenCalledWith('/api/v1/databases/test-db/query', {});
+    } as any, TEST_DB);
+    await expect(transport.query('/api/v1/query', {})).rejects.toThrow('page');
   });
 });

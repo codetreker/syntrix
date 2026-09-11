@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/syntrixbase/syntrix/internal/puller/events"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
@@ -560,4 +561,43 @@ func TestNormalizer_FixTimestamps(t *testing.T) {
 	// fixTimestamps logic converts them to int64
 	assert.Equal(t, now.UnixMilli(), evt.FullDocument.CreatedAt)
 	assert.Equal(t, now.UnixMilli(), evt.FullDocument.UpdatedAt)
+}
+
+func TestNormalizer_MetadataTimestampDeltasUseMilliseconds(t *testing.T) {
+	t.Parallel()
+	deadline := time.UnixMilli(1789102091123).UTC()
+	for _, value := range []any{primitive.NewDateTimeFromTime(deadline), deadline} {
+		raw := makeRawEvent("update", 1, 1, bson.M{
+			"_id": "physical-id", "database": "db", "collection": "items", "fullpath": "items/logical-id", "data": bson.M{}, "deleted": true,
+		}, bson.M{"_id": "physical-id"}, "source", "data")
+		raw.UpdateDescription = bson.M{"updatedFields": bson.M{
+			"created_at": value, "updated_at": value, "sys_expires_at": value,
+			"data": bson.M{}, "deleted": true, "version": int64(9007199254740993),
+		}}
+		evt, err := New().Normalize(raw)
+		require.NoError(t, err)
+		encoded, err := events.MarshalEvent(evt)
+		require.NoError(t, err)
+		decoded, err := events.UnmarshalEvent(encoded)
+		require.NoError(t, err)
+		for _, field := range []string{"created_at", "updated_at", "sys_expires_at"} {
+			require.Equal(t, deadline.UnixMilli(), decoded.UpdateDesc.UpdatedFields[field])
+		}
+		require.Equal(t, int64(9007199254740993), decoded.UpdateDesc.UpdatedFields["version"])
+		require.Equal(t, map[string]any{}, decoded.FullDocument.Data)
+	}
+}
+
+func TestNormalizer_MetadataConversionDoesNotCoerceBusinessDates(t *testing.T) {
+	t.Parallel()
+	raw := makeRawEvent("update", 1, 1, bson.M{
+		"_id": "physical-id", "database": "db", "collection": "items", "fullpath": "items/logical-id", "data": bson.M{},
+	}, bson.M{"_id": "physical-id"}, "source", "data")
+	raw.UpdateDescription = bson.M{"updatedFields": bson.M{
+		"data.sys_expires_at": primitive.DateTime(1234),
+	}}
+	evt, err := New().Normalize(raw)
+	require.NoError(t, err)
+	_, err = events.MarshalEvent(evt)
+	require.ErrorContains(t, err, "unsupported value type time.Time")
 }

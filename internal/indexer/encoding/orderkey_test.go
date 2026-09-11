@@ -17,15 +17,11 @@ func TestEncode_Version(t *testing.T) {
 }
 
 func TestEncode_DocID(t *testing.T) {
-	// Empty fields, just doc ID
 	key, err := Encode(nil, "hello")
 	require.NoError(t, err)
-
-	// [ver:1][id_len:2][id:5]
-	assert.Len(t, key, 1+2+5)
-	assert.Equal(t, byte(0), key[1]) // high byte of length
-	assert.Equal(t, byte(5), key[2]) // low byte of length
-	assert.Equal(t, "hello", string(key[3:]))
+	id, err := ExtractDocID(key)
+	require.NoError(t, err)
+	assert.Equal(t, "hello", id)
 }
 
 func TestEncode_TypeTags(t *testing.T) {
@@ -77,8 +73,6 @@ func TestEncode_NumberOrdering(t *testing.T) {
 		{-1, 0, -1},
 		{0, 1, -1},
 		{1, 100, -1},
-		{math.Inf(-1), -1000, -1},
-		{1000, math.Inf(1), -1},
 		{-0.5, 0.5, -1},
 	}
 
@@ -307,11 +301,12 @@ func TestExtractDocID(t *testing.T) {
 		assert.Error(t, err)
 	})
 
-	t.Run("requires field schema", func(t *testing.T) {
-		// Current implementation requires field schema for full decode
-		key, _ := Encode([]Field{{Value: "test", Direction: Asc}}, "doc123")
-		_, err := ExtractDocID(key)
-		assert.Error(t, err, "should return error since field schema is required")
+	t.Run("mixed directions and escaped fields", func(t *testing.T) {
+		key, err := Encode([]Field{{Value: "test\x00", Direction: Desc}, {Value: int64(9007199254740993)}}, "doc123")
+		require.NoError(t, err)
+		id, err := ExtractDocID(key)
+		require.NoError(t, err)
+		assert.Equal(t, "doc123", id)
 	})
 }
 
@@ -338,8 +333,6 @@ func TestEncode_NegativeNumbers(t *testing.T) {
 		a, b float64
 		want int
 	}{
-		{math.Inf(-1), math.Inf(-1), 0},
-		{math.Inf(1), math.Inf(1), 0},
 		{-0.0, 0.0, 0}, // -0 and +0 should be equal
 		{math.SmallestNonzeroFloat64, 0, 1},
 		{-math.SmallestNonzeroFloat64, 0, -1},
@@ -414,8 +407,8 @@ func TestEncodePrefix(t *testing.T) {
 		// For descending order, all bytes are XOR'd with 0xFF
 		assert.True(t, len(prefix) > 1)
 		assert.Equal(t, Version, prefix[0])
-		// Type tag is also XOR'd for descending: TypeNumber(0x02) XOR 0xFF = 0xFD
-		assert.Equal(t, byte(0xFD), prefix[1])
+		// The type family is reversed with the rest of the field.
+		assert.Equal(t, ^TypeNumber, prefix[1])
 	})
 
 	t.Run("multiple fields", func(t *testing.T) {
@@ -486,4 +479,32 @@ func TestEncodePrefix(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, TypeNumber, prefix[1])
 	})
+}
+
+func TestExactScalarAndIdentityOrder(t *testing.T) {
+	values := []any{nil, false, true, int64(-9007199254740993), float64(-9007199254740992), int64(0), math.SmallestNonzeroFloat64, int64(9007199254740992), int64(9007199254740993), "", "a", "a\x00", "aa"}
+	previous, err := Encode([]Field{{Missing: true}}, "same")
+	require.NoError(t, err)
+	for _, value := range values {
+		current, err := Encode([]Field{{Value: value}}, "same")
+		require.NoError(t, err)
+		assert.Negative(t, Compare(previous, current), "%#v", value)
+		previous = current
+	}
+	for _, pair := range [][2]string{{"aa", "b"}, {"a", "aa"}, {"a\x00", "a\x01"}} {
+		first, err := Encode(nil, pair[0])
+		require.NoError(t, err)
+		second, err := Encode(nil, pair[1])
+		require.NoError(t, err)
+		assert.Negative(t, Compare(first, second))
+	}
+	for _, value := range []any{math.Inf(1), math.Inf(-1), math.NaN(), uint64(1)} {
+		_, err := Encode([]Field{{Value: value}}, "id")
+		require.Error(t, err)
+	}
+	positive, err := Encode([]Field{{Value: float64(0)}}, "id")
+	require.NoError(t, err)
+	negative, err := Encode([]Field{{Value: math.Copysign(0, -1)}}, "id")
+	require.NoError(t, err)
+	assert.Equal(t, positive, negative)
 }

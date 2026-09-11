@@ -1,15 +1,15 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { ChevronLeft, ChevronRight, RefreshCw, Search, X } from 'lucide-react';
-import { documentsApi, type Document, type QueryResponse, type Filter } from '../../../lib/documents';
+import { documentsApi, formatDocumentJson, formatDocumentDate, parseFilterValue, type Document, type QueryResponse, type Filter } from '../../../lib/documents';
 import { Table, type Column, Button, Spinner } from '../../ui';
 
 const FILTER_OPS: { value: Filter['op']; label: string }[] = [
-  { value: 'eq', label: '=' },
-  { value: 'ne', label: '!=' },
-  { value: 'gt', label: '>' },
-  { value: 'gte', label: '>=' },
-  { value: 'lt', label: '<' },
-  { value: 'lte', label: '<=' },
+  { value: '==', label: '=' },
+  { value: '!=', label: '!=' },
+  { value: '>', label: '>' },
+  { value: '>=', label: '>=' },
+  { value: '<', label: '<' },
+  { value: '<=', label: '<=' },
   { value: 'contains', label: 'contains' },
 ];
 
@@ -24,18 +24,27 @@ export function DocumentList({ database, collection, onSelectDocument }: Documen
   const [documents, setDocuments] = useState<Document[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [hasMore, setHasMore] = useState(false);
-  const [cursors, setCursors] = useState<string[]>([]);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const hasMore = nextCursor !== null;
+  const [cursors, setCursors] = useState<(string | undefined)[]>([]);
   const [currentCursor, setCurrentCursor] = useState<string | undefined>(undefined);
   const [filterField, setFilterField] = useState('');
-  const [filterOp, setFilterOp] = useState<Filter['op']>('eq');
+  const [filterOp, setFilterOp] = useState<Filter['op']>('==');
   const [filterValue, setFilterValue] = useState('');
+  const [filterError, setFilterError] = useState<string | null>(null);
   const [activeFilters, setActiveFilters] = useState<Filter[]>([]);
+  const requestVersion = useRef(0);
   const limit = 20;
 
   const fetchDocuments = useCallback(async (startAfter?: string, isGoingBack = false) => {
+    const version = ++requestVersion.current;
     setLoading(true);
     setError(null);
+    if (startAfter === undefined && !isGoingBack) {
+      setNextCursor(null);
+      setCurrentCursor(undefined);
+      setCursors([]);
+    }
     try {
       const response: QueryResponse = await documentsApi.query({
         database,
@@ -44,33 +53,35 @@ export function DocumentList({ database, collection, onSelectDocument }: Documen
         limit,
         startAfter,
       });
+      if (requestVersion.current !== version) return;
       setDocuments(response.documents);
-      setHasMore(response.hasMore);
+      setNextCursor(response.nextCursor);
       setCurrentCursor(startAfter);
-      
-      // If going forward, save current cursor for back navigation
-      if (!isGoingBack && startAfter === undefined) {
-        setCursors([]);
-      }
     } catch (err) {
+      if (requestVersion.current !== version) return;
       setError(err instanceof Error ? err.message : 'Failed to load documents');
       setDocuments([]);
+      setNextCursor(null);
     } finally {
-      setLoading(false);
+      if (requestVersion.current === version) setLoading(false);
     }
   }, [database, collection, activeFilters]);
 
   useEffect(() => {
-    fetchDocuments();
+    void fetchDocuments();
+    return () => { requestVersion.current++; };
   }, [collection, fetchDocuments]);
 
   const handleAddFilter = () => {
     if (!filterField.trim()) return;
-    let parsedValue: unknown = filterValue;
-    if (filterValue === 'true') parsedValue = true;
-    else if (filterValue === 'false') parsedValue = false;
-    else if (filterValue !== '' && !isNaN(Number(filterValue))) parsedValue = Number(filterValue);
-    setActiveFilters((prev) => [...prev, { field: filterField, op: filterOp, value: parsedValue }]);
+    try {
+      const value = parseFilterValue(filterValue);
+      setActiveFilters((prev) => [...prev, { field: filterField, op: filterOp, value }]);
+      setFilterError(null);
+    } catch (err) {
+      setFilterError(err instanceof Error ? err.message : 'Invalid filter value');
+      return;
+    }
     setFilterField('');
     setFilterValue('');
   };
@@ -80,11 +91,9 @@ export function DocumentList({ database, collection, onSelectDocument }: Documen
   };
 
   const handleNextPage = () => {
-    if (hasMore && documents.length > 0) {
-      const lastDoc = documents[documents.length - 1];
-      // Save current cursor before moving forward
-      setCursors(prev => [...prev, currentCursor || '']);
-      fetchDocuments(lastDoc.id);
+    if (nextCursor !== null) {
+      setCursors(prev => [...prev, currentCursor]);
+      fetchDocuments(nextCursor);
     }
   };
 
@@ -93,7 +102,7 @@ export function DocumentList({ database, collection, onSelectDocument }: Documen
       const newCursors = [...cursors];
       const prevCursor = newCursors.pop();
       setCursors(newCursors);
-      fetchDocuments(prevCursor || undefined, true);
+      fetchDocuments(prevCursor, true);
     }
   };
 
@@ -135,7 +144,7 @@ export function DocumentList({ database, collection, onSelectDocument }: Documen
         const createdAt = doc.createdAt || doc._createdAt;
         return (
           <span className="text-xs text-gray-500">
-            {createdAt ? formatDate(createdAt as string | number) : '-'}
+            {createdAt ? formatDocumentDate(createdAt) : '-'}
           </span>
         );
       },
@@ -212,6 +221,7 @@ export function DocumentList({ database, collection, onSelectDocument }: Documen
             <Search className="w-4 h-4" />
           </button>
         </div>
+        {filterError && <p className="text-xs text-red-600 dark:text-red-400">{filterError}</p>}
         {activeFilters.length > 0 && (
           <div className="flex flex-wrap gap-1.5">
             {activeFilters.map((f, i) => (
@@ -291,25 +301,5 @@ function getDocumentPreview(doc: Document): string {
   if (typeof value === 'string') {
     return value.length > 50 ? value.slice(0, 50) + '...' : value;
   }
-  return `${key}: ${JSON.stringify(value)}`.slice(0, 60);
-}
-
-function formatDate(dateValue: string | number): string {
-  try {
-    // Handle both timestamp (milliseconds) and ISO string
-    const date = typeof dateValue === 'number' 
-      ? new Date(dateValue) 
-      : new Date(dateValue);
-    
-    if (isNaN(date.getTime())) return '-';
-    
-    return date.toLocaleDateString('en-US', {
-      month: 'short',
-      day: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit',
-    });
-  } catch {
-    return '-';
-  }
+  return `${key}: ${formatDocumentJson(value, 0)}`.slice(0, 60);
 }

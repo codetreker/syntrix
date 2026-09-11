@@ -27,9 +27,9 @@ import (
 
 // Service defines the interface for the Indexer service.
 type Service interface {
-	// Search returns document references matching the query plan.
-	// Indexer internally selects the best matching template based on
-	// plan.OrderBy and plan.Filters using the Query-to-Index matching rules.
+	// Search returns access candidates in the plan's common order. Query must
+	// materialize source documents and evaluate every predicate before returning
+	// user-visible results; an index reference alone is not a verified match.
 	Search(ctx context.Context, database string, plan Plan) ([]DocRef, error)
 
 	// Health returns current health status of the indexer.
@@ -39,6 +39,16 @@ type Service interface {
 	// independently; event counters reset when a new instance is created.
 	Stats(ctx context.Context) (Stats, error)
 }
+
+// CandidateService opens a request-owned ordered stream for Query materialization.
+// Callers must close the stream on page completion, error, or cancellation.
+type CandidateService interface {
+	OpenCandidates(ctx context.Context, database string, plan Plan) (manager.CandidateStream, error)
+}
+
+type CandidateStream = manager.CandidateStream
+type CandidateGroup = manager.CandidateGroup
+type CandidateMetadata = manager.CandidateMetadata
 
 // LocalService extends Service with methods for managing the indexer lifecycle.
 type LocalService interface {
@@ -74,11 +84,14 @@ type FilterOp = manager.FilterOp
 
 // Filter operation constants.
 const (
-	FilterEq  = manager.FilterEq
-	FilterGt  = manager.FilterGt
-	FilterLt  = manager.FilterLt
-	FilterGte = manager.FilterGte
-	FilterLte = manager.FilterLte
+	FilterEq       = manager.FilterEq
+	FilterGt       = manager.FilterGt
+	FilterLt       = manager.FilterLt
+	FilterGte      = manager.FilterGte
+	FilterLte      = manager.FilterLte
+	FilterNe       = manager.FilterNe
+	FilterIn       = manager.FilterIn
+	FilterContains = manager.FilterContains
 )
 
 // Direction represents sort direction.

@@ -6,10 +6,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/syntrixbase/syntrix/internal/core/storage"
 	"github.com/syntrixbase/syntrix/internal/puller/buffer"
 	"github.com/syntrixbase/syntrix/internal/puller/config"
 	"github.com/syntrixbase/syntrix/internal/puller/events"
-	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
@@ -48,7 +48,7 @@ func TestPuller_WatchAndCheckpoint(t *testing.T) {
 
 	// Insert a document to trigger an event
 	coll := env.DB.Collection("users")
-	_, err = coll.InsertOne(ctx, bson.M{"username": "testuser", "email": "test@example.com"})
+	_, err = coll.InsertOne(ctx, storage.NewStoredDoc(env.DBName, "users", "test-user", map[string]any{"username": "testuser", "email": "test@example.com"}))
 	if err != nil {
 		t.Fatalf("InsertOne failed: %v", err)
 	}
@@ -130,7 +130,7 @@ func TestPuller_ResumeFromCheckpoint(t *testing.T) {
 
 	// Generate event
 	coll := env.DB.Collection("users")
-	_, _ = coll.InsertOne(ctx, bson.M{"a": 1})
+	_, _ = coll.InsertOne(ctx, storage.NewStoredDoc(env.DBName, "users", "test-user", map[string]any{"a": 1}))
 
 	// Wait for event to ensure it was processed
 	select {
@@ -198,7 +198,7 @@ func TestPuller_EventHandlerError(t *testing.T) {
 
 	// Generate event
 	coll := env.DB.Collection("users")
-	_, _ = coll.InsertOne(ctx, bson.M{"a": 1})
+	_, _ = coll.InsertOne(ctx, storage.NewStoredDoc(env.DBName, "users", "test-user", map[string]any{"a": 1}))
 
 	// Wait a bit, should not crash
 	time.Sleep(100 * time.Millisecond)

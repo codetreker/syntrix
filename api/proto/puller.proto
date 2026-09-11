@@ -10,7 +10,15 @@ service PullerService {
   // Subscribe to merged event stream from all backends.
   // Events are delivered in order within each backend, merged across backends.
   rpc Subscribe(SubscribeRequest) returns (stream PullerEvent);
+  // Requires quiesced writers and explicitly reset buffers.
+  rpc BootstrapBoundary(BootstrapBoundaryRequest) returns (BoundaryResponse);
+  // Rejects a different buffer lineage or unavailable replay history.
+  rpc ValidateBoundary(ValidateBoundaryRequest) returns (BoundaryResponse);
 }
+
+message BootstrapBoundaryRequest {}
+message ValidateBoundaryRequest { string progress = 1; }
+message BoundaryResponse { string progress = 1; }
 
 // SubscribeRequest configures a subscription to the event stream.
 message SubscribeRequest {
@@ -27,6 +35,8 @@ message SubscribeRequest {
   // When enabled and consumer is catching up, multiple events
   // for the same document may be merged.
   bool coalesce_on_catch_up = 3;
+  // Require source readiness and verified replay; receive a ready control frame.
+  bool require_ready = 4;
 }
 
 // PullerEvent is the top-level wrapper for events emitted by the Puller service.
@@ -38,6 +48,8 @@ message PullerEvent {
   // Consumer should save this value and pass it as 'after'
   // when reconnecting to resume from this position.
   string progress = 2;
+  // Set only after registration and validated catch-up have reached live mode.
+  bool ready = 3;
 }
 
 // ChangeEvent represents a normalized change event from the database.
@@ -57,11 +69,11 @@ message ChangeEvent {
   // Operation type: "insert", "update", "replace", or "delete".
   string op_type = 5;
 
-  // Full document after the change (JSON encoded storage.StoredDoc).
+  // Full document after the change (typed BSON encoded storage.StoredDoc).
   // Empty for delete operations.
   bytes full_doc = 6;
 
-  // Description of update changes (JSON encoded).
+  // Description of update changes (typed BSON encoded).
   // Only present for update operations.
   bytes update_desc = 7;
 

@@ -20,6 +20,7 @@ const _ = grpc.SupportPackageIsVersion9
 
 const (
 	IndexerService_Search_FullMethodName          = "/syntrix.indexer.v1.IndexerService/Search"
+	IndexerService_OpenCandidates_FullMethodName  = "/syntrix.indexer.v1.IndexerService/OpenCandidates"
 	IndexerService_Health_FullMethodName          = "/syntrix.indexer.v1.IndexerService/Health"
 	IndexerService_Stats_FullMethodName           = "/syntrix.indexer.v1.IndexerService/Stats"
 	IndexerService_GetState_FullMethodName        = "/syntrix.indexer.v1.IndexerService/GetState"
@@ -44,6 +45,9 @@ type IndexerServiceClient interface {
 	// Indexer internally selects the best matching template based on
 	// plan's OrderBy and Filters using Query-to-Index matching rules.
 	Search(ctx context.Context, in *SearchRequest, opts ...grpc.CallOption) (*SearchResponse, error)
+	// OpenCandidates sends metadata, complete candidate groups, then completion.
+	// Each message is limited to 1 MiB; cancellation releases the index snapshot.
+	OpenCandidates(ctx context.Context, in *CandidateRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[CandidateResponse], error)
 	// Health returns the current health status of the indexer.
 	Health(ctx context.Context, in *HealthRequest, opts ...grpc.CallOption) (*HealthResponse, error)
 	// Stats returns current aggregate statistics for this Indexer service instance.
@@ -76,6 +80,25 @@ func (c *indexerServiceClient) Search(ctx context.Context, in *SearchRequest, op
 	}
 	return out, nil
 }
+
+func (c *indexerServiceClient) OpenCandidates(ctx context.Context, in *CandidateRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[CandidateResponse], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &IndexerService_ServiceDesc.Streams[0], IndexerService_OpenCandidates_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[CandidateRequest, CandidateResponse]{ClientStream: stream}
+	if err := x.ClientStream.SendMsg(in); err != nil {
+		return nil, err
+	}
+	if err := x.ClientStream.CloseSend(); err != nil {
+		return nil, err
+	}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type IndexerService_OpenCandidatesClient = grpc.ServerStreamingClient[CandidateResponse]
 
 func (c *indexerServiceClient) Health(ctx context.Context, in *HealthRequest, opts ...grpc.CallOption) (*HealthResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
@@ -144,6 +167,9 @@ type IndexerServiceServer interface {
 	// Indexer internally selects the best matching template based on
 	// plan's OrderBy and Filters using Query-to-Index matching rules.
 	Search(context.Context, *SearchRequest) (*SearchResponse, error)
+	// OpenCandidates sends metadata, complete candidate groups, then completion.
+	// Each message is limited to 1 MiB; cancellation releases the index snapshot.
+	OpenCandidates(*CandidateRequest, grpc.ServerStreamingServer[CandidateResponse]) error
 	// Health returns the current health status of the indexer.
 	Health(context.Context, *HealthRequest) (*HealthResponse, error)
 	// Stats returns current aggregate statistics for this Indexer service instance.
@@ -169,6 +195,9 @@ type UnimplementedIndexerServiceServer struct{}
 
 func (UnimplementedIndexerServiceServer) Search(context.Context, *SearchRequest) (*SearchResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Search not implemented")
+}
+func (UnimplementedIndexerServiceServer) OpenCandidates(*CandidateRequest, grpc.ServerStreamingServer[CandidateResponse]) error {
+	return status.Error(codes.Unimplemented, "method OpenCandidates not implemented")
 }
 func (UnimplementedIndexerServiceServer) Health(context.Context, *HealthRequest) (*HealthResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Health not implemented")
@@ -223,6 +252,17 @@ func _IndexerService_Search_Handler(srv interface{}, ctx context.Context, dec fu
 	}
 	return interceptor(ctx, in, info, handler)
 }
+
+func _IndexerService_OpenCandidates_Handler(srv interface{}, stream grpc.ServerStream) error {
+	m := new(CandidateRequest)
+	if err := stream.RecvMsg(m); err != nil {
+		return err
+	}
+	return srv.(IndexerServiceServer).OpenCandidates(m, &grpc.GenericServerStream[CandidateRequest, CandidateResponse]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type IndexerService_OpenCandidatesServer = grpc.ServerStreamingServer[CandidateResponse]
 
 func _IndexerService_Health_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(HealthRequest)
@@ -346,6 +386,12 @@ var IndexerService_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _IndexerService_InvalidateIndex_Handler,
 		},
 	},
-	Streams:  []grpc.StreamDesc{},
+	Streams: []grpc.StreamDesc{
+		{
+			StreamName:    "OpenCandidates",
+			Handler:       _IndexerService_OpenCandidates_Handler,
+			ServerStreams: true,
+		},
+	},
 	Metadata: "indexer.proto",
 }

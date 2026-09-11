@@ -51,7 +51,7 @@ func TestServer_AdmissionConcurrentLimit(t *testing.T) {
 				go func() {
 					<-start
 					results <- srv.Subscribe(&pullerv1.SubscribeRequest{
-						ConsumerId: label, After: makeProgressMarker("backend", "event"),
+						ConsumerId: label, After: makeProgressMarker("backend", "1-1-event"),
 					}, &mockSubscribeServer{ctx: ctx})
 				}()
 			}

@@ -3,7 +3,6 @@ package client
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -11,10 +10,11 @@ import (
 	"time"
 
 	pullerv1 "github.com/syntrixbase/syntrix/api/gen/puller/v1"
-	"github.com/syntrixbase/syntrix/internal/core/storage"
 	"github.com/syntrixbase/syntrix/internal/puller/events"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
 )
 
 // ConnectionState represents the current connection state.
@@ -109,27 +109,28 @@ func NewWithConfig(address string, logger *slog.Logger, cfg ClientConfig) (*Clie
 // Subscribe subscribes to events from the puller service with automatic reconnection.
 // The after parameter is the progress marker to resume from.
 // Returns a channel of events that will be closed when the context is canceled
-// or max retries is reached.
+// or max retries is reached. Invalid event payloads terminate the subscription
+// and report their decoding error through OnStateChange before progress advances.
 //
 // The subscription automatically:
 // - Reconnects on connection failures with exponential backoff
 // - Resumes from the last received progress marker
 // - Filters out heartbeat events (nil ChangeEvent)
 func (c *Client) Subscribe(ctx context.Context, consumerID string, after string) <-chan *events.PullerEvent {
-	return c.subscribe(ctx, consumerID, after, false)
+	return c.subscribe(ctx, consumerID, after, false, nil, false)
 }
 
 // SubscribeWithCoalesce subscribes with catch-up coalescing enabled.
 // When catching up, multiple events for the same document may be merged.
 func (c *Client) SubscribeWithCoalesce(ctx context.Context, consumerID string, after string) <-chan *events.PullerEvent {
-	return c.subscribe(ctx, consumerID, after, true)
+	return c.subscribe(ctx, consumerID, after, true, nil, false)
 }
 
 // subscribe is the internal implementation with reconnection logic.
-func (c *Client) subscribe(ctx context.Context, consumerID string, after string, coalesce bool) <-chan *events.PullerEvent {
+func (c *Client) subscribe(ctx context.Context, consumerID string, after string, coalesce bool, onReady func(string), verified bool) <-chan *events.PullerEvent {
 	ch := make(chan *events.PullerEvent, 1000)
 
-	go c.subscribeLoop(ctx, consumerID, after, coalesce, ch)
+	go c.subscribeLoop(ctx, consumerID, after, coalesce, ch, onReady, verified)
 
 	return ch
 }
@@ -141,10 +142,32 @@ func (c *Client) subscribeLoop(
 	initialAfter string,
 	coalesce bool,
 	ch chan *events.PullerEvent,
+	onReady func(string),
+	verified bool,
 ) {
 	defer close(ch)
 
 	currentProgress := initialAfter
+	reportFailure := func(err error, retryable bool) {
+		if !verified || ctx.Err() != nil {
+			return
+		}
+		select {
+		case ch <- &events.PullerEvent{Error: err, Retryable: retryable}:
+		case <-ctx.Done():
+		}
+	}
+	temporary := func(err error) bool {
+		if err == io.EOF {
+			return true
+		}
+		switch status.Code(err) {
+		case codes.Unavailable, codes.DeadlineExceeded, codes.ResourceExhausted:
+			return true
+		default:
+			return false
+		}
+	}
 	consecutiveFailures := 0
 	backoff := c.cfg.InitialBackoff
 
@@ -167,14 +190,20 @@ func (c *Client) subscribeLoop(
 			ConsumerId:        consumerID,
 			After:             currentProgress,
 			CoalesceOnCatchUp: coalesce,
+			RequireReady:      verified,
 		}
 
 		c.mu.RLock()
 		client := c.client
 		c.mu.RUnlock()
 
-		stream, err := client.Subscribe(ctx, req)
+		stream, err := client.Subscribe(ctx, req, grpc.MaxCallRecvMsgSize(events.MaxRPCBytes), grpc.MaxCallSendMsgSize(events.MaxRPCBytes))
 		if err != nil {
+			if verified {
+				reportFailure(err, temporary(err))
+				notifyState(StateDisconnected, err)
+				return
+			}
 			c.logger.Error("failed to subscribe", "error", err, "attempt", consecutiveFailures+1)
 			notifyState(StateReconnecting, err)
 
@@ -208,7 +237,9 @@ func (c *Client) subscribeLoop(
 		}
 
 		// Successfully connected
-		notifyState(StateConnected, nil)
+		if !verified {
+			notifyState(StateConnected, nil)
+		}
 		consecutiveFailures = 0
 		backoff = c.cfg.InitialBackoff
 
@@ -221,6 +252,11 @@ func (c *Client) subscribeLoop(
 		for {
 			evt, err := stream.Recv()
 			if err != nil {
+				if verified {
+					reportFailure(err, temporary(err))
+					notifyState(StateDisconnected, err)
+					return
+				}
 				if err == io.EOF {
 					c.logger.Info("subscription stream closed by server")
 				} else if ctx.Err() != nil {
@@ -235,21 +271,52 @@ func (c *Client) subscribeLoop(
 				break // Break inner loop to reconnect
 			}
 
-			// Update progress marker (always, even for heartbeats)
-			if evt.Progress != "" {
-				currentProgress = evt.Progress
+			if evt.Ready {
+				if !verified || evt.ChangeEvent != nil {
+					reportFailure(fmt.Errorf("invalid ready frame"), false)
+					notifyState(StateDisconnected, fmt.Errorf("invalid ready frame"))
+					return
+				}
+				if evt.Progress == "" {
+					reportFailure(fmt.Errorf("ready frame has no replay boundary"), false)
+					notifyState(StateDisconnected, fmt.Errorf("ready frame has no replay boundary"))
+					return
+				}
+				select {
+				case ch <- &events.PullerEvent{Ready: true, Progress: evt.Progress}:
+					currentProgress = evt.Progress
+				case <-ctx.Done():
+					return
+				}
+				if onReady != nil {
+					onReady(evt.Progress)
+				}
+				notifyState(StateConnected, nil)
+				continue
 			}
 
 			// Check if this is a heartbeat (nil ChangeEvent)
 			if evt.ChangeEvent == nil {
+				if evt.Progress != "" {
+					currentProgress = evt.Progress
+				}
 				c.logger.Debug("received heartbeat", "progress", evt.Progress)
 				continue // Skip heartbeats, don't send to channel
 			}
 
 			// Convert and send event
-			normalized := c.convertEvent(evt)
+			normalized, err := c.convertEvent(evt)
+			if err != nil {
+				c.logger.Error("invalid puller event", "error", err)
+				reportFailure(err, false)
+				notifyState(StateDisconnected, err)
+				return
+			}
 			select {
 			case ch <- normalized:
+				if evt.Progress != "" {
+					currentProgress = evt.Progress
+				}
 			case <-ctx.Done():
 				notifyState(StateDisconnected, ctx.Err())
 				return
@@ -297,7 +364,7 @@ func (c *Client) Close() error {
 }
 
 // convertEvent converts a gRPC event to a PullerEvent.
-func (c *Client) convertEvent(evt *pullerv1.PullerEvent) *events.PullerEvent {
+func (c *Client) convertEvent(evt *pullerv1.PullerEvent) (*events.PullerEvent, error) {
 	change := evt.ChangeEvent
 
 	normalized := &events.StoreChangeEvent{
@@ -318,26 +385,45 @@ func (c *Client) convertEvent(evt *pullerv1.PullerEvent) *events.PullerEvent {
 		}
 	}
 
+	var err error
 	if len(change.FullDoc) > 0 {
-		var doc storage.StoredDoc
-		if err := json.Unmarshal(change.FullDoc, &doc); err == nil {
-			normalized.FullDocument = &doc
-		} else {
-			c.logger.Error("failed to unmarshal full document", "error", err)
+		normalized.FullDocument, err = events.UnmarshalDocument(change.FullDoc)
+		if err != nil {
+			return nil, fmt.Errorf("decode puller full document: %w", err)
 		}
 	}
-
 	if len(change.UpdateDesc) > 0 {
-		var desc events.UpdateDescription
-		if err := json.Unmarshal(change.UpdateDesc, &desc); err == nil {
-			normalized.UpdateDesc = &desc
-		} else {
-			c.logger.Error("failed to unmarshal update description", "error", err)
+		normalized.UpdateDesc, err = events.UnmarshalUpdateDescription(change.UpdateDesc)
+		if err != nil {
+			return nil, fmt.Errorf("decode puller update description: %w", err)
 		}
 	}
 
 	return &events.PullerEvent{
 		Change:   normalized,
 		Progress: evt.Progress,
+	}, nil
+}
+
+func (c *Client) BootstrapBoundary(ctx context.Context) (string, error) {
+	c.mu.RLock()
+	client := c.client
+	c.mu.RUnlock()
+	response, err := client.BootstrapBoundary(ctx, &pullerv1.BootstrapBoundaryRequest{}, grpc.WaitForReady(true), grpc.MaxCallRecvMsgSize(events.MaxRPCBytes), grpc.MaxCallSendMsgSize(events.MaxRPCBytes))
+	if err != nil {
+		return "", err
 	}
+	return response.Progress, nil
+}
+
+func (c *Client) ValidateBoundary(ctx context.Context, after string) error {
+	c.mu.RLock()
+	client := c.client
+	c.mu.RUnlock()
+	_, err := client.ValidateBoundary(ctx, &pullerv1.ValidateBoundaryRequest{Progress: after}, grpc.WaitForReady(true), grpc.MaxCallRecvMsgSize(events.MaxRPCBytes), grpc.MaxCallSendMsgSize(events.MaxRPCBytes))
+	return err
+}
+
+func (c *Client) SubscribeReady(ctx context.Context, consumerID, after string, onReady func(string)) <-chan *events.PullerEvent {
+	return c.subscribe(ctx, consumerID, after, false, onReady, true)
 }

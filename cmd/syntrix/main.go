@@ -28,6 +28,10 @@ func main() {
 	runStreamer := flag.Bool("streamer", false, "Run Streamer Service")
 	runAll := flag.Bool("all", false, "Run All Services")
 	standalone := flag.Bool("standalone", false, "Run in standalone mode (single process, no inter-service HTTP)")
+	bootstrapIndexes := flag.Bool("bootstrap-indexes", false, "Rebuild indexes during maintenance, verify subscription readiness, then keep services running")
+	writesQuiesced := flag.Bool("writes-quiesced", false, "Attest all external writers, including HTTP/gRPC clients and MongoDB tombstone TTL deletion, remain paused until bootstrap readiness")
+	resetDerived := flag.Bool("reset-derived", false, "Archive configured index and Puller buffer directories before bootstrap; stop other processes using them")
+	bootstrapTimeout := flag.Duration("bootstrap-timeout", 30*time.Minute, "Maximum duration for index bootstrap and subscription readiness")
 	flag.Parse()
 
 	// 1. Load Configuration early to check deployment mode from config
@@ -53,15 +57,19 @@ func main() {
 		slog.Info("Starting Syntrix in Standalone Mode...")
 		slog.Info("- All services running in-process")
 		opts := services.Options{
-			Mode:   mode,
-			RunAPI: true,
+			Mode:             mode,
+			RunAPI:           true,
+			BootstrapIndexes: *bootstrapIndexes,
+			WritesQuiesced:   *writesQuiesced,
+			ResetDerived:     *resetDerived,
+			BootstrapTimeout: *bootstrapTimeout,
 		}
 		runServer(cfg, opts)
 		return
 	}
 
 	// Default to running all if no specific flags are provided or if --all is set
-	if *runAll || (!*runAPI && !*runQuery && !*runTriggerEvaluator && !*runTriggerWorker && !*runPuller) {
+	if *runAll || (!*runAPI && !*runQuery && !*runTriggerEvaluator && !*runTriggerWorker && !*runPuller && !*runIndexer && !*runStreamer) {
 		*runAPI = true
 		*runQuery = true
 		*runTriggerEvaluator = true
@@ -100,42 +108,60 @@ func main() {
 		RunPuller:           *runPuller,
 		RunIndexer:          *runIndexer,
 		RunStreamer:         *runStreamer,
+		Mode:                mode,
+		BootstrapIndexes:    *bootstrapIndexes,
+		WritesQuiesced:      *writesQuiesced,
+		ResetDerived:        *resetDerived,
+		BootstrapTimeout:    *bootstrapTimeout,
 	}
 	runServer(cfg, opts)
 }
 
 // runServer starts the service manager with the given configuration and options.
 func runServer(cfg *config.Config, opts services.Options) {
-	mgr := services.NewManager(cfg, opts)
+	if err := serve(cfg, opts); err != nil {
+		logging.Fatal("Service startup failed", "error", err)
+	}
+}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+func serve(cfg *config.Config, opts services.Options) error {
+	mgr := services.NewManager(cfg, opts)
+	if err := mgr.PrepareIndexBootstrap(); err != nil {
+		return err
+	}
+
+	bgCtx, bgCancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer bgCancel()
+	defer func() {
+		bgCancel()
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer shutdownCancel()
+		mgr.Shutdown(shutdownCtx)
+	}()
+
+	ctx, cancel := context.WithTimeout(bgCtx, 10*time.Second)
 	defer cancel()
 
 	if err := mgr.Init(ctx); err != nil {
-		logging.Fatal("Failed to initialize services", "error", err)
+		return fmt.Errorf("initialize services: %w", err)
 	}
 
-	// 3. Start Services
-	// Context for background tasks
-	bgCtx, bgCancel := context.WithCancel(context.Background())
-	defer bgCancel()
+	if opts.BootstrapIndexes {
+		slog.Info("Index maintenance active; keep all external writers and MongoDB tombstone TTL deletion paused until readiness is confirmed")
+		bootstrapCtx, bootstrapCancel := context.WithTimeout(bgCtx, opts.BootstrapTimeout)
+		err := mgr.BootstrapIndexes(bgCtx, bootstrapCtx)
+		bootstrapCancel()
+		if err != nil {
+			return fmt.Errorf("index maintenance failed; keep writes paused: %w", err)
+		}
+	}
 
 	mgr.Start(bgCtx)
+	if opts.BootstrapIndexes {
+		slog.Info("Index bootstrap and subscription application are ready; external writers and MongoDB tombstone TTL deletion may resume")
+	}
 
-	// 4. Wait for Shutdown
-	quit := make(chan os.Signal, 1)
-	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-	<-quit
+	<-bgCtx.Done()
 	slog.Info("Shutting down services...")
-
-	// Graceful shutdown
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer shutdownCancel()
-
-	// Cancel background tasks first
-	bgCancel()
-
-	mgr.Shutdown(shutdownCtx)
-
-	slog.Info("All services stopped.")
+	return nil
 }

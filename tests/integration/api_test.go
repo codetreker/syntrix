@@ -1,7 +1,6 @@
 package integration
 
 import (
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
@@ -83,10 +82,7 @@ func TestAPIIntegration(t *testing.T) {
 	resp := env.MakeRequest(t, "POST", "/api/v1/databases/default/query", query, token)
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 
-	var queryResults []map[string]interface{}
-	err := json.NewDecoder(resp.Body).Decode(&queryResults)
-	require.NoError(t, err)
-	resp.Body.Close()
+	queryResults := decodeQueryDocuments(t, resp)
 
 	found := false
 	for _, d := range queryResults {
@@ -181,9 +177,7 @@ func TestAPIQueryAdvanced(t *testing.T) {
 		resp := env.MakeRequest(t, "POST", "/api/v1/databases/default/query", query, token)
 		require.Equal(t, http.StatusOK, resp.StatusCode)
 
-		var results []map[string]interface{}
-		json.NewDecoder(resp.Body).Decode(&results)
-		resp.Body.Close()
+		results := decodeQueryDocuments(t, resp)
 
 		// Should only match Banana (fruit with price < 1.0)
 		require.Len(t, results, 1)
@@ -204,9 +198,7 @@ func TestAPIQueryAdvanced(t *testing.T) {
 		resp := env.MakeRequest(t, "POST", "/api/v1/databases/default/query", query, token)
 		require.Equal(t, http.StatusOK, resp.StatusCode)
 
-		var results []map[string]interface{}
-		json.NewDecoder(resp.Body).Decode(&results)
-		resp.Body.Close()
+		results := decodeQueryDocuments(t, resp)
 
 		require.Len(t, results, 2)
 		// Cheese ($5) should come before Milk ($2)
@@ -223,9 +215,7 @@ func TestAPIQueryAdvanced(t *testing.T) {
 		resp := env.MakeRequest(t, "POST", "/api/v1/databases/default/query", query, token)
 		require.Equal(t, http.StatusOK, resp.StatusCode)
 
-		var results []map[string]interface{}
-		json.NewDecoder(resp.Body).Decode(&results)
-		resp.Body.Close()
+		results := decodeQueryDocuments(t, resp)
 
 		assert.Len(t, results, 2)
 	})
@@ -242,9 +232,7 @@ func TestAPIQueryAdvanced(t *testing.T) {
 		resp := env.MakeRequest(t, "POST", "/api/v1/databases/default/query", query, token)
 		require.Equal(t, http.StatusOK, resp.StatusCode)
 
-		var results []map[string]interface{}
-		json.NewDecoder(resp.Body).Decode(&results)
-		resp.Body.Close()
+		results := decodeQueryDocuments(t, resp)
 
 		// Apple (100), Banana (200), Carrot (150) - only Banana and Carrot have stock >= 150
 		assert.Len(t, results, 2)
@@ -265,9 +253,7 @@ func TestAPIQueryAdvanced(t *testing.T) {
 		resp = env.MakeRequest(t, "POST", "/api/v1/databases/default/query", query, token)
 		require.Equal(t, http.StatusOK, resp.StatusCode)
 
-		var results []map[string]interface{}
-		json.NewDecoder(resp.Body).Decode(&results)
-		resp.Body.Close()
+		results := decodeQueryDocuments(t, resp)
 
 		assert.Len(t, results, 4) // 5 - 1 deleted
 
@@ -276,8 +262,7 @@ func TestAPIQueryAdvanced(t *testing.T) {
 		resp = env.MakeRequest(t, "POST", "/api/v1/databases/default/query", query, token)
 		require.Equal(t, http.StatusOK, resp.StatusCode)
 
-		json.NewDecoder(resp.Body).Decode(&results)
-		resp.Body.Close()
+		results = decodeQueryDocuments(t, resp)
 
 		assert.Len(t, results, 5) // All 5 including deleted
 	})

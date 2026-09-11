@@ -17,6 +17,10 @@ var (
 	ErrPermissionDenied = errors.New("permission denied")
 	// ErrInvalidQuery is returned when a query is malformed
 	ErrInvalidQuery = errors.New("invalid query")
+	// ErrStaleCursor requires restarting a query against its current index generation.
+	ErrStaleCursor = errors.New("stale query cursor")
+	// ErrQueryWorkLimit rejects a page that exceeds its execution or encoding budget.
+	ErrQueryWorkLimit = errors.New("query work limit exceeded")
 	// ErrIndexNotReady is returned when the index layer is unavailable or rebuilding.
 	// This error is a placeholder for future index layer implementation (Task 015).
 	ErrIndexNotReady = errors.New("index not ready")

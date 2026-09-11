@@ -3,9 +3,13 @@ package grpc
 import (
 	"context"
 	"errors"
+	"fmt"
+	"github.com/syntrixbase/syntrix/internal/query/wire"
+	"google.golang.org/genproto/googleapis/rpc/errdetails"
 
 	pb "github.com/syntrixbase/syntrix/api/gen/query/v1"
 	"github.com/syntrixbase/syntrix/internal/core/storage"
+	"github.com/syntrixbase/syntrix/internal/ctxkeys"
 	"github.com/syntrixbase/syntrix/internal/indexer"
 	"github.com/syntrixbase/syntrix/pkg/model"
 	"google.golang.org/grpc/codes"
@@ -99,15 +103,37 @@ func (s *Server) DeleteDocument(ctx context.Context, req *pb.DeleteDocumentReque
 
 // ExecuteQuery executes a query and returns matching documents.
 func (s *Server) ExecuteQuery(ctx context.Context, req *pb.ExecuteQueryRequest) (*pb.ExecuteQueryResponse, error) {
-	query := protoToQuery(req.Query)
-
-	docs, err := s.service.ExecuteQuery(ctx, req.Database, query)
-	if err != nil {
-		return nil, errorToStatus(err)
+	ctx = ctxkeys.IncomingRequestContext(ctx)
+	if req.WireVersion != wire.Version {
+		return nil, queryErrorToStatus(fmt.Errorf("%w: unsupported query wire version", model.ErrInvalidQuery))
 	}
-	return &pb.ExecuteQueryResponse{
-		Documents: modelDocsToProto(docs),
-	}, nil
+	q, err := wire.DecodeQuery(req.Query)
+	if err != nil {
+		return nil, queryErrorToStatus(err)
+	}
+	service, ok := s.service.(interface {
+		ExecuteQueryPage(context.Context, string, model.Query) (model.QueryPage, error)
+	})
+	if !ok {
+		return nil, status.Error(codes.Unimplemented, "query page service is required")
+	}
+	page, err := service.ExecuteQueryPage(ctx, req.Database, q)
+	if err != nil {
+		return nil, queryErrorToStatus(err)
+	}
+	response, err := wire.EncodePage(page)
+	if err != nil {
+		return nil, queryErrorToStatus(err)
+	}
+	return response, nil
+}
+
+func queryErrorToStatus(err error) error {
+	converted := errorToStatus(err)
+	if status.Code(converted) == codes.Internal {
+		return status.Error(codes.Internal, "query execution failed")
+	}
+	return converted
 }
 
 // Pull retrieves documents for replication.
@@ -144,6 +170,30 @@ func errorToStatus(err error) error {
 		return nil
 	}
 
+	reasons := []struct {
+		err    error
+		code   codes.Code
+		reason string
+	}{
+		{model.ErrStaleCursor, codes.FailedPrecondition, "STALE_CURSOR"},
+		{model.ErrQueryWorkLimit, codes.ResourceExhausted, "QUERY_WORK_LIMIT"},
+		{indexer.ErrNoMatchingIndex, codes.FailedPrecondition, "NO_MATCHING_INDEX"},
+		{indexer.ErrIndexNotReady, codes.Unavailable, "INDEX_UNAVAILABLE"},
+		{indexer.ErrIndexRebuilding, codes.Unavailable, "INDEX_UNAVAILABLE"},
+	}
+	for _, item := range reasons {
+		if errors.Is(err, item.err) {
+			st := status.New(item.code, item.err.Error())
+			detailed, detailErr := st.WithDetails(&errdetails.ErrorInfo{Reason: item.reason, Domain: "syntrix.query"})
+			if detailErr != nil {
+				return st.Err()
+			}
+			return detailed.Err()
+		}
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return status.Error(codes.DeadlineExceeded, "query deadline exceeded")
+	}
 	// Check for known error types
 	if errors.Is(err, model.ErrNotFound) {
 		return status.Error(codes.NotFound, err.Error())
@@ -162,12 +212,6 @@ func errorToStatus(err error) error {
 	}
 	if model.IsCanceled(err) {
 		return status.Error(codes.Canceled, "operation canceled")
-	}
-	if errors.Is(err, indexer.ErrNoMatchingIndex) {
-		return status.Error(codes.FailedPrecondition, err.Error())
-	}
-	if errors.Is(err, indexer.ErrIndexRebuilding) || errors.Is(err, indexer.ErrIndexNotReady) {
-		return status.Error(codes.Unavailable, err.Error())
 	}
 
 	// Default to internal error

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/syntrixbase/syntrix/pkg/benchmark/types"
+	"github.com/syntrixbase/syntrix/pkg/model"
 )
 
 // HTTPClient implements the Client interface for HTTP communication.
@@ -103,13 +104,100 @@ func (c *HTTPClient) DeleteDocument(ctx context.Context, collection, id string) 
 	return c.doRequest(ctx, "DELETE", url, nil, nil)
 }
 
-// Query executes a query and returns matching documents.
+// Query returns the first response page so one benchmark operation makes one
+// query request, regardless of whether the server provides a continuation.
 func (c *HTTPClient) Query(ctx context.Context, query types.Query) ([]*types.Document, error) {
+	if query.Offset != 0 {
+		return nil, fmt.Errorf("query offsets are not supported")
+	}
 	url := fmt.Sprintf("%s/api/v1/databases/%s/query", c.baseURL, c.database)
+	type queryFilter struct {
+		Field string          `json:"field"`
+		Op    model.FilterOp  `json:"op"`
+		Value json.RawMessage `json:"value"`
+	}
+	request := struct {
+		Collection string        `json:"collection"`
+		Filters    []queryFilter `json:"filters,omitempty"`
+		OrderBy    []model.Order `json:"orderBy,omitempty"`
+		Limit      int           `json:"limit,omitempty"`
+	}{Collection: query.Collection, OrderBy: query.OrderBy, Limit: query.Limit}
+	filters, err := model.NormalizeFilters(model.Filters(query.Filters))
+	if err != nil {
+		return nil, fmt.Errorf("invalid query filters: %w", err)
+	}
+	for _, filter := range filters {
+		value, err := model.EncodeTypedValue(filter.Value)
+		if err != nil {
+			return nil, fmt.Errorf("encode query filter %q: %w", filter.Field, err)
+		}
+		request.Filters = append(request.Filters, queryFilter{Field: filter.Field, Op: filter.Op, Value: value})
+	}
 
-	var results []*types.Document
-	if err := c.doRequest(ctx, "POST", url, query, &results); err != nil {
+	var response json.RawMessage
+	if err := c.doRequest(ctx, "POST", url, request, &response); err != nil {
 		return nil, err
+	}
+	if err := model.ValidateJSONUnicode(response); err != nil {
+		return nil, fmt.Errorf("invalid query page: %w", err)
+	}
+	var page struct {
+		Documents      []json.RawMessage `json:"documents"`
+		NextCursor     json.RawMessage   `json:"nextCursor"`
+		EffectiveOrder []model.Order     `json:"effectiveOrder"`
+	}
+	decoder := json.NewDecoder(bytes.NewReader(response))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&page); err != nil {
+		return nil, fmt.Errorf("invalid query page: %w", err)
+	}
+	if page.Documents == nil || len(page.NextCursor) == 0 || len(page.EffectiveOrder) == 0 {
+		return nil, fmt.Errorf("query page requires documents, nextCursor, and effectiveOrder")
+	}
+	if !bytes.Equal(bytes.TrimSpace(page.NextCursor), []byte("null")) {
+		var cursor string
+		if err := json.Unmarshal(page.NextCursor, &cursor); err != nil {
+			return nil, fmt.Errorf("invalid query page nextCursor: %w", err)
+		}
+		if cursor == "" {
+			return nil, fmt.Errorf("query page nextCursor must be nonempty or null")
+		}
+	}
+	for _, order := range page.EffectiveOrder {
+		if err := model.ValidateQueryField(order.Field); err != nil {
+			return nil, fmt.Errorf("invalid query page effectiveOrder: %w", err)
+		}
+		if order.Direction != "asc" && order.Direction != "desc" {
+			return nil, fmt.Errorf("invalid query page order direction %q", order.Direction)
+		}
+	}
+	results := make([]*types.Document, 0, len(page.Documents))
+	for i, raw := range page.Documents {
+		value, err := model.DecodeTypedValue(raw)
+		if err != nil {
+			return nil, fmt.Errorf("query document %d: %w", i, err)
+		}
+		data, ok := value.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("query document %d must be an object", i)
+		}
+		id, validID := data["id"].(string)
+		collection, validCollection := data["collection"].(string)
+		version, validVersion := data["version"].(int64)
+		createdAt, validCreatedAt := data["createdAt"].(int64)
+		updatedAt, validUpdatedAt := data["updatedAt"].(int64)
+		if !validID || id == "" || !validCollection || collection == "" || !validVersion || !validCreatedAt || !validUpdatedAt {
+			return nil, fmt.Errorf("query document %d has invalid or missing metadata", i)
+		}
+		for _, field := range []string{"id", "collection", "version", "createdAt", "updatedAt"} {
+			delete(data, field)
+		}
+		results = append(results, &types.Document{
+			ID: id, Collection: collection, Version: version,
+			CreatedAt: types.UnixMilliTime{Time: time.UnixMilli(createdAt)},
+			UpdatedAt: types.UnixMilliTime{Time: time.UnixMilli(updatedAt)},
+			Data:      data,
+		})
 	}
 
 	return results, nil

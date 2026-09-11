@@ -21,6 +21,690 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+type CandidateRequest struct {
+	state               protoimpl.MessageState `protogen:"open.v1"`
+	Database            string                 `protobuf:"bytes,1,opt,name=database,proto3" json:"database,omitempty"`
+	Collection          string                 `protobuf:"bytes,2,opt,name=collection,proto3" json:"collection,omitempty"`
+	Filters             []*CandidateFilter     `protobuf:"bytes,3,rep,name=filters,proto3" json:"filters,omitempty"`
+	OrderBy             []*OrderByField        `protobuf:"bytes,4,rep,name=order_by,json=orderBy,proto3" json:"order_by,omitempty"`
+	AfterPosition       []byte                 `protobuf:"bytes,5,opt,name=after_position,json=afterPosition,proto3" json:"after_position,omitempty"`
+	TemplateFingerprint string                 `protobuf:"bytes,6,opt,name=template_fingerprint,json=templateFingerprint,proto3" json:"template_fingerprint,omitempty"`
+	Generation          string                 `protobuf:"bytes,7,opt,name=generation,proto3" json:"generation,omitempty"`
+	BranchHash          string                 `protobuf:"bytes,8,opt,name=branch_hash,json=branchHash,proto3" json:"branch_hash,omitempty"`
+	MaxExamined         int64                  `protobuf:"varint,9,opt,name=max_examined,json=maxExamined,proto3" json:"max_examined,omitempty"`
+	ShowDeleted         bool                   `protobuf:"varint,10,opt,name=show_deleted,json=showDeleted,proto3" json:"show_deleted,omitempty"`
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
+}
+
+func (x *CandidateRequest) Reset() {
+	*x = CandidateRequest{}
+	mi := &file_indexer_proto_msgTypes[0]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CandidateRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CandidateRequest) ProtoMessage() {}
+
+func (x *CandidateRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_indexer_proto_msgTypes[0]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CandidateRequest.ProtoReflect.Descriptor instead.
+func (*CandidateRequest) Descriptor() ([]byte, []int) {
+	return file_indexer_proto_rawDescGZIP(), []int{0}
+}
+
+func (x *CandidateRequest) GetDatabase() string {
+	if x != nil {
+		return x.Database
+	}
+	return ""
+}
+
+func (x *CandidateRequest) GetCollection() string {
+	if x != nil {
+		return x.Collection
+	}
+	return ""
+}
+
+func (x *CandidateRequest) GetFilters() []*CandidateFilter {
+	if x != nil {
+		return x.Filters
+	}
+	return nil
+}
+
+func (x *CandidateRequest) GetOrderBy() []*OrderByField {
+	if x != nil {
+		return x.OrderBy
+	}
+	return nil
+}
+
+func (x *CandidateRequest) GetAfterPosition() []byte {
+	if x != nil {
+		return x.AfterPosition
+	}
+	return nil
+}
+
+func (x *CandidateRequest) GetTemplateFingerprint() string {
+	if x != nil {
+		return x.TemplateFingerprint
+	}
+	return ""
+}
+
+func (x *CandidateRequest) GetGeneration() string {
+	if x != nil {
+		return x.Generation
+	}
+	return ""
+}
+
+func (x *CandidateRequest) GetBranchHash() string {
+	if x != nil {
+		return x.BranchHash
+	}
+	return ""
+}
+
+func (x *CandidateRequest) GetMaxExamined() int64 {
+	if x != nil {
+		return x.MaxExamined
+	}
+	return 0
+}
+
+func (x *CandidateRequest) GetShowDeleted() bool {
+	if x != nil {
+		return x.ShowDeleted
+	}
+	return false
+}
+
+type CandidateFilter struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Field string                 `protobuf:"bytes,1,opt,name=field,proto3" json:"field,omitempty"`
+	Op    string                 `protobuf:"bytes,2,opt,name=op,proto3" json:"op,omitempty"`
+	// model.EncodeTypedValue format preserves int64 and binary64 domains.
+	TypedValue    []byte `protobuf:"bytes,3,opt,name=typed_value,json=typedValue,proto3" json:"typed_value,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CandidateFilter) Reset() {
+	*x = CandidateFilter{}
+	mi := &file_indexer_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CandidateFilter) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CandidateFilter) ProtoMessage() {}
+
+func (x *CandidateFilter) ProtoReflect() protoreflect.Message {
+	mi := &file_indexer_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CandidateFilter.ProtoReflect.Descriptor instead.
+func (*CandidateFilter) Descriptor() ([]byte, []int) {
+	return file_indexer_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *CandidateFilter) GetField() string {
+	if x != nil {
+		return x.Field
+	}
+	return ""
+}
+
+func (x *CandidateFilter) GetOp() string {
+	if x != nil {
+		return x.Op
+	}
+	return ""
+}
+
+func (x *CandidateFilter) GetTypedValue() []byte {
+	if x != nil {
+		return x.TypedValue
+	}
+	return nil
+}
+
+type CandidateTemplateField struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Field         string                 `protobuf:"bytes,1,opt,name=field,proto3" json:"field,omitempty"`
+	Direction     string                 `protobuf:"bytes,2,opt,name=direction,proto3" json:"direction,omitempty"`
+	Mode          string                 `protobuf:"bytes,3,opt,name=mode,proto3" json:"mode,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CandidateTemplateField) Reset() {
+	*x = CandidateTemplateField{}
+	mi := &file_indexer_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CandidateTemplateField) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CandidateTemplateField) ProtoMessage() {}
+
+func (x *CandidateTemplateField) ProtoReflect() protoreflect.Message {
+	mi := &file_indexer_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CandidateTemplateField.ProtoReflect.Descriptor instead.
+func (*CandidateTemplateField) Descriptor() ([]byte, []int) {
+	return file_indexer_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *CandidateTemplateField) GetField() string {
+	if x != nil {
+		return x.Field
+	}
+	return ""
+}
+
+func (x *CandidateTemplateField) GetDirection() string {
+	if x != nil {
+		return x.Direction
+	}
+	return ""
+}
+
+func (x *CandidateTemplateField) GetMode() string {
+	if x != nil {
+		return x.Mode
+	}
+	return ""
+}
+
+type CandidateMetadata struct {
+	state               protoimpl.MessageState    `protogen:"open.v1"`
+	TemplateName        string                    `protobuf:"bytes,1,opt,name=template_name,json=templateName,proto3" json:"template_name,omitempty"`
+	CollectionPattern   string                    `protobuf:"bytes,2,opt,name=collection_pattern,json=collectionPattern,proto3" json:"collection_pattern,omitempty"`
+	Fields              []*CandidateTemplateField `protobuf:"bytes,3,rep,name=fields,proto3" json:"fields,omitempty"`
+	IncludeDeleted      bool                      `protobuf:"varint,4,opt,name=include_deleted,json=includeDeleted,proto3" json:"include_deleted,omitempty"`
+	TemplateFingerprint string                    `protobuf:"bytes,5,opt,name=template_fingerprint,json=templateFingerprint,proto3" json:"template_fingerprint,omitempty"`
+	Generation          string                    `protobuf:"bytes,6,opt,name=generation,proto3" json:"generation,omitempty"`
+	BranchHash          string                    `protobuf:"bytes,7,opt,name=branch_hash,json=branchHash,proto3" json:"branch_hash,omitempty"`
+	EffectiveOrder      []*OrderByField           `protobuf:"bytes,8,rep,name=effective_order,json=effectiveOrder,proto3" json:"effective_order,omitempty"`
+	Branches            []*CandidateBranch        `protobuf:"bytes,9,rep,name=branches,proto3" json:"branches,omitempty"`
+	Assignments         []*PredicateAssignment    `protobuf:"bytes,10,rep,name=assignments,proto3" json:"assignments,omitempty"`
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
+}
+
+func (x *CandidateMetadata) Reset() {
+	*x = CandidateMetadata{}
+	mi := &file_indexer_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CandidateMetadata) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CandidateMetadata) ProtoMessage() {}
+
+func (x *CandidateMetadata) ProtoReflect() protoreflect.Message {
+	mi := &file_indexer_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CandidateMetadata.ProtoReflect.Descriptor instead.
+func (*CandidateMetadata) Descriptor() ([]byte, []int) {
+	return file_indexer_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *CandidateMetadata) GetTemplateName() string {
+	if x != nil {
+		return x.TemplateName
+	}
+	return ""
+}
+
+func (x *CandidateMetadata) GetCollectionPattern() string {
+	if x != nil {
+		return x.CollectionPattern
+	}
+	return ""
+}
+
+func (x *CandidateMetadata) GetFields() []*CandidateTemplateField {
+	if x != nil {
+		return x.Fields
+	}
+	return nil
+}
+
+func (x *CandidateMetadata) GetIncludeDeleted() bool {
+	if x != nil {
+		return x.IncludeDeleted
+	}
+	return false
+}
+
+func (x *CandidateMetadata) GetTemplateFingerprint() string {
+	if x != nil {
+		return x.TemplateFingerprint
+	}
+	return ""
+}
+
+func (x *CandidateMetadata) GetGeneration() string {
+	if x != nil {
+		return x.Generation
+	}
+	return ""
+}
+
+func (x *CandidateMetadata) GetBranchHash() string {
+	if x != nil {
+		return x.BranchHash
+	}
+	return ""
+}
+
+func (x *CandidateMetadata) GetEffectiveOrder() []*OrderByField {
+	if x != nil {
+		return x.EffectiveOrder
+	}
+	return nil
+}
+
+func (x *CandidateMetadata) GetBranches() []*CandidateBranch {
+	if x != nil {
+		return x.Branches
+	}
+	return nil
+}
+
+func (x *CandidateMetadata) GetAssignments() []*PredicateAssignment {
+	if x != nil {
+		return x.Assignments
+	}
+	return nil
+}
+
+type PredicateAssignment struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Predicate     int32                  `protobuf:"varint,1,opt,name=predicate,proto3" json:"predicate,omitempty"`
+	Access        bool                   `protobuf:"varint,2,opt,name=access,proto3" json:"access,omitempty"`
+	Residual      bool                   `protobuf:"varint,3,opt,name=residual,proto3" json:"residual,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PredicateAssignment) Reset() {
+	*x = PredicateAssignment{}
+	mi := &file_indexer_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PredicateAssignment) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PredicateAssignment) ProtoMessage() {}
+
+func (x *PredicateAssignment) ProtoReflect() protoreflect.Message {
+	mi := &file_indexer_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PredicateAssignment.ProtoReflect.Descriptor instead.
+func (*PredicateAssignment) Descriptor() ([]byte, []int) {
+	return file_indexer_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *PredicateAssignment) GetPredicate() int32 {
+	if x != nil {
+		return x.Predicate
+	}
+	return 0
+}
+
+func (x *PredicateAssignment) GetAccess() bool {
+	if x != nil {
+		return x.Access
+	}
+	return false
+}
+
+func (x *PredicateAssignment) GetResidual() bool {
+	if x != nil {
+		return x.Residual
+	}
+	return false
+}
+
+type CandidateBranch struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Prefix        []byte                 `protobuf:"bytes,1,opt,name=prefix,proto3" json:"prefix,omitempty"`
+	FixedFields   int32                  `protobuf:"varint,2,opt,name=fixed_fields,json=fixedFields,proto3" json:"fixed_fields,omitempty"`
+	Lower         []byte                 `protobuf:"bytes,3,opt,name=lower,proto3" json:"lower,omitempty"`
+	Upper         []byte                 `protobuf:"bytes,4,opt,name=upper,proto3" json:"upper,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CandidateBranch) Reset() {
+	*x = CandidateBranch{}
+	mi := &file_indexer_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CandidateBranch) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CandidateBranch) ProtoMessage() {}
+
+func (x *CandidateBranch) ProtoReflect() protoreflect.Message {
+	mi := &file_indexer_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CandidateBranch.ProtoReflect.Descriptor instead.
+func (*CandidateBranch) Descriptor() ([]byte, []int) {
+	return file_indexer_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *CandidateBranch) GetPrefix() []byte {
+	if x != nil {
+		return x.Prefix
+	}
+	return nil
+}
+
+func (x *CandidateBranch) GetFixedFields() int32 {
+	if x != nil {
+		return x.FixedFields
+	}
+	return 0
+}
+
+func (x *CandidateBranch) GetLower() []byte {
+	if x != nil {
+		return x.Lower
+	}
+	return nil
+}
+
+func (x *CandidateBranch) GetUpper() []byte {
+	if x != nil {
+		return x.Upper
+	}
+	return nil
+}
+
+type CandidateGroup struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	Position      []byte                 `protobuf:"bytes,2,opt,name=position,proto3" json:"position,omitempty"`
+	Branches      []int32                `protobuf:"varint,3,rep,packed,name=branches,proto3" json:"branches,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CandidateGroup) Reset() {
+	*x = CandidateGroup{}
+	mi := &file_indexer_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CandidateGroup) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CandidateGroup) ProtoMessage() {}
+
+func (x *CandidateGroup) ProtoReflect() protoreflect.Message {
+	mi := &file_indexer_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CandidateGroup.ProtoReflect.Descriptor instead.
+func (*CandidateGroup) Descriptor() ([]byte, []int) {
+	return file_indexer_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *CandidateGroup) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *CandidateGroup) GetPosition() []byte {
+	if x != nil {
+		return x.Position
+	}
+	return nil
+}
+
+func (x *CandidateGroup) GetBranches() []int32 {
+	if x != nil {
+		return x.Branches
+	}
+	return nil
+}
+
+type CandidateComplete struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CandidateComplete) Reset() {
+	*x = CandidateComplete{}
+	mi := &file_indexer_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CandidateComplete) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CandidateComplete) ProtoMessage() {}
+
+func (x *CandidateComplete) ProtoReflect() protoreflect.Message {
+	mi := &file_indexer_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CandidateComplete.ProtoReflect.Descriptor instead.
+func (*CandidateComplete) Descriptor() ([]byte, []int) {
+	return file_indexer_proto_rawDescGZIP(), []int{7}
+}
+
+type CandidateResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Types that are valid to be assigned to Payload:
+	//
+	//	*CandidateResponse_Metadata
+	//	*CandidateResponse_Group
+	//	*CandidateResponse_Complete
+	Payload isCandidateResponse_Payload `protobuf_oneof:"payload"`
+	// Cumulative entries examined when this message was produced.
+	Examined      int64 `protobuf:"varint,4,opt,name=examined,proto3" json:"examined,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CandidateResponse) Reset() {
+	*x = CandidateResponse{}
+	mi := &file_indexer_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CandidateResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CandidateResponse) ProtoMessage() {}
+
+func (x *CandidateResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_indexer_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CandidateResponse.ProtoReflect.Descriptor instead.
+func (*CandidateResponse) Descriptor() ([]byte, []int) {
+	return file_indexer_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *CandidateResponse) GetPayload() isCandidateResponse_Payload {
+	if x != nil {
+		return x.Payload
+	}
+	return nil
+}
+
+func (x *CandidateResponse) GetMetadata() *CandidateMetadata {
+	if x != nil {
+		if x, ok := x.Payload.(*CandidateResponse_Metadata); ok {
+			return x.Metadata
+		}
+	}
+	return nil
+}
+
+func (x *CandidateResponse) GetGroup() *CandidateGroup {
+	if x != nil {
+		if x, ok := x.Payload.(*CandidateResponse_Group); ok {
+			return x.Group
+		}
+	}
+	return nil
+}
+
+func (x *CandidateResponse) GetComplete() *CandidateComplete {
+	if x != nil {
+		if x, ok := x.Payload.(*CandidateResponse_Complete); ok {
+			return x.Complete
+		}
+	}
+	return nil
+}
+
+func (x *CandidateResponse) GetExamined() int64 {
+	if x != nil {
+		return x.Examined
+	}
+	return 0
+}
+
+type isCandidateResponse_Payload interface {
+	isCandidateResponse_Payload()
+}
+
+type CandidateResponse_Metadata struct {
+	Metadata *CandidateMetadata `protobuf:"bytes,1,opt,name=metadata,proto3,oneof"`
+}
+
+type CandidateResponse_Group struct {
+	Group *CandidateGroup `protobuf:"bytes,2,opt,name=group,proto3,oneof"`
+}
+
+type CandidateResponse_Complete struct {
+	Complete *CandidateComplete `protobuf:"bytes,3,opt,name=complete,proto3,oneof"`
+}
+
+func (*CandidateResponse_Metadata) isCandidateResponse_Payload() {}
+
+func (*CandidateResponse_Group) isCandidateResponse_Payload() {}
+
+func (*CandidateResponse_Complete) isCandidateResponse_Payload() {}
+
 // SearchRequest represents a search query plan.
 type SearchRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -43,7 +727,7 @@ type SearchRequest struct {
 
 func (x *SearchRequest) Reset() {
 	*x = SearchRequest{}
-	mi := &file_indexer_proto_msgTypes[0]
+	mi := &file_indexer_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -55,7 +739,7 @@ func (x *SearchRequest) String() string {
 func (*SearchRequest) ProtoMessage() {}
 
 func (x *SearchRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_indexer_proto_msgTypes[0]
+	mi := &file_indexer_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -68,7 +752,7 @@ func (x *SearchRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SearchRequest.ProtoReflect.Descriptor instead.
 func (*SearchRequest) Descriptor() ([]byte, []int) {
-	return file_indexer_proto_rawDescGZIP(), []int{0}
+	return file_indexer_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *SearchRequest) GetDatabase() string {
@@ -128,7 +812,7 @@ type Filter struct {
 
 func (x *Filter) Reset() {
 	*x = Filter{}
-	mi := &file_indexer_proto_msgTypes[1]
+	mi := &file_indexer_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -140,7 +824,7 @@ func (x *Filter) String() string {
 func (*Filter) ProtoMessage() {}
 
 func (x *Filter) ProtoReflect() protoreflect.Message {
-	mi := &file_indexer_proto_msgTypes[1]
+	mi := &file_indexer_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -153,7 +837,7 @@ func (x *Filter) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Filter.ProtoReflect.Descriptor instead.
 func (*Filter) Descriptor() ([]byte, []int) {
-	return file_indexer_proto_rawDescGZIP(), []int{1}
+	return file_indexer_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *Filter) GetField() string {
@@ -190,7 +874,7 @@ type OrderByField struct {
 
 func (x *OrderByField) Reset() {
 	*x = OrderByField{}
-	mi := &file_indexer_proto_msgTypes[2]
+	mi := &file_indexer_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -202,7 +886,7 @@ func (x *OrderByField) String() string {
 func (*OrderByField) ProtoMessage() {}
 
 func (x *OrderByField) ProtoReflect() protoreflect.Message {
-	mi := &file_indexer_proto_msgTypes[2]
+	mi := &file_indexer_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -215,7 +899,7 @@ func (x *OrderByField) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use OrderByField.ProtoReflect.Descriptor instead.
 func (*OrderByField) Descriptor() ([]byte, []int) {
-	return file_indexer_proto_rawDescGZIP(), []int{2}
+	return file_indexer_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *OrderByField) GetField() string {
@@ -243,7 +927,7 @@ type SearchResponse struct {
 
 func (x *SearchResponse) Reset() {
 	*x = SearchResponse{}
-	mi := &file_indexer_proto_msgTypes[3]
+	mi := &file_indexer_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -255,7 +939,7 @@ func (x *SearchResponse) String() string {
 func (*SearchResponse) ProtoMessage() {}
 
 func (x *SearchResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_indexer_proto_msgTypes[3]
+	mi := &file_indexer_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -268,7 +952,7 @@ func (x *SearchResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SearchResponse.ProtoReflect.Descriptor instead.
 func (*SearchResponse) Descriptor() ([]byte, []int) {
-	return file_indexer_proto_rawDescGZIP(), []int{3}
+	return file_indexer_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *SearchResponse) GetDocs() []*DocRef {
@@ -291,7 +975,7 @@ type DocRef struct {
 
 func (x *DocRef) Reset() {
 	*x = DocRef{}
-	mi := &file_indexer_proto_msgTypes[4]
+	mi := &file_indexer_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -303,7 +987,7 @@ func (x *DocRef) String() string {
 func (*DocRef) ProtoMessage() {}
 
 func (x *DocRef) ProtoReflect() protoreflect.Message {
-	mi := &file_indexer_proto_msgTypes[4]
+	mi := &file_indexer_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -316,7 +1000,7 @@ func (x *DocRef) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DocRef.ProtoReflect.Descriptor instead.
 func (*DocRef) Descriptor() ([]byte, []int) {
-	return file_indexer_proto_rawDescGZIP(), []int{4}
+	return file_indexer_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *DocRef) GetId() string {
@@ -342,7 +1026,7 @@ type HealthRequest struct {
 
 func (x *HealthRequest) Reset() {
 	*x = HealthRequest{}
-	mi := &file_indexer_proto_msgTypes[5]
+	mi := &file_indexer_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -354,7 +1038,7 @@ func (x *HealthRequest) String() string {
 func (*HealthRequest) ProtoMessage() {}
 
 func (x *HealthRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_indexer_proto_msgTypes[5]
+	mi := &file_indexer_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -367,7 +1051,7 @@ func (x *HealthRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HealthRequest.ProtoReflect.Descriptor instead.
 func (*HealthRequest) Descriptor() ([]byte, []int) {
-	return file_indexer_proto_rawDescGZIP(), []int{5}
+	return file_indexer_proto_rawDescGZIP(), []int{14}
 }
 
 // HealthResponse contains the indexer health status.
@@ -384,7 +1068,7 @@ type HealthResponse struct {
 
 func (x *HealthResponse) Reset() {
 	*x = HealthResponse{}
-	mi := &file_indexer_proto_msgTypes[6]
+	mi := &file_indexer_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -396,7 +1080,7 @@ func (x *HealthResponse) String() string {
 func (*HealthResponse) ProtoMessage() {}
 
 func (x *HealthResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_indexer_proto_msgTypes[6]
+	mi := &file_indexer_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -409,7 +1093,7 @@ func (x *HealthResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HealthResponse.ProtoReflect.Descriptor instead.
 func (*HealthResponse) Descriptor() ([]byte, []int) {
-	return file_indexer_proto_rawDescGZIP(), []int{6}
+	return file_indexer_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *HealthResponse) GetStatus() string {
@@ -439,7 +1123,7 @@ type IndexHealth struct {
 
 func (x *IndexHealth) Reset() {
 	*x = IndexHealth{}
-	mi := &file_indexer_proto_msgTypes[7]
+	mi := &file_indexer_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -451,7 +1135,7 @@ func (x *IndexHealth) String() string {
 func (*IndexHealth) ProtoMessage() {}
 
 func (x *IndexHealth) ProtoReflect() protoreflect.Message {
-	mi := &file_indexer_proto_msgTypes[7]
+	mi := &file_indexer_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -464,7 +1148,7 @@ func (x *IndexHealth) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use IndexHealth.ProtoReflect.Descriptor instead.
 func (*IndexHealth) Descriptor() ([]byte, []int) {
-	return file_indexer_proto_rawDescGZIP(), []int{7}
+	return file_indexer_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *IndexHealth) GetState() string {
@@ -489,7 +1173,7 @@ type StatsRequest struct {
 
 func (x *StatsRequest) Reset() {
 	*x = StatsRequest{}
-	mi := &file_indexer_proto_msgTypes[8]
+	mi := &file_indexer_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -501,7 +1185,7 @@ func (x *StatsRequest) String() string {
 func (*StatsRequest) ProtoMessage() {}
 
 func (x *StatsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_indexer_proto_msgTypes[8]
+	mi := &file_indexer_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -514,7 +1198,7 @@ func (x *StatsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StatsRequest.ProtoReflect.Descriptor instead.
 func (*StatsRequest) Descriptor() ([]byte, []int) {
-	return file_indexer_proto_rawDescGZIP(), []int{8}
+	return file_indexer_proto_rawDescGZIP(), []int{17}
 }
 
 // Fields are sampled independently; they are not a joint atomic snapshot.
@@ -534,7 +1218,7 @@ type StatsResponse struct {
 
 func (x *StatsResponse) Reset() {
 	*x = StatsResponse{}
-	mi := &file_indexer_proto_msgTypes[9]
+	mi := &file_indexer_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -546,7 +1230,7 @@ func (x *StatsResponse) String() string {
 func (*StatsResponse) ProtoMessage() {}
 
 func (x *StatsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_indexer_proto_msgTypes[9]
+	mi := &file_indexer_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -559,7 +1243,7 @@ func (x *StatsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StatsResponse.ProtoReflect.Descriptor instead.
 func (*StatsResponse) Descriptor() ([]byte, []int) {
-	return file_indexer_proto_rawDescGZIP(), []int{9}
+	return file_indexer_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *StatsResponse) GetTemplateCount() int64 {
@@ -596,7 +1280,7 @@ type GetStateRequest struct {
 
 func (x *GetStateRequest) Reset() {
 	*x = GetStateRequest{}
-	mi := &file_indexer_proto_msgTypes[10]
+	mi := &file_indexer_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -608,7 +1292,7 @@ func (x *GetStateRequest) String() string {
 func (*GetStateRequest) ProtoMessage() {}
 
 func (x *GetStateRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_indexer_proto_msgTypes[10]
+	mi := &file_indexer_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -621,7 +1305,7 @@ func (x *GetStateRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetStateRequest.ProtoReflect.Descriptor instead.
 func (*GetStateRequest) Descriptor() ([]byte, []int) {
-	return file_indexer_proto_rawDescGZIP(), []int{10}
+	return file_indexer_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *GetStateRequest) GetDatabase() string {
@@ -653,7 +1337,7 @@ type IndexerState struct {
 
 func (x *IndexerState) Reset() {
 	*x = IndexerState{}
-	mi := &file_indexer_proto_msgTypes[11]
+	mi := &file_indexer_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -665,7 +1349,7 @@ func (x *IndexerState) String() string {
 func (*IndexerState) ProtoMessage() {}
 
 func (x *IndexerState) ProtoReflect() protoreflect.Message {
-	mi := &file_indexer_proto_msgTypes[11]
+	mi := &file_indexer_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -678,7 +1362,7 @@ func (x *IndexerState) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use IndexerState.ProtoReflect.Descriptor instead.
 func (*IndexerState) Descriptor() ([]byte, []int) {
-	return file_indexer_proto_rawDescGZIP(), []int{11}
+	return file_indexer_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *IndexerState) GetDesired() []*IndexSpec {
@@ -717,7 +1401,7 @@ type IndexSpec struct {
 
 func (x *IndexSpec) Reset() {
 	*x = IndexSpec{}
-	mi := &file_indexer_proto_msgTypes[12]
+	mi := &file_indexer_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -729,7 +1413,7 @@ func (x *IndexSpec) String() string {
 func (*IndexSpec) ProtoMessage() {}
 
 func (x *IndexSpec) ProtoReflect() protoreflect.Message {
-	mi := &file_indexer_proto_msgTypes[12]
+	mi := &file_indexer_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -742,7 +1426,7 @@ func (x *IndexSpec) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use IndexSpec.ProtoReflect.Descriptor instead.
 func (*IndexSpec) Descriptor() ([]byte, []int) {
-	return file_indexer_proto_rawDescGZIP(), []int{12}
+	return file_indexer_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *IndexSpec) GetPattern() string {
@@ -779,7 +1463,7 @@ type IndexField struct {
 
 func (x *IndexField) Reset() {
 	*x = IndexField{}
-	mi := &file_indexer_proto_msgTypes[13]
+	mi := &file_indexer_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -791,7 +1475,7 @@ func (x *IndexField) String() string {
 func (*IndexField) ProtoMessage() {}
 
 func (x *IndexField) ProtoReflect() protoreflect.Message {
-	mi := &file_indexer_proto_msgTypes[13]
+	mi := &file_indexer_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -804,7 +1488,7 @@ func (x *IndexField) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use IndexField.ProtoReflect.Descriptor instead.
 func (*IndexField) Descriptor() ([]byte, []int) {
-	return file_indexer_proto_rawDescGZIP(), []int{13}
+	return file_indexer_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *IndexField) GetField() string {
@@ -840,7 +1524,7 @@ type IndexInfo struct {
 
 func (x *IndexInfo) Reset() {
 	*x = IndexInfo{}
-	mi := &file_indexer_proto_msgTypes[14]
+	mi := &file_indexer_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -852,7 +1536,7 @@ func (x *IndexInfo) String() string {
 func (*IndexInfo) ProtoMessage() {}
 
 func (x *IndexInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_indexer_proto_msgTypes[14]
+	mi := &file_indexer_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -865,7 +1549,7 @@ func (x *IndexInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use IndexInfo.ProtoReflect.Descriptor instead.
 func (*IndexInfo) Descriptor() ([]byte, []int) {
-	return file_indexer_proto_rawDescGZIP(), []int{14}
+	return file_indexer_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *IndexInfo) GetDatabase() string {
@@ -928,7 +1612,7 @@ type PendingOperation struct {
 
 func (x *PendingOperation) Reset() {
 	*x = PendingOperation{}
-	mi := &file_indexer_proto_msgTypes[15]
+	mi := &file_indexer_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -940,7 +1624,7 @@ func (x *PendingOperation) String() string {
 func (*PendingOperation) ProtoMessage() {}
 
 func (x *PendingOperation) ProtoReflect() protoreflect.Message {
-	mi := &file_indexer_proto_msgTypes[15]
+	mi := &file_indexer_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -953,7 +1637,7 @@ func (x *PendingOperation) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PendingOperation.ProtoReflect.Descriptor instead.
 func (*PendingOperation) Descriptor() ([]byte, []int) {
-	return file_indexer_proto_rawDescGZIP(), []int{15}
+	return file_indexer_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *PendingOperation) GetOpType() string {
@@ -1021,7 +1705,7 @@ type ReloadRequest struct {
 
 func (x *ReloadRequest) Reset() {
 	*x = ReloadRequest{}
-	mi := &file_indexer_proto_msgTypes[16]
+	mi := &file_indexer_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1033,7 +1717,7 @@ func (x *ReloadRequest) String() string {
 func (*ReloadRequest) ProtoMessage() {}
 
 func (x *ReloadRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_indexer_proto_msgTypes[16]
+	mi := &file_indexer_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1046,7 +1730,7 @@ func (x *ReloadRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReloadRequest.ProtoReflect.Descriptor instead.
 func (*ReloadRequest) Descriptor() ([]byte, []int) {
-	return file_indexer_proto_rawDescGZIP(), []int{16}
+	return file_indexer_proto_rawDescGZIP(), []int{25}
 }
 
 // ReloadResponse contains the result of the reload.
@@ -1062,7 +1746,7 @@ type ReloadResponse struct {
 
 func (x *ReloadResponse) Reset() {
 	*x = ReloadResponse{}
-	mi := &file_indexer_proto_msgTypes[17]
+	mi := &file_indexer_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1074,7 +1758,7 @@ func (x *ReloadResponse) String() string {
 func (*ReloadResponse) ProtoMessage() {}
 
 func (x *ReloadResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_indexer_proto_msgTypes[17]
+	mi := &file_indexer_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1087,7 +1771,7 @@ func (x *ReloadResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReloadResponse.ProtoReflect.Descriptor instead.
 func (*ReloadResponse) Descriptor() ([]byte, []int) {
-	return file_indexer_proto_rawDescGZIP(), []int{17}
+	return file_indexer_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *ReloadResponse) GetTemplatesLoaded() int32 {
@@ -1120,7 +1804,7 @@ type InvalidateIndexRequest struct {
 
 func (x *InvalidateIndexRequest) Reset() {
 	*x = InvalidateIndexRequest{}
-	mi := &file_indexer_proto_msgTypes[18]
+	mi := &file_indexer_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1132,7 +1816,7 @@ func (x *InvalidateIndexRequest) String() string {
 func (*InvalidateIndexRequest) ProtoMessage() {}
 
 func (x *InvalidateIndexRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_indexer_proto_msgTypes[18]
+	mi := &file_indexer_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1145,7 +1829,7 @@ func (x *InvalidateIndexRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use InvalidateIndexRequest.ProtoReflect.Descriptor instead.
 func (*InvalidateIndexRequest) Descriptor() ([]byte, []int) {
-	return file_indexer_proto_rawDescGZIP(), []int{18}
+	return file_indexer_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *InvalidateIndexRequest) GetDatabase() string {
@@ -1180,7 +1864,7 @@ type InvalidateIndexResponse struct {
 
 func (x *InvalidateIndexResponse) Reset() {
 	*x = InvalidateIndexResponse{}
-	mi := &file_indexer_proto_msgTypes[19]
+	mi := &file_indexer_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1192,7 +1876,7 @@ func (x *InvalidateIndexResponse) String() string {
 func (*InvalidateIndexResponse) ProtoMessage() {}
 
 func (x *InvalidateIndexResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_indexer_proto_msgTypes[19]
+	mi := &file_indexer_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1205,7 +1889,7 @@ func (x *InvalidateIndexResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use InvalidateIndexResponse.ProtoReflect.Descriptor instead.
 func (*InvalidateIndexResponse) Descriptor() ([]byte, []int) {
-	return file_indexer_proto_rawDescGZIP(), []int{19}
+	return file_indexer_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *InvalidateIndexResponse) GetIndexesInvalidated() int32 {
@@ -1219,7 +1903,68 @@ var File_indexer_proto protoreflect.FileDescriptor
 
 const file_indexer_proto_rawDesc = "" +
 	"\n" +
-	"\rindexer.proto\x12\x12syntrix.indexer.v1\"\xf5\x01\n" +
+	"\rindexer.proto\x12\x12syntrix.indexer.v1\"\xab\x03\n" +
+	"\x10CandidateRequest\x12\x1a\n" +
+	"\bdatabase\x18\x01 \x01(\tR\bdatabase\x12\x1e\n" +
+	"\n" +
+	"collection\x18\x02 \x01(\tR\n" +
+	"collection\x12=\n" +
+	"\afilters\x18\x03 \x03(\v2#.syntrix.indexer.v1.CandidateFilterR\afilters\x12;\n" +
+	"\border_by\x18\x04 \x03(\v2 .syntrix.indexer.v1.OrderByFieldR\aorderBy\x12%\n" +
+	"\x0eafter_position\x18\x05 \x01(\fR\rafterPosition\x121\n" +
+	"\x14template_fingerprint\x18\x06 \x01(\tR\x13templateFingerprint\x12\x1e\n" +
+	"\n" +
+	"generation\x18\a \x01(\tR\n" +
+	"generation\x12\x1f\n" +
+	"\vbranch_hash\x18\b \x01(\tR\n" +
+	"branchHash\x12!\n" +
+	"\fmax_examined\x18\t \x01(\x03R\vmaxExamined\x12!\n" +
+	"\fshow_deleted\x18\n" +
+	" \x01(\bR\vshowDeleted\"X\n" +
+	"\x0fCandidateFilter\x12\x14\n" +
+	"\x05field\x18\x01 \x01(\tR\x05field\x12\x0e\n" +
+	"\x02op\x18\x02 \x01(\tR\x02op\x12\x1f\n" +
+	"\vtyped_value\x18\x03 \x01(\fR\n" +
+	"typedValue\"`\n" +
+	"\x16CandidateTemplateField\x12\x14\n" +
+	"\x05field\x18\x01 \x01(\tR\x05field\x12\x1c\n" +
+	"\tdirection\x18\x02 \x01(\tR\tdirection\x12\x12\n" +
+	"\x04mode\x18\x03 \x01(\tR\x04mode\"\x9f\x04\n" +
+	"\x11CandidateMetadata\x12#\n" +
+	"\rtemplate_name\x18\x01 \x01(\tR\ftemplateName\x12-\n" +
+	"\x12collection_pattern\x18\x02 \x01(\tR\x11collectionPattern\x12B\n" +
+	"\x06fields\x18\x03 \x03(\v2*.syntrix.indexer.v1.CandidateTemplateFieldR\x06fields\x12'\n" +
+	"\x0finclude_deleted\x18\x04 \x01(\bR\x0eincludeDeleted\x121\n" +
+	"\x14template_fingerprint\x18\x05 \x01(\tR\x13templateFingerprint\x12\x1e\n" +
+	"\n" +
+	"generation\x18\x06 \x01(\tR\n" +
+	"generation\x12\x1f\n" +
+	"\vbranch_hash\x18\a \x01(\tR\n" +
+	"branchHash\x12I\n" +
+	"\x0feffective_order\x18\b \x03(\v2 .syntrix.indexer.v1.OrderByFieldR\x0eeffectiveOrder\x12?\n" +
+	"\bbranches\x18\t \x03(\v2#.syntrix.indexer.v1.CandidateBranchR\bbranches\x12I\n" +
+	"\vassignments\x18\n" +
+	" \x03(\v2'.syntrix.indexer.v1.PredicateAssignmentR\vassignments\"g\n" +
+	"\x13PredicateAssignment\x12\x1c\n" +
+	"\tpredicate\x18\x01 \x01(\x05R\tpredicate\x12\x16\n" +
+	"\x06access\x18\x02 \x01(\bR\x06access\x12\x1a\n" +
+	"\bresidual\x18\x03 \x01(\bR\bresidual\"x\n" +
+	"\x0fCandidateBranch\x12\x16\n" +
+	"\x06prefix\x18\x01 \x01(\fR\x06prefix\x12!\n" +
+	"\ffixed_fields\x18\x02 \x01(\x05R\vfixedFields\x12\x14\n" +
+	"\x05lower\x18\x03 \x01(\fR\x05lower\x12\x14\n" +
+	"\x05upper\x18\x04 \x01(\fR\x05upper\"X\n" +
+	"\x0eCandidateGroup\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1a\n" +
+	"\bposition\x18\x02 \x01(\fR\bposition\x12\x1a\n" +
+	"\bbranches\x18\x03 \x03(\x05R\bbranches\"\x13\n" +
+	"\x11CandidateComplete\"\x80\x02\n" +
+	"\x11CandidateResponse\x12C\n" +
+	"\bmetadata\x18\x01 \x01(\v2%.syntrix.indexer.v1.CandidateMetadataH\x00R\bmetadata\x12:\n" +
+	"\x05group\x18\x02 \x01(\v2\".syntrix.indexer.v1.CandidateGroupH\x00R\x05group\x12C\n" +
+	"\bcomplete\x18\x03 \x01(\v2%.syntrix.indexer.v1.CandidateCompleteH\x00R\bcomplete\x12\x1a\n" +
+	"\bexamined\x18\x04 \x01(\x03R\bexaminedB\t\n" +
+	"\apayload\"\xf5\x01\n" +
 	"\rSearchRequest\x12\x1a\n" +
 	"\bdatabase\x18\x01 \x01(\tR\bdatabase\x12\x1e\n" +
 	"\n" +
@@ -1302,9 +2047,10 @@ const file_indexer_proto_rawDesc = "" +
 	"\vtemplate_id\x18\x03 \x01(\tR\n" +
 	"templateId\"J\n" +
 	"\x17InvalidateIndexResponse\x12/\n" +
-	"\x13indexes_invalidated\x18\x01 \x01(\x05R\x12indexesInvalidated2\x90\x04\n" +
+	"\x13indexes_invalidated\x18\x01 \x01(\x05R\x12indexesInvalidated2\xf1\x04\n" +
 	"\x0eIndexerService\x12O\n" +
-	"\x06Search\x12!.syntrix.indexer.v1.SearchRequest\x1a\".syntrix.indexer.v1.SearchResponse\x12O\n" +
+	"\x06Search\x12!.syntrix.indexer.v1.SearchRequest\x1a\".syntrix.indexer.v1.SearchResponse\x12_\n" +
+	"\x0eOpenCandidates\x12$.syntrix.indexer.v1.CandidateRequest\x1a%.syntrix.indexer.v1.CandidateResponse0\x01\x12O\n" +
 	"\x06Health\x12!.syntrix.indexer.v1.HealthRequest\x1a\".syntrix.indexer.v1.HealthResponse\x12L\n" +
 	"\x05Stats\x12 .syntrix.indexer.v1.StatsRequest\x1a!.syntrix.indexer.v1.StatsResponse\x12Q\n" +
 	"\bGetState\x12#.syntrix.indexer.v1.GetStateRequest\x1a .syntrix.indexer.v1.IndexerState\x12O\n" +
@@ -1323,57 +2069,77 @@ func file_indexer_proto_rawDescGZIP() []byte {
 	return file_indexer_proto_rawDescData
 }
 
-var file_indexer_proto_msgTypes = make([]protoimpl.MessageInfo, 21)
+var file_indexer_proto_msgTypes = make([]protoimpl.MessageInfo, 30)
 var file_indexer_proto_goTypes = []any{
-	(*SearchRequest)(nil),           // 0: syntrix.indexer.v1.SearchRequest
-	(*Filter)(nil),                  // 1: syntrix.indexer.v1.Filter
-	(*OrderByField)(nil),            // 2: syntrix.indexer.v1.OrderByField
-	(*SearchResponse)(nil),          // 3: syntrix.indexer.v1.SearchResponse
-	(*DocRef)(nil),                  // 4: syntrix.indexer.v1.DocRef
-	(*HealthRequest)(nil),           // 5: syntrix.indexer.v1.HealthRequest
-	(*HealthResponse)(nil),          // 6: syntrix.indexer.v1.HealthResponse
-	(*IndexHealth)(nil),             // 7: syntrix.indexer.v1.IndexHealth
-	(*StatsRequest)(nil),            // 8: syntrix.indexer.v1.StatsRequest
-	(*StatsResponse)(nil),           // 9: syntrix.indexer.v1.StatsResponse
-	(*GetStateRequest)(nil),         // 10: syntrix.indexer.v1.GetStateRequest
-	(*IndexerState)(nil),            // 11: syntrix.indexer.v1.IndexerState
-	(*IndexSpec)(nil),               // 12: syntrix.indexer.v1.IndexSpec
-	(*IndexField)(nil),              // 13: syntrix.indexer.v1.IndexField
-	(*IndexInfo)(nil),               // 14: syntrix.indexer.v1.IndexInfo
-	(*PendingOperation)(nil),        // 15: syntrix.indexer.v1.PendingOperation
-	(*ReloadRequest)(nil),           // 16: syntrix.indexer.v1.ReloadRequest
-	(*ReloadResponse)(nil),          // 17: syntrix.indexer.v1.ReloadResponse
-	(*InvalidateIndexRequest)(nil),  // 18: syntrix.indexer.v1.InvalidateIndexRequest
-	(*InvalidateIndexResponse)(nil), // 19: syntrix.indexer.v1.InvalidateIndexResponse
-	nil,                             // 20: syntrix.indexer.v1.HealthResponse.IndexesEntry
+	(*CandidateRequest)(nil),        // 0: syntrix.indexer.v1.CandidateRequest
+	(*CandidateFilter)(nil),         // 1: syntrix.indexer.v1.CandidateFilter
+	(*CandidateTemplateField)(nil),  // 2: syntrix.indexer.v1.CandidateTemplateField
+	(*CandidateMetadata)(nil),       // 3: syntrix.indexer.v1.CandidateMetadata
+	(*PredicateAssignment)(nil),     // 4: syntrix.indexer.v1.PredicateAssignment
+	(*CandidateBranch)(nil),         // 5: syntrix.indexer.v1.CandidateBranch
+	(*CandidateGroup)(nil),          // 6: syntrix.indexer.v1.CandidateGroup
+	(*CandidateComplete)(nil),       // 7: syntrix.indexer.v1.CandidateComplete
+	(*CandidateResponse)(nil),       // 8: syntrix.indexer.v1.CandidateResponse
+	(*SearchRequest)(nil),           // 9: syntrix.indexer.v1.SearchRequest
+	(*Filter)(nil),                  // 10: syntrix.indexer.v1.Filter
+	(*OrderByField)(nil),            // 11: syntrix.indexer.v1.OrderByField
+	(*SearchResponse)(nil),          // 12: syntrix.indexer.v1.SearchResponse
+	(*DocRef)(nil),                  // 13: syntrix.indexer.v1.DocRef
+	(*HealthRequest)(nil),           // 14: syntrix.indexer.v1.HealthRequest
+	(*HealthResponse)(nil),          // 15: syntrix.indexer.v1.HealthResponse
+	(*IndexHealth)(nil),             // 16: syntrix.indexer.v1.IndexHealth
+	(*StatsRequest)(nil),            // 17: syntrix.indexer.v1.StatsRequest
+	(*StatsResponse)(nil),           // 18: syntrix.indexer.v1.StatsResponse
+	(*GetStateRequest)(nil),         // 19: syntrix.indexer.v1.GetStateRequest
+	(*IndexerState)(nil),            // 20: syntrix.indexer.v1.IndexerState
+	(*IndexSpec)(nil),               // 21: syntrix.indexer.v1.IndexSpec
+	(*IndexField)(nil),              // 22: syntrix.indexer.v1.IndexField
+	(*IndexInfo)(nil),               // 23: syntrix.indexer.v1.IndexInfo
+	(*PendingOperation)(nil),        // 24: syntrix.indexer.v1.PendingOperation
+	(*ReloadRequest)(nil),           // 25: syntrix.indexer.v1.ReloadRequest
+	(*ReloadResponse)(nil),          // 26: syntrix.indexer.v1.ReloadResponse
+	(*InvalidateIndexRequest)(nil),  // 27: syntrix.indexer.v1.InvalidateIndexRequest
+	(*InvalidateIndexResponse)(nil), // 28: syntrix.indexer.v1.InvalidateIndexResponse
+	nil,                             // 29: syntrix.indexer.v1.HealthResponse.IndexesEntry
 }
 var file_indexer_proto_depIdxs = []int32{
-	1,  // 0: syntrix.indexer.v1.SearchRequest.filters:type_name -> syntrix.indexer.v1.Filter
-	2,  // 1: syntrix.indexer.v1.SearchRequest.order_by:type_name -> syntrix.indexer.v1.OrderByField
-	4,  // 2: syntrix.indexer.v1.SearchResponse.docs:type_name -> syntrix.indexer.v1.DocRef
-	20, // 3: syntrix.indexer.v1.HealthResponse.indexes:type_name -> syntrix.indexer.v1.HealthResponse.IndexesEntry
-	12, // 4: syntrix.indexer.v1.IndexerState.desired:type_name -> syntrix.indexer.v1.IndexSpec
-	14, // 5: syntrix.indexer.v1.IndexerState.actual:type_name -> syntrix.indexer.v1.IndexInfo
-	15, // 6: syntrix.indexer.v1.IndexerState.pending_ops:type_name -> syntrix.indexer.v1.PendingOperation
-	13, // 7: syntrix.indexer.v1.IndexSpec.fields:type_name -> syntrix.indexer.v1.IndexField
-	7,  // 8: syntrix.indexer.v1.HealthResponse.IndexesEntry.value:type_name -> syntrix.indexer.v1.IndexHealth
-	0,  // 9: syntrix.indexer.v1.IndexerService.Search:input_type -> syntrix.indexer.v1.SearchRequest
-	5,  // 10: syntrix.indexer.v1.IndexerService.Health:input_type -> syntrix.indexer.v1.HealthRequest
-	8,  // 11: syntrix.indexer.v1.IndexerService.Stats:input_type -> syntrix.indexer.v1.StatsRequest
-	10, // 12: syntrix.indexer.v1.IndexerService.GetState:input_type -> syntrix.indexer.v1.GetStateRequest
-	16, // 13: syntrix.indexer.v1.IndexerService.Reload:input_type -> syntrix.indexer.v1.ReloadRequest
-	18, // 14: syntrix.indexer.v1.IndexerService.InvalidateIndex:input_type -> syntrix.indexer.v1.InvalidateIndexRequest
-	3,  // 15: syntrix.indexer.v1.IndexerService.Search:output_type -> syntrix.indexer.v1.SearchResponse
-	6,  // 16: syntrix.indexer.v1.IndexerService.Health:output_type -> syntrix.indexer.v1.HealthResponse
-	9,  // 17: syntrix.indexer.v1.IndexerService.Stats:output_type -> syntrix.indexer.v1.StatsResponse
-	11, // 18: syntrix.indexer.v1.IndexerService.GetState:output_type -> syntrix.indexer.v1.IndexerState
-	17, // 19: syntrix.indexer.v1.IndexerService.Reload:output_type -> syntrix.indexer.v1.ReloadResponse
-	19, // 20: syntrix.indexer.v1.IndexerService.InvalidateIndex:output_type -> syntrix.indexer.v1.InvalidateIndexResponse
-	15, // [15:21] is the sub-list for method output_type
-	9,  // [9:15] is the sub-list for method input_type
-	9,  // [9:9] is the sub-list for extension type_name
-	9,  // [9:9] is the sub-list for extension extendee
-	0,  // [0:9] is the sub-list for field type_name
+	1,  // 0: syntrix.indexer.v1.CandidateRequest.filters:type_name -> syntrix.indexer.v1.CandidateFilter
+	11, // 1: syntrix.indexer.v1.CandidateRequest.order_by:type_name -> syntrix.indexer.v1.OrderByField
+	2,  // 2: syntrix.indexer.v1.CandidateMetadata.fields:type_name -> syntrix.indexer.v1.CandidateTemplateField
+	11, // 3: syntrix.indexer.v1.CandidateMetadata.effective_order:type_name -> syntrix.indexer.v1.OrderByField
+	5,  // 4: syntrix.indexer.v1.CandidateMetadata.branches:type_name -> syntrix.indexer.v1.CandidateBranch
+	4,  // 5: syntrix.indexer.v1.CandidateMetadata.assignments:type_name -> syntrix.indexer.v1.PredicateAssignment
+	3,  // 6: syntrix.indexer.v1.CandidateResponse.metadata:type_name -> syntrix.indexer.v1.CandidateMetadata
+	6,  // 7: syntrix.indexer.v1.CandidateResponse.group:type_name -> syntrix.indexer.v1.CandidateGroup
+	7,  // 8: syntrix.indexer.v1.CandidateResponse.complete:type_name -> syntrix.indexer.v1.CandidateComplete
+	10, // 9: syntrix.indexer.v1.SearchRequest.filters:type_name -> syntrix.indexer.v1.Filter
+	11, // 10: syntrix.indexer.v1.SearchRequest.order_by:type_name -> syntrix.indexer.v1.OrderByField
+	13, // 11: syntrix.indexer.v1.SearchResponse.docs:type_name -> syntrix.indexer.v1.DocRef
+	29, // 12: syntrix.indexer.v1.HealthResponse.indexes:type_name -> syntrix.indexer.v1.HealthResponse.IndexesEntry
+	21, // 13: syntrix.indexer.v1.IndexerState.desired:type_name -> syntrix.indexer.v1.IndexSpec
+	23, // 14: syntrix.indexer.v1.IndexerState.actual:type_name -> syntrix.indexer.v1.IndexInfo
+	24, // 15: syntrix.indexer.v1.IndexerState.pending_ops:type_name -> syntrix.indexer.v1.PendingOperation
+	22, // 16: syntrix.indexer.v1.IndexSpec.fields:type_name -> syntrix.indexer.v1.IndexField
+	16, // 17: syntrix.indexer.v1.HealthResponse.IndexesEntry.value:type_name -> syntrix.indexer.v1.IndexHealth
+	9,  // 18: syntrix.indexer.v1.IndexerService.Search:input_type -> syntrix.indexer.v1.SearchRequest
+	0,  // 19: syntrix.indexer.v1.IndexerService.OpenCandidates:input_type -> syntrix.indexer.v1.CandidateRequest
+	14, // 20: syntrix.indexer.v1.IndexerService.Health:input_type -> syntrix.indexer.v1.HealthRequest
+	17, // 21: syntrix.indexer.v1.IndexerService.Stats:input_type -> syntrix.indexer.v1.StatsRequest
+	19, // 22: syntrix.indexer.v1.IndexerService.GetState:input_type -> syntrix.indexer.v1.GetStateRequest
+	25, // 23: syntrix.indexer.v1.IndexerService.Reload:input_type -> syntrix.indexer.v1.ReloadRequest
+	27, // 24: syntrix.indexer.v1.IndexerService.InvalidateIndex:input_type -> syntrix.indexer.v1.InvalidateIndexRequest
+	12, // 25: syntrix.indexer.v1.IndexerService.Search:output_type -> syntrix.indexer.v1.SearchResponse
+	8,  // 26: syntrix.indexer.v1.IndexerService.OpenCandidates:output_type -> syntrix.indexer.v1.CandidateResponse
+	15, // 27: syntrix.indexer.v1.IndexerService.Health:output_type -> syntrix.indexer.v1.HealthResponse
+	18, // 28: syntrix.indexer.v1.IndexerService.Stats:output_type -> syntrix.indexer.v1.StatsResponse
+	20, // 29: syntrix.indexer.v1.IndexerService.GetState:output_type -> syntrix.indexer.v1.IndexerState
+	26, // 30: syntrix.indexer.v1.IndexerService.Reload:output_type -> syntrix.indexer.v1.ReloadResponse
+	28, // 31: syntrix.indexer.v1.IndexerService.InvalidateIndex:output_type -> syntrix.indexer.v1.InvalidateIndexResponse
+	25, // [25:32] is the sub-list for method output_type
+	18, // [18:25] is the sub-list for method input_type
+	18, // [18:18] is the sub-list for extension type_name
+	18, // [18:18] is the sub-list for extension extendee
+	0,  // [0:18] is the sub-list for field type_name
 }
 
 func init() { file_indexer_proto_init() }
@@ -1381,13 +2147,18 @@ func file_indexer_proto_init() {
 	if File_indexer_proto != nil {
 		return
 	}
+	file_indexer_proto_msgTypes[8].OneofWrappers = []any{
+		(*CandidateResponse_Metadata)(nil),
+		(*CandidateResponse_Group)(nil),
+		(*CandidateResponse_Complete)(nil),
+	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_indexer_proto_rawDesc), len(file_indexer_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   21,
+			NumMessages:   30,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

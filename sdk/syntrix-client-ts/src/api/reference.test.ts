@@ -10,6 +10,7 @@ describe('Reference API', () => {
     update: mock(async () => ({})),
     delete: mock(async () => undefined),
     query: mock(async () => []),
+    queryPage: mock(async () => ({ documents: [], nextCursor: null, effectiveOrder: [] })),
   } as unknown as StorageClient;
 
   describe('DocumentReference', () => {
@@ -86,9 +87,9 @@ describe('Reference API', () => {
         .limit(10)
         .get();
 
-      expect(mockStorage.query).toHaveBeenCalledWith('/api/v1/query', {
+      expect(mockStorage.queryPage).toHaveBeenCalledWith('/api/v1/query', {
         collection: 'users',
-        filters: [{ field: 'age', op: '>=', value: 18 }],
+        filters: [{ field: 'age', op: '>=', value: { type: 'float64', value: 18 } }],
         orderBy: [{ field: 'name', direction: 'asc' }],
         limit: 10
       });
@@ -101,7 +102,7 @@ describe('Reference API', () => {
         .startAfter('cursor-123')
         .get();
 
-      expect(mockStorage.query).toHaveBeenCalledWith('/api/v1/query', {
+      expect(mockStorage.queryPage).toHaveBeenCalledWith('/api/v1/query', {
         collection: 'users',
         filters: [],
         orderBy: [],
@@ -116,7 +117,7 @@ describe('Reference API', () => {
         .showDeleted(true)
         .get();
 
-      expect(mockStorage.query).toHaveBeenCalledWith('/api/v1/query', {
+      expect(mockStorage.queryPage).toHaveBeenCalledWith('/api/v1/query', {
         collection: 'users',
         filters: [],
         orderBy: [],
@@ -134,9 +135,9 @@ describe('Reference API', () => {
         .showDeleted(false)
         .get();
 
-      expect(mockStorage.query).toHaveBeenCalledWith('/api/v1/query', {
+      expect(mockStorage.queryPage).toHaveBeenCalledWith('/api/v1/query', {
         collection: 'posts',
-        filters: [{ field: 'status', op: '==', value: 'published' }],
+        filters: [{ field: 'status', op: '==', value: { type: 'string', value: 'published' } }],
         orderBy: [{ field: 'createdAt', direction: 'desc' }],
         limit: 20,
         startAfter: 'last-doc-id',

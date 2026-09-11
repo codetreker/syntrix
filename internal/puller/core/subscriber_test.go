@@ -9,37 +9,38 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/syntrixbase/syntrix/internal/puller/cursor"
 	"github.com/syntrixbase/syntrix/internal/puller/events"
 )
 
 func TestSubscriber_ShouldSend(t *testing.T) {
-	sub := NewSubscriber("test-sub", nil, false, 100)
+	sub := testSubscriber(t, "test-sub", nil, false, 100)
 
 	// Initial state: no history for backend "db1"
 	// Should send any event
 	ct1 := events.ClusterTime{T: 100, I: 1}
-	assert.True(t, sub.ShouldSend("db1", ct1), "Should send first event")
+	assert.True(t, sub.ShouldSend("db1", "evt1", ct1), "Should send first event")
 
 	// Update position
 	sub.UpdatePosition("db1", "evt1", ct1)
 
 	// Test older event
 	ctOld := events.ClusterTime{T: 99, I: 1}
-	assert.False(t, sub.ShouldSend("db1", ctOld), "Should not send older event")
+	assert.False(t, sub.ShouldSend("db1", "old", ctOld), "Should not send older event")
 
 	// Test same event
-	assert.False(t, sub.ShouldSend("db1", ct1), "Should not send same event")
+	assert.False(t, sub.ShouldSend("db1", "evt1", ct1), "Should not send same event")
 
 	// Test newer event
 	ctNew := events.ClusterTime{T: 100, I: 2}
-	assert.True(t, sub.ShouldSend("db1", ctNew), "Should send newer event")
+	assert.True(t, sub.ShouldSend("db1", "new", ctNew), "Should send newer event")
 
 	// Test different backend
-	assert.True(t, sub.ShouldSend("db2", ctOld), "Should send event for new backend")
+	assert.True(t, sub.ShouldSend("db2", "old", ctOld), "Should send event for new backend")
 }
 
 func TestSubscriber_Overflow(t *testing.T) {
-	sub := NewSubscriber("test-sub", nil, false, 100)
+	sub := testSubscriber(t, "test-sub", nil, false, 100)
 
 	assert.False(t, sub.GetAndResetOverflow())
 
@@ -64,7 +65,7 @@ func TestSubscriberManager(t *testing.T) {
 	logger := slog.Default() // Use default logger for tests
 	mgr := NewSubscriberManager(logger)
 
-	sub1 := NewSubscriber("sub1", nil, false, 10)
+	sub1 := testSubscriber(t, "sub1", nil, false, 10)
 	mgr.Add(sub1)
 	assert.Equal(t, 1, mgr.Count())
 	assert.Equal(t, []*Subscriber{sub1}, mgr.All())
@@ -112,7 +113,7 @@ func TestSubscriberManager_Race(t *testing.T) {
 	for _, run := range []func(){
 		func() {
 			for i := 0; i < 100; i++ {
-				sub := NewSubscriber("same", nil, false, 10)
+				sub := testSubscriber(t, "same", nil, false, 10)
 				mgr.Add(sub)
 				mgr.Remove(sub)
 				mgr.Remove(sub)
@@ -156,15 +157,15 @@ func TestSubscriberManager_SameLabel(t *testing.T) {
 		t.Run("label="+label, func(t *testing.T) {
 			mgr := NewSubscriberManager(nil)
 			t.Cleanup(mgr.CloseAll)
-			a := NewSubscriber(label, nil, false, 2)
-			b := NewSubscriber(label, nil, false, 2)
+			a := testSubscriber(t, label, nil, false, 2)
+			b := testSubscriber(t, label, nil, false, 2)
 			mgr.Add(a)
 			mgr.Add(b)
 			mgr.Add(a)
 			require.Equal(t, 2, mgr.Count())
 			require.ElementsMatch(t, []*Subscriber{a, b}, mgr.All())
 
-			absent := NewSubscriber(label, nil, false, 2)
+			absent := testSubscriber(t, label, nil, false, 2)
 			mgr.Remove(absent)
 			require.Equal(t, 2, mgr.Count())
 			select {
@@ -225,8 +226,8 @@ func TestSubscriberManager_SameLabel(t *testing.T) {
 
 func TestSubscriberManager_All(t *testing.T) {
 	m := NewSubscriberManager(nil)
-	sub1 := NewSubscriber("sub1", nil, false, 100)
-	sub2 := NewSubscriber("sub2", nil, false, 100)
+	sub1 := testSubscriber(t, "sub1", nil, false, 100)
+	sub2 := testSubscriber(t, "sub2", nil, false, 100)
 
 	m.Add(sub1)
 	m.Add(sub2)
@@ -239,8 +240,8 @@ func TestSubscriberManager_All(t *testing.T) {
 
 func TestSubscriberManager_CloseAll(t *testing.T) {
 	m := NewSubscriberManager(nil)
-	sub1 := NewSubscriber("sub1", nil, false, 100)
-	sub2 := NewSubscriber("sub2", nil, false, 100)
+	sub1 := testSubscriber(t, "sub1", nil, false, 100)
+	sub2 := testSubscriber(t, "sub2", nil, false, 100)
 
 	m.Add(sub1)
 	m.Add(sub2)
@@ -260,4 +261,43 @@ func TestSubscriberManager_CloseAll(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("sub2 not closed")
 	}
+}
+
+func testSubscriber(t *testing.T, id string, after *cursor.ProgressMarker, coalesce bool, size int) *Subscriber {
+	t.Helper()
+	sub, err := NewSubscriber(id, after, coalesce, size)
+	require.NoError(t, err)
+	return sub
+}
+
+func TestSubscriberResumedGroupAcknowledgesEachIdentityIndependently(t *testing.T) {
+	boundary := cursor.NewProgressMarker()
+	boundary.SetPosition("a", "8-3-z")
+	sub := testSubscriber(t, "resume", boundary, false, 8)
+	group := events.ClusterTime{T: 8, I: 3}
+	require.False(t, sub.ShouldSend("a", "7-9-before", events.ClusterTime{T: 7, I: 9}))
+	for _, id := range []string{"8-3-z", "8-3-a", "8-3-m"} {
+		require.True(t, sub.ShouldSend("a", id, group))
+		require.True(t, sub.ShouldSend("a", id, group), "checking eligibility does not acknowledge delivery")
+		sub.UpdatePosition("a", id, group)
+		require.False(t, sub.ShouldSend("a", id, group))
+	}
+	require.Equal(t, "8-3-m", sub.CurrentProgress().Positions["a"])
+	require.True(t, sub.ShouldSend("b", "8-3-z", group), "backend histories are independent")
+	sub.UpdatePosition("a", "8-4-later", events.ClusterTime{T: 8, I: 4})
+	require.False(t, sub.ShouldSend("a", "8-3-unseen", group), "a completed older timestamp group cannot arrive after a newer group")
+	require.False(t, sub.ShouldSend("a", "8-4-later", events.ClusterTime{T: 8, I: 4}))
+	require.True(t, sub.ShouldSend("a", "8-4-sibling", events.ClusterTime{T: 8, I: 4}))
+}
+
+func TestSubscriberRejectsInvalidResumeIdentityBeforeAdmission(t *testing.T) {
+	marker := cursor.NewProgressMarker()
+	marker.SetPosition("source", "invalid-event-id")
+	subscriber, err := NewSubscriber("invalid", marker, false, 1)
+	require.Error(t, err)
+	require.Nil(t, subscriber)
+	marker.SetPosition("source", "")
+	subscriber, err = NewSubscriber("empty-source", marker, false, 1)
+	require.NoError(t, err)
+	require.True(t, subscriber.ShouldSend("source", "1-1-a", events.ClusterTime{T: 1, I: 1}))
 }

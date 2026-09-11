@@ -84,11 +84,20 @@ const (
 
 type ReadOptions struct {
 	Consistency ReadConsistency
+	ShowDeleted bool
+	// MaxBytes caps one read's populated result positions, including duplicate paths,
+	// using StoredDocumentBytes. Backend record overhead may be charged conservatively.
+	// Zero disables the cap. Exceeding a positive cap returns ErrReadBudget without
+	// partial results; implementations must enforce the cap before accumulating rows.
+	MaxBytes int64
 }
+
+var ErrReadBudget = errors.New("source read byte budget exceeded")
 
 // DocumentStore defines the interface for document storage operations
 type DocumentStore interface {
-	// Get retrieves a live document by path. At most one options value is accepted;
+	// Get retrieves a document by path, excluding tombstones unless ShowDeleted is set.
+	// At most one options value is accepted;
 	// omission or ReadDefault preserves configured read routing. Unsupported options
 	// and authoritative-source failures must be returned without replica fallback.
 	Get(ctx context.Context, database string, path string, opts ...ReadOptions) (*StoredDoc, error)
@@ -96,7 +105,8 @@ type DocumentStore interface {
 	// GetMany retrieves multiple documents by their paths within a collection.
 	// Returns documents in the same order as the provided paths.
 	// Documents that are not found are returned as nil in the result slice.
-	GetMany(ctx context.Context, database string, paths []string) ([]*StoredDoc, error)
+	// Read options have the same routing and tombstone semantics as Get.
+	GetMany(ctx context.Context, database string, paths []string, opts ...ReadOptions) ([]*StoredDoc, error)
 
 	// Create inserts a new document. Fails if it already exists.
 	Create(ctx context.Context, database string, doc StoredDoc) error
@@ -129,6 +139,44 @@ type DocumentStore interface {
 	// Close closes the connection to the backend
 	Close(ctx context.Context) error
 }
+
+// DocumentScanner reads bounded raw source candidates in logical document ID order.
+// Every returned row, including a tombstone, consumes the candidate and byte budgets.
+// Pages are independent reads and do not establish a snapshot across requests.
+type DocumentScanner interface {
+	ScanDocuments(ctx context.Context, database string, request SourceScanRequest) (SourceScanPage, error)
+}
+
+// DocumentCollectionEnumerator lists concrete source scopes from the authoritative
+// source, including scopes containing only tombstones. Results use binary order;
+// a short page proves exhaustion. Enumeration does not establish a snapshot.
+type DocumentCollectionEnumerator interface {
+	EnumerateCollections(ctx context.Context, database, afterCollection string, limit int, opts ...CollectionEnumerationOptions) ([]string, error)
+}
+
+type CollectionEnumerationOptions struct {
+	IncludeSystem bool
+}
+
+type SourceScanRequest struct {
+	Collection string
+	AfterID    string
+	Limit      int
+	// MaxBytes limits the BSON bytes of the whole page; zero disables this limit.
+	MaxBytes    int64
+	Consistency ReadConsistency
+}
+
+type SourceScanPage struct {
+	Documents []*StoredDoc
+	// NextAfter is the last candidate ID, including deleted candidates.
+	NextAfter string
+	// Exhausted is conservative: a full page requires another read to prove exhaustion.
+	Exhausted bool
+	Bytes     int64
+}
+
+var ErrSourceScanBudget = errors.New("source candidate byte budget exceeded")
 
 // UserStore defines the interface for user storage operations
 type UserStore interface {

@@ -3,6 +3,8 @@ package buffer
 
 import (
 	"bytes"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -21,6 +23,9 @@ type Buffer struct {
 	path     string
 	logger   *slog.Logger
 	newBatch func() pebbleBatch
+
+	retentionMu sync.Mutex
+	lineage     string
 
 	// pending is the queue of writes waiting to be batched
 	pending []*writeRequest
@@ -51,8 +56,13 @@ type Buffer struct {
 }
 
 const checkpointKey = "!checkpoint/resume_token"
+const formatKey = "!format"
+const lineageKey = "!lineage"
+const pruningFloorKey = "!pruning_floor"
+const formatVersion = "typed-events-v2"
 
 var checkpointKeyBytes = []byte(checkpointKey)
+var formatKeyBytes = []byte(formatKey)
 
 type pebbleBatch interface {
 	Set(key, value []byte, opts *pebble.WriteOptions) error
@@ -109,6 +119,10 @@ func New(opts Options) (*Buffer, error) {
 		return nil, fmt.Errorf("failed to open pebble database: %w", err)
 	}
 
+	if err := validateFormat(db); err != nil {
+		return nil, errors.Join(err, db.Close())
+	}
+
 	batchSize := opts.BatchSize
 	if batchSize <= 0 {
 		batchSize = 100
@@ -136,6 +150,11 @@ func New(opts Options) (*Buffer, error) {
 		notifyCh:      make(chan struct{}, 1),
 		capacityCh:    make(chan struct{}),
 	}
+	lineage, err := loadLineage(db)
+	if err != nil {
+		return nil, errors.Join(err, db.Close())
+	}
+	buf.lineage = lineage
 	buf.startBatcher()
 
 	return buf, nil
@@ -173,6 +192,8 @@ func (b *Buffer) Close() error {
 					closeErr = fmt.Errorf("%v", r)
 				}
 			}()
+			b.retentionMu.Lock()
+			defer b.retentionMu.Unlock()
 			closeErr = b.db.Close()
 		}()
 
@@ -221,26 +242,23 @@ func (b *Buffer) LoadCheckpoint() (bson.Raw, error) {
 
 // SaveCheckpoint writes the checkpoint token without an accompanying event.
 func (b *Buffer) SaveCheckpoint(token bson.Raw) error {
-	b.mu.RLock()
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	if b.closed {
-		b.mu.RUnlock()
 		return fmt.Errorf("buffer is closed")
 	}
-	b.mu.RUnlock()
-
 	if token == nil {
 		return nil
 	}
-
-	if err := b.applyBatch(func(batch pebbleBatch) error {
-		if err := batch.Set(checkpointKeyBytes, token, pebble.Sync); err != nil {
-			return fmt.Errorf("failed to batch write checkpoint: %w", err)
-		}
-		return nil
-	}); err != nil {
+	if len(token) == 0 {
+		return fmt.Errorf("checkpoint token is required")
+	}
+	if len(b.pending)+len(b.flushing) != 0 {
+		return fmt.Errorf("flush buffered events before saving a source boundary")
+	}
+	if err := b.applyBatch(func(batch pebbleBatch) error { return batch.Set(checkpointKeyBytes, token, pebble.Sync) }); err != nil {
 		return fmt.Errorf("failed to save checkpoint: %w", err)
 	}
-
 	return nil
 }
 
@@ -267,65 +285,226 @@ func (b *Buffer) DeleteCheckpoint() error {
 
 // Delete removes an event from the buffer.
 func (b *Buffer) Delete(key string) error {
+	b.retentionMu.Lock()
+	defer b.retentionMu.Unlock()
 	b.mu.RLock()
-	if b.closed {
-		b.mu.RUnlock()
+	closed := b.closed
+	b.mu.RUnlock()
+	if closed {
 		return fmt.Errorf("buffer is closed")
 	}
-	b.mu.RUnlock()
-
-	if err := b.applyBatch(func(batch pebbleBatch) error {
+	if isMetadataKey([]byte(key)) {
+		return fmt.Errorf("cannot delete buffer metadata as an event")
+	}
+	_, closer, err := b.db.Get([]byte(key))
+	exists := err == nil
+	if exists {
+		if err := closer.Close(); err != nil {
+			return err
+		}
+	} else if !errors.Is(err, pebble.ErrNotFound) {
+		return err
+	}
+	return b.applyBatch(func(batch pebbleBatch) error {
 		if err := batch.Delete([]byte(key), pebble.Sync); err != nil {
-			return fmt.Errorf("failed to batch delete: %w", err)
+			return err
+		}
+		if exists {
+			return b.advancePruningFloor(batch, key)
 		}
 		return nil
-	}); err != nil {
-		return fmt.Errorf("failed to delete event: %w", err)
-	}
-	return nil
+	})
 }
 
-// DeleteBefore deletes all events with keys before the given key.
-// Returns the number of events deleted.
+// DeleteBefore atomically records the greatest removed key with the deletions.
 func (b *Buffer) DeleteBefore(beforeKey string) (int, error) {
+	b.retentionMu.Lock()
+	defer b.retentionMu.Unlock()
+	return b.deleteBeforeLocked(beforeKey)
+}
+
+// PruneBefore applies capacity retention while preserving the entire newest
+// persisted timestamp group. Explicit Delete and DeleteBefore remain forceful.
+func (b *Buffer) PruneBefore(beforeKey string) (int, error) {
+	return b.pruneBefore(beforeKey, false)
+}
+
+// PruneExpired retains the newest complete persisted group before the age
+// cutoff and every later event, keeping an idle consumer's boundary available
+// while the first new group is being delivered.
+func (b *Buffer) PruneExpired(beforeKey string) (int, error) {
+	return b.pruneBefore(beforeKey, true)
+}
+
+func (b *Buffer) pruneBefore(beforeKey string, age bool) (int, error) {
+	b.retentionMu.Lock()
+	defer b.retentionMu.Unlock()
 	b.mu.RLock()
-	if b.closed {
-		b.mu.RUnlock()
+	closed := b.closed
+	b.mu.RUnlock()
+	if closed {
 		return 0, fmt.Errorf("buffer is closed")
 	}
-	b.mu.RUnlock()
-
-	count := 0
-	iter, err := b.db.NewIter(&pebble.IterOptions{
-		UpperBound: []byte(beforeKey),
-	})
+	options := &pebble.IterOptions{}
+	if age {
+		options.UpperBound = []byte(beforeKey)
+	}
+	iter, err := b.db.NewIter(options)
 	if err != nil {
-		return 0, fmt.Errorf("failed to create iterator: %w", err)
+		return 0, err
+	}
+	protectedGroup := ""
+	for iter.Last(); iter.Valid(); iter.Prev() {
+		if isMetadataKey(iter.Key()) {
+			continue
+		}
+		protectedGroup, err = timestampGroupStart(string(iter.Key()))
+		break
+	}
+	if err = errors.Join(err, iter.Error(), iter.Close()); err != nil {
+		return 0, err
+	}
+	if protectedGroup == "" {
+		return 0, nil
+	}
+	if beforeKey > protectedGroup {
+		beforeKey = protectedGroup
+	}
+	return b.deleteBeforeLocked(beforeKey)
+}
+
+func (b *Buffer) deleteBeforeLocked(beforeKey string) (int, error) {
+	b.mu.RLock()
+	closed := b.closed
+	b.mu.RUnlock()
+	if closed {
+		return 0, fmt.Errorf("buffer is closed")
+	}
+	iter, err := b.db.NewIter(&pebble.IterOptions{UpperBound: []byte(beforeKey)})
+	if err != nil {
+		return 0, err
 	}
 	defer iter.Close()
-
 	batch := b.newBatch()
 	defer batch.Close()
-
+	count, floor := 0, ""
 	for iter.First(); iter.Valid(); iter.Next() {
-		if isCheckpointKey(iter.Key()) {
+		if isMetadataKey(iter.Key()) {
 			continue
 		}
 		if err := batch.Delete(iter.Key(), pebble.Sync); err != nil {
-			return 0, fmt.Errorf("failed to batch delete: %w", err)
+			return 0, err
 		}
+		floor = string(iter.Key())
 		count++
 	}
-
-	if count > 0 {
-		if err := batch.Commit(pebble.Sync); err != nil {
-			return 0, fmt.Errorf("failed to commit deletes: %w", err)
-		}
+	if err := iter.Error(); err != nil {
+		return 0, err
 	}
-
+	if count == 0 {
+		return 0, nil
+	}
+	if err := b.advancePruningFloor(batch, floor); err != nil {
+		return 0, err
+	}
+	if err := batch.Commit(pebble.Sync); err != nil {
+		return 0, err
+	}
 	return count, nil
 }
 
-func isCheckpointKey(key []byte) bool {
-	return bytes.Equal(key, checkpointKeyBytes)
+func (b *Buffer) advancePruningFloor(batch pebbleBatch, floor string) error {
+	previous, err := b.pruningFloor()
+	if err != nil {
+		return err
+	}
+	if floor <= previous {
+		return nil
+	}
+	return batch.Set([]byte(pruningFloorKey), []byte(floor), pebble.Sync)
+}
+
+func (b *Buffer) pruningFloor() (string, error) {
+	value, closer, err := b.db.Get([]byte(pruningFloorKey))
+	if errors.Is(err, pebble.ErrNotFound) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	defer closer.Close()
+	return string(value), nil
+}
+
+// Lineage identifies this buffer incarnation across process restarts.
+func (b *Buffer) Lineage() string { return b.lineage }
+
+func loadLineage(db *pebble.DB) (string, error) {
+	value, closer, err := db.Get([]byte(lineageKey))
+	if err == nil {
+		defer closer.Close()
+		if len(value) != 32 {
+			return "", fmt.Errorf("invalid buffer lineage; offline buffer rebuild required")
+		}
+		return string(value), nil
+	}
+	if !errors.Is(err, pebble.ErrNotFound) {
+		return "", err
+	}
+	iter, err := db.NewIter(nil)
+	if err != nil {
+		return "", err
+	}
+	for iter.First(); iter.Valid(); iter.Next() {
+		if !bytes.Equal(iter.Key(), formatKeyBytes) {
+			iter.Close()
+			return "", fmt.Errorf("buffer lineage missing; offline buffer rebuild required")
+		}
+	}
+	if err := errors.Join(iter.Error(), iter.Close()); err != nil {
+		return "", err
+	}
+	token := make([]byte, 16)
+	if _, err := rand.Read(token); err != nil {
+		return "", err
+	}
+	lineage := hex.EncodeToString(token)
+	if err := db.Set([]byte(lineageKey), []byte(lineage), pebble.Sync); err != nil {
+		return "", err
+	}
+	return lineage, nil
+}
+
+func isMetadataKey(key []byte) bool {
+	return bytes.Equal(key, checkpointKeyBytes) || bytes.Equal(key, formatKeyBytes) || string(key) == lineageKey || string(key) == pruningFloorKey
+}
+
+func validateFormat(db *pebble.DB) error {
+	value, closer, err := db.Get(formatKeyBytes)
+	if err == nil {
+		defer closer.Close()
+		if string(value) != formatVersion {
+			return fmt.Errorf("unsupported buffer format %q; offline buffer rebuild required", value)
+		}
+		return nil
+	}
+	if !errors.Is(err, pebble.ErrNotFound) {
+		return fmt.Errorf("read buffer format: %w", err)
+	}
+	iter, err := db.NewIter(nil)
+	if err != nil {
+		return fmt.Errorf("inspect buffer format: %w", err)
+	}
+	nonempty := iter.First()
+	err = errors.Join(iter.Error(), iter.Close())
+	if err != nil {
+		return fmt.Errorf("inspect buffer format: %w", err)
+	}
+	if nonempty {
+		return fmt.Errorf("unversioned buffer format; offline buffer rebuild required")
+	}
+	if err := db.Set(formatKeyBytes, []byte(formatVersion), pebble.Sync); err != nil {
+		return fmt.Errorf("initialize buffer format: %w", err)
+	}
+	return nil
 }

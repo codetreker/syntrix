@@ -48,6 +48,7 @@ func (m *mockSubscribeClient) Recv() (*pullerv1.PullerEvent, error) {
 
 // mockPullerServiceClient implements pullerv1.PullerServiceClient
 type mockPullerServiceClient struct {
+	pullerv1.PullerServiceClient
 	subscribeFunc func(ctx context.Context, in *pullerv1.SubscribeRequest, opts ...grpc.CallOption) (pullerv1.PullerService_SubscribeClient, error)
 }
 

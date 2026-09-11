@@ -34,11 +34,14 @@ var (
 type FilterOp string
 
 const (
-	FilterEq  FilterOp = "eq"  // equality
-	FilterGt  FilterOp = "gt"  // greater than
-	FilterLt  FilterOp = "lt"  // less than
-	FilterGte FilterOp = "gte" // greater than or equal
-	FilterLte FilterOp = "lte" // less than or equal
+	FilterNe       FilterOp = "ne"
+	FilterIn       FilterOp = "in"
+	FilterContains FilterOp = "contains"
+	FilterEq       FilterOp = "eq"  // equality
+	FilterGt       FilterOp = "gt"  // greater than
+	FilterLt       FilterOp = "lt"  // less than
+	FilterGte      FilterOp = "gte" // greater than or equal
+	FilterLte      FilterOp = "lte" // less than or equal
 )
 
 // Filter represents a query filter on a field.
@@ -56,12 +59,17 @@ type OrderField struct {
 
 // Plan represents a query plan passed from Query Engine.
 type Plan struct {
-	Collection  string       // Concrete collection path (e.g., "users/alice/chats")
-	Filters     []Filter     // Prefix/range filters
-	OrderBy     []OrderField // Ordering specification
-	Limit       int          // Max results
-	StartAfter  string       // Cursor for pagination (base64-encoded OrderKey)
-	ShowDeleted bool         // Include deleted documents in results
+	Collection          string       // Concrete collection path (e.g., "users/alice/chats")
+	Filters             []Filter     // Prefix/range filters
+	OrderBy             []OrderField // Ordering specification
+	Limit               int          // Max results
+	StartAfter          string       // Cursor for pagination (base64-encoded OrderKey)
+	ShowDeleted         bool         // Include deleted documents in results
+	AfterPosition       []byte
+	TemplateFingerprint string
+	Generation          string
+	BranchHash          string
+	MaxExamined         int64
 }
 
 // DocRef represents a document reference with its OrderKey.

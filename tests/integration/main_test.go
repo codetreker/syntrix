@@ -349,6 +349,11 @@ templates:
     fields:
       - field: name
         order: asc
+  - name: default-title
+    collectionPattern: "{collection}"
+    fields:
+      - field: title
+        order: asc
   - name: nested-id
     collectionPattern: "{col1}/{doc1}/{col2}"
     fields:
@@ -396,9 +401,11 @@ templates:
       - field: id
         order: asc
 `
-	templatesFile := templatesDir + "/default.yml"
-	if err := os.WriteFile(templatesFile, []byte(templatesContent), 0644); err != nil {
-		return nil, fmt.Errorf("failed to write templates file: %w", err)
+	for _, database := range databases {
+		content := strings.Replace(templatesContent, "database: default", "database: "+database, 1)
+		if err := os.WriteFile(templatesDir+"/"+database+".yml", []byte(content), 0644); err != nil {
+			return nil, fmt.Errorf("failed to write templates file: %w", err)
+		}
 	}
 
 	// Create trigger rules directory for trigger integration tests
@@ -526,7 +533,7 @@ triggers:
 		},
 		Puller: puller_config.Config{
 			Backends: []puller_config.PullerBackendConfig{
-				{Name: "default", Collections: []string{"documents"}},
+				{Name: "default", Collections: []string{"documents", "sys"}},
 			},
 			Cleaner: puller_config.CleanerConfig{
 				Interval:  1 * time.Minute,
@@ -584,6 +591,9 @@ triggers:
 		RunTriggerWorker:    true,
 		RunPuller:           true,
 		RunIndexer:          true,
+		BootstrapIndexes:    true,
+		WritesQuiesced:      true,
+		BootstrapTimeout:    30 * time.Second,
 	}
 
 	manager := services.NewManager(cfg, opts)
@@ -593,6 +603,13 @@ triggers:
 
 	// Start manager
 	mgrCtx, mgrCancel := context.WithCancel(context.Background())
+	bootstrapCtx, bootstrapCancel := context.WithTimeout(mgrCtx, 30*time.Second)
+	err = manager.BootstrapIndexes(mgrCtx, bootstrapCtx)
+	bootstrapCancel()
+	if err != nil {
+		mgrCancel()
+		return nil, fmt.Errorf("bootstrap integration indexes: %w", err)
+	}
 	manager.Start(mgrCtx)
 
 	// Wait for services to be healthy

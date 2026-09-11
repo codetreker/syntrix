@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/syntrixbase/syntrix/internal/core/storage"
 	"github.com/syntrixbase/syntrix/internal/indexer"
+	"github.com/syntrixbase/syntrix/internal/indexer/config"
 	"github.com/syntrixbase/syntrix/internal/indexer/encoding"
 	"github.com/syntrixbase/syntrix/internal/puller"
 )
@@ -29,7 +29,7 @@ func TestIntegration_Pebble_BasicOperations(t *testing.T) {
 	}
 
 	// Wait for events to be processed and flush to ensure all writes are complete
-	time.Sleep(1 * time.Second)
+	waitIntegrationEvents(t, svc, mockPullerSvc)
 	if err := svc.Manager().Flush(); err != nil {
 		t.Fatalf("failed to flush: %v", err)
 	}
@@ -90,7 +90,7 @@ func TestIntegration_Pebble_Persistence(t *testing.T) {
 	}
 
 	// Wait for events and flush
-	time.Sleep(500 * time.Millisecond)
+	waitIntegrationEvents(t, svc1, mockPullerSvc1)
 	if err := svc1.Manager().Flush(); err != nil {
 		t.Fatalf("failed to flush: %v", err)
 	}
@@ -120,7 +120,7 @@ func TestIntegration_Pebble_Persistence(t *testing.T) {
 	defer cancel2()
 
 	// Wait for service to fully initialize
-	time.Sleep(100 * time.Millisecond)
+	waitIntegrationEvents(t, svc2, mockPullerSvc2)
 
 	// Search again - data should be persisted
 	results2, err := svc2.Search(ctx2, "db1", plan)
@@ -158,7 +158,7 @@ func TestIntegration_Pebble_ProgressPersistence(t *testing.T) {
 	}
 
 	// Wait for events and flush
-	time.Sleep(500 * time.Millisecond)
+	waitIntegrationEvents(t, svc1, mockPullerSvc1)
 	if err := svc1.Manager().Flush(); err != nil {
 		t.Fatalf("failed to flush: %v", err)
 	}
@@ -172,7 +172,7 @@ func TestIntegration_Pebble_ProgressPersistence(t *testing.T) {
 	svc2, _, cancel2 := setupIndexerServiceWithPebble(t, mockPullerSvc2, dataDir)
 	defer cancel2()
 
-	time.Sleep(100 * time.Millisecond)
+	waitIntegrationEvents(t, svc2, mockPullerSvc2)
 
 	// Get manager and check progress
 	mgr := svc2.Manager()
@@ -207,7 +207,7 @@ func TestIntegration_Pebble_UpdatesAndDeletes(t *testing.T) {
 	}
 
 	// Wait for inserts and flush
-	time.Sleep(300 * time.Millisecond)
+	waitIntegrationEvents(t, svc, mockPullerSvc)
 	if err := svc.Manager().Flush(); err != nil {
 		t.Fatalf("failed to flush inserts: %v", err)
 	}
@@ -219,17 +219,11 @@ func TestIntegration_Pebble_UpdatesAndDeletes(t *testing.T) {
 			EventID:  fmt.Sprintf("evt-update-%d", i),
 			Database: "db1",
 			OpType:   puller.OperationUpdate,
-			FullDocument: &storage.StoredDoc{
-				Id:         docID,
-				Database:   "db1",
-				Collection: "users",
-				Fullpath:   "users/" + docID,
-				Data: map[string]any{
-					"id":        docID,
-					"name":      fmt.Sprintf("User %d Updated", i),
-					"timestamp": int64(1000 + i),
-				},
-			},
+			FullDocument: testStoredDoc("db1", "users", docID, map[string]any{
+				"id":        docID,
+				"name":      fmt.Sprintf("User %d Updated", i),
+				"timestamp": int64(1000 + i),
+			}),
 			ClusterTime: puller.ClusterTime{T: uint32(time.Now().Unix()), I: uint32(i)},
 			Timestamp:   time.Now().UnixMilli(),
 		}
@@ -240,25 +234,18 @@ func TestIntegration_Pebble_UpdatesAndDeletes(t *testing.T) {
 	for i := 40; i < 50; i++ {
 		docID := fmt.Sprintf("user%03d", i)
 		deleteEvt := &puller.ChangeEvent{
-			EventID:  fmt.Sprintf("evt-delete-%d", i),
-			Database: "db1",
-			OpType:   puller.OperationUpdate,
-			FullDocument: &storage.StoredDoc{
-				Id:         docID,
-				Database:   "db1",
-				Collection: "users",
-				Fullpath:   "users/" + docID,
-				Data:       map[string]any{"id": docID, "timestamp": int64(i)},
-				Deleted:    true,
-			},
-			ClusterTime: puller.ClusterTime{T: uint32(time.Now().Unix()), I: uint32(100 + i)},
-			Timestamp:   time.Now().UnixMilli(),
+			EventID:      fmt.Sprintf("evt-delete-%d", i),
+			Database:     "db1",
+			OpType:       puller.OperationUpdate,
+			FullDocument: testDeletedDoc("db1", "users", docID, map[string]any{"id": docID, "timestamp": int64(i)}),
+			ClusterTime:  puller.ClusterTime{T: uint32(time.Now().Unix()), I: uint32(100 + i)},
+			Timestamp:    time.Now().UnixMilli(),
 		}
 		mockPullerSvc.pushEvent(deleteEvt, fmt.Sprintf("delete-%d", i))
 	}
 
 	// Wait for updates/deletes and flush
-	time.Sleep(300 * time.Millisecond)
+	waitIntegrationEvents(t, svc, mockPullerSvc)
 	if err := svc.Manager().Flush(); err != nil {
 		t.Fatalf("failed to flush updates/deletes: %v", err)
 	}
@@ -330,7 +317,7 @@ func TestIntegration_Pebble_MultiDatabase(t *testing.T) {
 	}
 
 	// Wait for events and flush
-	time.Sleep(1 * time.Second)
+	waitIntegrationEvents(t, svc, mockPullerSvc)
 	if err := svc.Manager().Flush(); err != nil {
 		t.Fatalf("failed to flush: %v", err)
 	}
@@ -387,7 +374,7 @@ func TestIntegration_Pebble_LargeDataset(t *testing.T) {
 	}
 
 	// Wait for processing and flush
-	time.Sleep(1500 * time.Millisecond)
+	waitIntegrationEvents(t, svc, mockPullerSvc)
 	if err := svc.Manager().Flush(); err != nil {
 		t.Fatalf("failed to flush: %v", err)
 	}
@@ -450,7 +437,7 @@ func TestIntegration_Pebble_PatternMatching(t *testing.T) {
 	}
 
 	// Wait for events and flush
-	time.Sleep(1 * time.Second)
+	waitIntegrationEvents(t, svc, mockPullerSvc)
 	if err := svc.Manager().Flush(); err != nil {
 		t.Fatalf("failed to flush: %v", err)
 	}
@@ -512,7 +499,7 @@ func TestIntegration_Pebble_FlushOnStop(t *testing.T) {
 	}
 
 	// Wait for events to be processed (read from channel)
-	time.Sleep(300 * time.Millisecond)
+	waitIntegrationEvents(t, svc1, mockPullerSvc1)
 
 	// Stop should flush all pending data
 	stopService(t, svc1, mockPullerSvc1)
@@ -523,7 +510,7 @@ func TestIntegration_Pebble_FlushOnStop(t *testing.T) {
 	svc2, ctx2, cancel2 := setupIndexerServiceWithPebble(t, mockPullerSvc2, dataDir)
 	defer cancel2()
 
-	time.Sleep(100 * time.Millisecond)
+	waitIntegrationEvents(t, svc2, mockPullerSvc2)
 
 	plan := indexer.Plan{
 		Collection: "users",
@@ -562,7 +549,7 @@ func TestIntegration_Pebble_PaginationPersistence(t *testing.T) {
 	}
 
 	// Wait for events and flush
-	time.Sleep(1 * time.Second)
+	waitIntegrationEvents(t, svc1, mockPullerSvc1)
 	if err := svc1.Manager().Flush(); err != nil {
 		t.Fatalf("failed to flush: %v", err)
 	}
@@ -594,7 +581,7 @@ func TestIntegration_Pebble_PaginationPersistence(t *testing.T) {
 	svc2, ctx2, cancel2 := setupIndexerServiceWithPebble(t, mockPullerSvc2, dataDir)
 	defer cancel2()
 
-	time.Sleep(100 * time.Millisecond)
+	waitIntegrationEvents(t, svc2, mockPullerSvc2)
 
 	// Fetch page 2 using cursor from page 1
 	plan.StartAfter = cursor
@@ -636,7 +623,7 @@ func TestIntegration_Pebble_MultiTemplatePersistence(t *testing.T) {
 	t.Parallel()
 	dataDir := t.TempDir()
 
-	// Phase 1: Create service, add templates dynamically, insert data, stop
+	// Phase 1: Rebuild with an additional template, ingest more data, and stop.
 	mockPullerSvc1 := newMockPuller(1000)
 	svc1, ctx1, cancel1 := setupIndexerServiceWithPebble(t, mockPullerSvc1, dataDir)
 
@@ -650,12 +637,12 @@ func TestIntegration_Pebble_MultiTemplatePersistence(t *testing.T) {
 		mockPullerSvc1.pushEvent(evt, fmt.Sprintf("user-%d", i))
 	}
 
-	time.Sleep(500 * time.Millisecond)
+	waitIntegrationEvents(t, svc1, mockPullerSvc1)
 	if err := svc1.Manager().Flush(); err != nil {
 		t.Fatalf("failed to flush: %v", err)
 	}
 
-	// Dynamically add a new template for score-based sorting
+	// Rebuild with a new template for score-based sorting.
 	newTemplateYAML := `
 templates:
   - name: users_by_timestamp
@@ -691,10 +678,7 @@ templates:
         order: asc
 `
 
-	mgr1 := svc1.Manager()
-	if err := mgr1.LoadTemplatesFromBytes([]byte(newTemplateYAML)); err != nil {
-		t.Fatalf("failed to load new templates: %v", err)
-	}
+	svc1, ctx1, cancel1 = reloadIntegrationTemplates(t, svc1, mockPullerSvc1, newTemplateYAML)
 
 	// Insert more users - these will be indexed by both templates
 	for i := 300; i < 500; i++ {
@@ -706,7 +690,7 @@ templates:
 		mockPullerSvc1.pushEvent(evt, fmt.Sprintf("user-%d", i))
 	}
 
-	time.Sleep(500 * time.Millisecond)
+	waitIntegrationEvents(t, svc1, mockPullerSvc1)
 	if err := svc1.Manager().Flush(); err != nil {
 		t.Fatalf("failed to flush after new template: %v", err)
 	}
@@ -736,16 +720,10 @@ templates:
 
 	// Phase 2: Restart with same templates and verify both indexes persisted
 	mockPullerSvc2 := newMockPuller(500)
-	svc2, ctx2, cancel2 := setupIndexerServiceWithPebble(t, mockPullerSvc2, dataDir)
+	svc2, ctx2, cancel2 := setupIntegrationService(t, mockPullerSvc2, config.Config{StorageMode: config.StorageModePebble, Store: config.StoreConfig{Path: dataDir, BatchSize: 10, BatchInterval: 10 * time.Millisecond}}, newTemplateYAML)
 	defer cancel2()
 
-	time.Sleep(100 * time.Millisecond)
-
-	// Load the same templates
-	mgr2 := svc2.Manager()
-	if err := mgr2.LoadTemplatesFromBytes([]byte(newTemplateYAML)); err != nil {
-		t.Fatalf("failed to load templates after restart: %v", err)
-	}
+	waitIntegrationEvents(t, svc2, mockPullerSvc2)
 
 	// Verify timestamp-based search still works
 	timestampPlan := indexer.Plan{
@@ -765,13 +743,17 @@ templates:
 		t.Errorf("expected user499 first by timestamp after restart, got %s", timestampResults[0].ID)
 	}
 
-	// Verify score-based search still works (only users 300-499 indexed by score template)
+	// The complete rebuilt score index survives restart.
+	scorePlan.Limit = 500
 	scoreResults2, err := svc2.Search(ctx2, "db1", scorePlan)
 	if err != nil {
 		t.Fatalf("score search after restart failed: %v", err)
 	}
-	if len(scoreResults2) != 100 {
-		t.Fatalf("expected 100 score results after restart, got %d", len(scoreResults2))
+	if len(scoreResults2) != 500 {
+		t.Fatalf("expected 500 score results after restart, got %d", len(scoreResults2))
+	}
+	if scoreResults2[499].ID != "user000" {
+		t.Errorf("expected pre-rebuild user000 last by score, got %s", scoreResults2[499].ID)
 	}
 	if scoreResults2[0].ID != "user499" {
 		t.Errorf("expected user499 first by score after restart, got %s", scoreResults2[0].ID)
@@ -797,7 +779,7 @@ func TestIntegration_Pebble_ContinueProcessingAfterRestart(t *testing.T) {
 		mockPullerSvc1.pushEvent(evt, fmt.Sprintf("progress-%03d", i))
 	}
 
-	time.Sleep(500 * time.Millisecond)
+	waitIntegrationEvents(t, svc1, mockPullerSvc1)
 	if err := svc1.Manager().Flush(); err != nil {
 		t.Fatalf("failed to flush: %v", err)
 	}
@@ -836,7 +818,7 @@ func TestIntegration_Pebble_ContinueProcessingAfterRestart(t *testing.T) {
 	svc2, ctx2, cancel2 := setupIndexerServiceWithPebble(t, mockPullerSvc2, dataDir)
 	defer cancel2()
 
-	time.Sleep(100 * time.Millisecond)
+	waitIntegrationEvents(t, svc2, mockPullerSvc2)
 
 	// Verify old data is still there
 	results2, err := svc2.Search(ctx2, "db1", plan)
@@ -866,7 +848,7 @@ func TestIntegration_Pebble_ContinueProcessingAfterRestart(t *testing.T) {
 		mockPullerSvc2.pushEvent(evt, fmt.Sprintf("progress-%03d", i))
 	}
 
-	time.Sleep(500 * time.Millisecond)
+	waitIntegrationEvents(t, svc2, mockPullerSvc2)
 	if err := svc2.Manager().Flush(); err != nil {
 		t.Fatalf("failed to flush new events: %v", err)
 	}
@@ -906,7 +888,7 @@ func TestIntegration_Pebble_ContinueProcessingAfterRestart(t *testing.T) {
 	svc3, ctx3, cancel3 := setupIndexerServiceWithPebble(t, mockPullerSvc3, dataDir)
 	defer cancel3()
 
-	time.Sleep(100 * time.Millisecond)
+	waitIntegrationEvents(t, svc3, mockPullerSvc3)
 
 	results4, err := svc3.Search(ctx3, "db1", plan)
 	if err != nil {

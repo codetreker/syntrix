@@ -3,15 +3,18 @@ package client
 import (
 	"context"
 	"encoding/json"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/syntrixbase/syntrix/pkg/benchmark/types"
+	"github.com/syntrixbase/syntrix/pkg/model"
 )
 
 func TestNewHTTPClient(t *testing.T) {
@@ -154,25 +157,38 @@ func TestHTTPClient_DeleteDocument(t *testing.T) {
 }
 
 func TestHTTPClient_Query(t *testing.T) {
+	var requests atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
 		assert.Equal(t, "POST", r.Method)
 		assert.Equal(t, "/api/v1/databases/default/query", r.URL.Path)
-
-		response := []map[string]interface{}{
-			{
-				"id": "doc-1",
-				"data": map[string]interface{}{
-					"name": "test1",
-				},
-			},
-			{
-				"id": "doc-2",
-				"data": map[string]interface{}{
-					"name": "test2",
-				},
-			},
+		var body json.RawMessage
+		if !assert.NoError(t, json.NewDecoder(r.Body).Decode(&body)) {
+			w.WriteHeader(http.StatusBadRequest)
+			return
 		}
-		json.NewEncoder(w).Encode(response)
+		assert.JSONEq(t, `{
+			"collection":"test-collection",
+			"filters":[{"field":"count","op":">=","value":{"type":"int64","value":"9007199254740993"}}],
+			"orderBy":[{"field":"count","direction":"desc"}],
+			"limit":3
+		}`, string(body))
+		_, err := w.Write([]byte(`{
+			"documents":[{"type":"object","value":{
+				"id":{"type":"string","value":"doc-1"},
+				"collection":{"type":"string","value":"test-collection"},
+				"version":{"type":"int64","value":"9007199254740993"},
+				"createdAt":{"type":"int64","value":"1720000000000"},
+				"updatedAt":{"type":"int64","value":"1720000000001"},
+				"name":{"type":"string","value":"test1"},
+				"count":{"type":"int64","value":"9223372036854775807"},
+				"nested":{"type":"array","value":[{"type":"int64","value":"-9223372036854775808"},{"type":"float64","value":1.5}]},
+				"data":{"type":"object","value":{"type":{"type":"string","value":"business"}}}
+			}}],
+			"nextCursor":"continue-this-page",
+			"effectiveOrder":[{"field":"count","direction":"desc"},{"field":"id","direction":"asc"}]
+		}`))
+		assert.NoError(t, err)
 	}))
 	defer server.Close()
 
@@ -181,13 +197,86 @@ func TestHTTPClient_Query(t *testing.T) {
 
 	query := types.Query{
 		Collection: "test-collection",
+		Filters:    []model.Filter{{Field: "count", Op: model.OpGte, Value: int64(9007199254740993)}},
+		OrderBy:    []model.Order{{Field: "count", Direction: "desc"}},
+		Limit:      3,
 	}
 
 	results, err := client.Query(context.Background(), query)
 	require.NoError(t, err)
-	assert.Len(t, results, 2)
+	require.Len(t, results, 1)
 	assert.Equal(t, "doc-1", results[0].ID)
-	assert.Equal(t, "doc-2", results[1].ID)
+	assert.Equal(t, "test-collection", results[0].Collection)
+	assert.Equal(t, int64(9007199254740993), results[0].Version)
+	assert.Equal(t, int64(1720000000000), results[0].CreatedAt.UnixMilli())
+	assert.Equal(t, int64(1720000000001), results[0].UpdatedAt.UnixMilli())
+	assert.Equal(t, map[string]any{
+		"name": "test1", "count": int64(math.MaxInt64),
+		"nested": []any{int64(math.MinInt64), float64(1.5)},
+		"data":   map[string]any{"type": "business"},
+	}, results[0].Data)
+	assert.Equal(t, int32(1), requests.Load())
+}
+
+func TestHTTPClient_QueryRejectsOffsetBeforeRequest(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+	client, err := NewHTTPClient(server.URL, "default", "test-token")
+	require.NoError(t, err)
+	for _, offset := range []int{-1, 1, 100} {
+		results, err := client.Query(context.Background(), types.Query{Collection: "test-collection", Offset: offset})
+		require.ErrorContains(t, err, "offsets are not supported")
+		assert.Nil(t, results)
+	}
+	assert.Zero(t, requests.Load())
+}
+
+func TestHTTPClient_QueryEmptyPage(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, err := w.Write([]byte(`{"documents":[],"nextCursor":null,"effectiveOrder":[{"field":"id","direction":"asc"}]}`))
+		assert.NoError(t, err)
+	}))
+	defer server.Close()
+	client, err := NewHTTPClient(server.URL, "default", "test-token")
+	require.NoError(t, err)
+	results, err := client.Query(context.Background(), types.Query{Collection: "test-collection"})
+	require.NoError(t, err)
+	assert.NotNil(t, results)
+	assert.Empty(t, results)
+}
+
+func TestHTTPClient_QueryRejectsInvalidPage(t *testing.T) {
+	for _, response := range []string{
+		`[]`, `null`, `{}`, `{"documents":[],"nextCursor":null}`,
+		`{"documents":null,"nextCursor":null,"effectiveOrder":[{"field":"id","direction":"asc"}]}`,
+		`{"documents":{},"nextCursor":null,"effectiveOrder":[{"field":"id","direction":"asc"}]}`,
+		`{"documents":[],"nextCursor":12,"effectiveOrder":[{"field":"id","direction":"asc"}]}`,
+		`{"documents":[],"nextCursor":"","effectiveOrder":[{"field":"id","direction":"asc"}]}`,
+		`{"documents":[],"nextCursor":null,"effectiveOrder":[{"field":"id","direction":"sideways"}]}`,
+		`{"documents":[],"nextCursor":null,"effectiveOrder":[{"field":"\ud800","direction":"asc"}]}`,
+		`{"documents":[],"nextCursor":null,"effectiveOrder":[{"field":"id","direction":"asc"}],"data":[]}`,
+		`{"documents":[{"type":"null"}],"nextCursor":null,"effectiveOrder":[{"field":"id","direction":"asc"}]}`,
+		`{"documents":[{"id":"plain"}],"nextCursor":null,"effectiveOrder":[{"field":"id","direction":"asc"}]}`,
+		`{"documents":[{"type":"object","value":{"id":{"type":"string","value":"missing-metadata"}}}],"nextCursor":null,"effectiveOrder":[{"field":"id","direction":"asc"}]}`,
+		`{"documents":[{"type":"object","value":{"id":{"type":"string","value":"\ud800"}}}],"nextCursor":null,"effectiveOrder":[{"field":"id","direction":"asc"}]}`,
+	} {
+		t.Run(response, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_, err := w.Write([]byte(response))
+				assert.NoError(t, err)
+			}))
+			defer server.Close()
+			client, err := NewHTTPClient(server.URL, "default", "test-token")
+			require.NoError(t, err)
+			results, err := client.Query(context.Background(), types.Query{Collection: "test-collection"})
+			require.Error(t, err)
+			assert.Nil(t, results)
+		})
+	}
 }
 
 func TestHTTPClient_HTTPError(t *testing.T) {

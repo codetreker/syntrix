@@ -2,6 +2,7 @@ package router
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/syntrixbase/syntrix/internal/core/storage/types"
@@ -33,12 +34,54 @@ func (s *RoutedDocumentStore) Get(ctx context.Context, database string, path str
 	return store.Get(ctx, database, path, opts...)
 }
 
-func (s *RoutedDocumentStore) GetMany(ctx context.Context, database string, paths []string) ([]*types.StoredDoc, error) {
-	store, err := s.router.Select(database, types.OpRead)
+func (s *RoutedDocumentStore) GetMany(ctx context.Context, database string, paths []string, opts ...types.ReadOptions) ([]*types.StoredDoc, error) {
+	readOpts, err := types.ResolveReadOptions(opts)
 	if err != nil {
 		return nil, err
 	}
-	return store.GetMany(ctx, database, paths)
+	op := types.OpRead
+	if readOpts.Consistency == types.ReadAuthoritative {
+		op = types.OpWrite
+	}
+	store, err := s.router.Select(database, op)
+	if err != nil {
+		return nil, err
+	}
+	return store.GetMany(ctx, database, paths, opts...)
+}
+
+func (s *RoutedDocumentStore) ScanDocuments(ctx context.Context, database string, request types.SourceScanRequest) (types.SourceScanPage, error) {
+	if err := request.Validate(database); err != nil {
+		return types.SourceScanPage{}, err
+	}
+	op := types.OpRead
+	if request.Consistency == types.ReadAuthoritative {
+		op = types.OpWrite
+	}
+	store, err := s.router.Select(database, op)
+	if err != nil {
+		return types.SourceScanPage{}, err
+	}
+	scanner, ok := store.(types.DocumentScanner)
+	if !ok {
+		return types.SourceScanPage{}, fmt.Errorf("document source does not support bounded scanning")
+	}
+	return scanner.ScanDocuments(ctx, database, request)
+}
+
+func (s *RoutedDocumentStore) EnumerateCollections(ctx context.Context, database, afterCollection string, limit int, opts ...types.CollectionEnumerationOptions) ([]string, error) {
+	if _, err := types.ResolveCollectionEnumerationOptions(database, afterCollection, limit, opts); err != nil {
+		return nil, err
+	}
+	store, err := s.router.Select(database, types.OpWrite)
+	if err != nil {
+		return nil, err
+	}
+	enumerator, ok := store.(types.DocumentCollectionEnumerator)
+	if !ok {
+		return nil, fmt.Errorf("document source does not support collection enumeration")
+	}
+	return enumerator.EnumerateCollections(ctx, database, afterCollection, limit, opts...)
 }
 
 func (s *RoutedDocumentStore) Create(ctx context.Context, database string, doc types.StoredDoc) error {

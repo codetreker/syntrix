@@ -76,6 +76,8 @@ func TestResolveReadOptions(t *testing.T) {
 		{name: "zero value", options: []ReadOptions{{}}},
 		{name: "explicit default", options: []ReadOptions{{Consistency: ReadDefault}}},
 		{name: "authoritative", options: []ReadOptions{{Consistency: ReadAuthoritative}}, expected: ReadOptions{Consistency: ReadAuthoritative}},
+		{name: "bounded authoritative", options: []ReadOptions{{Consistency: ReadAuthoritative, ShowDeleted: true, MaxBytes: 1024}}, expected: ReadOptions{Consistency: ReadAuthoritative, ShowDeleted: true, MaxBytes: 1024}},
+		{name: "negative byte budget", options: []ReadOptions{{MaxBytes: -1}}, invalid: true},
 		{name: "unknown consistency", options: []ReadOptions{{Consistency: 255}}, invalid: true},
 		{name: "duplicate default", options: []ReadOptions{{}, {}}, invalid: true},
 		{name: "duplicate authoritative", options: []ReadOptions{{Consistency: ReadAuthoritative}, {Consistency: ReadAuthoritative}}, invalid: true},
@@ -91,4 +93,98 @@ func TestResolveReadOptions(t *testing.T) {
 			assert.Equal(t, tc.expected, actual)
 		})
 	}
+}
+
+func TestLogicalDocumentID(t *testing.T) {
+	doc := NewStoredDoc("app", "users", "real", map[string]interface{}{})
+	doc.Data["id"] = "business"
+	doc.Id = "backend-specific-key"
+	id, err := LogicalDocumentID(&doc)
+	assert.NoError(t, err)
+	assert.Equal(t, "real", id)
+	doc.Deleted, doc.Data = true, nil
+	id, err = LogicalDocumentID(&doc)
+	assert.NoError(t, err)
+	assert.Equal(t, "real", id)
+	for name, mutate := range map[string]func(*StoredDoc){
+		"database":   func(d *StoredDoc) { d.Database = "" },
+		"scope":      func(d *StoredDoc) { d.Collection = "other" },
+		"missing ID": func(d *StoredDoc) { d.Fullpath = "users/" },
+		"nested ID":  func(d *StoredDoc) { d.Fullpath = "users/a/b" },
+		"wildcard":   func(d *StoredDoc) { d.Collection = "*" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			invalid := doc
+			mutate(&invalid)
+			_, err := LogicalDocumentID(&invalid)
+			assert.Error(t, err)
+		})
+	}
+	_, err = LogicalDocumentID(nil)
+	assert.Error(t, err)
+}
+
+func TestSourceScanRequestValidation(t *testing.T) {
+	valid := SourceScanRequest{Collection: "groups/a/items", Limit: 10, AfterID: "a"}
+	assert.NoError(t, valid.Validate("app"))
+	for name, mutate := range map[string]func(*SourceScanRequest){
+		"wildcard":               func(r *SourceScanRequest) { r.Collection = "users/*" },
+		"empty segment":          func(r *SourceScanRequest) { r.Collection = "users//items" },
+		"empty collection":       func(r *SourceScanRequest) { r.Collection = "" },
+		"zero limit":             func(r *SourceScanRequest) { r.Limit = 0 },
+		"negative bytes":         func(r *SourceScanRequest) { r.MaxBytes = -1 },
+		"invalid consistency":    func(r *SourceScanRequest) { r.Consistency = -1 },
+		"full path continuation": func(r *SourceScanRequest) { r.AfterID = "users/a" },
+	} {
+		t.Run(name, func(t *testing.T) { invalid := valid; mutate(&invalid); assert.Error(t, invalid.Validate("app")) })
+	}
+	assert.Error(t, valid.Validate(""))
+}
+
+func TestCollectionEnumerationAdmission(t *testing.T) {
+	ordinary, err := ResolveCollectionEnumerationOptions("app", "", 1, nil)
+	assert.NoError(t, err)
+	assert.False(t, ordinary.IncludeSystem)
+
+	allScopes, err := ResolveCollectionEnumerationOptions("app", "groups/a/items", 1, []CollectionEnumerationOptions{{IncludeSystem: true}})
+	assert.NoError(t, err)
+	assert.True(t, allScopes.IncludeSystem)
+
+	for _, tc := range []struct {
+		name     string
+		database string
+		after    string
+		limit    int
+		options  []CollectionEnumerationOptions
+	}{
+		{name: "database-wide enumeration requires explicit database", limit: 1},
+		{name: "zero budget must not become an unbounded scan", database: "app"},
+		{name: "negative budget", database: "app", limit: -1},
+		{name: "cursor cannot select a wildcard scope", database: "app", after: "groups/*/items", limit: 1},
+		{name: "cursor must be a canonical collection path", database: "app", after: "groups//items", limit: 1},
+		{name: "conflicting visibility options", database: "app", limit: 1, options: []CollectionEnumerationOptions{{}, {IncludeSystem: true}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := ResolveCollectionEnumerationOptions(tc.database, tc.after, tc.limit, tc.options)
+			assert.Error(t, err)
+		})
+	}
+}
+
+func TestStoredDocumentBytes(t *testing.T) {
+	missing, err := StoredDocumentBytes(nil)
+	assert.NoError(t, err)
+	assert.Zero(t, missing)
+	doc := NewStoredDoc("app", "items", "a", map[string]interface{}{"number": int64(9007199254740993)})
+	size, err := StoredDocumentBytes(&doc)
+	assert.NoError(t, err)
+	assert.Positive(t, size)
+	doc.Data["number"] = int64(9007199254740992)
+	adjacentSize, err := StoredDocumentBytes(&doc)
+	assert.NoError(t, err)
+	assert.Equal(t, size, adjacentSize)
+	assert.Equal(t, int64(9007199254740992), doc.Data["number"])
+	doc.Data["invalid"] = make(chan int)
+	_, err = StoredDocumentBytes(&doc)
+	assert.Error(t, err)
 }

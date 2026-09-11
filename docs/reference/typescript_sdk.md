@@ -144,14 +144,53 @@ Both clients return `DocumentReference` and `CollectionReference` objects with t
 - **`orderBy(field, direction): QueryBuilder<T>`** — sort.
 - **`limit(n: number): QueryBuilder<T>`** — limit results.
 
-`where()` accepts the shared filter syntax. On execution, indexed queries using
-`!=`, `in`, or `contains` reject with HTTP 400 and code `BAD_REQUEST`; no partial
-result is returned. Unordered queries whose filters all target `id` with `==` or
-`in` retain their direct Store path. See
-[query availability](filters.md#query-availability) for supported query shapes.
-Query `update()` and `delete()` fetch matching documents first; a query rejection
-prevents their document writes. These restrictions do not change the operators
-available to document write conditions or realtime filters.
+### Query Pages
+
+Both clients expose the same query builder and page contract:
+
+```typescript
+interface QueryPage<T> {
+  documents: T[];
+  nextCursor: string | null;
+  effectiveOrder: { field: string; direction: 'asc' | 'desc' }[];
+}
+
+const query = client.collection('messages')
+  .where('version', '>=', 9007199254740993n)
+  .orderBy('version', 'asc')
+  .limit(20);
+
+let page = await query.getPage();
+for (;;) {
+  console.log(page.documents);
+  if (page.nextCursor === null) break;
+  page = await query.startAfter(page.nextCursor).getPage();
+}
+```
+
+- `getPage()` returns one decoded page and its continuation.
+- `get()` returns only that page's documents; it does not traverse subsequent
+  pages. Query `update()` and `delete()` also act only on the selected page, using
+  per-document writes. They are not an atomic query-wide mutation.
+- `where()` supports `==`, `!=`, `>`, `>=`, `<`, `<=`, `in`, and `contains` under
+  the [query filter contract](filters.md). Queries need a compatible complete
+  index plan except for the documented direct Store routes.
+- Pass the opaque `nextCursor` to `startAfter()` while keeping query scope and
+  ordering unchanged. A non-null cursor may lead to an empty terminal page.
+- SDK `bigint` values encode as signed int64; SDK `number` values encode as finite
+  binary64. All decoded int64 fields become `bigint`, including metadata and
+  nested values; float64 fields remain `number`. Already-rounded JavaScript
+  numbers cannot recover lost integer precision.
+- Query transport uses [typed values](filters.md#typed-values). Document CRUD,
+  conditional writes, and Trigger writes retain ordinary JSON bodies; query
+  decoding does not add bigint support to those write methods.
+- Malformed pages, legacy array responses, invalid typed values, and execution
+  errors reject. A stale cursor requires restarting the query. See
+  [query errors](api.md#query-errors) and [consistency](api.md#continuation).
+
+Trigger collection queries use `/trigger/v1/databases/{database}/query` with the
+same page and value codec as standard queries. This query contract does not
+change conditional-write or realtime filter execution.
 
 ## 4. Realtime (WS & SSE)
 

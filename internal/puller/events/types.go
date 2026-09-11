@@ -92,6 +92,11 @@ type TruncatedArray struct {
 type PullerEvent struct {
 	Change   *StoreChangeEvent `json:"change_event"`
 	Progress string            `json:"progress"`
+	// Ready follows every replay event; consumers apply and flush that prefix first.
+	Ready bool `json:"ready,omitempty"`
+	// Error terminates a verified subscription attempt without changing event progress.
+	Error     error `json:"-"`
+	Retryable bool  `json:"-"`
 }
 
 // StoreChangeEvent is the canonical event schema published by Puller.
