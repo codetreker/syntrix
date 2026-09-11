@@ -123,7 +123,7 @@ func DefaultConfig() Config {
 		Backends: []PullerBackendConfig{
 			{
 				Name:        "default_mongo",
-				Collections: []string{"documents"},
+				Collections: []string{"documents", "sys"},
 			},
 		},
 		Buffer: BufferConfig{

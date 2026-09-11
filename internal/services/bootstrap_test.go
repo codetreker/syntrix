@@ -26,6 +26,7 @@ import (
 	pullerconfig "github.com/syntrixbase/syntrix/internal/puller/config"
 	"github.com/syntrixbase/syntrix/internal/puller/cursor"
 	"github.com/syntrixbase/syntrix/internal/server"
+	"gopkg.in/yaml.v3"
 )
 
 func bootstrapTestConfig(t *testing.T) *config.Config {
@@ -34,8 +35,25 @@ func bootstrapTestConfig(t *testing.T) *config.Config {
 	cfg.Indexer.TemplatePath = t.TempDir()
 	cfg.Indexer.Store.Path = filepath.Join(t.TempDir(), "indexes")
 	cfg.Puller.Buffer.Path = filepath.Join(t.TempDir(), "events")
-	cfg.Puller.Backends[0].Collections = []string{"documents", "sys"}
 	return cfg
+}
+
+func TestBootstrapCaptureDefaultConfiguration(t *testing.T) {
+	t.Run("raw defaults", func(t *testing.T) {
+		cfg := &config.Config{Storage: storageconfig.DefaultConfig(), Puller: pullerconfig.DefaultConfig()}
+		require.NoError(t, validateBootstrapCapture(cfg, []string{"default", "dynamic"}))
+	})
+	t.Run("shipped configuration", func(t *testing.T) {
+		data, err := os.ReadFile(filepath.Join("..", "..", "configs", "config.yml"))
+		require.NoError(t, err)
+		var shipped config.Config
+		require.NoError(t, yaml.Unmarshal(data, &shipped))
+		configDir := t.TempDir()
+		require.NoError(t, os.WriteFile(filepath.Join(configDir, "config.yml"), data, 0600))
+		cfg := config.LoadConfigFrom(configDir)
+		require.Equal(t, shipped.Puller.Backends, cfg.Puller.Backends)
+		require.NoError(t, validateBootstrapCapture(cfg, []string{"default", "dynamic"}))
+	})
 }
 
 func TestBootstrapCaptureAuthoritativeRouting(t *testing.T) {
