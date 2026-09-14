@@ -17,6 +17,8 @@ import (
 	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/encoding/protowire"
+	"google.golang.org/protobuf/proto"
 )
 
 // MockService is a mock implementation of the Service interface.
@@ -331,6 +333,37 @@ func TestServer_Pull(t *testing.T) {
 		assert.True(t, resp.CaughtUp)
 		assert.EqualValues(t, 2, resp.WireVersion)
 	})
+}
+
+func TestServerPullRejectsLegacyNumericProtobufBeforeService(t *testing.T) {
+	legacy := protowire.AppendTag(nil, 1, protowire.BytesType)
+	legacy = protowire.AppendString(legacy, "db")
+	legacy = protowire.AppendTag(legacy, 2, protowire.BytesType)
+	legacy = protowire.AppendString(legacy, "users")
+	legacy = protowire.AppendTag(legacy, 3, protowire.VarintType)
+	legacy = protowire.AppendVarint(legacy, 1700000000000)
+	legacy = protowire.AppendTag(legacy, 4, protowire.VarintType)
+	legacy = protowire.AppendVarint(legacy, 100)
+
+	var request pb.PullRequest
+	require.NoError(t, proto.Unmarshal(legacy, &request))
+	require.Equal(t, "db", request.Database)
+	require.Equal(t, "users", request.Collection)
+	require.Empty(t, request.Checkpoint)
+	require.Zero(t, request.WireVersion)
+	require.NotEmpty(t, request.ProtoReflect().GetUnknown())
+
+	service := new(MockService)
+	page, err := NewServer(service).Pull(context.Background(), &request)
+	require.Nil(t, page)
+	require.Equal(t, codes.InvalidArgument, status.Code(err))
+	details := status.Convert(err).Details()
+	require.Len(t, details, 1)
+	info, ok := details[0].(*errdetails.ErrorInfo)
+	require.True(t, ok)
+	require.Equal(t, "syntrix.replication", info.Domain)
+	require.Equal(t, string(types.ReplicationInvalidCursor), info.Reason)
+	service.AssertNotCalled(t, "Pull", mock.Anything, mock.Anything, mock.Anything)
 }
 
 func TestServerPullRejectsInvalidRequestsBeforeService(t *testing.T) {

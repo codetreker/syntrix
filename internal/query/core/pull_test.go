@@ -368,3 +368,25 @@ func TestPullCursorEncodingBoundsSourcePositions(t *testing.T) {
 		})
 	}
 }
+
+func TestPullRejectsInvalidDatabaseIdentityAndOversizedRequest(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		database string
+		identity string
+		code     types.ReplicationErrorCode
+	}{
+		{name: "missing storage namespace", code: types.ReplicationScopeMismatch},
+		{name: "invalid resolved identity", database: "db", identity: "invalid\x00identity", code: types.ReplicationScopeMismatch},
+		{name: "oversized resolved identity", database: "db", identity: strings.Repeat("x", MaxPullRequestBytes), code: types.ReplicationInvalidCursor},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			source := &pullSource{}
+			page, err := New(source, nil).Pull(context.Background(), test.database, types.ReplicationPullRequest{Collection: "items", DatabaseIdentity: test.identity})
+			var failure *types.ReplicationError
+			require.ErrorAs(t, err, &failure)
+			require.Equal(t, test.code, failure.Code)
+			require.Nil(t, page)
+		})
+	}
+}

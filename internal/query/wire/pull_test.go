@@ -145,6 +145,21 @@ func TestPullPageBudgetRejectsOversizedInput(t *testing.T) {
 	requirePullCode(t, CheckPullPageSize(page, 0, MaxGRPCBytes), types.ReplicationBudgetExceeded)
 }
 
+func TestPullPageAccountingRejectsInvalidEnvelopeAndSizes(t *testing.T) {
+	page := &types.ReplicationPullResponse{Checkpoint: "cp"}
+	requirePullCode(t, CheckPullPageSize(nil, 0, 0), types.ReplicationInvalidState)
+	for _, size := range []struct{ json, protobuf int }{
+		{-1, 0}, {0, -1},
+	} {
+		requirePullCode(t, CheckPullPageSize(page, size.json, size.protobuf), types.ReplicationInvalidState)
+	}
+	for _, size := range []struct{ json, protobuf int }{
+		{math.MaxInt, 0}, {0, math.MaxInt},
+	} {
+		requirePullCode(t, CheckPullPageSize(page, size.json, size.protobuf), types.ReplicationBudgetExceeded)
+	}
+}
+
 func TestReplicationErrorTransportRoundTrip(t *testing.T) {
 	for _, code := range []types.ReplicationErrorCode{
 		types.ReplicationInvalidCursor, types.ReplicationScopeMismatch, types.ReplicationSourceMismatch,
