@@ -20,38 +20,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestHandlePull(t *testing.T) {
-	mockService := new(MockQueryService)
-	server := createTestServer(mockService, nil, nil)
-
-	resp := &storage.ReplicationPullResponse{
-		Documents: []*storage.StoredDoc{
-			{
-				Id:         "hash-1",
-				Fullpath:   "rooms/room-1/messages/msg-1",
-				Collection: "rooms/room-1/messages",
-				Data:       map[string]interface{}{"name": "Alice"},
-				Version:    1,
-			},
-		},
-		Checkpoint: 100,
-	}
-
-	mockService.On("Pull", mock.Anything, "default", mock.AnythingOfType("types.ReplicationPullRequest")).Return(resp, nil)
-
-	req, _ := http.NewRequest("GET", "/replication/v1/databases/default/pull?collection=rooms/room-1/messages&checkpoint=0&limit=10", nil)
-	rr := httptest.NewRecorder()
-
-	server.ServeHTTP(rr, req)
-
-	assert.Equal(t, http.StatusOK, rr.Code)
-
-	var pullResp ReplicaPullResponse
-	json.Unmarshal(rr.Body.Bytes(), &pullResp)
-	assert.Len(t, pullResp.Documents, 1)
-	assert.Equal(t, "100", pullResp.Checkpoint)
-}
-
 func TestHandlePush(t *testing.T) {
 	mockService := new(MockQueryService)
 	server := createTestServer(mockService, nil, nil)
@@ -280,69 +248,6 @@ func TestHandlePush_QueryEngineVersionPrecondition(t *testing.T) {
 			})
 		}
 	}
-}
-
-func TestHandlePull_InvalidQuery(t *testing.T) {
-	mockService := new(MockQueryService)
-	server := createTestServer(mockService, nil, nil)
-
-	req, _ := http.NewRequest("GET", "/replication/v1/databases/default/pull?limit=abc", nil)
-	rr := httptest.NewRecorder()
-
-	server.ServeHTTP(rr, req)
-
-	assert.Equal(t, http.StatusBadRequest, rr.Code)
-}
-
-func TestHandlePull_MissingCollection(t *testing.T) {
-	mockService := new(MockQueryService)
-	server := createTestServer(mockService, nil, nil)
-
-	req, _ := http.NewRequest("GET", "/replication/v1/databases/default/pull?checkpoint=0", nil)
-	rr := httptest.NewRecorder()
-
-	server.ServeHTTP(rr, req)
-
-	assert.Equal(t, http.StatusBadRequest, rr.Code)
-}
-
-func TestHandlePull_InvalidCheckpoint(t *testing.T) {
-	mockService := new(MockQueryService)
-	server := createTestServer(mockService, nil, nil)
-
-	req, _ := http.NewRequest("GET", "/replication/v1/databases/default/pull?collection=rooms&checkpoint=abc", nil)
-	rr := httptest.NewRecorder()
-
-	server.ServeHTTP(rr, req)
-
-	assert.Equal(t, http.StatusBadRequest, rr.Code)
-}
-
-func TestHandlePull_ValidateError(t *testing.T) {
-	mockService := new(MockQueryService)
-	server := createTestServer(mockService, nil, nil)
-
-	req, _ := http.NewRequest("GET", "/replication/v1/databases/default/pull?collection=rooms&checkpoint=0&limit=2001", nil)
-	rr := httptest.NewRecorder()
-
-	server.ServeHTTP(rr, req)
-
-	assert.Equal(t, http.StatusBadRequest, rr.Code)
-}
-
-func TestHandlePull_EngineError(t *testing.T) {
-	mockService := new(MockQueryService)
-	server := createTestServer(mockService, nil, nil)
-
-	mockService.On("Pull", mock.Anything, "default", mock.AnythingOfType("types.ReplicationPullRequest")).Return(nil, errors.New("boom"))
-
-	req, _ := http.NewRequest("GET", "/replication/v1/databases/default/pull?collection=rooms&checkpoint=0&limit=1", nil)
-	rr := httptest.NewRecorder()
-
-	server.ServeHTTP(rr, req)
-
-	assert.Equal(t, http.StatusInternalServerError, rr.Code)
-	mockService.AssertExpectations(t)
 }
 
 func TestHandlePush_InvalidBody(t *testing.T) {

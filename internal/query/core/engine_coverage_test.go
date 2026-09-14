@@ -332,24 +332,6 @@ func TestReplaceDocument_GetAfterUpdateError(t *testing.T) {
 	assert.Contains(t, err.Error(), "get error")
 }
 
-func TestPull_QueryEmpty(t *testing.T) {
-	mockStorage := new(MockStorageBackend)
-	engine := newTestEngine(mockStorage)
-
-	mockStorage.On("Query", mock.Anything, "default", mock.Anything).Return(nil, nil)
-
-	resp, err := engine.Pull(context.Background(), "default", storage.ReplicationPullRequest{
-		Collection: "col",
-		Checkpoint: 100,
-		Limit:      10,
-	})
-
-	assert.NoError(t, err)
-	assert.NotNil(t, resp)
-	assert.Empty(t, resp.Documents)
-	assert.Equal(t, int64(100), resp.Checkpoint)
-}
-
 func TestPush_DeleteNotFound(t *testing.T) {
 	mockStorage := new(MockStorageBackend)
 	engine := newTestEngine(mockStorage)
@@ -842,32 +824,6 @@ func TestDeleteDocument_CustomDatabase(t *testing.T) {
 
 	err := engine.DeleteDocument(context.Background(), "custom-database", "col/doc1", nil)
 	assert.NoError(t, err)
-	mockStorage.AssertExpectations(t)
-}
-
-func TestPull_CustomDatabase(t *testing.T) {
-	mockStorage := new(MockStorageBackend)
-	engine := newTestEngine(mockStorage)
-
-	storedDocs := []*storage.StoredDoc{
-		{
-			Fullpath:   "col/doc1",
-			Collection: "col",
-			Data:       map[string]interface{}{"foo": "bar"},
-			Version:    1,
-			UpdatedAt:  200,
-		},
-	}
-	mockStorage.On("Query", mock.Anything, "custom-database", mock.Anything).Return(storedDocs, nil)
-
-	req := storage.ReplicationPullRequest{
-		Collection: "col",
-		Checkpoint: 100,
-		Limit:      10,
-	}
-	resp, err := engine.Pull(context.Background(), "custom-database", req)
-	assert.NoError(t, err)
-	assert.Len(t, resp.Documents, 1)
 	mockStorage.AssertExpectations(t)
 }
 

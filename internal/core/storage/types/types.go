@@ -280,15 +280,19 @@ type Event struct {
 
 // ReplicationPullRequest represents a request to pull changes
 type ReplicationPullRequest struct {
-	Collection string `json:"collection"`
-	Checkpoint int64  `json:"checkpoint"`
-	Limit      int    `json:"limit"`
+	// DatabaseIdentity is supplied by a trusted database resolver. Empty uses the
+	// storage namespace as identity for internal callers without that resolver.
+	DatabaseIdentity string `json:"-"`
+	Collection       string `json:"collection"`
+	Checkpoint       string `json:"checkpoint"`
+	Limit            int    `json:"limit"`
 }
 
 // ReplicationPullResponse represents the response for a pull request
 type ReplicationPullResponse struct {
-	Documents  []*StoredDoc `json:"documents"`
-	Checkpoint int64        `json:"checkpoint"`
+	Documents  []model.Document `json:"documents"`
+	Checkpoint string           `json:"checkpoint"`
+	CaughtUp   bool             `json:"caughtUp"`
 }
 
 // ReplicationPushChange represents a single change in a push request

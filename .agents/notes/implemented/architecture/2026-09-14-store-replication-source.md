@@ -10,10 +10,10 @@ authoritative read routing does not guarantee that a read covers a change
 position. Wall-clock timestamps do not establish commit order, and a local
 consumer's replay offset cannot survive replacement of that consumer.
 
-The [Pull progress proposal](../../proposed/bug-fix/2026-09-07-replication-pull-cursor-progress.md)
+The [Pull progress decision](../bug-fix/2026-09-07-replication-pull-cursor-progress.md)
 owns the end-to-end defect and the research comparing native changes with
 transactional revisions. This note owns the delivered Store capability and its
-source-selection contract; public Pull integration remains in that proposal.
+source-selection contract; the linked decision owns public Pull integration.
 
 ## Decision
 
@@ -140,11 +140,12 @@ lifecycle. Neither is required for this authoritative-source capability.
 - Source replacement, unavailable history, or lost logical identity requires
   deliberate resynchronization. A source failure never silently selects another
   backend or discards the requested position.
-- The Store capability does not activate a new public Pull endpoint, implement
-  a durable SDK coordinator, or decide client authorization. The
-  [Pull proposal](../../proposed/bug-fix/2026-09-07-replication-pull-cursor-progress.md)
-  retains protocol integration and the pending full-scope authorization choice;
-  authentication alone does not establish replication access.
+- The Store capability owns source operations independently of public transport
+  and client authorization. The
+  [Pull decision](../bug-fix/2026-09-07-replication-pull-cursor-progress.md)
+  owns protocol integration and complete-database authorization; authentication
+  alone does not establish replication access. A durable SDK coordinator remains
+  separate from the Store capability.
 
 ## Topology Validation
 

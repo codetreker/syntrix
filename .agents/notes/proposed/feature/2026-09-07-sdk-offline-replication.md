@@ -4,7 +4,18 @@ Status: proposed
 
 ## Problem
 
-The SDK exposes replication components without a working durable synchronization loop. [Puller](../../../../sdk/syntrix-client-ts/src/replication/pull.ts) returns `{}`, [Pusher](../../../../sdk/syntrix-client-ts/src/replication/push.ts) performs no operation, [Outbox](../../../../sdk/syntrix-client-ts/src/replication/outbox.ts) always reads an empty queue, and [CheckpointManager](../../../../sdk/syntrix-client-ts/src/replication/checkpoint.ts) never persists progress. The [coordinator](../../../../sdk/syntrix-client-ts/src/replication/coordinator.ts) starts work without applying returned documents or saving checkpoints. These static findings leave the offline behavior in the [replication design](../../../../docs/design/sdk/002_replication_client.md) unimplemented.
+The SDK provides manual `SyntrixClient.pull` without a working durable
+synchronization loop. Internal coordinator scaffolding remains incomplete:
+[Puller](../../../../sdk/syntrix-client-ts/src/replication/pull.ts) returns `{}`,
+[Pusher](../../../../sdk/syntrix-client-ts/src/replication/push.ts) performs no
+operation, [Outbox](../../../../sdk/syntrix-client-ts/src/replication/outbox.ts)
+always reads an empty queue, and
+[CheckpointManager](../../../../sdk/syntrix-client-ts/src/replication/checkpoint.ts)
+never persists progress. The
+[coordinator](../../../../sdk/syntrix-client-ts/src/replication/coordinator.ts)
+starts work without applying returned documents or saving checkpoints. Manual
+transport alone does not deliver the durable offline behavior in the
+[replication design](../../../../docs/design/sdk/002_replication_client.md).
 
 ## Proposal
 
@@ -29,7 +40,11 @@ Use one bounded pull worker and one bounded push worker per coordinator, coalesc
 
 ## Dependencies
 
-[Push version checks](../bug-fix/2026-09-07-replication-push-version-checks.md), [pull cursor progress](../bug-fix/2026-09-07-replication-pull-cursor-progress.md), and [realtime resume](2026-09-07-realtime-client-resume.md) own server and transport guarantees.
+[Push version checks](../bug-fix/2026-09-07-replication-push-version-checks.md),
+[implemented Pull progress](../../implemented/bug-fix/2026-09-07-replication-pull-cursor-progress.md),
+and [realtime resume](2026-09-07-realtime-client-resume.md) own server and transport
+guarantees. The manual Pull API supplies typed pages and portable progress;
+this proposal owns their durable application and automatic coordination.
 
 ## Risks
 

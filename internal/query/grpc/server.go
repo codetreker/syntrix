@@ -9,11 +9,14 @@ import (
 
 	pb "github.com/syntrixbase/syntrix/api/gen/query/v1"
 	"github.com/syntrixbase/syntrix/internal/core/storage"
+	"github.com/syntrixbase/syntrix/internal/core/storage/types"
 	"github.com/syntrixbase/syntrix/internal/ctxkeys"
 	"github.com/syntrixbase/syntrix/internal/indexer"
+	"github.com/syntrixbase/syntrix/internal/query/core"
 	"github.com/syntrixbase/syntrix/pkg/model"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 )
 
 // Service defines the interface for the Query Engine.
@@ -138,14 +141,29 @@ func queryErrorToStatus(err error) error {
 
 // Pull retrieves documents for replication.
 func (s *Server) Pull(ctx context.Context, req *pb.PullRequest) (*pb.PullResponse, error) {
+	ctx = ctxkeys.IncomingRequestContext(ctx)
+	if err := ctx.Err(); err != nil {
+		return nil, wire.ReplicationErrorToStatus(err)
+	}
+	if req == nil || req.WireVersion != wire.Version || proto.Size(req) > core.MaxPullRequestBytes {
+		return nil, wire.ReplicationErrorToStatus(&types.ReplicationError{Code: types.ReplicationInvalidCursor, Cause: errors.New("unsupported pull request version")})
+	}
 	pullReq := protoToPullRequest(req)
-
+	if err := core.ValidatePullRequest(req.Database, pullReq); err != nil {
+		return nil, wire.ReplicationErrorToStatus(err)
+	}
 	resp, err := s.service.Pull(ctx, req.Database, pullReq)
 	if err != nil {
-		return nil, errorToStatus(err)
+		return nil, wire.ReplicationErrorToStatus(err)
 	}
-
-	return pullResponseToProto(resp), nil
+	encoded, err := wire.EncodePullPage(resp)
+	if err != nil {
+		return nil, wire.ReplicationErrorToStatus(err)
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, wire.ReplicationErrorToStatus(err)
+	}
+	return encoded, nil
 }
 
 // Push sends documents for replication.

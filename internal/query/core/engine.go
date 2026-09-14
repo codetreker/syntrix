@@ -177,51 +177,6 @@ func (e *Engine) queryToPlan(q model.Query) (indexer.Plan, error) {
 	return plan, nil
 }
 
-// Pull handles replication pull requests.
-func (e *Engine) Pull(ctx context.Context, database string, req storage.ReplicationPullRequest) (*storage.ReplicationPullResponse, error) {
-	q := model.Query{
-		Collection: req.Collection,
-		Filters: []model.Filter{
-			{
-				Field: "updatedAt",
-				Op:    ">=",
-				Value: req.Checkpoint,
-			},
-		},
-		OrderBy: []model.Order{
-			{
-				Field:     "updatedAt",
-				Direction: "asc",
-			},
-			{
-				Field:     "id",
-				Direction: "asc",
-			},
-		},
-		Limit:       req.Limit,
-		ShowDeleted: true,
-	}
-
-	docs, err := e.storage.Query(ctx, database, q)
-	if err != nil {
-		return nil, err
-	}
-
-	if docs == nil {
-		docs = make([]*storage.StoredDoc, 0)
-	}
-
-	newCheckpoint := req.Checkpoint
-	if len(docs) > 0 {
-		newCheckpoint = docs[len(docs)-1].UpdatedAt
-	}
-
-	return &storage.ReplicationPullResponse{
-		Documents:  docs,
-		Checkpoint: newCheckpoint,
-	}, nil
-}
-
 // Push handles replication push requests.
 func (e *Engine) Push(ctx context.Context, database string, req storage.ReplicationPushRequest) (*storage.ReplicationPushResponse, error) {
 	var conflicts []*storage.StoredDoc

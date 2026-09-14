@@ -6,61 +6,126 @@ This document details the replication HTTP protocol used by Syntrix. It separate
 
 - Support RxDB-style pull/push replication over HTTP.
 - Keep the wire format storage-agnostic (no internal IDs, fullpaths, parents).
-- Provide deterministic checkpointing using opaque stringified int64 values.
+- Resume current-state synchronization using opaque committed source positions.
 - Surface conflicts without exposing storage internals.
 
 ## Endpoint Summary
 
-- Pull: `GET /replication/v1/pull?collection=...&checkpoint=...&limit=...`
-- Push: `POST /replication/v1/push`
+| Operation | Endpoint |
+|---|---|
+| Pull | `POST /replication/v1/databases/{database}/pull` |
+| Push | `POST /replication/v1/databases/{database}/push` |
 
 ## Document Shape (Flattened)
 
-Documents in responses and requests use a flattened JSON object with reserved metadata fields:
+Decoded documents use a flattened object with reserved metadata fields. Pull
+encodes each complete object using recursive typed values; Push requests and
+conflicts retain plain JSON. The
+[API reference](../../../reference/replication.md) owns exact wire examples.
 
 - `id` (string): required document ID.
-- `version` (int64): optional version precondition on push; server-owned version on pull/conflicts.
-- `updatedAt` (int64, millis): server update timestamp (returned on pull/conflicts).
-- `createdAt` (int64, millis): server creation timestamp (returned on pull/conflicts).
+- `version` (int64): optional version precondition on push; server-owned version on complete pull states/conflicts.
+- `updatedAt` (int64, millis): server update timestamp when metadata is available.
+- `createdAt` (int64, millis): server creation timestamp when metadata is available.
 - `collection` (string): collection path (returned on pull/conflicts).
 - `deleted` (bool): present and true if the document is a tombstone.
 - All other fields are user data.
 
 ## Pull
 
-- Method: `GET /replication/v1/pull`
-- Query params:
-  - `collection` (string, required): collection path.
-  - `checkpoint` (string, required): last known checkpoint as stringified int64; opaque to clients.
-  - `limit` (int, optional): 0–1000.
-- Response:
+Pull synchronizes one concrete collection. The client submits a JSON body:
 
 ```json
 {
-  "documents": [
-    {
-      "id": "m1",
-      "text": "hello",
-      "version": 2,
-      "updatedAt": 1710000000000,
-      "createdAt": 1700000000000,
-      "collection": "room/chatroom-1/messages",
-      "deleted": false
-    }
-  ],
-  "checkpoint": "123"
+  "collection": "room/chatroom-1/messages",
+  "checkpoint": null,
+  "limit": 100
 }
 ```
 
-- Semantics:
-  - Documents are ordered by server checkpoint (monotonic).
-  - `checkpoint` in response is the new high-water mark for the next pull.
-  - Deleted docs are represented via `deleted: true`; identity and metadata remain, while former business fields are cleared.
-  - Physical cleanup does not create another business deletion; a removed tombstone is unavailable to document scans. See [deletion semantics](../core/storage/03.stores.md#document-deletion-and-physical-cleanup).
+The response contains typed `documents`, an opaque `checkpoint`, and `caughtUp`.
+POST keeps potentially large source positions out of URLs. Omitted, null, or
+empty checkpoints begin bootstrap; an omitted or zero limit selects 100, with a
+maximum of 1,000. Numeric timestamp checkpoints require explicit reset.
+
+### Responsibility and flow
+
+| Component | Responsibility |
+|---|---|
+| Gateway | Authenticate, resolve database entity for authorization, retain URL identifier as storage namespace, validate bounded JSON, encode HTTP response |
+| Query | Validate source page, wrap source position, admit complete frames within transport limits |
+| Store ReplicationSource | Pair committed scans with replay, validate source/history, materialize logical state |
+| Client | Atomically apply page states and checkpoint; preserve local unsent edits during reset |
+
+```text
+Initial request
+      |
+Store establishes committed C0
+      |
+Scan current documents in logical ID order
+      |
+Replay changes from original C0
+      |
+Continue from completed source prefixes
+```
+
+The source owns the overlapping scan/replay guarantee; Query never derives it
+from timestamps or combines unrelated ordinary reads with a watch. Each request
+processes one source page. There is no retained client session or instance
+affinity. The [Store contract](../core/storage/03.stores.md#13-replicationsource)
+owns adapter consistency, deletion identity, history checks, and source budgets.
+
+### Page acceptance
+
+- Query validates phase transitions, frame positions, logical state, and usage
+  before accepting the page. A malformed source result fails as a whole.
+- Each accepted frame supplies the continuation after all preceding work.
+  Progress-only frames can advance without adding a document.
+- The entire JSON envelope, cursor, and typed documents must fit 16 MiB, and the
+  corresponding protobuf response must fit 20 MiB. If only a prefix fits, return
+  that prefix's position and `caughtUp=false`; discard later prefetched work.
+- A page-level terminal position or caught-up watermark is accepted only with
+  the entire source page. A state too large for an empty page fails explicitly.
+- Empty pages can advance without being caught-up. Only source proof establishes
+  a watermark; continuous writes may keep caught-up false.
+- Cancellation, source failure, and encoding failure publish no successful
+  checkpoint. The client retains its previous durable position.
+
+### State and authorization
+
+Returned states may repeat or reflect writes newer than their triggering source
+change. Applying pages yields eventual current-state convergence, not a fixed
+historical snapshot or increasing document versions. Recreated documents can
+restart their version sequence.
+
+| Deletion condition | State |
+|---|---|
+| Retained tombstone | Logical identity, available metadata, `deleted: true`, no former business fields |
+| Known identity but current record absent | Logical ID, collection, and `deleted: true`; omit unknown metadata |
+| Physical cleanup event | Source progress only |
+| Required identity unavailable | Resynchronization error without advancing past the unknown change |
+
+Every request requires complete database access, established by database
+ownership or a `db_admin` grant matching the canonical ID or validated slug.
+Ordinary roles and per-document read permissions do not establish that grant.
+The protocol has no document-permission membership/removal channel; filtered
+replication would require an additional design. A cursor is never authorization.
+
+The resolved database entity and the storage namespace are distinct. Existing
+CRUD/Push use the URL's database identifier as their Store namespace, so Pull
+preserves that identifier when selecting and reading its source. It does not
+merge ID- and slug-keyed data or migrate either namespace. The public cursor
+binds both namespace and entity ID: changing identifiers or reassigning a slug
+to a different entity rejects continuation.
+
+Native Puller checkpoints, capture buffers, CRUD, and Push write semantics remain
+independent of this protocol. The
+[Pull progress decision](../../../../.agents/notes/implemented/bug-fix/2026-09-07-replication-pull-cursor-progress.md)
+records the native-source selection and alternatives.
 
 ## Push
 
-- Method: `POST /replication/v1/push`
+- Method: `POST /replication/v1/databases/{database}/push`
 - Request body (flattened documents):
 
 ```json
@@ -134,9 +199,23 @@ existing document-number representation.
 
 ## Checkpointing
 
-- Clients treat checkpoint as an opaque stringified int64.
-- Server guarantees monotonic increase; clients should persist the latest returned value.
-- On initial sync, clients typically use `checkpoint=0`.
+| Layer | Ownership |
+|---|---|
+| Public version-2 cursor | Query binds URL storage namespace, resolved database entity ID, concrete collection, phase, and opaque source position |
+| Native source position | Store binds source incarnation, continuation, and committed read context |
+| Durable local checkpoint | Client commits it atomically with all applied states |
+
+Clients retain cursors verbatim and never compare their encoded values for order.
+Requests can move between Gateway/Query instances using the same source. Invalid
+or cross-scope cursors fail; source replacement, unavailable history, or missing
+identity requires a deliberate new bootstrap. Old timestamp checkpoints have no
+implicit conversion. Reset rebuilds the server mirror while retaining unsent
+local edits for reconciliation.
+
+Requests are bounded to 1 MiB, public cursors to 256 KiB. Source work shares a
+30-second hard deadline with a five-second soft budget; the
+[source contract](../core/storage/03.stores.md#bounds-and-failures) defines
+completed-prefix behavior and separately bounded cleanup.
 
 ## Conflict Handling
 
@@ -150,12 +229,27 @@ existing document-number representation.
 
 ## Error Handling
 
-- 400: validation failures (missing collection/id, invalid checkpoint, invalid action, invalid supplied document.version).
-- 409: (future) may be used for explicit conflict signaling; currently conflicts are returned in 200 with the `conflicts` array.
-- 500: server errors.
+| Pull failure | HTTP outcome |
+|---|---|
+| Invalid request, cursor, or logical scope | 400 |
+| Authentication or complete-scope access denied | 401 / 403 |
+| Timestamp checkpoint, replaced source, lost history or identity | 409 `RESYNC_REQUIRED` |
+| Request/cursor bytes exceed limits | 413 |
+| Required source unit cannot fit supported bounds | 422 |
+| Unsupported source capability | 501 |
+| Source unavailable | 503 |
+| Canceled / deadline exceeded | 499 / 504 |
+| Invalid source state or encoding | 500 |
+
+gRPC carries typed recovery categories so remote and local Query calls retain
+the same public behavior. Diagnostics contain request ID, hashed scope and
+checkpoint identities, phase, counts, end reason, and duration; raw positions,
+source causes, and document payloads are excluded from transport errors.
+Push validation failures use 400; conflicts remain HTTP 200 with `conflicts`.
 
 ## Notes for Implementers
 
 - Do not include storage-internal fields in any response or request validation.
 - Keep batch sizes modest (100–500) for IndexedDB performance when using RxDB Dexie.
-- Deleted docs should still include `id`, `version`, and timestamps so clients can cleanly tombstone or purge.
+- A minimal deletion requires only logical identity and `deleted: true`; clients
+  must not require historical version or timestamps to remove a document.

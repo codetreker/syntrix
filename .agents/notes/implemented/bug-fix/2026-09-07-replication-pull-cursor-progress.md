@@ -1,14 +1,13 @@
 # Agent Note: Make Replication Pull Checkpoints Advance Reliably
 
-Status: proposed
+Status: implemented
 
 ## Problem
 
-The [Pull implementation](../../../../internal/query/core/engine.go) filters
-`updatedAt >= checkpoint`, sorts by timestamp and ID, and returns only the last
-timestamp as its checkpoint. A page filled by documents sharing that timestamp
-can repeat indefinitely. Strict greater-than would omit the remaining tied
-documents.
+The former Pull protocol filtered `updatedAt >= checkpoint`, sorted by timestamp
+and ID, and returned only the last timestamp as its checkpoint. A page filled by
+documents sharing that timestamp could repeat indefinitely. Strict greater-than
+would omit the remaining tied documents.
 
 The [replication design](../../../../docs/design/server/gateway/replication.md)
 requires deterministic monotonic progress. Wall-clock timestamps do not
@@ -18,16 +17,16 @@ still loses that write. Replication must converge to current document state
 through concurrent writes, logical deletion, restart, and routing to another
 service instance.
 
-## Proposal
+## Decision
 
 The native source change-stream direction was confirmed on 2026-09-11. The
-[Store replication capability](../../implemented/architecture/2026-09-14-store-replication-source.md)
-delivers authoritative source selection, bootstrap and change pages, and portable
-source progress. Public Pull still uses the timestamp protocol described above;
-this note retains proposed status until its integration is delivered. The earlier
-suggestion to prefer Puller event history was conditional and never selected.
-The chosen source is the authoritative storage adapter, using its native
-committed change history.
+[Store replication capability](../architecture/2026-09-14-store-replication-source.md)
+owns authoritative source selection, bootstrap/change pages, and portable source
+progress. Query Pull consumes that capability and exposes a versioned opaque
+cursor through HTTP, gRPC, and the manual SDK API. The earlier suggestion to
+prefer Puller event history was conditional and never selected. The chosen
+source is the authoritative storage adapter, using its native committed change
+history.
 
 ### Responsibility and progress
 
@@ -45,11 +44,13 @@ capability. The public contract must not assume MongoDB. Ordinary authoritative
 read routing alone does not establish that a read covers a committed change
 position.
 
-Use versioned opaque checkpoints bound to database, collection, source
-incarnation, and phase. They must survive requests routed to another instance
-using the same authoritative source. No server-side client registry, instance
-affinity, or persistent synchronization replica is required. The native
-Puller's capture checkpoint and buffer architecture remain unchanged.
+Version-2 public cursors bind the URL's storage namespace, resolved database
+entity ID, concrete collection, phase, and the opaque Store position. Store
+positions also bind source incarnation and read context. They survive requests
+routed to another instance using the same authoritative source. No server-side
+client registry, instance affinity, or
+persistent synchronization replica is required. The native Puller's capture
+checkpoint and buffer architecture remain unchanged.
 
 ### Bootstrap and incremental delivery
 
@@ -84,11 +85,45 @@ Continue incremental current-state delivery
   is not the ordering authority; deletion and recreation can reset version.
   Continuous writes may keep caught-up false.
 
-Integrate this capability into Query Pull, HTTP, protobuf, the manual SDK Pull
-API, and reference documents. Public checkpoints become opaque strings;
-old numeric checkpoints require explicit reset without silent reinterpretation.
-Document numbers remain lossless across transports. Cancellation and source
-failures must not expose successful progress for incomplete work.
+### Public protocol and page acceptance
+
+| Contract | Delivered behavior |
+|---|---|
+| HTTP | `POST /replication/v1/databases/{database}/pull` with collection, checkpoint, and limit |
+| Bootstrap | Omitted, null, or empty checkpoint begins a scan; timestamp checkpoints return `RESYNC_REQUIRED` |
+| Cursor | Opaque version-2 envelope; malformed or cross-scope continuations fail explicitly |
+| Counts | Default 100 states, maximum 1,000 |
+| Bytes | 1 MiB request, 256 KiB cursor, 16 MiB JSON page, 20 MiB protobuf page |
+| Encoding | Recursive typed values preserve int64 and finite float64 through HTTP/gRPC; SDK int64 values decode to `bigint` |
+| Deletion | Retained metadata when available; otherwise logical ID, collection, and deletion status only |
+| Manual SDK | `SyntrixClient.pull` performs one cancellable request bound to the starting authentication session |
+
+Query validates the source page's phase transitions, frame continuations,
+identities, usage, and state encoding. It admits only a complete ordered prefix
+within both transport budgets, including envelope and cursor bytes. Accepting a
+prefix uses the last accepted frame's continuation and clears caught-up; page
+terminal progress is accepted only with the entire page. Source or encoding
+errors discard tentative progress. The old numeric protocol has no implicit
+compatibility conversion.
+
+HTTP Pull requires full database access: ownership or `db_admin` matching the
+canonical ID or validated slug. General roles and individual-document read rules
+do not authorize replication. This profile avoids presenting partial document
+permissions as a complete replication contract: membership exits and permission
+changes need a separate design. Checkpoint possession never grants access.
+
+Storage routing retains the URL database identifier to match existing CRUD/Push
+namespaces. Resolving the entity for authorization does not merge ID- and
+slug-keyed data. Both identities are bound into the public cursor, so switching
+identifiers or reassigning a slug cannot reuse that continuation.
+[Namespace canonicalization](../../proposed/bug-fix/2026-09-14-database-alias-document-namespace.md)
+owns the broader routing and existing-data decision.
+
+The [API reference](../../../../docs/reference/replication.md) owns request,
+encoding, and error details; the
+[server design](../../../../docs/design/server/gateway/replication.md) owns
+component responsibilities. Durable local application, repeated Pull scheduling,
+and reset while retaining unsent edits remain the client's responsibility.
 
 ### Research findings and selection rationale
 
@@ -161,10 +196,10 @@ separating client-history retention would require derived documents, a change
 log, and another recovery lifecycle. That additional architecture was explicitly
 excluded from the selected direction.
 
-## Acceptance Criteria
+## Consequences
 
-- More than one page of equal-timestamp documents terminates with every
-  document synchronized; delayed commits and clock regression cause no loss.
+- Timestamp ties, delayed commits, and clock regression cannot determine or
+  stall native source progress.
 - Writes during bootstrap, deletion, recreation, and restart converge to
   current committed state. Source rollback cannot publish uncommitted state.
 - Scan and change requests can move between service instances; source
@@ -174,12 +209,15 @@ excluded from the selected direction.
 - Empty filtered pages advance safely without claiming caught-up. Page budgets
   never skip an unreturned state; canceled or failed application does not commit
   a client checkpoint.
-- Expired, malformed, old-format, and cross-scope checkpoints produce distinct
+- Expired, malformed, timestamp, and cross-scope checkpoints produce distinct
   documented outcomes through local and remote transports.
-- Authorization is enforced on every request under the separately confirmed
-  scope; checkpoint possession never grants access.
+- Complete-database authorization is enforced on every HTTP request; arbitrary
+  per-document replication is unsupported.
+- Server and SDK CI run their existing path-selected checks for any pull-request
+  base branch, so dependent changes in a stack receive the same validation as
+  changes targeting main. Job contents and coverage thresholds are unchanged.
 
-## Risks
+### Retention and operational costs
 
 - Bootstrap can outlive usable history and require restart. An oplog entry's
   presence alone does not guarantee recoverable identity. The current
@@ -191,19 +229,19 @@ excluded from the selected direction.
   opening, materialization, and cancellation cleanup require explicit limits
   and representative load measurements.
 - The wire format requires coordinated server/manual-client delivery.
-  Diagnostics identify phase, source generation, counts, budget end reason,
-  and expiration cause without raw checkpoints or document payloads.
+  Diagnostics identify phase, hashed scope and checkpoints, counts, end reason,
+  and duration without raw checkpoints or document payloads.
 
-## Dependencies and Remaining Decisions
+## Related Ownership
 
 | Item | Ownership and consequence |
 |---|---|
-| Full-scope authorization | Pending. Database-wide readable scope is recommended, but not confirmed. Per-document replication also needs membership exits and permission-change recovery; authentication alone is insufficient. |
-| Durable client coordinator | [SDK offline replication](../feature/2026-09-07-sdk-offline-replication.md) owns persistence, outbox, and automatic lifecycle. Manual Pull can be delivered separately, but its protocol must preserve atomic apply/checkpoint and reset without erasing pending local edits. |
-| Native Puller recovery | [History-gap recovery](../architecture/2026-09-07-puller-history-gap-recovery.md) and [local replay](../architecture/2026-09-07-local-puller-subscription-replay.md) remain separate consumer concerns, not prerequisites for the selected native-source Pull path. |
-| Query pagination | [Query pagination](../../implemented/feature/2026-09-07-query-cursor-pagination.md) owns public query traversal; it does not repair replication checkpoints. |
+| Store capability | [ReplicationSource](../architecture/2026-09-14-store-replication-source.md) owns committed boundaries, history, source identity, and adapter lifecycle. |
+| Durable client coordinator | [SDK offline replication](../../proposed/feature/2026-09-07-sdk-offline-replication.md) owns persistence, outbox, and automatic lifecycle. Manual Pull is available, but the application must apply/checkpoint atomically and reset without erasing pending local edits. |
+| Native Puller recovery | [History-gap recovery](../../proposed/architecture/2026-09-07-puller-history-gap-recovery.md) and [local replay](../../proposed/architecture/2026-09-07-local-puller-subscription-replay.md) remain separate consumer concerns, not prerequisites for the selected native-source Pull path. |
+| Query pagination | [Query pagination](../feature/2026-09-07-query-cursor-pagination.md) owns public query traversal; it does not repair replication checkpoints. |
 | Rejected publication mechanism | The [publication proposal](../../rejected/architecture/2026-09-07-puller-persist-before-publish.md) remains rejected. Its local sequence and generation mechanism is not restored here. |
 
-The source capability's implemented note and storage design own its delivered
-contract. This proposal preserves the selection research and the remaining
-public protocol, client integration, and authorization obligations.
+The native-source selection preserves the existing business write path. Its
+operational costs and the transactional-revision alternative remain relevant
+when evaluating future workload changes.

@@ -12,6 +12,7 @@ import (
 
 	"github.com/syntrixbase/syntrix/internal/gateway/realtime"
 	"github.com/syntrixbase/syntrix/internal/gateway/rest"
+	"github.com/syntrixbase/syntrix/pkg/model"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -25,10 +26,12 @@ func TestReplication_FullFlow(t *testing.T) {
 	// Get Token
 	token := env.GetToken(t, "user1", "user")
 
-	collectionName := "replication_test_col"
+	database := "default"
+	token = replicationAdminToken(t, env, database, token)
+	collectionName := env.testPrefix + "_replication"
 
 	// 1. Setup Realtime (SSE) Connection
-	sseURL := fmt.Sprintf("%s/realtime/sse?database=default&collection=%s", env.RealtimeURL, collectionName)
+	sseURL := fmt.Sprintf("%s/realtime/sse?database=%s&collection=%s", env.RealtimeURL, database, collectionName)
 	req, err := http.NewRequest("GET", sseURL, nil)
 	require.NoError(t, err)
 	req.Header.Set("Accept", "text/event-stream")
@@ -116,7 +119,7 @@ func TestReplication_FullFlow(t *testing.T) {
 	}
 
 	bodyBytes, _ := json.Marshal(pushBody)
-	pushURL := fmt.Sprintf("%s/replication/v1/databases/default/push?collection=%s", env.APIURL, collectionName)
+	pushURL := fmt.Sprintf("%s/replication/v1/databases/%s/push", env.APIURL, database)
 
 	pushReq, err := http.NewRequest("POST", pushURL, bytes.NewBuffer(bodyBytes))
 	require.NoError(t, err)
@@ -143,24 +146,7 @@ func TestReplication_FullFlow(t *testing.T) {
 		t.Fatal("Timeout waiting for SSE event")
 	}
 
-	// 5. Pull to verify storage
-	pullURL := fmt.Sprintf("%s/replication/v1/databases/default/pull?collection=%s&checkpoint=0", env.APIURL, collectionName)
-	pullReq, err := http.NewRequest("GET", pullURL, nil)
-	require.NoError(t, err)
-	pullReq.Header.Set("Authorization", "Bearer "+token)
-
-	pullResp, err := client.Do(pullReq)
-	require.NoError(t, err)
-	require.Equal(t, http.StatusOK, pullResp.StatusCode)
-
-	var pullResult struct {
-		Documents  []map[string]interface{} `json:"documents"`
-		Checkpoint string                   `json:"checkpoint"`
-	}
-	err = json.NewDecoder(pullResp.Body).Decode(&pullResult)
-	pullResp.Body.Close()
-	require.NoError(t, err)
-
+	pullResult := pullReplicationPage(t, env, database, collectionName, "", 100, token)
 	assert.NotEmpty(t, pullResult.Documents)
 	found := false
 	for _, doc := range pullResult.Documents {
@@ -199,32 +185,20 @@ func TestReplication_FullFlow(t *testing.T) {
 	require.Equal(t, http.StatusOK, deleteResp.StatusCode)
 	deleteResp.Body.Close()
 
-	// 6. Pull to verify deletion
-	pullURL = fmt.Sprintf("%s/replication/v1/databases/default/pull?collection=%s&checkpoint=%s", env.APIURL, collectionName, pullResult.Checkpoint)
-	pullReq, err = http.NewRequest("GET", pullURL, nil)
-	require.NoError(t, err)
-	pullReq.Header.Set("Authorization", "Bearer "+token)
-
-	pullResp, err = client.Do(pullReq)
-	require.NoError(t, err)
-	require.Equal(t, http.StatusOK, pullResp.StatusCode)
-
-	err = json.NewDecoder(pullResp.Body).Decode(&pullResult)
-	pullResp.Body.Close()
-	require.NoError(t, err)
-
-	assert.NotEmpty(t, pullResult.Documents)
-	found = false
-	for _, doc := range pullResult.Documents {
-		if doc["id"] == docID {
-			if val, ok := doc["deleted"]; ok {
-				assert.True(t, val.(bool), "Document should be marked as deleted")
-			} else {
-				t.Error("Document missing deleted field")
+	var deleted model.Document
+	for pageNumber := 0; pageNumber < 20; pageNumber++ {
+		pullResult = pullReplicationPage(t, env, database, collectionName, pullResult.Checkpoint, 100, token)
+		for _, doc := range pullResult.Documents {
+			if doc.GetID() == docID && doc["deleted"] == true {
+				deleted = doc
 			}
-			found = true
+		}
+		if pullResult.CaughtUp {
 			break
 		}
 	}
-	assert.True(t, found, "Deleted document should be returned in pull")
+	require.True(t, pullResult.CaughtUp, "replication must reach a source watermark")
+	require.NotNil(t, deleted, "deleted document must be returned in pull")
+	assert.Equal(t, collectionName, deleted.GetCollection())
+	assert.NotContains(t, deleted, "msg")
 }

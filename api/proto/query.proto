@@ -242,11 +242,16 @@ message PullRequest {
   // Target collection.
   string collection = 2;
 
-  // Checkpoint to resume from (Unix milliseconds).
-  int64 checkpoint = 3;
+  // Opaque, source-bound continuation; empty begins bootstrap.
+  string checkpoint = 3;
 
   // Maximum number of documents to return.
   int32 limit = 4;
+
+  uint32 wire_version = 5;
+
+  // Trusted resolved entity identity; database remains the storage namespace.
+  string database_identity = 6;
 }
 
 message PullResponse {
@@ -254,7 +259,10 @@ message PullResponse {
   repeated Document documents = 1;
 
   // New checkpoint for next pull.
-  int64 checkpoint = 2;
+  string checkpoint = 2;
+
+  bool caught_up = 3;
+  uint32 wire_version = 4;
 }
 
 // ============================================================================

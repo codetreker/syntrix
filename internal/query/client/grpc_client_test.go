@@ -315,25 +315,29 @@ func TestClient_Pull(t *testing.T) {
 		mockClient := grpctesting.NewMockQueryServiceClient()
 		client := newTestClient(mockClient)
 
-		mockClient.On("Pull", mock.Anything, mock.Anything).Return(&pb.PullResponse{
-			Documents: []*pb.Document{
-				{Id: "doc1", Fullpath: "users/doc1", Version: 1, Data: []byte(`{"name":"Alice"}`)},
-				{Id: "doc2", Fullpath: "users/doc2", Version: 2, Data: []byte(`{"name":"Bob"}`)},
+		encoded, err := wire.EncodePullPage(&storage.ReplicationPullResponse{
+			Documents: []model.Document{
+				{"id": "doc1", "collection": "users", "version": int64(1), "name": "Alice"},
+				{"id": "doc2", "collection": "users", "version": int64(2), "name": "Bob"},
 			},
-			Checkpoint: 123456789,
-		}, nil)
+			Checkpoint: "opaque-next",
+		})
+		require.NoError(t, err)
+		mockClient.On("Pull", mock.Anything, mock.MatchedBy(func(request *pb.PullRequest) bool {
+			return request.Database == "database1" && request.Collection == "users" && request.Checkpoint == "" && request.Limit == 100 && request.WireVersion == wire.Version
+		})).Return(encoded, nil)
 
 		resp, err := client.Pull(context.Background(), "database1", storage.ReplicationPullRequest{
 			Collection: "users",
-			Checkpoint: 0,
+			Checkpoint: "",
 			Limit:      100,
 		})
-		assert.NoError(t, err)
-		assert.NotNil(t, resp)
+		require.NoError(t, err)
+		require.NotNil(t, resp)
 		assert.Len(t, resp.Documents, 2)
-		assert.Equal(t, "doc1", resp.Documents[0].Id)
-		assert.Equal(t, "doc2", resp.Documents[1].Id)
-		assert.Equal(t, int64(123456789), resp.Checkpoint)
+		assert.Equal(t, "doc1", resp.Documents[0].GetID())
+		assert.Equal(t, "doc2", resp.Documents[1].GetID())
+		assert.Equal(t, "opaque-next", resp.Checkpoint)
 		mockClient.AssertExpectations(t)
 	})
 
@@ -342,17 +346,20 @@ func TestClient_Pull(t *testing.T) {
 		client := newTestClient(mockClient)
 
 		mockClient.On("Pull", mock.Anything, mock.Anything).Return(&pb.PullResponse{
-			Documents:  []*pb.Document{},
-			Checkpoint: 987654321,
+			Documents:   []*pb.Document{},
+			Checkpoint:  "advanced",
+			WireVersion: wire.Version,
+			CaughtUp:    true,
 		}, nil)
 
 		resp, err := client.Pull(context.Background(), "database1", storage.ReplicationPullRequest{
 			Collection: "users",
-			Checkpoint: 100,
+			Checkpoint: "",
 		})
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		assert.Empty(t, resp.Documents)
-		assert.Equal(t, int64(987654321), resp.Checkpoint)
+		assert.Equal(t, "advanced", resp.Checkpoint)
+		assert.True(t, resp.CaughtUp)
 	})
 }
 

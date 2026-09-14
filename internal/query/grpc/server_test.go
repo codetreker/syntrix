@@ -3,6 +3,7 @@ package grpc
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -10,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 	pb "github.com/syntrixbase/syntrix/api/gen/query/v1"
 	"github.com/syntrixbase/syntrix/internal/core/storage"
+	"github.com/syntrixbase/syntrix/internal/core/storage/types"
 	"github.com/syntrixbase/syntrix/internal/indexer"
 	"github.com/syntrixbase/syntrix/pkg/model"
 	"google.golang.org/genproto/googleapis/rpc/errdetails"
@@ -307,24 +309,82 @@ func TestServer_Pull(t *testing.T) {
 		server := NewServer(mockSvc)
 
 		pullResp := &storage.ReplicationPullResponse{
-			Documents: []*storage.StoredDoc{
-				{Id: "doc1"},
+			Documents: []model.Document{
+				{"id": "doc1", "collection": "users"},
 			},
-			Checkpoint: 12345,
+			Checkpoint: "opaque",
+			CaughtUp:   true,
 		}
 		mockSvc.On("Pull", mock.Anything, "database1", mock.Anything).Return(pullResp, nil)
 
 		resp, err := server.Pull(context.Background(), &pb.PullRequest{
-			Database:   "database1",
-			Collection: "users",
-			Checkpoint: 0,
-			Limit:      100,
+			Database:    "database1",
+			Collection:  "users",
+			Checkpoint:  "",
+			WireVersion: 2,
+			Limit:       100,
 		})
 
 		assert.NoError(t, err)
 		assert.Len(t, resp.Documents, 1)
-		assert.Equal(t, int64(12345), resp.Checkpoint)
+		assert.Equal(t, "opaque", resp.Checkpoint)
+		assert.True(t, resp.CaughtUp)
+		assert.EqualValues(t, 2, resp.WireVersion)
 	})
+}
+
+func TestServerPullRejectsInvalidRequestsBeforeService(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	for _, test := range []struct {
+		name    string
+		ctx     context.Context
+		request *pb.PullRequest
+		code    codes.Code
+	}{
+		{name: "canceled", ctx: ctx, request: &pb.PullRequest{Database: "db", Collection: "users", WireVersion: 2}, code: codes.Canceled},
+		{name: "missing request", ctx: context.Background(), code: codes.InvalidArgument},
+		{name: "document path", ctx: context.Background(), request: &pb.PullRequest{Database: "db", Collection: "users/alice", WireVersion: 2}, code: codes.InvalidArgument},
+		{name: "oversized envelope", ctx: context.Background(), request: &pb.PullRequest{Database: "db", Collection: "users", DatabaseIdentity: strings.Repeat("x", (1<<20)+1), WireVersion: 2}, code: codes.InvalidArgument},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			service := new(MockService)
+			page, err := NewServer(service).Pull(test.ctx, test.request)
+			require.Nil(t, page)
+			require.Equal(t, test.code, status.Code(err))
+			service.AssertNotCalled(t, "Pull", mock.Anything, mock.Anything, mock.Anything)
+		})
+	}
+}
+
+func TestServerPullDiscardsFailedResponses(t *testing.T) {
+	for _, test := range []struct {
+		name                string
+		response            *storage.ReplicationPullResponse
+		err                 error
+		cancelDuringService bool
+		code                codes.Code
+	}{
+		{name: "source history unavailable", err: &types.ReplicationError{Code: types.ReplicationHistoryUnavailable, Cause: fmt.Errorf("private native position")}, code: codes.FailedPrecondition},
+		{name: "missing response checkpoint", response: &storage.ReplicationPullResponse{}, code: codes.Internal},
+		{name: "canceled during source read", response: &storage.ReplicationPullResponse{Checkpoint: "opaque", CaughtUp: true}, cancelDuringService: true, code: codes.Canceled},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			service := new(MockService)
+			service.On("Pull", mock.Anything, "db", mock.Anything).Run(func(mock.Arguments) {
+				if test.cancelDuringService {
+					cancel()
+				}
+			}).Return(test.response, test.err).Once()
+			page, err := NewServer(service).Pull(ctx, &pb.PullRequest{Database: "db", Collection: "users", WireVersion: 2})
+			require.Nil(t, page)
+			require.Equal(t, test.code, status.Code(err))
+			require.NotContains(t, err.Error(), "private native position")
+			service.AssertExpectations(t)
+		})
+	}
 }
 
 func TestServer_Push(t *testing.T) {
