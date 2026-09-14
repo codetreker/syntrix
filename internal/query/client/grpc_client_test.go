@@ -11,6 +11,7 @@ import (
 	pb "github.com/syntrixbase/syntrix/api/gen/query/v1"
 	grpctesting "github.com/syntrixbase/syntrix/api/gen/testing"
 	"github.com/syntrixbase/syntrix/internal/core/storage"
+	"github.com/syntrixbase/syntrix/internal/core/storage/types"
 	"github.com/syntrixbase/syntrix/internal/indexer"
 	"github.com/syntrixbase/syntrix/internal/query/wire"
 	"github.com/syntrixbase/syntrix/pkg/model"
@@ -361,6 +362,56 @@ func TestClient_Pull(t *testing.T) {
 		assert.Equal(t, "advanced", resp.Checkpoint)
 		assert.True(t, resp.CaughtUp)
 	})
+}
+
+func TestClientPullRejectsBeforeRPC(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	for _, test := range []struct {
+		name       string
+		ctx        context.Context
+		checkpoint string
+	}{
+		{"canceled", ctx, ""},
+		{"legacy checkpoint", context.Background(), "1700000000000"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			mockClient := grpctesting.NewMockQueryServiceClient()
+			page, err := newTestClient(mockClient).Pull(test.ctx, "db", storage.ReplicationPullRequest{Collection: "users", Checkpoint: test.checkpoint})
+			require.Nil(t, page)
+			if test.ctx.Err() != nil {
+				require.ErrorIs(t, err, context.Canceled)
+			} else {
+				var failure *types.ReplicationError
+				require.ErrorAs(t, err, &failure)
+				require.Equal(t, types.ReplicationHistoryUnavailable, failure.Code)
+			}
+			mockClient.AssertNotCalled(t, "Pull", mock.Anything, mock.Anything)
+		})
+	}
+}
+
+func TestClientPullDiscardsFailedRemotePage(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		response *pb.PullResponse
+		rpcError error
+		code     types.ReplicationErrorCode
+	}{
+		{name: "source history lost", rpcError: wire.ReplicationErrorToStatus(&types.ReplicationError{Code: types.ReplicationHistoryUnavailable}), code: types.ReplicationHistoryUnavailable},
+		{name: "missing response", code: types.ReplicationInvalidState},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			mockClient := grpctesting.NewMockQueryServiceClient()
+			mockClient.On("Pull", mock.Anything, mock.Anything).Return(test.response, test.rpcError).Once()
+			page, err := newTestClient(mockClient).Pull(context.Background(), "db", storage.ReplicationPullRequest{Collection: "users"})
+			require.Nil(t, page)
+			var failure *types.ReplicationError
+			require.ErrorAs(t, err, &failure)
+			require.Equal(t, test.code, failure.Code)
+			mockClient.AssertExpectations(t)
+		})
+	}
 }
 
 func TestClient_Push(t *testing.T) {
