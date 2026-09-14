@@ -100,7 +100,15 @@ func TestReplicationScopeAndFailureCause(t *testing.T) {
 		require.ErrorAs(t, ValidateReplicationScope(scope[0], scope[1]), &failure)
 		require.Equal(t, ReplicationScopeMismatch, failure.Code)
 	}
-	err := &ReplicationError{Code: ReplicationUnavailable, Database: "db", Collection: "users", Cause: fmt.Errorf("source read: %w", context.DeadlineExceeded)}
+	cause := fmt.Errorf("native-token-secret partial-document-secret: %w", context.DeadlineExceeded)
+	err := &ReplicationError{Code: ReplicationUnavailable, Database: "db", Collection: "users", Cause: cause}
 	require.ErrorIs(t, err, context.DeadlineExceeded)
-	require.Contains(t, err.Error(), `database "db" collection "users"`)
+	require.ErrorIs(t, err, cause)
+	require.Same(t, cause, err.Unwrap())
+	var failure *ReplicationError
+	require.ErrorAs(t, fmt.Errorf("request failed: %w", err), &failure)
+	require.Same(t, err, failure)
+	require.Equal(t, `replication UNAVAILABLE for database "db" collection "users"`, err.Error())
+	require.NotContains(t, err.Error(), "native-token-secret")
+	require.NotContains(t, err.Error(), "partial-document-secret")
 }

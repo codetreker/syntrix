@@ -132,7 +132,7 @@ type ReplicationError struct {
 }
 
 func (e *ReplicationError) Error() string {
-	return fmt.Sprintf("replication %s for database %q collection %q: %v", e.Code, e.Database, e.Collection, e.Cause)
+	return fmt.Sprintf("replication %s for database %q collection %q", e.Code, e.Database, e.Collection)
 }
 
 func (e *ReplicationError) Unwrap() error { return e.Cause }

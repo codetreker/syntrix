@@ -21,10 +21,13 @@ service instance.
 ## Proposal
 
 The native source change-stream direction was confirmed on 2026-09-11. The
-runtime protocol and supporting capabilities remain unimplemented; this note
-retains proposed status until delivery. The earlier suggestion to prefer Puller
-event history was conditional and never selected. The chosen source is the
-authoritative storage adapter, using its native committed change history.
+[Store replication capability](../../implemented/architecture/2026-09-14-store-replication-source.md)
+delivers authoritative source selection, bootstrap and change pages, and portable
+source progress. Public Pull still uses the timestamp protocol described above;
+this note retains proposed status until its integration is delivered. The earlier
+suggestion to prefer Puller event history was conditional and never selected.
+The chosen source is the authoritative storage adapter, using its native
+committed change history.
 
 ### Responsibility and progress
 
@@ -35,7 +38,7 @@ authoritative storage adapter, using its native committed change history.
 | Query and Gateway | Bind scope and authorization, expose Pull, and enforce transport budgets |
 | Client | Apply documents and tombstones durably with the returned checkpoint; retain prior progress if application fails |
 
-The proposed capability, provisionally `ReplicationSource`, groups
+The implemented optional capability `ReplicationSource` groups
 `BeginBootstrap`, `ReadBootstrapPage`, and `ReadChangesPage`. Native resume
 tokens, causal context, and adapter-specific read guarantees stay inside that
 capability. The public contract must not assume MongoDB. Ordinary authoritative
@@ -81,8 +84,8 @@ Continue incremental current-state delivery
   is not the ordering authority; deletion and recreation can reset version.
   Continuous writes may keep caught-up false.
 
-Update HTTP, storage-facing contracts, protobuf, the manual SDK Pull API, and
-reference documents with implementation. Checkpoints become opaque strings;
+Integrate this capability into Query Pull, HTTP, protobuf, the manual SDK Pull
+API, and reference documents. Public checkpoints become opaque strings;
 old numeric checkpoints require explicit reset without silent reinterpretation.
 Document numbers remain lossless across transports. Cancellation and source
 failures must not expose successful progress for incomplete work.
@@ -201,6 +204,6 @@ excluded from the selected direction.
 | Query pagination | [Query pagination](../../implemented/feature/2026-09-07-query-cursor-pagination.md) owns public query traversal; it does not repair replication checkpoints. |
 | Rejected publication mechanism | The [publication proposal](../../rejected/architecture/2026-09-07-puller-persist-before-publish.md) remains rejected. Its local sequence and generation mechanism is not restored here. |
 
-This selection records architecture and research conclusions. Active design and
-reference contracts change with eventual implementation; the detailed runtime
-contract remains a draft until confirmed.
+The source capability's implemented note and storage design own its delivered
+contract. This proposal preserves the selection research and the remaining
+public protocol, client integration, and authorization obligations.

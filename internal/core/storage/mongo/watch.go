@@ -135,17 +135,21 @@ func (m *documentStore) Watch(ctx context.Context, database, collectionName stri
 }
 
 func (m *documentStore) watchSource(ctx context.Context, collection *mongo.Collection, create bool) (watchSource, error) {
-	specs, err := m.db.ListCollectionSpecifications(ctx, bson.D{{Key: "name", Value: collection.Name()}})
+	return readWatchSource(ctx, m.db, collection, create)
+}
+
+func readWatchSource(ctx context.Context, db *mongo.Database, collection *mongo.Collection, create bool) (watchSource, error) {
+	specs, err := db.ListCollectionSpecifications(ctx, bson.D{{Key: "name", Value: collection.Name()}})
 	if err != nil {
 		return watchSource{}, err
 	}
 	if len(specs) == 0 && create {
-		err := m.db.CreateCollection(ctx, collection.Name())
+		err := db.CreateCollection(ctx, collection.Name())
 		var command mongo.CommandError
 		if err != nil && !(errors.As(err, &command) && command.Code == 48) {
 			return watchSource{}, err
 		}
-		return m.watchSource(ctx, collection, false)
+		return readWatchSource(ctx, db, collection, false)
 	}
 	if len(specs) == 0 {
 		return watchSource{}, errWatchCollectionMissing
@@ -154,7 +158,7 @@ func (m *documentStore) watchSource(ctx context.Context, collection *mongo.Colle
 	if spec.Type != "collection" || spec.UUID == nil || spec.UUID.Subtype != 4 || len(spec.UUID.Data) != 16 {
 		return watchSource{}, &types.WatchError{Code: types.WatchUnsupported, Cause: errors.New("source has no stable collection UUID")}
 	}
-	return watchSource{Database: m.db.Name(), Collection: collection.Name(), UUID: hex.EncodeToString(spec.UUID.Data)}, nil
+	return watchSource{Database: db.Name(), Collection: collection.Name(), UUID: hex.EncodeToString(spec.UUID.Data)}, nil
 }
 
 func (w *documentWatch) InitialCheckpoint() types.WatchCheckpoint { return w.initial }
