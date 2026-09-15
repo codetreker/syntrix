@@ -58,12 +58,37 @@ owned by the [offline replication proposal](../../proposed/feature/2026-09-07-sd
 | JSON / protobuf response | 16 MiB / 20 MiB including envelopes |
 | Incremental frames | 10,000 |
 | Incremental soft interval / hard timeout | 5 seconds / 30 seconds |
+| HTTP socket write deadline | Processing deadline plus 10 seconds |
 
 Scan candidate batches shrink on byte-budget errors. A single oversized record
 fails explicitly. Page limits return a completed prefix without skipping a fetched
 record. Source-byte accounting describes adapter-visible records, not total DB
 work. Request logs retain request ID, hashed scope/checkpoint identities, phase,
 count, duration and bounded reason without raw payloads or source tokens.
+
+The soft interval permits success only after an accepted source checkpoint
+advances or Watch proves caught-up progress. A slow Watch open or repeated empty
+frames at the same position must not produce indefinitely repeatable successful
+pages. Without progress, exhausting source-byte or frame budgets returns retryable
+unavailability; the hard deadline returns a timeout. Processing includes response
+encoding. Pull extends its HTTP socket write deadline ten seconds past that
+deadline, so the configured general write timeout cannot discard a valid result.
+The handler requires write-deadline control before calling Query.
+
+### Realtime Snapshot Consumer
+
+The existing snapshot message consumes opaque Pull pages through `caughtUp`,
+applying upserts and logical deletions by document ID. Only the completed live
+state is sent as a snapshot. One Pull page cannot establish completeness because
+source-byte and encoded-page limits can stop it below the document-count limit.
+
+Snapshot collection retains at most 1000 live documents and 16 MiB of serialized
+SnapshotPayload, including its envelope. Collection has a ten-second deadline;
+delivery to the connection queue has a separate ten-second bound. Collection or
+encoding failure produces `snapshot_failed`; exceeding either size bound produces
+`snapshot_limit`. No successful prefix is sent. The ordinary JSON message schema
+is unchanged. Filter matching and coordination with live delivery remain owned by
+the [filtered snapshot proposal](../../proposed/bug-fix/2026-09-07-realtime-filtered-snapshots.md).
 
 ### Authorization Profile
 

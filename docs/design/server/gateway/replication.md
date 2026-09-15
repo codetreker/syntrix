@@ -93,6 +93,7 @@ defines retained tombstones and physical cleanup.
 | Watch frames | 10,000 per request |
 | Incremental soft work interval / hard request timeout | 5 seconds / 30 seconds |
 | Incremental Watch poll | 100 milliseconds |
+| HTTP socket write deadline | Processing deadline plus 10 seconds |
 
 Scans shrink candidate batches after a source-byte limit and fail explicitly if
 one candidate cannot fit. A prefetched record that does not fit the response
@@ -100,6 +101,18 @@ cannot advance its public cursor; it is read again. A successful page may stop
 on count, source work, or response size and return `caughtUp: false`. Errors,
 cancellation, invalid source data, and stream-close failures fail the whole
 request without returning partial progress.
+
+The soft interval ends a successful page only after an accepted source checkpoint
+advances or Watch proves caught-up progress. Watch setup and repeated empty frames
+at the same checkpoint cannot consume the soft interval into a successful no-op:
+that would let every retry repeat the same position. Without progress, source-byte
+or frame exhaustion returns a retryable unavailable error; the hard deadline
+returns a timeout. The 30-second processing deadline also covers response encoding.
+
+Gateway sets Pull's socket write deadline to the processing deadline plus ten
+seconds, allowing the result or timeout error to be transmitted. Response wrappers
+must expose the underlying writer's deadline control; unavailable control fails
+before querying. The configured write timeout continues to govern other routes.
 
 Only Watch's successful watermark proof produces `caughtUp: true`. Filtered
 empty pages can advance while false; sustained writes may prevent true. The

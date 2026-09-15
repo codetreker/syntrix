@@ -324,11 +324,35 @@ All messages follow a standard JSON envelope:
 
 ```json
 {
+  "id": "sub-room-123",
   "type": "snapshot",
-  "subId": "sub-room-123",
-  "docs": [ ... ]
+  "payload": {
+    "subId": "sub-room-123",
+    "documents": [ ... ]
+  }
 }
 ```
+
+For `sendSnapshot: true`, the Gateway drains opaque replication Pull pages through
+`caughtUp`, applying each upsert and deletion by document ID. A page can end on
+bytes or source work before reaching its document-count limit; sending that page
+alone would leave an incomplete snapshot. Only the completed retained state is
+sent in the existing snapshot envelope.
+
+| Snapshot constraint | Behavior |
+|---|---|
+| Retained live documents | At most 1000; replayed updates replace the same ID and deletions remove it |
+| Serialized snapshot payload | At most 16 MiB including `subId` and the document-array envelope |
+| Collection deadline | 10 seconds across all Pull pages and snapshot encoding |
+| Connection queue deadline | A separate 10 seconds for the snapshot or error |
+| Collection or encoding failure | Correlated `error` message with code `snapshot_failed`; no successful prefix |
+| Document or byte limit exceeded | Correlated `error` message with code `snapshot_limit`; use paginated Pull for larger state |
+
+Queue timeout or connection closure can prevent delivery; it never converts an
+incomplete result into a snapshot. Subscription acknowledgment does not imply
+snapshot completion. This collection-wide state does not apply subscription
+filters or establish an atomic handoff to live events; those guarantees remain in
+the [filtered snapshot proposal](../../../../.agents/notes/proposed/bug-fix/2026-09-07-realtime-filtered-snapshots.md).
 
 **Server pushes (Delta):**
 

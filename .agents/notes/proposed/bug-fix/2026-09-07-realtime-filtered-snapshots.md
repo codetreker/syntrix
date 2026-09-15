@@ -5,13 +5,15 @@ Status: proposed
 ## Problem
 
 A realtime subscription can request a filtered initial snapshot, but
-[the WebSocket handler](../../../../internal/gateway/realtime/client.go) calls
-replication Pull with `Checkpoint: 0` and `Limit: 1000`. It passes filters to
-live matching but not the snapshot.
-[Replication Pull](../../../../internal/query/core/engine.go) uses an update-time
-predicate and `ShowDeleted: true`, so this snapshot can contain nonmatching
-rows or tombstones and truncate results without a completeness indicator.
-Snapshot failures are logged after acknowledgment without a client error.
+the WebSocket snapshot consumes collection-wide replication Pull without passing
+the subscription filters. It drains scan and replay pages through `caughtUp`,
+applying updates and deletions by ID, but can still include nonmatching rows.
+The completed message is bounded to 1000 retained live documents and 16 MiB of
+serialized payload. Collection failures and exceeded bounds return explicit
+errors, not a successful prefix. The
+[Pull decision](../../implemented/bug-fix/2026-09-07-replication-pull-cursor-progress.md)
+owns these consumer guarantees; predicate matching and snapshot/live handoff
+remain unresolved.
 
 In [Streamer processing](../../../../internal/streamer/service.go),
 `doc := helper.FlattenStorageDocument(event.Document)` supplies only the current
@@ -54,8 +56,9 @@ update SDK application of them together.
 
 ## Alternatives
 
-**Filter the replication batch in memory.** This retains truncation and cannot
-establish completeness or detect later filter exits.
+**Filter the collected replication state in memory.** The collection-wide size
+bound can fail before discovering a small filtered result, and filtering alone
+cannot coordinate live handoff or detect later filter exits.
 
 **Evaluate both document images.** Before/after matching can avoid a member set,
 but images are not guaranteed throughout the current event path. Reconsider

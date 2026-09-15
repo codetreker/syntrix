@@ -109,13 +109,22 @@ same retained source; source replacement or history expiry requires recovery.
 | Encoded protobuf response | 20 MiB |
 | Incremental source frames | 10,000 |
 | Incremental soft processing interval | 5 seconds |
-| Hard request timeout | 30 seconds |
+| Hard processing timeout, including response encoding | 30 seconds |
+| HTTP socket write deadline | Processing deadline plus 10 seconds |
 
 Source-byte accounting covers records visible to the adapter, not all database
 work. A successful limited page retains the last fully accepted prefix; the next
 request rereads any unreturned record. A single record exceeding the supported
 budgets fails explicitly. Cancellation and source/encoding/cleanup errors fail
 the request; retain the last saved checkpoint.
+
+The soft interval permits a successful stop only after the source checkpoint
+advances or a caught-up watermark is proved. Opening a Watch slowly or receiving
+an empty frame with the same checkpoint does not count as progress. Exhausting
+the frame or source-byte budget without progress returns retryable
+`REPLICATION_UNAVAILABLE`; reaching the hard deadline returns `DEADLINE_EXCEEDED`.
+The HTTP write deadline leaves time to transmit the encoded result or error after
+processing ends. Other routes retain the configured server write timeout.
 
 ## Push Changes
 - **Endpoint:** `POST /replication/v1/databases/{database}/push`
@@ -197,7 +206,7 @@ records the delivered fix and its limits.
 | 422 `REPLICATION_BUDGET_EXCEEDED` | A response cannot satisfy work/size limits |
 | 499 | Request canceled; keep the last saved checkpoint |
 | 501 `REPLICATION_UNSUPPORTED` | Selected source lacks required capabilities |
-| 503 `REPLICATION_UNAVAILABLE` | Transient source failure; retry the saved checkpoint |
+| 503 `REPLICATION_UNAVAILABLE` | Transient source failure or work budget exhausted without checkpoint progress; retry the saved checkpoint |
 | 504 `DEADLINE_EXCEEDED` | Request timeout; retry the saved checkpoint |
 | 500 `INTERNAL_ERROR` | Invalid source output or other server failure; no progress returned |
 
