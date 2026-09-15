@@ -95,6 +95,11 @@ type Client struct {
 	// Buffered channel of outbound messages.
 	send chan BaseMessage
 
+	// Snapshot enqueue and Hub-owned closure share this per-client lifecycle.
+	sendMu       sync.RWMutex
+	sendStopOnce sync.Once
+	sendStop     chan struct{}
+
 	// Subscriptions
 	subscriptions  map[string]Subscription // clientSubID -> Subscription
 	streamerSubIDs map[string]string       // clientSubID -> streamerSubID
@@ -108,6 +113,21 @@ type Client struct {
 type Subscription struct {
 	Query       model.Query
 	IncludeData bool
+}
+
+func (c *Client) outboundDone() <-chan struct{} {
+	c.sendStopOnce.Do(func() { c.sendStop = make(chan struct{}) })
+	return c.sendStop
+}
+
+// The Hub calls closeOutbound once while removing a registered client. Signal
+// before acquiring sendMu so a full queue cannot hold up the Hub's close path.
+func (c *Client) closeOutbound() {
+	c.outboundDone()
+	close(c.sendStop)
+	c.sendMu.Lock()
+	defer c.sendMu.Unlock()
+	close(c.send)
 }
 
 // readPump pumps messages from the websocket connection to the hub.

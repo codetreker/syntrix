@@ -37,10 +37,19 @@ func (c *Client) sendSnapshot(ctx context.Context, subID, collection string) {
 }
 
 func (c *Client) deliverSnapshot(ctx context.Context, message BaseMessage) {
+	stopped := c.outboundDone()
+	c.sendMu.RLock()
+	defer c.sendMu.RUnlock()
+	select {
+	case <-stopped:
+		return
+	default:
+	}
 	select {
 	case c.send <- message:
 	case <-ctx.Done():
 		slog.Warn("WS: Snapshot response delivery timed out", "error", ctx.Err())
+	case <-stopped:
 	case <-c.hub.Done():
 	}
 }

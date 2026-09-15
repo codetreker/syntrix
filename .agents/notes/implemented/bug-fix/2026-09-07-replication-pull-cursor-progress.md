@@ -84,8 +84,11 @@ source-byte and encoded-page limits can stop it below the document-count limit.
 
 Snapshot collection retains at most 1000 live documents and 16 MiB of serialized
 SnapshotPayload, including its envelope. Collection has a ten-second deadline;
-delivery to the connection queue has a separate ten-second bound. Collection or
-encoding failure produces `snapshot_failed`; exceeding either size bound produces
+delivery to the connection queue has a separate ten-second bound. Snapshot enqueue
+shares per-client synchronization with Hub-owned channel closure. The Hub signals
+pending senders before waiting for the send lock, preventing a full queue from
+holding up deregistration or shutdown. Late results after closure are discarded.
+Collection or encoding failure produces `snapshot_failed`; exceeding either size bound produces
 `snapshot_limit`. No successful prefix is sent. The ordinary JSON message schema
 is unchanged. Filter matching and coordination with live delivery remain owned by
 the [filtered snapshot proposal](../../proposed/bug-fix/2026-09-07-realtime-filtered-snapshots.md).
@@ -112,6 +115,12 @@ decision remains pending; neither the cursor binding nor the current active-stat
 check fixes that transition. No terminal-deletion guarantee is claimed here.
 
 ## Alternatives
+
+**Hold the Hub registry lock while enqueueing snapshots.** A slow connection could
+block registration, deregistration and broadcasts for unrelated clients until the
+delivery deadline. Registry membership also cannot distinguish an in-progress
+registration from a closed client. A per-client stop signal and send lock preserve
+the existing Hub close owner without making registry progress depend on the queue.
 
 **Timestamp and ID continuation.** Repairs static tied pages but cannot represent
 commit order; a delayed write can still disappear behind the saved tuple.

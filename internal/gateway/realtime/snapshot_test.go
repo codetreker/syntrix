@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -247,4 +248,142 @@ func TestSnapshotResponseDeliveryIsBounded(t *testing.T) {
 			t.Fatal("snapshot response blocked on a full outbound queue")
 		}
 	}
+}
+
+func TestSnapshotPullCompletesAfterHubShutdown(t *testing.T) {
+	for _, pullError := range []error{nil, context.Canceled} {
+		t.Run(fmt.Sprint(pullError), func(t *testing.T) {
+			client, service := snapshotClient(t)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			runDone := make(chan struct{})
+			go func() {
+				client.hub.Run(ctx)
+				close(runDone)
+			}()
+			t.Cleanup(func() {
+				cancel()
+				select {
+				case <-runDone:
+				case <-time.After(time.Second):
+					t.Error("Hub remained blocked after cancellation")
+				}
+			})
+			require.True(t, client.hub.Register(client))
+
+			pullStarted := make(chan struct{})
+			releasePull := make(chan struct{})
+			var releaseOnce sync.Once
+			release := func() { releaseOnce.Do(func() { close(releasePull) }) }
+			t.Cleanup(release)
+			service.On("Pull", mock.Anything, "db", mock.Anything).Run(func(mock.Arguments) {
+				close(pullStarted)
+				<-releasePull
+			}).Return(&storage.ReplicationPullResponse{Checkpoint: "head", CaughtUp: true}, pullError).Once()
+			finished := make(chan any, 1)
+			go func() {
+				defer func() { finished <- recover() }()
+				client.sendSnapshot(context.Background(), "sub", "users")
+			}()
+			select {
+			case <-pullStarted:
+			case <-time.After(time.Second):
+				t.Fatal("snapshot did not start Pull")
+			}
+			cancel()
+			select {
+			case <-runDone:
+			case <-time.After(time.Second):
+				t.Fatal("Hub did not finish shutting down")
+			}
+			select {
+			case _, open := <-client.send:
+				require.False(t, open, "Hub must actually close the outbound channel")
+			default:
+				t.Fatal("Hub left the outbound channel open")
+			}
+			release()
+			select {
+			case panicValue := <-finished:
+				require.Nil(t, panicValue, "snapshot must not send after Hub shutdown")
+			case <-time.After(time.Second):
+				t.Fatal("snapshot did not finish after Pull returned")
+			}
+			require.Empty(t, client.send)
+		})
+	}
+}
+
+type snapshotDeliveryContext struct {
+	context.Context
+	entered chan struct{}
+	once    sync.Once
+}
+
+func (ctx *snapshotDeliveryContext) Done() <-chan struct{} {
+	ctx.once.Do(func() { close(ctx.entered) })
+	return ctx.Context.Done()
+}
+
+func TestSnapshotUnregisterUnblocksFullQueue(t *testing.T) {
+	client, _ := snapshotClient(t)
+	client.send = make(chan BaseMessage, 1)
+	client.send <- BaseMessage{Type: TypeSubscribeAck}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	runDone := make(chan struct{})
+	go func() {
+		client.hub.Run(ctx)
+		close(runDone)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-runDone:
+		case <-time.After(time.Second):
+			t.Error("Hub remained blocked after cancellation")
+		}
+	})
+	require.True(t, client.hub.Register(client))
+	deliveryCtx := &snapshotDeliveryContext{Context: context.Background(), entered: make(chan struct{})}
+	deliveryDone := make(chan struct{})
+	go func() {
+		client.deliverSnapshot(deliveryCtx, BaseMessage{Type: TypeSnapshot})
+		close(deliveryDone)
+	}()
+	select {
+	case <-deliveryCtx.entered:
+	case <-time.After(time.Second):
+		t.Fatal("snapshot did not attempt delivery")
+	}
+	client.hub.Unregister(client)
+	select {
+	case <-deliveryDone:
+	case <-time.After(time.Second):
+		t.Fatal("unregister did not unblock the full snapshot queue")
+	}
+	client.hub.Unregister(client)
+
+	probe, _ := snapshotClient(t)
+	registered := make(chan bool, 1)
+	go func() { registered <- client.hub.Register(probe) }()
+	select {
+	case ok := <-registered:
+		require.True(t, ok, "Hub must keep serving clients after unregister")
+	case <-time.After(time.Second):
+		t.Fatal("unregister stalled the Hub")
+	}
+	require.Equal(t, TypeSubscribeAck, (<-client.send).Type)
+	_, open := <-client.send
+	require.False(t, open, "only the already queued message may remain")
+}
+
+func TestSnapshotAlreadyClosedClientDoesNotEnqueue(t *testing.T) {
+	client, _ := snapshotClient(t)
+	client.closeOutbound()
+	require.NotPanics(t, func() {
+		client.deliverSnapshot(context.Background(), BaseMessage{Type: TypeSnapshot})
+	})
+	_, open := <-client.send
+	require.False(t, open)
 }
