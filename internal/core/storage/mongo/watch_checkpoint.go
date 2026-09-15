@@ -12,6 +12,7 @@ import (
 
 	"github.com/syntrixbase/syntrix/internal/core/storage/types"
 	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
 const maxWatchCheckpointSize = 64 * 1024
@@ -23,12 +24,15 @@ type watchSource struct {
 }
 
 type watchCheckpoint struct {
-	Version       int         `json:"version"`
-	Source        watchSource `json:"source"`
-	Database      string      `json:"database"`
-	Collection    string      `json:"collection"`
-	IncludeBefore bool        `json:"includeBefore"`
-	Token         bson.Raw    `json:"token"`
+	Version       int                  `json:"version"`
+	Source        watchSource          `json:"source"`
+	Database      string               `json:"database"`
+	Collection    string               `json:"collection"`
+	IncludeBefore bool                 `json:"includeBefore"`
+	Token         bson.Raw             `json:"token,omitempty"`
+	Start         *primitive.Timestamp `json:"start,omitempty"`
+	ClusterTime   bson.Raw             `json:"clusterTime,omitempty"`
+	Target        bson.Raw             `json:"target,omitempty"`
 }
 
 func (c watchCheckpoint) encode(token bson.Raw) (types.WatchCheckpoint, error) {
@@ -36,6 +40,15 @@ func (c watchCheckpoint) encode(token bson.Raw) (types.WatchCheckpoint, error) {
 		return "", err
 	}
 	c.Token = token
+	c.Start = nil
+	c.ClusterTime = nil
+	return c.marshal()
+}
+
+func (c watchCheckpoint) marshal() (types.WatchCheckpoint, error) {
+	if err := c.validate(); err != nil {
+		return "", err
+	}
 	data, err := json.Marshal(c)
 	if err != nil {
 		return "", err
@@ -67,14 +80,58 @@ func decodeWatchCheckpoint(encoded types.WatchCheckpoint) (watchCheckpoint, erro
 	if err != nil || !bytes.Equal(canonical, data) {
 		return c, errors.New("checkpoint envelope is not canonical")
 	}
+	return c, c.validate()
+}
+
+func (c watchCheckpoint) validate() error {
 	uuid, err := hex.DecodeString(c.Source.UUID)
-	if c.Version != 1 || c.Database == "" || c.Source.Database == "" || c.Source.Collection == "" || err != nil || len(uuid) != 16 {
-		return c, errors.New("checkpoint binding is invalid")
+	if c.Version != 2 || c.Database == "" || c.Source.Database == "" || c.Source.Collection == "" || err != nil || len(uuid) != 16 {
+		return errors.New("checkpoint binding is invalid")
 	}
-	if err := validateWatchToken(c.Token); err != nil {
-		return c, err
+	if len(c.Target) != 0 {
+		if err := validateWatchToken(c.Target); err != nil {
+			return err
+		}
+		if _, err := watchTokenOrderKey(c.Target); err != nil {
+			return err
+		}
 	}
-	return c, nil
+	if c.Start != nil {
+		return validateWatchBootstrap(c)
+	}
+	if len(c.ClusterTime) != 0 {
+		return errors.New("token checkpoint contains scan context")
+	}
+	return validateWatchToken(c.Token)
+}
+
+func watchTokenOrderKey(token bson.Raw) (string, error) {
+	key, ok := token.Lookup("_data").StringValueOK()
+	if !ok || key == "" {
+		return "", errors.New("source resume token has no ordered data field")
+	}
+	return key, nil
+}
+
+func validateWatchBootstrap(c watchCheckpoint) error {
+	if c.Start == nil || c.Start.T == 0 || len(c.Token) != 0 {
+		return errors.New("checkpoint is not a scan boundary")
+	}
+	if err := c.ClusterTime.Validate(); err != nil {
+		return errors.New("invalid causal cluster time")
+	}
+	clock, ok := c.ClusterTime.Lookup("$clusterTime").DocumentOK()
+	if !ok {
+		return errors.New("causal context lacks cluster time")
+	}
+	t, i, ok := clock.Lookup("clusterTime").TimestampOK()
+	if !ok || t < c.Start.T || t == c.Start.T && i < c.Start.I {
+		return errors.New("causal cluster time precedes scan boundary")
+	}
+	if _, ok := clock.Lookup("signature").DocumentOK(); !ok {
+		return errors.New("causal cluster time lacks signature")
+	}
+	return nil
 }
 
 func validateWatchToken(token bson.Raw) error {

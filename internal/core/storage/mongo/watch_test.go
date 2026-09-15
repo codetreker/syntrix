@@ -157,16 +157,17 @@ func TestMongoWatchPhysicalDeleteRouting(t *testing.T) {
 	defer stream.Close()
 	_, err = env.DB.Collection("docs").DeleteOne(ctx, bson.M{"_id": foreign.Id})
 	require.NoError(t, err)
-	progress, err := stream.Next(ctx)
-	require.NoError(t, err)
-	require.Nil(t, progress.Event)
 	_, err = env.DB.Collection("docs").DeleteOne(ctx, bson.M{"_id": selected.Id})
 	require.NoError(t, err)
-	deleted := nextWatchEvent(t, stream).Event
-	require.Equal(t, selected.Id, deleted.Id)
-	require.Equal(t, types.EventDelete, deleted.Type)
-	require.Nil(t, deleted.Before)
-	require.Nil(t, deleted.Document)
+	for changes := 0; changes < 2; {
+		progress, err := stream.Next(ctx)
+		require.NoError(t, err)
+		require.Nil(t, progress.Event)
+		if progress.SourceBytes > 0 {
+			require.False(t, progress.CaughtUp)
+			changes++
+		}
+	}
 
 	require.NoError(t, store.Create(ctx, "tenant", selected))
 	before, err := store.Watch(ctx, "tenant", "users", "", types.WatchOptions{IncludeBefore: true})
@@ -193,18 +194,17 @@ func TestMongoWatchMissingDeleteMetadata(t *testing.T) {
 	defer all.Close()
 	_, err = env.DB.Collection("docs").DeleteOne(ctx, bson.M{"_id": doc.Id})
 	require.NoError(t, err)
-	for {
-		frame, err := scoped.Next(ctx)
-		if err != nil {
-			requireWatchCode(t, err, types.WatchPayloadUnavailable)
-			require.Empty(t, frame.Checkpoint)
-			break
+	for _, stream := range []types.WatchStream{scoped, all} {
+		initial := stream.InitialCheckpoint()
+		for {
+			frame, err := stream.Next(ctx)
+			require.NoError(t, err)
+			require.Nil(t, frame.Event)
+			if frame.CaughtUp && frame.Checkpoint != initial {
+				break
+			}
 		}
-		require.Nil(t, frame.Event)
 	}
-	deleted := nextWatchEvent(t, all).Event
-	require.Equal(t, doc.Id, deleted.Id)
-	require.Equal(t, types.EventDelete, deleted.Type)
 }
 
 func TestMongoWatchCloseAndCancellation(t *testing.T) {

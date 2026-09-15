@@ -4,35 +4,110 @@ Status: proposed
 
 ## Problem
 
-The [Pull implementation](../../../../internal/query/core/engine.go) filters `updatedAt >= checkpoint`, sorts by timestamp and ID, and returns only the last timestamp as the checkpoint. A page filled by documents sharing that timestamp can repeat indefinitely. Simply changing the comparison to strict greater-than would omit remaining documents at the same timestamp.
+Pull filters `updatedAt >= checkpoint`, sorts by timestamp and ID, and returns
+only the last timestamp as its checkpoint. A page filled by equal timestamps
+can repeat indefinitely. Strict greater-than would omit remaining documents at
+that timestamp. Wall-clock values also cannot establish commit order: a write
+can receive an earlier timestamp and commit after Pull has passed it.
 
-The [replication design](../../../../docs/design/server/gateway/replication.md) promises a deterministic monotonic checkpoint. Existing millisecond wall-clock values also cannot establish committed-write order when a later write has an equal or earlier timestamp. These are static findings; an end-to-end replication run has not been performed.
+The [replication design](../../../../docs/design/server/gateway/replication.md)
+requires a deterministic continuation. Initial scanning and incremental replay
+must cover concurrent mutations without relying on timestamp order or one
+service instance's lifetime.
 
 ## Proposal
 
-Separate replication position from user-visible `updatedAt`. Use a versioned opaque checkpoint over a durable committed change position, with an explicit bootstrap-scan phase and live-replay phase. Prefer the existing Puller event history as that source, subject to its durability and history-gap guarantees. The checkpoint must carry enough scope and generation information to reject use for another database or collection.
+Use storage-native committed history through the existing Store Watch, with an
+explicit scan phase followed by ordered replay. The
+[Watch scan-boundary extension](../../implemented/architecture/2026-09-15-watch-scan-boundary.md)
+provides the source capabilities; public Pull integration remains proposed.
 
-Bootstrap captures a replay fence before scanning current documents using exclusive ID continuation, then replays changes from that fence before switching to incremental delivery. Incremental pages advance after the last consumed committed event, including events excluded by collection filtering. Duplicate document states are permitted and clients apply them idempotently; no mutation may disappear merely because a timestamp equals or precedes the prior page. Bound page work, honor cancellation, and report expired history as a resynchronization requirement.
+```text
+Watch(StartForScan) -> initial C0
+                       |
+        ScanDocuments(AtLeast=C0, AfterID)
+                       |
+              Watch(after=C0)
+                       |
+           ordered incremental Pull pages
+```
 
-Update HTTP, storage-facing types, protobuf, SDK persistence, and reference documents together. The wire field remains a string, but its documented stringified-int64 restriction changes. Define explicit reset or migration for persisted old checkpoints; do not silently reinterpret them. Diagnostics identify phase, generation, counts, and expiration cause without exposing raw checkpoints or document payloads.
+| Concern | Required behavior |
+|---|---|
+| Public position | Versioned opaque cursor binds database, collection, phase, and source checkpoint |
+| Scan | Retain original C0, advance exclusive logical-ID continuation only past returned candidates |
+| Replay | Resume C0 inclusively, then advance only past completed frames |
+| State | Use Watch's committed current-or-later document enrichment; allow duplicates and eventual convergence |
+| Logical delete | Preserve nil event Document and use separate logical identity copied from StoredDoc |
+| Physical cleanup | Advance source progress without a second business deletion |
+| Budgets | Query owns frame, source-byte, document and encoded-response limits; unreturned events cannot advance the public cursor |
+| Caught-up | Require explicit Watch watermark proof; an empty filtered page may advance without being caught up |
+| Recovery | Malformed/scope-mismatched cursors fail; expired history, replaced source or missing required identity/payload require resynchronization |
+| Client application | Atomically apply page state and persist checkpoint; failed application retains the previous checkpoint |
+
+Update HTTP, protobuf, the manual SDK Pull API, and their reference contracts
+together. The public field remains a string but ceases to be a stringified int64;
+old numeric positions require an explicit reset, without runtime reinterpretation.
+Preserve pending local edits during a reset. Phase and progress diagnostics must
+exclude raw checkpoint and document content.
+
+Permission scope remains unresolved. Full-scope replication needs an explicit
+authorization rule on every request; authentication alone does not grant database
+access. Per-document authorization additionally requires membership exits and
+permission-change recovery, and must not be claimed by a full-scope protocol.
 
 ## Alternatives
 
-**Use strict `(updatedAt, id)` continuation.** This repairs tied pages in a fixed dataset with limited changes, but later equal-timestamp writes behind the tuple and clock regression still cause omissions.
+**Strict `(updatedAt, id)` continuation.** Repairs static tied pages, but delayed
+commits and equal-timestamp writes behind the tuple can still disappear.
 
-**Assign a new durable sequence in storage.** This could preserve scalar checkpoints, but requires atomic publication ordering with document writes and a retained change representation. Reuse of the existing event stream avoids selecting a second ordering authority.
+**Transactional replication revision.** Atomically committing a scope counter
+with each document can order current-state scans without a full event journal.
+It adds transaction retries and scope-local counter contention to writes, and
+requires tombstone cleanup coordinated with a retained revision floor. Native
+committed history preserves the current write model. This choice does not assume
+that arbitrary direct writes to the source are a supported product feature.
+
+**Parallel ReplicationSource.** Separate bootstrap/scan/change methods duplicate
+existing Watch lifecycle, checkpoints, source errors, and scanning mechanisms.
+The selected Watch extension gives these existing owners the missing consistency
+guarantees while Query owns public phases and response budgets.
+
+**Puller-local history as the replication source.** It adds dependencies on local
+buffer continuity, retention, replay and instance replacement. Source-owned Watch
+checkpoints allow cross-instance requests directly; Puller-local history is not
+a prerequisite of this proposal, and native Puller checkpoints stay unchanged.
 
 ## Acceptance Criteria
 
-- More than one page of equal-timestamp documents terminates with every document synchronized.
-- Writes during bootstrap, equal-timestamp updates, clock regression, deletes, and restart converge to current server state without checkpoint regression.
-- Empty filtered pages advance safely; canceled or failed application does not commit a client checkpoint.
-- Expired, malformed, old-format, and cross-database checkpoints produce explicit documented outcomes.
+- More than one page of equal-timestamp documents terminates with all state synchronized.
+- Delayed commits, concurrent scan writes, deletion/recreation and rollback converge without permanent omissions.
+- Source checkpoints resume across service/client replacement; replaced sources fail explicitly.
+- Empty filtered pages advance safely without claiming caught-up; responses never skip unreturned records.
+- Expired, malformed, old-format and cross-scope checkpoints have explicit documented outcomes.
+- HTTP/gRPC and manual SDK preserve typed document values and bounded response semantics.
+- Authorization follows the approved permission scope; no unresolved policy is presented as implemented.
 
 ## Risks
 
-This changes replication ordering and checkpoint format. Bootstrap can outlive retained history and require restart; durable history and bounded scan duration must be sized together. Replication remains asynchronous and replay may deliver duplicates.
+The public checkpoint and request protocol change. Scanning can outlive retained
+history; actual replay may discover expiry after substantial scan work. Required
+logical identity can become unavailable before source history expires. Neither
+condition permits silently restarting at the present. Watch opens and committed
+reads add source load; no fixed offline recovery period or performance equivalence
+is promised. Continuous writes can prevent a caught-up watermark.
 
-## Dependencies
+## Dependencies and Scope
 
-[History-gap recovery](../architecture/2026-09-07-puller-history-gap-recovery.md), [local replay](../architecture/2026-09-07-local-puller-subscription-replay.md), and [SDK replication](../feature/2026-09-07-sdk-offline-replication.md) track the proposed source and checkpoint persistence. [Query pagination](../../implemented/feature/2026-09-07-query-cursor-pagination.md) supplies public query traversal; it does not change replication Pull checkpoints. The [publication proposal](../../rejected/architecture/2026-09-07-puller-persist-before-publish.md) is rejected; relying on Puller history for this replication design remains unconfirmed.
+The implemented Watch extension is the source dependency.
+[Query pagination](../../implemented/feature/2026-09-07-query-cursor-pagination.md)
+provides public query traversal but does not itself repair Pull checkpoints.
+The [SDK offline replication proposal](../feature/2026-09-07-sdk-offline-replication.md)
+owns the durable local coordinator/outbox; manual Pull transport alone does not
+deliver those features. These client additions must retain page-atomic state and
+checkpoint application. Puller
+[history-gap recovery](../architecture/2026-09-07-puller-history-gap-recovery.md)
+and [local replay](../architecture/2026-09-07-local-puller-subscription-replay.md)
+remain independent owners. The
+[publication redesign](../../rejected/architecture/2026-09-07-puller-persist-before-publish.md)
+remains rejected.
