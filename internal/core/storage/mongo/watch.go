@@ -294,9 +294,14 @@ func (w *documentWatch) Next(ctx context.Context) (types.WatchFrame, error) {
 		if err != nil {
 			return types.WatchFrame{}, w.terminate(w.failure(types.WatchInvalidEvent, err))
 		}
+		// PBRT alone is only a scanned prefix; a filtered backlog can yield many
+		// empty batches. The target also bounds the committed work for this drain.
+		// MongoDB's _data string preserves complete native token ordering:
+		// https://github.com/mongodb/mongo/blob/r8.0.0/src/mongo/db/pipeline/resume_token.h#L131-L143
 		caughtUp = key >= w.target
 		if caughtUp {
 			binding.Target = nil
+			w.binding.Target = nil
 		}
 	}
 	checkpoint, err := binding.encode(token)

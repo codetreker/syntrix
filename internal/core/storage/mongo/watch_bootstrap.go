@@ -32,8 +32,14 @@ func watchReadSession(ctx context.Context, client *mongo.Client, cp *watchCheckp
 func (m *documentStore) watchTarget(ctx context.Context, collection *mongo.Collection, cp watchCheckpoint) (target bson.Raw, err error) {
 	// A fresh committed target is independent of an earlier bootstrap scan's
 	// lower bound. Replaying from that bound must also cover writes during scan.
-	cp.Start, cp.ClusterTime, cp.Token, cp.Target = nil, nil, nil, nil
-	sctx, session, err := captureWatchBoundary(ctx, collection, &cp)
+	cp.Token, cp.Target = nil, nil
+	var sctx mongo.SessionContext
+	var session mongo.Session
+	if cp.Start != nil {
+		sctx, session, err = watchReadSession(ctx, collection.Database().Client(), &cp)
+	} else {
+		sctx, session, err = captureWatchBoundary(ctx, collection, &cp)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -45,6 +51,12 @@ func (m *documentStore) watchTarget(ctx context.Context, collection *mongo.Colle
 		return nil, err
 	}
 	start := *cp.Start
+	// A replica set pauses only after unwinding its current transaction, so an
+	// empty batch covering T includes all operations committed at T. A mongos
+	// merge can pause with another shard's same-time events pending; it must pass
+	// T strictly. Shard progress uses MongoDB's native periodic noops.
+	// https://github.com/mongodb/mongo/blob/r8.0.0/src/mongo/db/pipeline/document_source_change_stream_unwind_transaction.cpp#L218-L259
+	// https://github.com/mongodb/mongo/blob/r8.0.0/src/mongo/s/query/async_results_merger.cpp#L295-L369
 	if hello.Msg == "isdbgrid" {
 		start, err = nextWatchTimestamp(start)
 		if err != nil {
