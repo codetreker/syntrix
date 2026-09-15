@@ -227,10 +227,12 @@ func (p *pullPage) admit(cursor pullCursor, doc model.Document, caughtUp bool) (
 		}
 		return false, err
 	}
+	if checkpoint != p.response.Checkpoint || doc != nil || caughtUp {
+		p.accepted++
+	}
 	p.response = candidate
 	p.jsonBytes += addedJSON
 	p.protoBytes += addedProto
-	p.accepted++
 	return true, nil
 }
 
@@ -347,7 +349,9 @@ func (e *Engine) pullChanges(ctx context.Context, cursor pullCursor, limit int, 
 		return pullError(types.WatchInvalidEvent, "watch did not preserve the requested checkpoint")
 	}
 	var sourceBytes int64
-	for frames := 0; frames < maxPullFrames && len(page.response.Documents) < limit && time.Now().Before(softDeadline); frames++ {
+	initialPosition := cursor.Position
+	progressed := false
+	for frames := 0; frames < maxPullFrames && len(page.response.Documents) < limit && (!progressed || time.Now().Before(softDeadline)); frames++ {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
@@ -359,7 +363,10 @@ func (e *Engine) pullChanges(ctx context.Context, cursor pullCursor, limit int, 
 			return pullError(types.WatchInvalidEvent, "watch returned an invalid frame")
 		}
 		if frame.SourceBytes > maxPullSourceBytes-sourceBytes {
-			if page.accepted == 0 {
+			if !progressed {
+				if sourceBytes > 0 {
+					return pullError(types.WatchSourceUnavailable, "watch exhausted the source budget without advancing")
+				}
 				return model.ErrQueryWorkLimit
 			}
 			return nil
@@ -377,9 +384,19 @@ func (e *Engine) pullChanges(ctx context.Context, cursor pullCursor, limit int, 
 		if err != nil || !accepted {
 			return err
 		}
-		if frame.CaughtUp || sourceBytes == maxPullSourceBytes {
+		progressed = cursor.Position != initialPosition
+		if frame.CaughtUp {
 			return nil
 		}
+		if sourceBytes == maxPullSourceBytes {
+			break
+		}
 	}
-	return ctx.Err()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if !progressed {
+		return pullError(types.WatchSourceUnavailable, "watch exhausted the page budget without advancing")
+	}
+	return nil
 }

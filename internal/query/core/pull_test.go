@@ -377,7 +377,7 @@ func TestPullCursorScopeValidation(t *testing.T) {
 	pullCode(t, err, types.WatchInvalidCheckpoint)
 }
 
-func TestPullCancellationAndSoftDeadline(t *testing.T) {
+func TestPullCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	page, err := New(nil, nil).Pull(ctx, "db", types.ReplicationPullRequest{Collection: "users"})
@@ -391,14 +391,88 @@ func TestPullCancellationAndSoftDeadline(t *testing.T) {
 	require.Nil(t, page)
 	require.ErrorIs(t, err, context.Canceled)
 	require.True(t, stream.closed)
-	stream = &pullWatch{}
-	engine := changesEngine(t, stream)
+
+}
+
+func TestPullSoftDeadlineRequiresProgress(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		frames []types.WatchFrame
+		caught bool
+		want   types.WatchCheckpoint
+	}{
+		{"slow open then event", []types.WatchFrame{pullFrame("a", "C1", types.EventCreate)}, false, "C1"},
+		{"slow open then filtered progress", []types.WatchFrame{{Checkpoint: "C1"}}, false, "C1"},
+		{"unchanged poll then progress", []types.WatchFrame{{Checkpoint: "C0"}, {Checkpoint: "C1"}}, false, "C1"},
+		{"idle watermark", []types.WatchFrame{{Checkpoint: "C0", CaughtUp: true}}, true, "C0"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			stream := &pullWatch{frames: test.frames}
+			engine := changesEngine(t, stream)
+			cursor := pullCursor{Version: 3, Database: "db", DatabaseIdentity: "db", Collection: "users", Phase: "changes", Position: "C0"}
+			page := &pullPage{response: types.ReplicationPullResponse{Checkpoint: pullToken(t, "changes", "C0", "")}}
+			err := engine.pullChanges(context.Background(), cursor, 100, time.Now().Add(-time.Second), page)
+			require.NoError(t, err)
+			require.Equal(t, len(test.frames), stream.reads)
+			require.Equal(t, test.caught, page.response.CaughtUp)
+			require.Equal(t, 1, page.accepted)
+			require.True(t, stream.closed)
+			result, err := decodePullCursor("db", "db", "users", page.response.Checkpoint)
+			require.NoError(t, err)
+			require.Equal(t, test.want, result.Position)
+		})
+	}
+}
+
+func TestPullSlowReadReturnsProgressAfterSoftDeadline(t *testing.T) {
+	stream := &pullWatch{frames: []types.WatchFrame{pullFrame("a", "C1", types.EventCreate)}}
+	deadline := time.Now().Add(time.Millisecond)
+	stream.afterRead = func() { time.Sleep(time.Until(deadline) + time.Millisecond) }
 	cursor := pullCursor{Version: 3, Database: "db", DatabaseIdentity: "db", Collection: "users", Phase: "changes", Position: "C0"}
-	p := &pullPage{response: types.ReplicationPullResponse{Checkpoint: pullToken(t, "changes", "C0", "")}}
-	err = engine.pullChanges(context.Background(), cursor, 100, time.Now().Add(-time.Second), p)
+	page := &pullPage{response: types.ReplicationPullResponse{Checkpoint: pullToken(t, "changes", "C0", "")}}
+	err := changesEngine(t, stream).pullChanges(context.Background(), cursor, 100, deadline, page)
 	require.NoError(t, err)
-	require.Equal(t, 0, stream.reads)
-	require.False(t, p.response.CaughtUp)
+	require.Equal(t, 1, stream.reads)
+	require.Len(t, page.response.Documents, 1)
+	require.False(t, page.response.CaughtUp)
+	require.Equal(t, pullToken(t, "changes", "C1", ""), page.response.Checkpoint)
+	require.True(t, stream.closed)
+}
+
+func TestPullUnchangedCheckpointCannotExhaustBudgetSuccessfully(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		frames []types.WatchFrame
+	}{
+		{"source exact", []types.WatchFrame{{Checkpoint: "C0", SourceBytes: maxPullSourceBytes}}},
+		{"source overflow", []types.WatchFrame{{Checkpoint: "C0", SourceBytes: 1}, {Checkpoint: "C0", SourceBytes: maxPullSourceBytes}}},
+		{"frame limit", func() []types.WatchFrame {
+			frames := make([]types.WatchFrame, maxPullFrames)
+			for i := range frames {
+				frames[i].Checkpoint = "C0"
+			}
+			return frames
+		}()},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			stream := &pullWatch{frames: test.frames}
+			page, err := changesEngine(t, stream).Pull(context.Background(), "db", types.ReplicationPullRequest{Collection: "users", Checkpoint: pullToken(t, "changes", "C0", "")})
+			require.Nil(t, page)
+			pullCode(t, err, types.WatchSourceUnavailable)
+			require.Equal(t, len(test.frames), stream.reads)
+			require.True(t, stream.closed)
+		})
+	}
+}
+
+func TestPullSlowReadRespectsHardDeadline(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	stream := &pullWatch{frames: []types.WatchFrame{{Checkpoint: "C0"}}, afterRead: func() { <-ctx.Done() }}
+	page, err := changesEngine(t, stream).Pull(ctx, "db", types.ReplicationPullRequest{Collection: "users", Checkpoint: pullToken(t, "changes", "C0", "")})
+	require.Nil(t, page)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	require.Equal(t, 1, stream.reads)
 	require.True(t, stream.closed)
 }
 
