@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/syntrixbase/syntrix/internal/core/identity"
-	"github.com/syntrixbase/syntrix/internal/core/storage"
 	"github.com/syntrixbase/syntrix/internal/ctxkeys"
 	api_config "github.com/syntrixbase/syntrix/internal/gateway/config"
 	"github.com/syntrixbase/syntrix/internal/query"
@@ -199,37 +198,9 @@ func (c *Client) handleMessage(msg BaseMessage) {
 		c.send <- BaseMessage{ID: msg.ID, Type: TypeSubscribeAck}
 
 		if payload.SendSnapshot {
-			// Fetch snapshot
-			req := storage.ReplicationPullRequest{
-				Collection: payload.Query.Collection,
-				Checkpoint: "",
-				Limit:      1000, // Reasonable limit for snapshot
-			}
-			// Use a background context or create one with timeout
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
-
-			resp, err := c.queryService.Pull(ctx, c.database, req)
-			if err != nil {
-				slog.Error("WS: Snapshot pull failed", "error", err)
-				return
-			}
-
-			flatDocs := make([]map[string]interface{}, len(resp.Documents))
-			for i, doc := range resp.Documents {
-				flatDocs[i] = map[string]interface{}(doc)
-			}
-
-			snapshotPayload := SnapshotPayload{
-				SubID:     msg.ID,
-				Documents: flatDocs,
-			}
-
-			c.send <- BaseMessage{
-				ID:      msg.ID,
-				Type:    TypeSnapshot,
-				Payload: mustMarshal(snapshotPayload),
-			}
+			c.sendSnapshot(ctx, msg.ID, payload.Query.Collection)
 		}
 	case TypeUnsubscribe:
 		if !c.authenticated {

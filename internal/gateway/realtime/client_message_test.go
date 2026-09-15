@@ -469,7 +469,9 @@ func setupMockQuery() *MockQueryService {
 	m := new(MockQueryService)
 	// Mock Pull for Snapshot
 	m.On("Pull", mock.Anything, mock.Anything, mock.Anything).Return(&storage.ReplicationPullResponse{
-		Documents: []model.Document{{"id": "1", "name": "test", "collection": "users", "version": int64(1), "createdAt": int64(100), "updatedAt": int64(200)}},
+		Documents:  []model.Document{{"id": "1", "name": "test", "collection": "users", "version": int64(1), "createdAt": int64(100), "updatedAt": int64(200)}},
+		Checkpoint: "caught-up",
+		CaughtUp:   true,
 	}, nil).Maybe()
 	return m
 }
