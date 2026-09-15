@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/syntrixbase/syntrix/internal/indexer"
+	"github.com/syntrixbase/syntrix/internal/query/core"
 	"github.com/syntrixbase/syntrix/internal/query/wire"
 	"google.golang.org/genproto/googleapis/rpc/errdetails"
 
@@ -143,25 +144,20 @@ func (c *Client) ExecuteQueryPage(ctx context.Context, database string, q model.
 
 // Pull retrieves documents for replication.
 func (c *Client) Pull(ctx context.Context, database string, req storage.ReplicationPullRequest) (*storage.ReplicationPullResponse, error) {
-	resp, err := c.client.Pull(ctx, &pb.PullRequest{
-		Database:   database,
-		Collection: req.Collection,
-		Checkpoint: req.Checkpoint,
-		Limit:      int32(req.Limit),
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if err := core.ValidatePullRequest(database, req); err != nil {
+		return nil, err
+	}
+	resp, err := c.client.Pull(ctxkeys.OutgoingRequestContext(ctx), &pb.PullRequest{
+		Database: database, DatabaseIdentity: req.DatabaseIdentity, Collection: req.Collection, Checkpoint: req.Checkpoint,
+		Limit: int32(req.Limit), WireVersion: wire.Version,
 	})
 	if err != nil {
-		return nil, statusToError(err)
+		return nil, wire.ReplicationStatusToError(err)
 	}
-
-	docs := make([]*storage.StoredDoc, 0, len(resp.Documents))
-	for _, d := range resp.Documents {
-		docs = append(docs, protoToStoredDoc(d))
-	}
-
-	return &storage.ReplicationPullResponse{
-		Documents:  docs,
-		Checkpoint: resp.Checkpoint,
-	}, nil
+	return wire.DecodePullPage(resp)
 }
 
 // Push sends documents for replication.

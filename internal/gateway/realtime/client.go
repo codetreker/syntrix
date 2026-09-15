@@ -202,7 +202,7 @@ func (c *Client) handleMessage(msg BaseMessage) {
 			// Fetch snapshot
 			req := storage.ReplicationPullRequest{
 				Collection: payload.Query.Collection,
-				Checkpoint: 0,    // From beginning
+				Checkpoint: "",
 				Limit:      1000, // Reasonable limit for snapshot
 			}
 			// Use a background context or create one with timeout
@@ -217,7 +217,7 @@ func (c *Client) handleMessage(msg BaseMessage) {
 
 			flatDocs := make([]map[string]interface{}, len(resp.Documents))
 			for i, doc := range resp.Documents {
-				flatDocs[i] = flattenDocument(doc)
+				flatDocs[i] = map[string]interface{}(doc)
 			}
 
 			snapshotPayload := SnapshotPayload{

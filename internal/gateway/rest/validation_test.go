@@ -132,7 +132,7 @@ func TestValidateReplicationPull(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := validateReplicationPull(tt.req)
+			err := validateReplicationPull("default", tt.req)
 			if tt.wantErr {
 				assert.Error(t, err)
 			} else {

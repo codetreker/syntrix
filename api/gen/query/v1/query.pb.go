@@ -1019,12 +1019,15 @@ type PullRequest struct {
 	Database string `protobuf:"bytes,1,opt,name=database,proto3" json:"database,omitempty"`
 	// Target collection.
 	Collection string `protobuf:"bytes,2,opt,name=collection,proto3" json:"collection,omitempty"`
-	// Checkpoint to resume from (Unix milliseconds).
-	Checkpoint int64 `protobuf:"varint,3,opt,name=checkpoint,proto3" json:"checkpoint,omitempty"`
+	// Opaque, source-bound continuation; empty begins bootstrap.
+	Checkpoint string `protobuf:"bytes,3,opt,name=checkpoint,proto3" json:"checkpoint,omitempty"`
 	// Maximum number of documents to return.
-	Limit         int32 `protobuf:"varint,4,opt,name=limit,proto3" json:"limit,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Limit       int32  `protobuf:"varint,4,opt,name=limit,proto3" json:"limit,omitempty"`
+	WireVersion uint32 `protobuf:"varint,5,opt,name=wire_version,json=wireVersion,proto3" json:"wire_version,omitempty"`
+	// Trusted resolved entity identity; database remains the storage namespace.
+	DatabaseIdentity string `protobuf:"bytes,6,opt,name=database_identity,json=databaseIdentity,proto3" json:"database_identity,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *PullRequest) Reset() {
@@ -1071,11 +1074,11 @@ func (x *PullRequest) GetCollection() string {
 	return ""
 }
 
-func (x *PullRequest) GetCheckpoint() int64 {
+func (x *PullRequest) GetCheckpoint() string {
 	if x != nil {
 		return x.Checkpoint
 	}
-	return 0
+	return ""
 }
 
 func (x *PullRequest) GetLimit() int32 {
@@ -1085,12 +1088,28 @@ func (x *PullRequest) GetLimit() int32 {
 	return 0
 }
 
+func (x *PullRequest) GetWireVersion() uint32 {
+	if x != nil {
+		return x.WireVersion
+	}
+	return 0
+}
+
+func (x *PullRequest) GetDatabaseIdentity() string {
+	if x != nil {
+		return x.DatabaseIdentity
+	}
+	return ""
+}
+
 type PullResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Documents to replicate.
 	Documents []*Document `protobuf:"bytes,1,rep,name=documents,proto3" json:"documents,omitempty"`
 	// New checkpoint for next pull.
-	Checkpoint    int64 `protobuf:"varint,2,opt,name=checkpoint,proto3" json:"checkpoint,omitempty"`
+	Checkpoint    string `protobuf:"bytes,2,opt,name=checkpoint,proto3" json:"checkpoint,omitempty"`
+	CaughtUp      bool   `protobuf:"varint,3,opt,name=caught_up,json=caughtUp,proto3" json:"caught_up,omitempty"`
+	WireVersion   uint32 `protobuf:"varint,4,opt,name=wire_version,json=wireVersion,proto3" json:"wire_version,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1132,9 +1151,23 @@ func (x *PullResponse) GetDocuments() []*Document {
 	return nil
 }
 
-func (x *PullResponse) GetCheckpoint() int64 {
+func (x *PullResponse) GetCheckpoint() string {
 	if x != nil {
 		return x.Checkpoint
+	}
+	return ""
+}
+
+func (x *PullResponse) GetCaughtUp() bool {
+	if x != nil {
+		return x.CaughtUp
+	}
+	return false
+}
+
+func (x *PullResponse) GetWireVersion() uint32 {
+	if x != nil {
+		return x.WireVersion
 	}
 	return 0
 }
@@ -1377,21 +1410,25 @@ const file_query_proto_rawDesc = "" +
 	"nextCursor\x12\x19\n" +
 	"\bhas_more\x18\x03 \x01(\bR\ahasMore\x12B\n" +
 	"\x0feffective_order\x18\x04 \x03(\v2\x19.syntrix.query.v1.OrderByR\x0eeffectiveOrder\x12!\n" +
-	"\fwire_version\x18\x05 \x01(\rR\vwireVersion\"\x7f\n" +
+	"\fwire_version\x18\x05 \x01(\rR\vwireVersion\"\xcf\x01\n" +
 	"\vPullRequest\x12\x1a\n" +
 	"\bdatabase\x18\x01 \x01(\tR\bdatabase\x12\x1e\n" +
 	"\n" +
 	"collection\x18\x02 \x01(\tR\n" +
 	"collection\x12\x1e\n" +
 	"\n" +
-	"checkpoint\x18\x03 \x01(\x03R\n" +
+	"checkpoint\x18\x03 \x01(\tR\n" +
 	"checkpoint\x12\x14\n" +
-	"\x05limit\x18\x04 \x01(\x05R\x05limit\"h\n" +
+	"\x05limit\x18\x04 \x01(\x05R\x05limit\x12!\n" +
+	"\fwire_version\x18\x05 \x01(\rR\vwireVersion\x12+\n" +
+	"\x11database_identity\x18\x06 \x01(\tR\x10databaseIdentity\"\xa8\x01\n" +
 	"\fPullResponse\x128\n" +
 	"\tdocuments\x18\x01 \x03(\v2\x1a.syntrix.query.v1.DocumentR\tdocuments\x12\x1e\n" +
 	"\n" +
-	"checkpoint\x18\x02 \x01(\x03R\n" +
-	"checkpoint\"g\n" +
+	"checkpoint\x18\x02 \x01(\tR\n" +
+	"checkpoint\x12\x1b\n" +
+	"\tcaught_up\x18\x03 \x01(\bR\bcaughtUp\x12!\n" +
+	"\fwire_version\x18\x04 \x01(\rR\vwireVersion\"g\n" +
 	"\n" +
 	"PushChange\x126\n" +
 	"\bdocument\x18\x01 \x01(\v2\x1a.syntrix.query.v1.DocumentR\bdocument\x12!\n" +
