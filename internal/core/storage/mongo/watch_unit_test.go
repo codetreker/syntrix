@@ -80,7 +80,7 @@ func watchToken(t *testing.T, position string) bson.Raw {
 }
 
 func watchBinding() watchCheckpoint {
-	return watchCheckpoint{Version: 1, Source: watchSource{Database: "physical", Collection: "docs", UUID: strings.Repeat("01", 16)}, Database: "tenant", Collection: "users"}
+	return watchCheckpoint{Version: 2, Source: watchSource{Database: "physical", Collection: "docs", UUID: strings.Repeat("01", 16)}, Database: "tenant", Collection: "users"}
 }
 
 func watchChange(t *testing.T, operation string) changeStreamEvent {
@@ -101,7 +101,8 @@ func nativeWatch(t *testing.T, native *stubChangeStream) *documentStore {
 	require.NoError(t, err)
 	return &documentStore{
 		db: client.Database("physical"), dataCollection: "docs", sysCollection: "sys",
-		readSource: func(context.Context, *mongo.Collection, bool) (watchSource, error) { return watchBinding().Source, nil },
+		readSource:      func(context.Context, *mongo.Collection, bool) (watchSource, error) { return watchBinding().Source, nil },
+		readWatchTarget: func(context.Context, *mongo.Collection, watchCheckpoint) (bson.Raw, error) { return native.token, nil },
 		openStream: func(context.Context, *mongo.Collection, mongo.Pipeline, *options.ChangeStreamOptions) (changeStream, error) {
 			return native, nil
 		},
@@ -122,11 +123,11 @@ func TestWatchCheckpointCodec(t *testing.T) {
 	for name, corrupt := range map[string]types.WatchCheckpoint{
 		"empty": "", "oversized": types.WatchCheckpoint(strings.Repeat("a", maxWatchCheckpointSize+1)), "base64": "!invalid",
 		"invalid JSON":    types.WatchCheckpoint(base64.RawURLEncoding.EncodeToString([]byte("{"))),
-		"unknown field":   checkpointJSON(strings.Replace(string(data), `"version":1`, `"unknown":0,"version":1`, 1)),
-		"duplicate field": checkpointJSON(strings.Replace(string(data), `"version":1`, `"version":1,"version":1`, 1)),
+		"unknown field":   checkpointJSON(strings.Replace(string(data), `"version":2`, `"unknown":0,"version":2`, 1)),
+		"duplicate field": checkpointJSON(strings.Replace(string(data), `"version":2`, `"version":2,"version":2`, 1)),
 		"missing field":   checkpointJSON(strings.Replace(string(data), `,"includeBefore":false`, "", 1)),
 		"trailing JSON":   checkpointJSON(string(data) + "{}"),
-		"version":         checkpointJSON(strings.Replace(string(data), `"version":1`, `"version":2`, 1)),
+		"version":         checkpointJSON(strings.Replace(string(data), `"version":2`, `"version":1`, 1)),
 		"empty scope":     checkpointJSON(strings.Replace(string(data), `"database":"tenant"`, `"database":""`, 1)),
 		"empty source":    checkpointJSON(strings.Replace(string(data), `"database":"physical"`, `"database":""`, 1)),
 		"UUID":            checkpointJSON(strings.Replace(string(data), binding.Source.UUID, "bad", 1)),
@@ -464,7 +465,7 @@ func TestWatchConversion(t *testing.T) {
 		{"lookup reflects later delete", "update", func(c *changeStreamEvent) { c.FullDocument.Deleted = true }, types.EventUpdate, "", false},
 		{"soft delete", "update", func(c *changeStreamEvent) { c.UpdateDescription.UpdatedFields["deleted"] = true }, types.EventDelete, "", false},
 		{"undelete", "update", func(c *changeStreamEvent) { c.UpdateDescription.UpdatedFields["deleted"] = false }, types.EventCreate, "", false},
-		{"delete", "delete", func(c *changeStreamEvent) { c.FullDocumentBeforeChange = c.FullDocument; c.FullDocument = nil }, types.EventDelete, "", false},
+		{"delete", "delete", func(c *changeStreamEvent) { c.FullDocumentBeforeChange = c.FullDocument; c.FullDocument = nil }, "", "", true},
 		{"unknown", "noop", nil, "", types.WatchInvalidEvent, false},
 		{"drop", "drop", nil, "", types.WatchSourceMismatch, false},
 		{"bad key", "insert", func(c *changeStreamEvent) { c.DocumentKey.ID = "invalid" }, "", types.WatchInvalidEvent, false},
@@ -474,7 +475,7 @@ func TestWatchConversion(t *testing.T) {
 		{"wrong document database", "insert", func(c *changeStreamEvent) { c.FullDocument.Database = "other" }, "", types.WatchInvalidEvent, false},
 		{"wrong document path", "insert", func(c *changeStreamEvent) { c.FullDocument.Fullpath = "users/bob" }, "", types.WatchInvalidEvent, false},
 		{"wrong collection metadata", "insert", func(c *changeStreamEvent) { c.FullDocument.Collection = "other" }, "", types.WatchInvalidEvent, false},
-		{"missing metadata", "delete", func(c *changeStreamEvent) { c.FullDocument = nil }, "", types.WatchPayloadUnavailable, false},
+		{"missing metadata", "delete", func(c *changeStreamEvent) { c.FullDocument = nil }, "", "", true},
 		{"missing lookup", "update", func(c *changeStreamEvent) { c.FullDocumentBeforeChange = c.FullDocument; c.FullDocument = nil }, "", types.WatchPayloadUnavailable, false},
 		{"wrong collection", "insert", func(c *changeStreamEvent) {
 			doc := types.NewStoredDoc("tenant", "other", "bob", nil)
