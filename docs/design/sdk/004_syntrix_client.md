@@ -1,7 +1,7 @@
 # SyntrixClient Design
 
 **Date:** December 22, 2025
-**Status:** Planned
+**Status:** Client behavior includes manual Pull; planned API details are identified below.
 **Related:** [001_sdk_architecture.md](001_sdk_architecture.md), [003_authentication.md](003_authentication.md)
 
 ## Scope
@@ -12,7 +12,7 @@ Public HTTP client for application usage (web/mobile/backend) over `/api/v1/...`
 - Token injection via shared auth surface (003); retry once on 401/403 if refresh is provided.
 - Surface 404 as `null` for `get()`; propagate other HTTP errors.
 - Provide reference API entry points `collection(path)` and `doc(path)`.
-- Remain side-effect free for replication: replication workers can share auth but own their Axios instance.
+- Provide one-page manual `pull<T>(collection, options?)` over the scoped replication route using shared authentication. Local document and checkpoint persistence belong to the application.
 
 ## Non-Responsibilities
 - Managing refresh token storage (caller responsibility).
@@ -23,6 +23,7 @@ Public HTTP client for application usage (web/mobile/backend) over `/api/v1/...`
 - `constructor(baseURL: string, token: string | TokenProvider)` (to be aligned with 003 for tokenProvider/refresh hooks).
 - `collection<T>(path): CollectionReference<T>`
 - `doc<T>(path): DocumentReference<T>`
+- `pull<T>(collection, options?): Promise<PullPage<T>>`: typed current-state page with an opaque checkpoint and `caughtUp`; see the [replication contract](002_replication_client.md#implemented-manual-pull).
 - `get(path): Promise<T | null>`
 - `create(collectionPath, data, id?): Promise<T>`
 - `update(path, data): Promise<T>`

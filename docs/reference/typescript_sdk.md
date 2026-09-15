@@ -34,6 +34,49 @@ Creates a reference to a document.
 
 Creates a reference to a collection.
 
+#### `pull<T>(collection: string, options?: PullOptions): Promise<PullPage<T>>`
+
+Fetches one authenticated replication page for the configured database, preserving
+any base URL prefix. Options are `checkpoint?: string | null`, `limit?: number`,
+and `signal?: AbortSignal`. Omitted/null checkpoint starts initialization; a supplied
+checkpoint must be nonempty and at most 256 KiB. Limit defaults to 100 and must be
+an integer from 1 through 1000.
+
+```typescript
+const page = await client.pull<{ name: string }>('users', {
+  checkpoint: savedCheckpoint,
+  limit: 100,
+  signal: abortController.signal,
+});
+```
+
+The result contains `documents`, opaque `checkpoint`, and boolean `caughtUp`.
+Documents have flattened business fields and logical identity; int64 metadata and
+nested values decode to bigint. A deletion may contain only `id`, `collection`,
+and `deleted: true`. Process records in order, tolerating repeated states and
+version reset after recreation. Continue with the checkpoint when `caughtUp` is
+false, even on an empty page.
+
+The application must atomically apply a whole page and persist its checkpoint.
+Failures leave saved progress unchanged. `RESYNC_REQUIRED` means rebuilding the
+server mirror from null while preserving pending local edits. The SDK does not
+automatically fetch more pages, save progress, or maintain an outbox.
+
+Plain JSON serialization rejects bigint, including values in decoded Pull and
+Query documents. Existing SDK document `set`/`update` therefore cannot blindly
+round-trip such documents. Converting to Number can lose precision. Use a lossless
+local persistence representation; the matching outbound codec and Pusher remain
+tracked by the [offline replication proposal](../../.agents/notes/proposed/feature/2026-09-07-sdk-offline-replication.md).
+
+Pull binds the session before scheduling the request. Login, signup, or logout
+invalidates a successful old-session response with `AuthSessionChangedError`;
+applications must also invalidate pending local application after account changes.
+Keep mirrors and checkpoints separated by account, database URL scope, and collection.
+
+The implemented access profile requires the database owner or matching `db_admin`
+grant; that full-scope policy remains provisional pending approval. See the
+[replication reference](replication.md) for transport encoding, limits and recovery.
+
 ### Authentication sessions
 
 `login(username, password)` and `signup(username, password)` immediately end the
