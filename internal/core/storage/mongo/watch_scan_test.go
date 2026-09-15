@@ -17,6 +17,37 @@ import (
 	"go.mongodb.org/mongo-driver/mongo/readpref"
 )
 
+func TestScanDocumentsRejectsInvalidRequestBeforeSourceWork(t *testing.T) {
+	store := &documentStore{}
+	for _, checkpoint := range []types.WatchCheckpoint{"", "invalid"} {
+		page, err := store.ScanDocuments(context.Background(), "tenant", types.SourceScanRequest{
+			Collection: "users", Limit: 0, AtLeast: checkpoint,
+		})
+		require.Error(t, err)
+		assert.Equal(t, types.SourceScanPage{}, page)
+		var watchErr *types.WatchError
+		assert.False(t, errors.As(err, &watchErr), "request validation precedes boundary decoding")
+	}
+}
+
+func TestScanDocumentsPreservesSourceIndexInstallationError(t *testing.T) {
+	env := setupTestEnv(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	_, err := env.DB.Collection("docs").Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys: bson.D{{Key: "fullpath", Value: 1}}, Options: options.Index().SetName(sourceScanIndexName),
+	})
+	require.NoError(t, err)
+	store := NewDocumentStore(env.Client, env.DB, "docs", "sys", time.Hour).(*documentStore)
+	page, err := store.ScanDocuments(ctx, "tenant", types.SourceScanRequest{Collection: "users", Limit: 1})
+	require.Error(t, err)
+	assert.Equal(t, types.SourceScanPage{}, page)
+	var server mongo.ServerError
+	require.ErrorAs(t, err, &server)
+	assert.True(t, server.HasErrorCode(85) || server.HasErrorCode(86), "the source index conflict must remain inspectable")
+	assert.False(t, store.sourceIndexesReady)
+}
+
 func TestWatchBoundaryScanCommittedPages(t *testing.T) {
 	env := setupTestEnv(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
