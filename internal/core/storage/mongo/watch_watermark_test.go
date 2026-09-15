@@ -166,6 +166,46 @@ func TestWatchTargetCheckpointValidation(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestWatchTargetFailureReleasesResumedSession(t *testing.T) {
+	mt := mtest.New(t, mtest.NewOptions().ClientType(mtest.Mock))
+	for _, scenario := range []string{"target read failure", "invalid target"} {
+		mt.Run(scenario, func(mt *mtest.T) {
+			cp := watchScanBinding(mt.T)
+			after, err := cp.marshal()
+			require.NoError(mt, err)
+			store := &documentStore{client: mt.Client, db: mt.DB, dataCollection: "docs", sysCollection: "sys"}
+			store.readSource = func(context.Context, *mongo.Collection, bool) (watchSource, error) { return cp.Source, nil }
+			var observed context.Context
+			var session mongo.Session
+			cause := &mongo.CommandError{Code: 13, Message: "private source details"}
+			store.readWatchTarget = func(ctx context.Context, _ *mongo.Collection, _ watchCheckpoint) (bson.Raw, error) {
+				observed, session = ctx, mongo.SessionFromContext(ctx)
+				require.NotNil(mt, session)
+				require.Equal(mt, cp.Start, session.OperationTime())
+				if scenario == "target read failure" {
+					return nil, cause
+				}
+				return mustBSON(mt.T, bson.M{"value": 1}), nil
+			}
+			store.openStream = func(context.Context, *mongo.Collection, mongo.Pipeline, *options.ChangeStreamOptions) (changeStream, error) {
+				mt.Fatal("target failure must prevent opening the data stream")
+				return nil, nil
+			}
+			stream, err := store.Watch(context.Background(), "tenant", "users", after, types.WatchOptions{})
+			require.Nil(mt, stream)
+			if scenario == "target read failure" {
+				requireWatchCode(mt.T, err, types.WatchPermissionDenied)
+				require.ErrorIs(mt, err, cause)
+			} else {
+				requireWatchCode(mt.T, err, types.WatchInvalidCheckpoint)
+			}
+			require.NotContains(mt, err.Error(), "private source details")
+			require.ErrorIs(mt, observed.Err(), context.Canceled)
+			require.Error(mt, session.AdvanceOperationTime(cp.Start), "the resumed causal session must be ended")
+		})
+	}
+}
+
 func TestMongoWatchIdleWatermarkNeedsNoNewWrite(t *testing.T) {
 	env := setupTestEnv(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
