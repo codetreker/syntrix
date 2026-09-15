@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"net/http"
 	"net/http/httptest"
@@ -24,6 +25,99 @@ import (
 	"github.com/syntrixbase/syntrix/internal/query/wire"
 	"github.com/syntrixbase/syntrix/pkg/model"
 )
+
+type pullRecorder struct {
+	*httptest.ResponseRecorder
+	deadline    time.Time
+	deadlineErr error
+	writeErr    error
+}
+
+func newPullRecorder() *pullRecorder {
+	return &pullRecorder{ResponseRecorder: httptest.NewRecorder()}
+}
+
+func (w *pullRecorder) SetWriteDeadline(deadline time.Time) error {
+	w.deadline = deadline
+	return w.deadlineErr
+}
+
+func (w *pullRecorder) Write(data []byte) (int, error) {
+	if w.writeErr != nil {
+		return 0, w.writeErr
+	}
+	return w.ResponseRecorder.Write(data)
+}
+
+func TestPullResponseDeadline(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	deadline, _ := ctx.Deadline()
+	service := new(MockQueryService)
+	service.On("Pull", mock.Anything, "friendly-name", mock.Anything).
+		Return(&storage.ReplicationPullResponse{Checkpoint: "next", CaughtUp: true}, nil).Twice()
+	rr := newPullRecorder()
+	(&Handler{engine: service}).handlePull(rr, pullRequest(ctx, `{"collection":"users"}`))
+	require.Equal(t, http.StatusOK, rr.Code)
+	require.Equal(t, deadline.Add(pullResponseWriteTimeout), rr.deadline)
+	rr = newPullRecorder()
+	rr.writeErr = io.ErrClosedPipe
+	(&Handler{engine: service}).handlePull(rr, pullRequest(ctx, `{"collection":"users"}`))
+	require.Empty(t, rr.Body.String())
+	service.AssertExpectations(t)
+}
+
+func TestPullRejectsUnavailableResponseDeadline(t *testing.T) {
+	for _, writer := range []http.ResponseWriter{
+		httptest.NewRecorder(),
+		&pullRecorder{ResponseRecorder: httptest.NewRecorder(), deadlineErr: io.ErrClosedPipe},
+	} {
+		service := new(MockQueryService)
+		(&Handler{engine: service}).handlePull(writer, pullRequest(context.Background(), `{"collection":"users"}`))
+		var rr *httptest.ResponseRecorder
+		switch w := writer.(type) {
+		case *httptest.ResponseRecorder:
+			rr = w
+		case *pullRecorder:
+			rr = w.ResponseRecorder
+		}
+		require.Equal(t, http.StatusInternalServerError, rr.Code)
+		require.Contains(t, rr.Body.String(), "Cannot establish replication response deadline")
+		service.AssertNotCalled(t, "Pull", mock.Anything, mock.Anything, mock.Anything)
+	}
+}
+
+func TestPullOverridesHTTPWriteTimeout(t *testing.T) {
+	service := new(MockQueryService)
+	service.On("Pull", mock.Anything, "friendly-name", mock.Anything).Run(func(args mock.Arguments) {
+		ctx := args.Get(0).(context.Context)
+		select {
+		case <-time.After(150 * time.Millisecond):
+		case <-ctx.Done():
+			t.Error(ctx.Err())
+		}
+	}).Return(&storage.ReplicationPullResponse{Checkpoint: "next", CaughtUp: true}, nil).Once()
+	handler := &Handler{engine: service}
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r.SetPathValue("database", "friendly-name")
+		r = r.WithContext(databasecore.WithDatabase(r.Context(), &databasecore.Database{ID: "canonical-id"}))
+		handler.handlePull(w, r)
+	}))
+	srv.Config.WriteTimeout = 50 * time.Millisecond
+	srv.Start()
+	defer srv.Close()
+	client := srv.Client()
+	client.Timeout = 3 * time.Second
+	response, err := client.Post(srv.URL, "application/json", strings.NewReader(`{"collection":"users"}`))
+	require.NoError(t, err)
+	defer response.Body.Close()
+	require.Equal(t, http.StatusOK, response.StatusCode)
+	var page ReplicaPullResponse
+	require.NoError(t, json.NewDecoder(response.Body).Decode(&page))
+	require.Equal(t, "next", page.Checkpoint)
+	require.True(t, page.CaughtUp)
+	service.AssertExpectations(t)
+}
 
 func pullRequest(ctx context.Context, body string) *http.Request {
 	req := httptest.NewRequest(http.MethodPost, "/replication/v1/databases/friendly-name/pull", strings.NewReader(body))
@@ -55,9 +149,10 @@ func TestHandlePullTypedPage(t *testing.T) {
 				assert.Equal(t, "request-pull", ctx.Value(ctxkeys.KeyRequestID))
 			}).Return(&storage.ReplicationPullResponse{Documents: documents, Checkpoint: "next-position", CaughtUp: true}, nil).Once()
 			ctx := context.WithValue(context.Background(), ctxkeys.KeyRequestID, "request-pull")
-			rr := httptest.NewRecorder()
+			rr := newPullRecorder()
 			handler.handlePull(rr, pullRequest(ctx, `{"collection":"users"`+checkpoint+`}`))
 			require.Equal(t, http.StatusOK, rr.Code, rr.Body.String())
+			require.WithinDuration(t, time.Now().Add(querycore.PullHardTimeout+pullResponseWriteTimeout), rr.deadline, time.Second)
 			var response ReplicaPullResponse
 			require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &response))
 			require.Len(t, response.Documents, 2)
@@ -111,7 +206,7 @@ func TestHandlePullRejectsBeforeSource(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			service := new(MockQueryService)
-			rr := httptest.NewRecorder()
+			rr := newPullRecorder()
 			(&Handler{engine: service}).handlePull(rr, pullRequest(context.Background(), tc.body))
 			assert.Equal(t, tc.status, rr.Code, rr.Body.String())
 			service.AssertNotCalled(t, "Pull", mock.Anything, mock.Anything, mock.Anything)
@@ -136,7 +231,7 @@ func TestHandlePullFailureMapping(t *testing.T) {
 		t.Run(string(tc.code), func(t *testing.T) {
 			service := new(MockQueryService)
 			service.On("Pull", mock.Anything, "friendly-name", mock.Anything).Return(nil, &storagetypes.WatchError{Code: tc.code, Cause: errors.New("private-cursor-and-payload")}).Once()
-			rr := httptest.NewRecorder()
+			rr := newPullRecorder()
 			(&Handler{engine: service}).handlePull(rr, pullRequest(context.Background(), `{"collection":"users"}`))
 			assert.Equal(t, tc.status, rr.Code, rr.Body.String())
 			assert.NotContains(t, rr.Body.String(), "private-cursor-and-payload")
@@ -156,7 +251,7 @@ func TestHandlePullFailureMapping(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			service := new(MockQueryService)
 			service.On("Pull", mock.Anything, "friendly-name", mock.Anything).Return(nil, tc.err).Once()
-			rr := httptest.NewRecorder()
+			rr := newPullRecorder()
 			(&Handler{engine: service}).handlePull(rr, pullRequest(context.Background(), `{"collection":"users"}`))
 			assert.Equal(t, tc.status, rr.Code)
 			assert.NotContains(t, rr.Body.String(), "private-cursor-and-payload")
@@ -170,7 +265,7 @@ func TestHandlePullRejectsReassignedDatabaseAlias(t *testing.T) {
 	body := `{"collection":"users","checkpoint":"` + pullCheckpoint("friendly-name", "users") + `"}`
 	req := pullRequest(context.Background(), body)
 	req = req.WithContext(databasecore.WithDatabase(req.Context(), &databasecore.Database{ID: "replacement-id"}))
-	rr := httptest.NewRecorder()
+	rr := newPullRecorder()
 	(&Handler{engine: service}).handlePull(rr, req)
 	assert.Equal(t, http.StatusBadRequest, rr.Code, rr.Body.String())
 	service.AssertNotCalled(t, "Pull", mock.Anything, mock.Anything, mock.Anything)
@@ -189,7 +284,7 @@ func TestHandlePullDoesNotReturnPartialPage(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			service := new(MockQueryService)
 			service.On("Pull", mock.Anything, "friendly-name", mock.Anything).Return(tc.response, nil).Once()
-			rr := httptest.NewRecorder()
+			rr := newPullRecorder()
 			(&Handler{engine: service}).handlePull(rr, pullRequest(context.Background(), `{"collection":"users"}`))
 			assert.Equal(t, tc.status, rr.Code, rr.Body.String())
 			assert.NotContains(t, rr.Body.String(), "unsafe-progress")
@@ -213,7 +308,7 @@ func TestHandlePullLargeLegalPage(t *testing.T) {
 		require.True(t, ok)
 		assert.Equal(t, deadline, actual)
 	}).Return(&storage.ReplicationPullResponse{Documents: documents, Checkpoint: "next-position"}, nil).Once()
-	rr := httptest.NewRecorder()
+	rr := newPullRecorder()
 	(&Handler{engine: service}).handlePull(rr, pullRequest(ctx, `{"collection":"users","limit":1000}`))
 	require.Equal(t, 200, rr.Code)
 	assert.Greater(t, rr.Body.Len(), 4<<20)
@@ -236,7 +331,7 @@ func TestHandlePullCancellationClosesRequest(t *testing.T) {
 		sourceContext = args.Get(0).(context.Context)
 		cancel()
 	}).Return(&storage.ReplicationPullResponse{Checkpoint: "unsafe-progress"}, nil).Once()
-	rr := httptest.NewRecorder()
+	rr := newPullRecorder()
 	(&Handler{engine: service}).handlePull(rr, pullRequest(ctx, `{"collection":"users"}`))
 	assert.Equal(t, 499, rr.Code)
 	assert.ErrorIs(t, sourceContext.Err(), context.Canceled)

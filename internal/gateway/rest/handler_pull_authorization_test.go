@@ -69,7 +69,7 @@ func TestPullRouteFullScopeAuthorization(t *testing.T) {
 			mux := http.NewServeMux()
 			handler.RegisterRoutes(mux)
 			request := httptest.NewRequest(http.MethodPost, "/replication/v1/databases/id:canonical-id/pull", strings.NewReader(`{"collection":"users"}`))
-			rr := httptest.NewRecorder()
+			rr := newPullRecorder()
 			mux.ServeHTTP(rr, request)
 			assert.Equal(t, tc.status, rr.Code, rr.Body.String())
 			assert.Equal(t, 1, auth.calls)
@@ -85,7 +85,7 @@ func TestPullRouteRejectsLegacyGET(t *testing.T) {
 	source := new(MockQueryService)
 	auth := &pullRouteAuth{MockAuthService: new(MockAuthService), uid: "user", grants: []string{"canonical-id"}}
 	server := createTestServer(source, auth, nil)
-	rr := httptest.NewRecorder()
+	rr := newPullRecorder()
 	server.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/replication/v1/databases/default/pull?collection=users&checkpoint=0", nil))
 	assert.Equal(t, http.StatusMethodNotAllowed, rr.Code)
 	assert.Contains(t, rr.Header().Get("Allow"), http.MethodPost)
@@ -97,7 +97,7 @@ func TestPullAuthorizationRequiresValidatedScope(t *testing.T) {
 	source := new(MockQueryService)
 	auth := &pullRouteAuth{MockAuthService: new(MockAuthService), uid: "user", grants: []string{"canonical-id"}}
 	server := createTestServer(source, auth, nil)
-	rr := httptest.NewRecorder()
+	rr := newPullRecorder()
 	server.ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/replication/v1/databases/canonical-id/pull", strings.NewReader(`{"collection":"users"}`)))
 	assert.Equal(t, http.StatusInternalServerError, rr.Code)
 	source.AssertNotCalled(t, "Pull", mock.Anything, mock.Anything, mock.Anything)

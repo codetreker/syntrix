@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"time"
 
 	databasecore "github.com/syntrixbase/syntrix/internal/core/database"
 	"github.com/syntrixbase/syntrix/internal/core/storage"
@@ -19,6 +20,8 @@ import (
 )
 
 var validateReplicationPushFn = validateReplicationPush
+
+const pullResponseWriteTimeout = 10 * time.Second
 
 func decodePullRequest(body io.Reader) (storage.ReplicationPullRequest, error) {
 	data, err := io.ReadAll(body)
@@ -134,6 +137,14 @@ func writePullError(w http.ResponseWriter, err error) {
 func (h *Handler) handlePull(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), querycore.PullHardTimeout)
 	defer cancel()
+	deadline, _ := ctx.Deadline()
+	// The server's general write timeout includes handler execution. Reserve
+	// time to transmit the bounded page after the processing deadline.
+	if err := http.NewResponseController(w).SetWriteDeadline(deadline.Add(pullResponseWriteTimeout)); err != nil {
+		slog.ErrorContext(ctx, "Failed to set replication response deadline", "error", err)
+		writeError(w, http.StatusInternalServerError, ErrCodeInternalError, "Cannot establish replication response deadline")
+		return
+	}
 	req, err := decodePullRequest(http.MaxBytesReader(w, r.Body, querycore.MaxPullRequestBytes))
 	if err != nil {
 		var tooLarge *http.MaxBytesError
@@ -184,7 +195,9 @@ func (h *Handler) handlePull(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(encoded)
+	if _, err := w.Write(encoded); err != nil {
+		slog.WarnContext(ctx, "Failed to write replication response", "error", err)
+	}
 }
 
 func (h *Handler) handlePush(w http.ResponseWriter, r *http.Request) {
