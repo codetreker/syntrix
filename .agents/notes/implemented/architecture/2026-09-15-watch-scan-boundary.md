@@ -90,9 +90,9 @@ additional capture/probe sequence.
 | Resumed clients need causal session context | [Causal consistency specification](https://github.com/mongodb/specifications/blob/master/source/causal-consistency/causal-consistency.md); retain operation time and signed cluster time across requests |
 | Lookup may return later state or no document | [Mongo update events](https://www.mongodb.com/docs/manual/reference/change-events/update/); do not claim historical after-images or reinterpret absence as deletion |
 | Transaction revision changes the write path | [Mongo transaction production considerations](https://www.mongodb.com/docs/manual/core/transactions-production-consideration/); ordering requires coordinated commits, not merely allocating numbers |
-| Replica-set transaction expansion completes before pause | [Mongo transaction expansion](https://github.com/mongodb/mongo/blob/r8.0.0/src/mongo/db/pipeline/document_source_change_stream_unwind_transaction.cpp#L218-L259); a successful empty real read can prove timestamp equality after the transaction drains |
-| Mongos may retain same-timestamp shard results | [Mongo async results merger](https://github.com/mongodb/mongo/blob/r8.0.0/src/mongo/s/query/async_results_merger.cpp#L295-L316); require progress strictly past the target |
-| Sharded idle progress uses native no-ops | [Mongo periodic no-op writer](https://github.com/mongodb/mongo/blob/r8.0.0/src/mongo/db/repl/noop_writer.cpp#L200-L226); completion does not require application writes |
+| Replica-set transaction expansion completes before pause | [Mongo transaction expansion](https://github.com/mongodb/mongo/blob/b41cda4fe697dce6fd9b83b3805362ccc02fbeb3/src/mongo/db/pipeline/document_source_change_stream_unwind_transaction.cpp#L218-L259); a successful empty real read can prove timestamp equality after the transaction drains |
+| Mongos may retain same-timestamp shard results | [Mongo async results merger](https://github.com/mongodb/mongo/blob/b41cda4fe697dce6fd9b83b3805362ccc02fbeb3/src/mongo/s/query/async_results_merger.cpp#L295-L316); require progress strictly past the target |
+| Sharded idle progress uses native no-ops | [Mongo periodic no-op writer](https://github.com/mongodb/mongo/blob/b41cda4fe697dce6fd9b83b3805362ccc02fbeb3/src/mongo/db/repl/noop_writer.cpp#L200-L226); completion does not require application writes |
 
 These source contracts justify the mechanism; they do not establish performance
 results or a real sharded runtime test. The mongos comparison follows the cited

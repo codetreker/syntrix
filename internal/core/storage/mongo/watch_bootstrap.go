@@ -55,8 +55,8 @@ func (m *documentStore) watchTarget(ctx context.Context, collection *mongo.Colle
 	// empty batch covering T includes all operations committed at T. A mongos
 	// merge can pause with another shard's same-time events pending; it must pass
 	// T strictly. Shard progress uses MongoDB's native periodic noops.
-	// https://github.com/mongodb/mongo/blob/r8.0.0/src/mongo/db/pipeline/document_source_change_stream_unwind_transaction.cpp#L218-L259
-	// https://github.com/mongodb/mongo/blob/r8.0.0/src/mongo/s/query/async_results_merger.cpp#L295-L369
+	// https://github.com/mongodb/mongo/blob/b41cda4fe697dce6fd9b83b3805362ccc02fbeb3/src/mongo/db/pipeline/document_source_change_stream_unwind_transaction.cpp#L218-L259
+	// https://github.com/mongodb/mongo/blob/b41cda4fe697dce6fd9b83b3805362ccc02fbeb3/src/mongo/s/query/async_results_merger.cpp#L295-L369
 	if hello.Msg == "isdbgrid" {
 		start, err = nextWatchTimestamp(start)
 		if err != nil {
@@ -124,7 +124,7 @@ func captureWatchBoundary(ctx context.Context, collection *mongo.Collection, cp 
 	// Majority operationTime identifies a committed read boundary. clusterTime
 	// alone may include uncommitted writes. Replay includes this boundary so a
 	// scan covering it and the stream overlap even across concurrent commits.
-	// https://github.com/mongodb/mongo/blob/r8.0.0/src/mongo/db/service_entry_point_common.cpp#L325-L354
+	// https://github.com/mongodb/mongo/blob/b41cda4fe697dce6fd9b83b3805362ccc02fbeb3/src/mongo/db/service_entry_point_common.cpp#L325-L354
 	err = committed.FindOne(sctx, bson.D{{Key: "_id", Value: ""}}, options.FindOne().SetProjection(bson.D{{Key: "_id", Value: 1}})).Err()
 	if err != nil && !errors.Is(err, mongo.ErrNoDocuments) {
 		session.EndSession(ctx)
