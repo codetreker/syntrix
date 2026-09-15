@@ -3,6 +3,7 @@ package types
 import (
 	"context"
 	"fmt"
+	"time"
 )
 
 // WatchCheckpoint is a Store-issued, portable encoded continuation. Callers may
@@ -10,10 +11,41 @@ import (
 // byte order. Its source identity is independent of client and Puller instances.
 type WatchCheckpoint string
 
+type WatchStartMode int
+
+const (
+	WatchStartCurrent WatchStartMode = iota
+	// WatchStartForScan establishes an overlapping replay boundary that can also
+	// fence committed scans through SourceScanRequest.AtLeast.
+	WatchStartForScan
+)
+
 type WatchOptions struct {
 	// IncludeBefore requests available before-state. It does not require retained
 	// historical images or change the meaning of the current Document enrichment.
 	IncludeBefore bool
+	// StartMode applies only to a new stream. Resumption follows the checkpoint's
+	// stored boundary, including an inclusive scan boundary when applicable.
+	StartMode WatchStartMode
+	// MaxAwaitTime bounds one source poll, not the lifetime of Next. Zero uses one
+	// second; positive values must be at least one millisecond.
+	MaxAwaitTime time.Duration
+}
+
+// Resolve validates the start contract and supplies the source polling default.
+func (opts WatchOptions) Resolve(after WatchCheckpoint) (WatchOptions, error) {
+	if opts.StartMode != WatchStartCurrent && opts.StartMode != WatchStartForScan {
+		return WatchOptions{}, fmt.Errorf("invalid watch start mode")
+	}
+	if opts.StartMode != WatchStartCurrent && after != "" {
+		return WatchOptions{}, fmt.Errorf("watch start mode requires an empty checkpoint")
+	}
+	if opts.MaxAwaitTime == 0 {
+		opts.MaxAwaitTime = time.Second
+	} else if opts.MaxAwaitTime < time.Millisecond {
+		return WatchOptions{}, fmt.Errorf("watch maximum await time must be at least one millisecond")
+	}
+	return opts, nil
 }
 
 // WatchFrame advances a completed source prefix. A nil Event is ordered progress
@@ -22,6 +54,12 @@ type WatchOptions struct {
 type WatchFrame struct {
 	Event      *Event
 	Checkpoint WatchCheckpoint
+	// CaughtUp proves that the source reached its current watermark after all
+	// preceding frames. Filtering, cancellation, and budgets do not prove it.
+	CaughtUp bool
+	// SourceBytes counts raw bytes returned by the source for this frame, including
+	// filtered events. It does not measure all work performed by the source.
+	SourceBytes int64
 }
 
 // WatchStream owns one subscription, not the shared Store connection. Returned
@@ -64,7 +102,7 @@ type WatchError struct {
 }
 
 func (e *WatchError) Error() string {
-	return fmt.Sprintf("watch %s for database %q collection %q: %v", e.Code, e.Database, e.Collection, e.Cause)
+	return fmt.Sprintf("watch %s for database %q collection %q", e.Code, e.Database, e.Collection)
 }
 
 func (e *WatchError) Unwrap() error { return e.Cause }
