@@ -136,7 +136,8 @@ func TestClientHandleMessage_AuthSystemRole(t *testing.T) {
 }
 
 func TestClientHandleMessage_SubscribeSnapshot(t *testing.T) {
-	c := &Client{hub: NewTestHub(), queryService: setupMockQuery(), send: make(chan BaseMessage, 2), subscriptions: make(map[string]Subscription), streamerSubIDs: make(map[string]string), authenticated: true}
+	queryService := setupMockQuery()
+	c := &Client{hub: NewTestHub(), queryService: queryService, send: make(chan BaseMessage, 2), subscriptions: make(map[string]Subscription), streamerSubIDs: make(map[string]string), authenticated: true}
 	payload := SubscribePayload{Query: model.Query{Collection: "users"}, IncludeData: true, SendSnapshot: true}
 	b, _ := json.Marshal(payload)
 
@@ -156,6 +157,11 @@ func TestClientHandleMessage_SubscribeSnapshot(t *testing.T) {
 	}
 	assert.Equal(t, TypeSubscribeAck, msg1.Type)
 	assert.Equal(t, TypeSnapshot, msg2.Type)
+	assert.JSONEq(t, `{"subId":"sub","documents":[{"id":"1","name":"test","collection":"users","version":1,"createdAt":100,"updatedAt":200}]}`, string(msg2.Payload))
+	queryService.AssertCalled(t, "Pull", mock.MatchedBy(func(ctx context.Context) bool {
+		deadline, ok := ctx.Deadline()
+		return ok && time.Until(deadline) > 0 && time.Until(deadline) <= 10*time.Second
+	}), "", storage.ReplicationPullRequest{Collection: "users", Checkpoint: "", Limit: 1000})
 }
 
 func TestClientHandleMessage_Unsubscribe(t *testing.T) {
@@ -463,7 +469,9 @@ func setupMockQuery() *MockQueryService {
 	m := new(MockQueryService)
 	// Mock Pull for Snapshot
 	m.On("Pull", mock.Anything, mock.Anything, mock.Anything).Return(&storage.ReplicationPullResponse{
-		Documents: []*storage.StoredDoc{{Id: "1", Data: map[string]interface{}{"name": "test"}}},
+		Documents:  []model.Document{{"id": "1", "name": "test", "collection": "users", "version": int64(1), "createdAt": int64(100), "updatedAt": int64(200)}},
+		Checkpoint: "caught-up",
+		CaughtUp:   true,
 	}, nil).Maybe()
 	return m
 }

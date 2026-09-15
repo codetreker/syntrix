@@ -10,6 +10,7 @@ import (
 	"github.com/go-playground/validator/v10"
 	"github.com/syntrixbase/syntrix/internal/core/storage"
 	"github.com/syntrixbase/syntrix/internal/helper"
+	querycore "github.com/syntrixbase/syntrix/internal/query/core"
 	"github.com/syntrixbase/syntrix/pkg/model"
 )
 
@@ -179,17 +180,8 @@ func validateQuery(q model.Query) error {
 	return nil
 }
 
-func validateReplicationPull(req storage.ReplicationPullRequest) error {
-	if err := helper.CheckCollectionPath(req.Collection); err != nil {
-		return fmt.Errorf("invalid collection: %w", err)
-	}
-	if req.Limit < 0 {
-		return errors.New("limit cannot be negative")
-	}
-	if req.Limit > validationConfig.MaxReplicationLimit {
-		return fmt.Errorf("limit cannot exceed %d", validationConfig.MaxReplicationLimit)
-	}
-	return nil
+func validateReplicationPull(database string, req storage.ReplicationPullRequest) error {
+	return querycore.ValidatePullRequest(database, req)
 }
 
 func validateReplicationPush(req storage.ReplicationPushRequest) error {

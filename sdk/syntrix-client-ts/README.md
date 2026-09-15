@@ -103,6 +103,70 @@ for setter ordering, ownership, and already admitted request limits, and the
 [realtime reference](../../docs/reference/typescript_sdk.md#4-realtime-ws--sse)
 for error routing and timeouts.
 
+## Manual Replication Pull
+
+```typescript
+const page = await client.pull<{ name: string }>('users', {
+  checkpoint: savedCheckpoint, // string | null; null starts bootstrap
+  limit: 100,
+  signal: abortController.signal,
+});
+
+// This transaction belongs to the application's local database.
+await localDatabase.transaction(async tx => {
+  for (const document of page.documents) {
+    if (document.deleted) await tx.removeServerDocument(document.id);
+    else await tx.replaceServerDocument(document.id, document);
+  }
+  await tx.saveCheckpoint(page.checkpoint);
+});
+```
+
+`pull<T>(collection, options?)` performs one authenticated POST to
+`/replication/v1/databases/{database}/pull`, using the client's configured database
+and retaining any base URL prefix. `limit` defaults to 100 and accepts integers
+from 1 through 1000. Omit `checkpoint` or pass `null` to start bootstrap; retain
+returned checkpoints verbatim and reuse them only for the same database,
+collection, and account. `AbortSignal` cancels the request.
+
+Bootstrap scans committed documents and then replays Store Watch from the
+original scan boundary. Later pages continue Watch progress. This overlap can
+repeat document states; it does not provide a fixed snapshot across pages.
+
+Pull requires full database access through a matching `db_admin` grant for the
+requested database's canonical ID or validated slug, or the existing database-owner
+grant. An `admin` or `user` role alone does not authorize Pull.
+
+Documents contain flattened business fields plus `id`, `collection`, `version`,
+`createdAt`, and `updatedAt`; int64 values decode as `bigint`, including nested
+business fields. Logical deletions have `deleted: true`. A minimal deletion can
+contain only `id`, `collection`, and `deleted`; unknown metadata remains absent.
+Apply pages in order and tolerate duplicate states. Document versions are not a
+global replication order and may reset after deletion and recreation.
+
+Decoded bigint values need a lossless local storage representation. Plain
+`JSON.stringify` and existing SDK document `set`/`update` serialization reject
+bigint, so a pulled document cannot be blindly saved as JSON or sent back through
+those methods. Converting to `Number` can lose precision. A matching lossless
+outbound codec and durable Pusher remain part of the offline replication work;
+the typed Pull response is not a CRUD/Push request format.
+
+The caller must atomically apply the entire page and persist its checkpoint.
+An empty page can advance progress while `caughtUp` remains false; continue using
+its checkpoint. `caughtUp: true` means the source proved a processed watermark,
+not that no write can occur after that watermark. The SDK does not automatically
+fetch subsequent pages or save progress.
+
+Transport failures, cancellation, malformed responses, and failed local
+transactions leave the caller's saved checkpoint unchanged. `RESYNC_REQUIRED`
+requires rebuilding the server mirror from a null checkpoint while preserving
+unsent local edits for reconciliation. Keep mirrors and checkpoints isolated per
+account. Login, signup, or logout during a Pull invalidates a successful old-session
+response with `AuthSessionChangedError` (`AUTH_SESSION_CHANGED`); account changes
+after the response returns must also invalidate the application's pending local
+apply operation. See the [replication reference](../../docs/reference/replication.md).
+
 ## Offline Replication (WIP)
 
-Durable offline replication features are currently in development.
+Durable local storage, the automatic coordinator, and the outbox remain in
+development. Manual Pull supplies pages for an application-owned consumer.

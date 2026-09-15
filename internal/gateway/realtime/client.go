@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/syntrixbase/syntrix/internal/core/identity"
-	"github.com/syntrixbase/syntrix/internal/core/storage"
 	"github.com/syntrixbase/syntrix/internal/ctxkeys"
 	api_config "github.com/syntrixbase/syntrix/internal/gateway/config"
 	"github.com/syntrixbase/syntrix/internal/query"
@@ -96,6 +95,11 @@ type Client struct {
 	// Buffered channel of outbound messages.
 	send chan BaseMessage
 
+	// Snapshot enqueue and Hub-owned closure share this per-client lifecycle.
+	sendMu       sync.RWMutex
+	sendStopOnce sync.Once
+	sendStop     chan struct{}
+
 	// Subscriptions
 	subscriptions  map[string]Subscription // clientSubID -> Subscription
 	streamerSubIDs map[string]string       // clientSubID -> streamerSubID
@@ -109,6 +113,21 @@ type Client struct {
 type Subscription struct {
 	Query       model.Query
 	IncludeData bool
+}
+
+func (c *Client) outboundDone() <-chan struct{} {
+	c.sendStopOnce.Do(func() { c.sendStop = make(chan struct{}) })
+	return c.sendStop
+}
+
+// The Hub calls closeOutbound once while removing a registered client. Signal
+// before acquiring sendMu so a full queue cannot hold up the Hub's close path.
+func (c *Client) closeOutbound() {
+	c.outboundDone()
+	close(c.sendStop)
+	c.sendMu.Lock()
+	defer c.sendMu.Unlock()
+	close(c.send)
 }
 
 // readPump pumps messages from the websocket connection to the hub.
@@ -199,37 +218,9 @@ func (c *Client) handleMessage(msg BaseMessage) {
 		c.send <- BaseMessage{ID: msg.ID, Type: TypeSubscribeAck}
 
 		if payload.SendSnapshot {
-			// Fetch snapshot
-			req := storage.ReplicationPullRequest{
-				Collection: payload.Query.Collection,
-				Checkpoint: 0,    // From beginning
-				Limit:      1000, // Reasonable limit for snapshot
-			}
-			// Use a background context or create one with timeout
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
-
-			resp, err := c.queryService.Pull(ctx, c.database, req)
-			if err != nil {
-				slog.Error("WS: Snapshot pull failed", "error", err)
-				return
-			}
-
-			flatDocs := make([]map[string]interface{}, len(resp.Documents))
-			for i, doc := range resp.Documents {
-				flatDocs[i] = flattenDocument(doc)
-			}
-
-			snapshotPayload := SnapshotPayload{
-				SubID:     msg.ID,
-				Documents: flatDocs,
-			}
-
-			c.send <- BaseMessage{
-				ID:      msg.ID,
-				Type:    TypeSnapshot,
-				Payload: mustMarshal(snapshotPayload),
-			}
+			c.sendSnapshot(ctx, msg.ID, payload.Query.Collection)
 		}
 	case TypeUnsubscribe:
 		if !c.authenticated {

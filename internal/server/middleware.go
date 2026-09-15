@@ -230,6 +230,9 @@ type responseWriter struct {
 	statusCode int
 }
 
+// Unwrap lets ResponseController reach connection deadlines through logging.
+func (rw *responseWriter) Unwrap() http.ResponseWriter { return rw.ResponseWriter }
+
 func (rw *responseWriter) WriteHeader(code int) {
 	rw.statusCode = code
 	rw.ResponseWriter.WriteHeader(code)

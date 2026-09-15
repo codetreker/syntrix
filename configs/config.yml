@@ -7,6 +7,8 @@ server:
   host: "localhost"
   http_port: 8080
   http_read_timeout: 10s
+  # General endpoint limit. Pull sets its processing deadline (up to 30s)
+  # plus a 10s response transmission allowance on the connection.
   http_write_timeout: 10s
   http_idle_timeout: 60s
   enable_cors: true

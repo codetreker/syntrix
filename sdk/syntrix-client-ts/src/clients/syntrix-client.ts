@@ -4,7 +4,8 @@ import { DefaultTokenProvider } from '../internal/auth/provider';
 import { setupAuthInterceptor } from '../internal/auth/interceptor';
 import { RestTransport } from '../internal/transport/rest-transport';
 import { StorageClient } from '../internal/storage-client';
-import { CollectionReference, DocumentReference } from '../api/types';
+import { CollectionReference, DocumentReference, PullOptions, PullPage } from '../api/types';
+import { PullTransport } from '../internal/pull';
 import { CollectionReferenceImpl, DocumentReferenceImpl } from '../api/reference';
 import { RealtimeClient, SubscriptionCallbacks, SubscribeOptions } from '../replication/realtime';
 import { RealtimeSSEClient, RealtimeSSEOptions } from '../replication/realtime-sse';
@@ -17,6 +18,7 @@ export interface SyntrixClientConfig {
 export class SyntrixClient implements AuthService {
   private storage: StorageClient;
   private tokenProvider: DefaultTokenProvider;
+  private pullTransport: PullTransport;
   private realtimeClient: RealtimeClient | null = null;
   private realtimeSseClient: RealtimeSSEClient | null = null;
   private baseUrl: string;
@@ -29,6 +31,7 @@ export class SyntrixClient implements AuthService {
     this.tokenProvider = new DefaultTokenProvider(config.auth || {}, baseUrl);
     setupAuthInterceptor(axiosInstance, this.tokenProvider);
     this.storage = new RestTransport(axiosInstance, config.database);
+    this.pullTransport = new PullTransport(axiosInstance, this.tokenProvider, config.database);
   }
 
   getDatabase(): string {
@@ -77,6 +80,11 @@ export class SyntrixClient implements AuthService {
     const parts = path.split('/');
     const id = parts[parts.length - 1];
     return new DocumentReferenceImpl<T>(this.storage, path, id);
+  }
+
+  /** Reads one replication page; the caller owns atomic local application and checkpoint persistence. */
+  pull<T>(collection: string, options?: PullOptions): Promise<PullPage<T>> {
+    return this.pullTransport.pull<T>(collection, options);
   }
 
   // Realtime methods

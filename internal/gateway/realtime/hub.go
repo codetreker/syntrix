@@ -72,7 +72,7 @@ func (h *Hub) Run(ctx context.Context) {
 			h.mu.Lock()
 			if _, ok := h.clients[client]; ok {
 				delete(h.clients, client)
-				close(client.send)
+				client.closeOutbound()
 			}
 			h.mu.Unlock()
 		case delivery := <-h.broadcast:
@@ -287,7 +287,7 @@ func (h *Hub) shutdownClients() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	for client := range h.clients {
-		close(client.send)
+		client.closeOutbound()
 		delete(h.clients, client)
 	}
 }

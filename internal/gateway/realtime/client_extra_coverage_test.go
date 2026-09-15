@@ -341,12 +341,12 @@ func TestClient_HandleSubscribe_SnapshotError(t *testing.T) {
 		t.Fatal("timeout waiting for ack")
 	}
 
-	// Should NOT receive Snapshot (due to error)
 	select {
 	case resp := <-client.send:
-		assert.NotEqual(t, TypeSnapshot, resp.Type, "Should not receive snapshot on error")
+		assert.Equal(t, TypeError, resp.Type)
+		assert.Contains(t, string(resp.Payload), `"code":"snapshot_failed"`)
 	case <-time.After(100 * time.Millisecond):
-		// Success
+		t.Fatal("expected an explicit snapshot failure")
 	}
 }
 

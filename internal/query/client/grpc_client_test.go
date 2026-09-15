@@ -11,6 +11,7 @@ import (
 	pb "github.com/syntrixbase/syntrix/api/gen/query/v1"
 	grpctesting "github.com/syntrixbase/syntrix/api/gen/testing"
 	"github.com/syntrixbase/syntrix/internal/core/storage"
+	"github.com/syntrixbase/syntrix/internal/core/storage/types"
 	"github.com/syntrixbase/syntrix/internal/indexer"
 	"github.com/syntrixbase/syntrix/internal/query/wire"
 	"github.com/syntrixbase/syntrix/pkg/model"
@@ -315,25 +316,29 @@ func TestClient_Pull(t *testing.T) {
 		mockClient := grpctesting.NewMockQueryServiceClient()
 		client := newTestClient(mockClient)
 
-		mockClient.On("Pull", mock.Anything, mock.Anything).Return(&pb.PullResponse{
-			Documents: []*pb.Document{
-				{Id: "doc1", Fullpath: "users/doc1", Version: 1, Data: []byte(`{"name":"Alice"}`)},
-				{Id: "doc2", Fullpath: "users/doc2", Version: 2, Data: []byte(`{"name":"Bob"}`)},
+		encoded, err := wire.EncodePullPage(&storage.ReplicationPullResponse{
+			Documents: []model.Document{
+				{"id": "doc1", "collection": "users", "version": int64(1), "name": "Alice"},
+				{"id": "doc2", "collection": "users", "version": int64(2), "name": "Bob"},
 			},
-			Checkpoint: 123456789,
-		}, nil)
+			Checkpoint: "opaque-next",
+		})
+		require.NoError(t, err)
+		mockClient.On("Pull", mock.Anything, mock.MatchedBy(func(request *pb.PullRequest) bool {
+			return request.Database == "database1" && request.Collection == "users" && request.Checkpoint == "" && request.Limit == 100 && request.WireVersion == wire.Version
+		})).Return(encoded, nil)
 
 		resp, err := client.Pull(context.Background(), "database1", storage.ReplicationPullRequest{
 			Collection: "users",
-			Checkpoint: 0,
+			Checkpoint: "",
 			Limit:      100,
 		})
-		assert.NoError(t, err)
-		assert.NotNil(t, resp)
+		require.NoError(t, err)
+		require.NotNil(t, resp)
 		assert.Len(t, resp.Documents, 2)
-		assert.Equal(t, "doc1", resp.Documents[0].Id)
-		assert.Equal(t, "doc2", resp.Documents[1].Id)
-		assert.Equal(t, int64(123456789), resp.Checkpoint)
+		assert.Equal(t, "doc1", resp.Documents[0].GetID())
+		assert.Equal(t, "doc2", resp.Documents[1].GetID())
+		assert.Equal(t, "opaque-next", resp.Checkpoint)
 		mockClient.AssertExpectations(t)
 	})
 
@@ -342,18 +347,71 @@ func TestClient_Pull(t *testing.T) {
 		client := newTestClient(mockClient)
 
 		mockClient.On("Pull", mock.Anything, mock.Anything).Return(&pb.PullResponse{
-			Documents:  []*pb.Document{},
-			Checkpoint: 987654321,
+			Documents:   []*pb.Document{},
+			Checkpoint:  "advanced",
+			WireVersion: wire.Version,
+			CaughtUp:    true,
 		}, nil)
 
 		resp, err := client.Pull(context.Background(), "database1", storage.ReplicationPullRequest{
 			Collection: "users",
-			Checkpoint: 100,
+			Checkpoint: "",
 		})
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		assert.Empty(t, resp.Documents)
-		assert.Equal(t, int64(987654321), resp.Checkpoint)
+		assert.Equal(t, "advanced", resp.Checkpoint)
+		assert.True(t, resp.CaughtUp)
 	})
+}
+
+func TestClientPullRejectsBeforeRPC(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	for _, test := range []struct {
+		name       string
+		ctx        context.Context
+		checkpoint string
+	}{
+		{"canceled", ctx, ""},
+		{"legacy checkpoint", context.Background(), "1700000000000"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			mockClient := grpctesting.NewMockQueryServiceClient()
+			page, err := newTestClient(mockClient).Pull(test.ctx, "db", storage.ReplicationPullRequest{Collection: "users", Checkpoint: test.checkpoint})
+			require.Nil(t, page)
+			if test.ctx.Err() != nil {
+				require.ErrorIs(t, err, context.Canceled)
+			} else {
+				var failure *types.WatchError
+				require.ErrorAs(t, err, &failure)
+				require.Equal(t, types.WatchHistoryUnavailable, failure.Code)
+			}
+			mockClient.AssertNotCalled(t, "Pull", mock.Anything, mock.Anything)
+		})
+	}
+}
+
+func TestClientPullDiscardsFailedRemotePage(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		response *pb.PullResponse
+		rpcError error
+		code     types.WatchErrorCode
+	}{
+		{name: "source history lost", rpcError: wire.ReplicationErrorToStatus(&types.WatchError{Code: types.WatchHistoryUnavailable}), code: types.WatchHistoryUnavailable},
+		{name: "missing response", code: types.WatchInvalidEvent},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			mockClient := grpctesting.NewMockQueryServiceClient()
+			mockClient.On("Pull", mock.Anything, mock.Anything).Return(test.response, test.rpcError).Once()
+			page, err := newTestClient(mockClient).Pull(context.Background(), "db", storage.ReplicationPullRequest{Collection: "users"})
+			require.Nil(t, page)
+			var failure *types.WatchError
+			require.ErrorAs(t, err, &failure)
+			require.Equal(t, test.code, failure.Code)
+			mockClient.AssertExpectations(t)
+		})
+	}
 }
 
 func TestClient_Push(t *testing.T) {
