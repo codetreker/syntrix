@@ -625,10 +625,16 @@ func TestEnsureSchema(t *testing.T) {
 	require.NoError(t, err)
 	defer db.Close()
 
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT pg_advisory_xact_lock\(\$1\)`).
+		WithArgs(int64(0x53594e5452495801)).
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(`CREATE TABLE IF NOT EXISTS databases`).
 		WillReturnResult(sqlmock.NewResult(0, 0))
 
-	err = EnsureSchema(db)
+	mock.ExpectCommit()
+
+	err = EnsureSchema(context.Background(), db)
 	assert.NoError(t, err)
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
@@ -638,10 +644,16 @@ func TestEnsureSchema_Error(t *testing.T) {
 	require.NoError(t, err)
 	defer db.Close()
 
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT pg_advisory_xact_lock\(\$1\)`).
+		WithArgs(int64(0x53594e5452495801)).
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(`CREATE TABLE IF NOT EXISTS databases`).
 		WillReturnError(errors.New("schema creation failed"))
 
-	err = EnsureSchema(db)
+	mock.ExpectRollback()
+
+	err = EnsureSchema(context.Background(), db)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "schema creation failed")
 	assert.NoError(t, mock.ExpectationsWereMet())

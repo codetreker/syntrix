@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/syntrixbase/syntrix/internal/core/database"
+	"github.com/syntrixbase/syntrix/internal/core/storage/postgres/schema"
 )
 
 // Store implements database.DatabaseStore using PostgreSQL
@@ -27,8 +28,8 @@ func NewStore(db *sql.DB, tableName string) database.DatabaseStore {
 }
 
 // EnsureSchema creates the databases table and indexes if they don't exist
-func EnsureSchema(db *sql.DB) error {
-	schema := `
+func EnsureSchema(ctx context.Context, db *sql.DB) error {
+	statements := `
 CREATE TABLE IF NOT EXISTS databases (
     id                  VARCHAR(16) PRIMARY KEY,
     slug                VARCHAR(63) UNIQUE,
@@ -60,8 +61,7 @@ CREATE INDEX IF NOT EXISTS idx_databases_created_at ON databases(created_at DESC
 CREATE INDEX IF NOT EXISTS idx_databases_owner_status ON databases(owner_id, status);
 CREATE INDEX IF NOT EXISTS idx_databases_slug ON databases(slug) WHERE slug IS NOT NULL;
 `
-	_, err := db.Exec(schema)
-	return err
+	return schema.Ensure(ctx, db, statements)
 }
 
 func (s *Store) Create(ctx context.Context, db *database.Database) error {
