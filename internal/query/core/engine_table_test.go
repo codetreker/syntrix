@@ -375,7 +375,7 @@ func TestEngine_Push_TableDriven(t *testing.T) {
 		name              string
 		req               storage.ReplicationPushRequest
 		mockSetup         func(*MockStorageBackend)
-		expectedConflicts []*storage.StoredDoc
+		expectedConflicts []storage.ReplicationPushConflict
 		expectError       bool
 	}
 
@@ -385,11 +385,11 @@ func TestEngine_Push_TableDriven(t *testing.T) {
 			req: storage.ReplicationPushRequest{
 				Collection: "test",
 				Changes: []storage.ReplicationPushChange{
-					{Doc: &storage.StoredDoc{Id: "test/1", Fullpath: "test/1", Collection: "test", Data: map[string]interface{}{"foo": "bar"}, Version: 1}},
+					{Action: storage.PushUpdate, Doc: &storage.StoredDoc{Database: "default", Id: "test/1", Fullpath: "test/1", Collection: "test", Data: map[string]interface{}{"foo": "bar"}, Version: 1}},
 				},
 			},
 			mockSetup: func(m *MockStorageBackend) {
-				existingDoc := &storage.StoredDoc{Id: "test/1", Version: 1}
+				existingDoc := &storage.StoredDoc{Database: "default", Collection: "test", Fullpath: "test/1", Id: "test/1", Version: 1}
 				m.On("Get", mock.Anything, "default", "test/1").Return(existingDoc, nil)
 				m.On("Update", mock.Anything, "default", "test/1", map[string]interface{}{"foo": "bar"}, mock.Anything).Return(nil)
 			},
@@ -401,7 +401,7 @@ func TestEngine_Push_TableDriven(t *testing.T) {
 			req: storage.ReplicationPushRequest{
 				Collection: "test",
 				Changes: []storage.ReplicationPushChange{
-					{Doc: &storage.StoredDoc{Id: "test/2", Fullpath: "test/2", Collection: "test", Data: map[string]interface{}{"foo": "bar"}, Version: 0}},
+					{Action: storage.PushUpdate, Doc: &storage.StoredDoc{Database: "default", Id: "test/2", Fullpath: "test/2", Collection: "test", Data: map[string]interface{}{"foo": "bar"}, Version: 0}},
 				},
 			},
 			mockSetup: func(m *MockStorageBackend) {

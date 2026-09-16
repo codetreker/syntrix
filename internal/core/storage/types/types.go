@@ -307,8 +307,17 @@ type ReplicationPullResponse struct {
 	CaughtUp   bool             `json:"caughtUp"`
 }
 
-// ReplicationPushChange represents a single change in a push request
+type PushAction string
+
+const (
+	PushCreate PushAction = "create"
+	PushUpdate PushAction = "update"
+	PushDelete PushAction = "delete"
+)
+
+// ReplicationPushChange preserves the requested operation and version presence.
 type ReplicationPushChange struct {
+	Action      PushAction `json:"action"`
 	Doc         *StoredDoc `json:"doc"`
 	BaseVersion *int64     `json:"baseVersion"` // Version known to the client
 }
@@ -319,7 +328,26 @@ type ReplicationPushRequest struct {
 	Changes    []ReplicationPushChange `json:"changes"`
 }
 
-// ReplicationPushResponse represents the response for a push request
+type PushConflictReason string
+
+const (
+	PushVersionMismatch    PushConflictReason = "version_mismatch"
+	PushMissing            PushConflictReason = "missing"
+	PushTombstoned         PushConflictReason = "tombstoned"
+	PushAlreadyExists      PushConflictReason = "already_exists"
+	PushPreconditionFailed PushConflictReason = "precondition_failed"
+)
+
+// ReplicationPushConflict identifies the failed request item and a later read of
+// its current state. Current is nil for absence; it is not a write-time snapshot.
+type ReplicationPushConflict struct {
+	ChangeIndex int                `json:"changeIndex"`
+	ID          string             `json:"id"`
+	Reason      PushConflictReason `json:"reason"`
+	Current     *StoredDoc         `json:"current"`
+}
+
+// ReplicationPushResponse reports per-change conflicts in request order.
 type ReplicationPushResponse struct {
-	Conflicts []*StoredDoc `json:"conflicts"`
+	Conflicts []ReplicationPushConflict `json:"conflicts"`
 }

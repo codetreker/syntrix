@@ -22,6 +22,9 @@ type ReplicationPullResponse = types.ReplicationPullResponse
 type ReplicationPushChange = types.ReplicationPushChange
 type ReplicationPushRequest = types.ReplicationPushRequest
 type ReplicationPushResponse = types.ReplicationPushResponse
+type ReplicationPushConflict = types.ReplicationPushConflict
+type PushAction = types.PushAction
+type PushConflictReason = types.PushConflictReason
 type WatchOptions = types.WatchOptions
 type WatchCheckpoint = types.WatchCheckpoint
 type WatchFrame = types.WatchFrame
@@ -36,6 +39,17 @@ type RevocationRouter = types.RevocationRouter
 const (
 	ReadDefault       = types.ReadDefault
 	ReadAuthoritative = types.ReadAuthoritative
+)
+
+const (
+	PushCreate             = types.PushCreate
+	PushUpdate             = types.PushUpdate
+	PushDelete             = types.PushDelete
+	PushVersionMismatch    = types.PushVersionMismatch
+	PushMissing            = types.PushMissing
+	PushTombstoned         = types.PushTombstoned
+	PushAlreadyExists      = types.PushAlreadyExists
+	PushPreconditionFailed = types.PushPreconditionFailed
 )
 
 const (

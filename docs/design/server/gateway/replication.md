@@ -1,7 +1,8 @@
 # Replication Design
 
 Replication Pull uses committed Store Watch progress to synchronize current
-document state. Push retains its existing conditional-write protocol.
+document state. Push preserves explicit actions and optional version conditions
+through atomic writes and structured conflict responses.
 [Replication reference](../../../reference/replication.md) owns exact request,
 response, typed-value, and error contracts.
 
@@ -148,91 +149,121 @@ payloads, and document data are excluded.
 
 ## Push
 
-- Method: `POST /replication/v1/databases/{database}/push`
-- Request body (flattened documents):
+| Contract | Rule |
+|---|---|
+| Route | `POST /replication/v1/databases/{database}/push` |
+| Scope | One concrete collection; nonempty ordered changes |
+| Action | Explicit `create`, `update`, or `delete`; missing/unknown values fail |
+| Document | Flattened data with a required logical `id`; protected metadata is stripped |
+| Version | Optional exact nonnegative int64 `document.version`, extracted before stripping |
+| Validation | HTTP and Query validate the complete request before any storage operation |
+| Batch | Sequential, nontransactional; conflicts do not stop later changes |
 
-```json
-{
-  "collection": "room/chatroom-1/messages",
-  "changes": [
-    {
-      "action": "create",
-      "document": {
-        "id": "m1",
-        "text": "hello",
-        "version": 1
-      }
-    },
-    {
-      "action": "delete",
-      "document": { "id": "m2" }
-    }
-  ]
-}
+### Version and Action Semantics
+
+| Request | Target | Result |
+|---|---|---|
+| Versioned update/delete, including zero | Live and exact version | Atomic conditional write |
+| Versioned update/delete | Missing, tombstoned, or different version | Conflict |
+| Unversioned update | Live | Update |
+| Unversioned update | Missing or tombstoned | Existing create/recreate behavior |
+| Unversioned delete | Live | Delete |
+| Unversioned delete | Missing or tombstoned | Idempotent success |
+| Create | Live | Existing update behavior; supplied version is an equality condition |
+| Create | Missing or tombstoned | Existing create/recreate behavior; supplied valid version is ignored |
+
+The raw JSON decoder preserves exact version presence and value before ordinary
+business-number decoding. Null, non-integer, negative, or out-of-range versions
+reject the batch. Ordinary business numbers retain their existing representation;
+storage assigns resulting metadata. Local and gRPC calls retain action and an
+optional int64 precondition, with no negative sentinel or unspecified-action
+fallback. Push-specific protobuf document data uses recursive typed values in
+requests and conflict responses, preserving nested int64 values separately from
+float64. HTTP keeps ordinary flattened JSON; this internal encoding is not an
+additional HTTP request format or an SDK bigint write contract.
+
+A versioned update/delete must not enter Create when its target disappears.
+Push reads from the authoritative write source with tombstones included, then
+applies the optional version condition in the atomic live-document mutation.
+The read itself does not lock data or provide a linearizable snapshot.
+
+```text
+Validate complete batch
+    -> Read target, including tombstones
+    -> Apply action/version rule
+         -> Conflict: retain request position and observed state
+         -> Write: enforce live/version predicate atomically
+              -> Failed condition: reread authoritative state and report conflict
+              -> Other storage error: fail request; earlier writes may remain
+    -> Continue next change
 ```
 
-- Rules:
-  - `action` ∈ {"create", "update", "delete"}.
-  - `document.id` is required for every change.
-  - `document.version` is optional and case-sensitive; preserve its exact nonnegative int64 integer value and presence as the version precondition before stripping protected metadata.
-  - No storage-layer fields (e.g., `_id`, `fullpath`, `parent`) are accepted or returned.
-- Response (conflicts only):
+Tombstone replacement during creation atomically requires a still-deleted target.
+If another writer has recreated it, the write reports a conflict; the newly live
+document cannot be overwritten by the stale replacement attempt. Explicit zero
+and create/version 1 retain their accepted meanings. New insert-only rules remain
+[proposed](../../../../.agents/notes/proposed/feature/2026-09-07-replication-push-insert-only.md).
+
+### Encoded Message Budgets
+
+| Boundary | Maximum |
+|---|---|
+| HTTP Push body | 10 MiB |
+| Encoded protobuf request | 20 MiB, including typed data and envelope |
+| Encoded protobuf conflict response | 20 MiB, including typed data and envelope |
+
+Local and remote Query execution enforce the same encoded message budgets;
+production gRPC receive limits admit messages within them. Typed-value expansion
+means the HTTP body cap does not guarantee that every body below it is accepted.
+An oversized request fails validation before storage access. An oversized conflict
+response returns HTTP 422 `REPLICATION_BUDGET_EXCEEDED` without truncating
+outcomes; earlier changes may already have committed.
+
+## Conflict Handling
+
+Each successful Push response contains a `conflicts` array of objects:
 
 ```json
 {
   "conflicts": [
-    {
-      "id": "m1",
-      "text": "server-copy",
-      "version": 3,
-      "updatedAt": 1710000001000,
-      "createdAt": 1700000000000,
-      "collection": "room/chatroom-1/messages"
-    }
+    { "changeIndex": 1, "id": "m2", "reason": "missing", "current": null }
   ]
 }
 ```
 
-### Version Preconditions
+| Field | Meaning |
+|---|---|
+| `changeIndex` | Zero-based request position, preserving duplicate-ID operations |
+| `id` | Logical document ID |
+| `reason` | `version_mismatch`, `missing`, `tombstoned`, `already_exists`, or `precondition_failed` |
+| `current` | Real flattened live document or tombstone; null for absence |
 
-| Supplied `document.version` | Request handling |
-|----------------------------|------------------|
-| Omitted | Preserve an absent precondition |
-| Nonnegative int64 integer literal, including zero | Forward the exact value separately from document data |
-| Null, string, boolean, negative value, fraction, exponent notation, or out-of-range integer | Reject the request before any Engine call |
+Conflict rendering takes logical ID and deletion state from validated storage
+metadata; business-data keys cannot override either value.
 
-Extract the reserved field from raw JSON so values beyond floating-point integer
-precision remain exact. Ordinary business numbers keep their existing decoding
-behavior. Protected fields are still removed from document data, and new stored
-documents retain server initialization at version 1. The supplied value is not
-assigned to stored version metadata. The existing gRPC encoding preserves absence
-as `-1` and retains explicit zero and supported positive int64 values.
+After a failed mutation, the reread may observe a later state. A matching version
+at reread does not convert failure into success: report `precondition_failed`
+when no more specific reason applies. Non-conflict write errors and conflict-read
+errors propagate. An unversioned delete followed by absence or a tombstone is
+idempotent success.
 
-Push requests the database's write source for its initial and conflict lookups.
-Non-not-found conflict-read errors propagate as server errors. These reads do not
-lock data or establish transactions or linearizable reads. Existing live-target
-writes compare the version and apply it in the atomic write predicate. Explicit zero is an equality precondition, not an insert-only request;
-`create` with version 1 remains accepted. Omission retains the current optional,
-unconditional behavior. A malformed version anywhere in a batch prevents all
-Engine calls for that request; valid batches remain nontransactional.
+Clients correlate outcomes by request position, then choose retry, merge, or
+application-visible conflict handling. Missing targets have no fabricated
+metadata. A lost response or a runtime error after earlier changes leaves an
+ambiguous completed prefix; batches offer no exactly-once guarantee.
 
-The [HTTP precondition decision](../../../../.agents/notes/implemented/bug-fix/2026-09-07-http-push-version-preconditions.md)
-records why extraction is local to replication decoding and preserves the
-existing document-number representation.
-
-## Conflict Handling
-
-- Push may return `conflicts` containing the authoritative server documents in flattened form.
-- Clients decide whether to retry, merge, or surface conflicts.
-- The initial not-found path can enter Create before checking the version, including
-  for deleted targets. Concurrent deletion can still leave incomplete conflict
-  results when the authoritative lookup reports absence. Strict create/update/delete predicates, authoritative
-  missing/tombstone results, and structured conflict reasons remain in the
-  [version-check proposal](../../../../.agents/notes/proposed/bug-fix/2026-09-07-replication-push-version-checks.md).
-
+Structured conflicts replace the former document-only response. Gateway, Query,
+and response consumers require a coordinated upgrade. The
+[replication reference](../../../reference/replication.md#push-changes) owns full
+request and response examples.
 
 ## Decision Ownership
 
 The [Pull checkpoint decision](../../../../.agents/notes/implemented/bug-fix/2026-09-07-replication-pull-cursor-progress.md)
 records native-source selection, alternatives, and accepted retention and client
 integration limits. Public Pull and source capabilities have separate owners.
+
+The [Push conditional-write decision](../../../../.agents/notes/implemented/bug-fix/2026-09-07-replication-push-version-checks.md)
+records action semantics, conflict observations, and deferred insert-only creation.
+The [HTTP decoder decision](../../../../.agents/notes/implemented/bug-fix/2026-09-07-http-push-version-preconditions.md)
+records why raw version extraction remains local to replication decoding.

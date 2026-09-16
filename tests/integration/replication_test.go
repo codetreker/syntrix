@@ -113,7 +113,8 @@ func TestReplication_FullFlow(t *testing.T) {
 		Collection: collectionName,
 		Changes: []rest.ReplicaChange{
 			{
-				Doc: docData,
+				Action: "create",
+				Doc:    docData,
 			},
 		},
 	}

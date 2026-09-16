@@ -153,7 +153,7 @@ func TestValidateReplicationPush(t *testing.T) {
 			storage.ReplicationPushRequest{
 				Collection: "users",
 				Changes: []storage.ReplicationPushChange{
-					{Doc: &storage.StoredDoc{Fullpath: "users/alice"}},
+					{Action: storage.PushUpdate, Doc: &storage.StoredDoc{Fullpath: "users/alice"}},
 				},
 			},
 			false,
@@ -168,7 +168,7 @@ func TestValidateReplicationPush(t *testing.T) {
 			storage.ReplicationPushRequest{
 				Collection: "users",
 				Changes: []storage.ReplicationPushChange{
-					{Doc: nil},
+					{Action: storage.PushUpdate, Doc: nil},
 				},
 			},
 			true,
@@ -178,7 +178,7 @@ func TestValidateReplicationPush(t *testing.T) {
 			storage.ReplicationPushRequest{
 				Collection: "users",
 				Changes: []storage.ReplicationPushChange{
-					{Doc: &storage.StoredDoc{Fullpath: "users/alice!"}},
+					{Action: storage.PushUpdate, Doc: &storage.StoredDoc{Fullpath: "users/alice!"}},
 				},
 			},
 			true,
@@ -188,7 +188,7 @@ func TestValidateReplicationPush(t *testing.T) {
 			storage.ReplicationPushRequest{
 				Collection: "users",
 				Changes: []storage.ReplicationPushChange{
-					{Doc: &storage.StoredDoc{Fullpath: "posts/post1"}},
+					{Action: storage.PushUpdate, Doc: &storage.StoredDoc{Fullpath: "posts/post1"}},
 				},
 			},
 			true,
@@ -198,7 +198,7 @@ func TestValidateReplicationPush(t *testing.T) {
 			storage.ReplicationPushRequest{
 				Collection: "users",
 				Changes: []storage.ReplicationPushChange{
-					{Doc: &storage.StoredDoc{Fullpath: "users/alice/posts"}},
+					{Action: storage.PushUpdate, Doc: &storage.StoredDoc{Fullpath: "users/alice/posts"}},
 				},
 			},
 			true,
@@ -207,7 +207,7 @@ func TestValidateReplicationPush(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := validateReplicationPush(tt.req)
+			err := validateReplicationPush("default", tt.req)
 			if tt.wantErr {
 				assert.Error(t, err)
 			} else {

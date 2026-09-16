@@ -420,7 +420,7 @@ func TestClient_Push(t *testing.T) {
 		client := newTestClient(mockClient)
 
 		mockClient.On("Push", mock.Anything, mock.Anything).Return(&pb.PushResponse{
-			Conflicts: []*pb.Document{},
+			Conflicts: []*pb.PushConflict{},
 		}, nil)
 
 		baseVersion := int64(1)
@@ -428,6 +428,7 @@ func TestClient_Push(t *testing.T) {
 			Collection: "users",
 			Changes: []storage.ReplicationPushChange{
 				{
+					Action: storage.PushCreate,
 					Doc: &storage.StoredDoc{
 						Id:       "doc1",
 						Fullpath: "users/doc1",
@@ -449,8 +450,8 @@ func TestClient_Push(t *testing.T) {
 		client := newTestClient(mockClient)
 
 		mockClient.On("Push", mock.Anything, mock.Anything).Return(&pb.PushResponse{
-			Conflicts: []*pb.Document{
-				{Id: "doc1", Fullpath: "users/doc1", Version: 3, Data: []byte(`{"name":"Server Version"}`)},
+			Conflicts: []*pb.PushConflict{
+				{Id: "doc1", Reason: "already_exists", Current: &pb.Document{Database: "database1", Collection: "users", Fullpath: "users/doc1", Version: 3, Data: []byte(`{"type":"object","value":{"name":{"type":"string","value":"Server Version"}}}`)}},
 			},
 		}, nil)
 
@@ -458,6 +459,7 @@ func TestClient_Push(t *testing.T) {
 			Collection: "users",
 			Changes: []storage.ReplicationPushChange{
 				{
+					Action: storage.PushCreate,
 					Doc: &storage.StoredDoc{
 						Id:       "doc1",
 						Fullpath: "users/doc1",
@@ -469,7 +471,7 @@ func TestClient_Push(t *testing.T) {
 		})
 		assert.NoError(t, err)
 		assert.Len(t, resp.Conflicts, 1)
-		assert.Equal(t, "doc1", resp.Conflicts[0].Id)
+		assert.Equal(t, "doc1", resp.Conflicts[0].ID)
 	})
 }
 

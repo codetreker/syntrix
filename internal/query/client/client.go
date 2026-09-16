@@ -162,28 +162,21 @@ func (c *Client) Pull(ctx context.Context, database string, req storage.Replicat
 
 // Push sends documents for replication.
 func (c *Client) Push(ctx context.Context, database string, req storage.ReplicationPushRequest) (*storage.ReplicationPushResponse, error) {
-	changes := make([]*pb.PushChange, 0, len(req.Changes))
-	for _, change := range req.Changes {
-		changes = append(changes, pushChangeToProto(change))
+	if err := core.ValidatePushRequest(database, req); err != nil {
+		return nil, err
 	}
-
-	resp, err := c.client.Push(ctx, &pb.PushRequest{
-		Database:   database,
-		Collection: req.Collection,
-		Changes:    changes,
-	})
+	encoded, err := wire.EncodePushRequest(database, req)
 	if err != nil {
+		return nil, err
+	}
+	resp, err := c.client.Push(ctx, encoded)
+	if err != nil {
+		if code := status.Code(err); code == codes.Unavailable || code == codes.Aborted || code == codes.Unknown || code == codes.Internal {
+			return nil, err
+		}
 		return nil, statusToError(err)
 	}
-
-	conflicts := make([]*storage.StoredDoc, 0, len(resp.Conflicts))
-	for _, d := range resp.Conflicts {
-		conflicts = append(conflicts, protoToStoredDoc(d))
-	}
-
-	return &storage.ReplicationPushResponse{
-		Conflicts: conflicts,
-	}, nil
+	return wire.DecodePushResponse(database, req, resp)
 }
 
 // ============================================================================

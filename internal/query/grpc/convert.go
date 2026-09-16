@@ -64,15 +64,6 @@ func protoToStoredDoc(doc *pb.Document) *storage.StoredDoc {
 	}
 }
 
-// storedDocsToProto converts a slice of StoredDoc to proto Documents.
-func storedDocsToProto(docs []*storage.StoredDoc) []*pb.Document {
-	result := make([]*pb.Document, 0, len(docs))
-	for _, doc := range docs {
-		result = append(result, storedDocToProto(doc))
-	}
-	return result
-}
-
 // ============================================================================
 // model.Document <-> Proto Document conversions
 // ============================================================================
@@ -271,56 +262,5 @@ func protoToPullRequest(req *pb.PullRequest) storage.ReplicationPullRequest {
 		Collection:       req.Collection,
 		Checkpoint:       req.Checkpoint,
 		Limit:            int(req.Limit),
-	}
-}
-
-// pushChangeToProto converts storage.ReplicationPushChange to proto.
-func pushChangeToProto(c storage.ReplicationPushChange) *pb.PushChange {
-	var baseVersion int64 = -1
-	if c.BaseVersion != nil {
-		baseVersion = *c.BaseVersion
-	}
-	return &pb.PushChange{
-		Document:    storedDocToProto(c.Doc),
-		BaseVersion: baseVersion,
-	}
-}
-
-// protoToPushChange converts proto PushChange to storage type.
-func protoToPushChange(c *pb.PushChange) storage.ReplicationPushChange {
-	if c == nil {
-		return storage.ReplicationPushChange{}
-	}
-	change := storage.ReplicationPushChange{
-		Doc: protoToStoredDoc(c.Document),
-	}
-	if c.BaseVersion >= 0 {
-		change.BaseVersion = &c.BaseVersion
-	}
-	return change
-}
-
-// protoToPushRequest converts proto PushRequest to storage type.
-func protoToPushRequest(req *pb.PushRequest) storage.ReplicationPushRequest {
-	if req == nil {
-		return storage.ReplicationPushRequest{}
-	}
-	changes := make([]storage.ReplicationPushChange, 0, len(req.Changes))
-	for _, c := range req.Changes {
-		changes = append(changes, protoToPushChange(c))
-	}
-	return storage.ReplicationPushRequest{
-		Collection: req.Collection,
-		Changes:    changes,
-	}
-}
-
-// pushResponseToProto converts storage.ReplicationPushResponse to proto.
-func pushResponseToProto(resp *storage.ReplicationPushResponse) *pb.PushResponse {
-	if resp == nil {
-		return nil
-	}
-	return &pb.PushResponse{
-		Conflicts: storedDocsToProto(resp.Conflicts),
 	}
 }

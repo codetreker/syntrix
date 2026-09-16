@@ -433,7 +433,7 @@ func TestServer_Push(t *testing.T) {
 		resp, err := server.Push(context.Background(), &pb.PushRequest{
 			Database:   "database1",
 			Collection: "users",
-			Changes:    []*pb.PushChange{},
+			Changes:    []*pb.PushChange{{Action: pb.PushAction_PUSH_ACTION_UPDATE, Document: &pb.Document{Fullpath: "users/alice", Data: []byte(`{"type":"null"}`)}}},
 		})
 
 		assert.NoError(t, err)

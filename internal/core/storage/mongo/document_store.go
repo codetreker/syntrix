@@ -354,17 +354,26 @@ func (m *documentStore) Create(ctx context.Context, database string, doc types.S
 
 	_, err := collection.InsertOne(ctx, doc)
 	if mongo.IsDuplicateKeyError(err) {
-		// Check if the document exists but is soft-deleted
 		id := types.CalculateDatabase(database, doc.Fullpath)
 		var existingDoc types.StoredDoc
-		if findErr := collection.FindOne(ctx, bson.M{"_id": id, "database": database}).Decode(&existingDoc); findErr == nil {
-			if existingDoc.Deleted {
-				// Overwrite the soft-deleted document
-				_, replaceErr := collection.ReplaceOne(ctx, bson.M{"_id": id, "database": database}, doc)
-				return replaceErr
+		if findErr := collection.FindOne(ctx, bson.M{"_id": id, "database": database}).Decode(&existingDoc); findErr != nil {
+			if errors.Is(findErr, mongo.ErrNoDocuments) {
+				return model.ErrExists
 			}
+			return findErr
 		}
-		return model.ErrExists
+		if !existingDoc.Deleted {
+			return model.ErrExists
+		}
+		// A concurrent creator may have replaced the tombstone after our read.
+		result, replaceErr := collection.ReplaceOne(ctx, bson.M{"_id": id, "database": database, "deleted": true}, doc)
+		if replaceErr != nil {
+			return replaceErr
+		}
+		if result.MatchedCount == 0 {
+			return model.ErrExists
+		}
+		return nil
 	}
 	return err
 }

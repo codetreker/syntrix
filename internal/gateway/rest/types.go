@@ -22,6 +22,9 @@ type ReplicaChange struct {
 }
 
 func (c *ReplicaChange) UnmarshalJSON(data []byte) error {
+	if err := model.ValidateJSONUnicode(data); err != nil {
+		return err
+	}
 	var raw struct {
 		Action string          `json:"action"`
 		Doc    json.RawMessage `json:"document"`
@@ -59,7 +62,14 @@ type ReplicaPushRequest struct {
 }
 
 type ReplicaPushResponse struct {
-	Conflicts []model.Document `json:"conflicts"`
+	Conflicts []ReplicaPushConflict `json:"conflicts"`
+}
+
+type ReplicaPushConflict struct {
+	ChangeIndex int            `json:"changeIndex"`
+	ID          string         `json:"id"`
+	Reason      string         `json:"reason"`
+	Current     model.Document `json:"current"`
 }
 
 type ReplicaPullRequest struct {

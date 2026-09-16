@@ -258,6 +258,7 @@ func (h *Handler) handlePush(w http.ResponseWriter, r *http.Request) {
 		}
 
 		changes = append(changes, storage.ReplicationPushChange{
+			Action:      storage.PushAction(change.Action),
 			Doc:         &doc,
 			BaseVersion: change.BaseVersion,
 		})
@@ -274,7 +275,7 @@ func (h *Handler) handlePush(w http.ResponseWriter, r *http.Request) {
 		Changes:    changes,
 	}
 
-	if err := validateReplicationPushFn(pushReq); err != nil {
+	if err := validateReplicationPushFn(database, pushReq); err != nil {
 		slog.Warn("Push: validation error", "error", err)
 		writeError(w, http.StatusBadRequest, ErrCodeBadRequest, "Invalid replication parameters")
 		return
@@ -283,19 +284,45 @@ func (h *Handler) handlePush(w http.ResponseWriter, r *http.Request) {
 	slog.Info("Push: started", "collection", collection, "changes", len(changes))
 	resp, err := h.engine.Push(r.Context(), database, pushReq)
 	if err != nil {
+		if errors.Is(err, model.ErrInvalidQuery) {
+			writeError(w, http.StatusBadRequest, ErrCodeBadRequest, "Invalid replication parameters")
+			return
+		}
+		if errors.Is(err, model.ErrQueryWorkLimit) {
+			writeError(w, http.StatusUnprocessableEntity, "REPLICATION_BUDGET_EXCEEDED", "Push conflicts exceed the response size limit")
+			return
+		}
 		writeInternalError(w, err, "Failed to push changes")
 		return
 	}
 
-	// Flatten conflicts
-	flatConflicts := make([]model.Document, len(resp.Conflicts))
-	for i, doc := range resp.Conflicts {
-		flatConflicts[i] = flattenDocument(doc)
+	if err := wire.ValidatePushResponse(database, pushReq, resp); err != nil {
+		writeInternalError(w, err, "Invalid push result")
+		return
+	}
+	conflicts := make([]ReplicaPushConflict, len(resp.Conflicts))
+	for i, conflict := range resp.Conflicts {
+		var current model.Document
+		if conflict.Current != nil {
+			current = flattenDocument(conflict.Current)
+			current["id"] = conflict.ID
+			delete(current, "deleted")
+			if conflict.Current.Deleted {
+				current["deleted"] = true
+			}
+		}
+		conflicts[i] = ReplicaPushConflict{ChangeIndex: conflict.ChangeIndex, ID: conflict.ID, Reason: string(conflict.Reason), Current: current}
+	}
+	encoded, err := json.Marshal(ReplicaPushResponse{Conflicts: conflicts})
+	if err != nil {
+		writeInternalError(w, err, "Failed to encode push conflicts")
+		return
 	}
 
-	slog.Info("Push: completed", "collection", collection, "conflicts", len(flatConflicts))
-
-	writeJSON(w, http.StatusOK, ReplicaPushResponse{
-		Conflicts: flatConflicts,
-	})
+	slog.Info("Push: completed", "collection", collection, "conflicts", len(conflicts))
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	if _, err := w.Write(encoded); err != nil {
+		slog.WarnContext(r.Context(), "Failed to write push response", "error", err)
+	}
 }

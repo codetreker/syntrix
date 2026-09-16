@@ -163,7 +163,7 @@ func TestMockQueryServiceClient_PullAndPush(t *testing.T) {
 	t.Run("Push with conflicts", func(t *testing.T) {
 		mockClient := NewMockQueryServiceClient()
 		mockClient.On("Push", mock.Anything, mock.Anything).Return(&queryv1.PushResponse{
-			Conflicts: []*queryv1.Document{{Id: "conflict1"}},
+			Conflicts: []*queryv1.PushConflict{{Id: "conflict1", Reason: "missing"}},
 		}, nil)
 
 		resp, err := mockClient.Push(ctx, &queryv1.PushRequest{
