@@ -298,6 +298,22 @@ func TestRoutedDocumentStoreWatchRejectsEmptyDatabase(t *testing.T) {
 	router.AssertNotCalled(t, "Select", mock.Anything, mock.Anything)
 }
 
+func TestRoutedDocumentStoreWatchRejectsInvalidOptionsBeforeRouting(t *testing.T) {
+	for _, opts := range []types.WatchOptions{
+		{StartMode: types.WatchStartForScan},
+		{StartMode: -1},
+		{MaxAwaitTime: time.Microsecond},
+	} {
+		router := new(mockDocRouter)
+		stream, err := NewRoutedDocumentStore(router).Watch(context.Background(), "app", "users", "opaque", opts)
+		require.Nil(t, stream)
+		var watchErr *types.WatchError
+		require.ErrorAs(t, err, &watchErr)
+		require.Equal(t, types.WatchInvalidScope, watchErr.Code)
+		require.Empty(t, router.Calls)
+	}
+}
+
 func TestRoutedDocumentStoreWatchPreservesBackendError(t *testing.T) {
 	ctx := context.Background()
 	router := new(mockDocRouter)
@@ -918,6 +934,43 @@ func TestRoutedDocumentStoreScan(t *testing.T) {
 	request.Collection = "*"
 	_, err = routed.ScanDocuments(ctx, "app", request)
 	assert.Error(t, err)
+}
+
+func TestRoutedDocumentStoreFencedScanUsesWatchSource(t *testing.T) {
+	ctx := context.Background()
+	for _, consistency := range []types.ReadConsistency{types.ReadDefault, types.ReadAuthoritative} {
+		router := new(mockDocRouter)
+		failure := &types.WatchError{Code: types.WatchSourceMismatch, Cause: errors.New("different source")}
+		primary := &scanningDocumentStore{mockDocumentStore: new(mockDocumentStore), err: failure}
+		request := types.SourceScanRequest{Collection: "users", Limit: 2, AtLeast: "scan-boundary", Consistency: consistency}
+		router.On("Select", "app", types.OpWatch).Return(primary, nil).Once()
+		page, err := NewRoutedDocumentStore(router).(types.DocumentScanner).ScanDocuments(ctx, "app", request)
+		require.Same(t, failure, err)
+		require.Zero(t, page)
+		require.Equal(t, request, primary.request)
+		router.AssertExpectations(t)
+	}
+}
+
+func TestRoutedDocumentStoreFencedScanDoesNotFallback(t *testing.T) {
+	ctx := context.Background()
+	request := types.SourceScanRequest{Collection: "users", Limit: 2, AtLeast: "scan-boundary"}
+	t.Run("source selection fails", func(t *testing.T) {
+		router := new(mockDocRouter)
+		failure := errors.New("source unavailable")
+		router.On("Select", "app", types.OpWatch).Return(nil, failure).Once()
+		_, err := NewRoutedDocumentStore(router).(types.DocumentScanner).ScanDocuments(ctx, "app", request)
+		require.ErrorIs(t, err, failure)
+		router.AssertExpectations(t)
+	})
+	t.Run("primary lacks scanning capability", func(t *testing.T) {
+		primary := new(mockDocumentStore)
+		replica := &scanningDocumentStore{mockDocumentStore: new(mockDocumentStore)}
+		routed := NewRoutedDocumentStore(NewSplitDocumentRouter(primary, replica)).(types.DocumentScanner)
+		_, err := routed.ScanDocuments(ctx, "app", request)
+		require.ErrorContains(t, err, "does not support bounded scanning")
+		require.Empty(t, replica.database)
+	})
 }
 
 type enumeratingDocumentStore struct {

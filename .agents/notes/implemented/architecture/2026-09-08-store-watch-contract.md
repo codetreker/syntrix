@@ -22,9 +22,13 @@ The [DocumentStore API](../../../../internal/core/storage/types/types.go) expose
 `Watch(ctx, database, collection, after, opts) (WatchStream, error)`. Its
 [shared Watch types](../../../../internal/core/storage/types/watch.go) carry an
 opaque string `WatchCheckpoint`, an initial checkpoint, ordered
-`WatchFrame{Event, Checkpoint}` results, and terminal errors. The
+`WatchFrame` results, and terminal errors. The
 [Store design](../../../../docs/design/server/core/storage/03.stores.md#2-document-watch)
 owns the complete consumer contract.
+The [scan-boundary extension](2026-09-15-watch-scan-boundary.md) adds committed
+scan/replay overlap, logical identity on documentless deletes, and explicit
+watermarks. It changes the original physical-delete exposure while preserving
+this note's checkpoint and lifecycle decisions.
 
 ### Scope, identity, and progress
 
@@ -33,27 +37,42 @@ logical collections in the selected data namespace; system collections require
 an explicit selection. One call selects one source through the existing
 routing facade. It does not enumerate logical databases or aggregate backends.
 
-A fresh watch establishes a nonempty current checkpoint before returning,
+A default fresh watch establishes a nonempty current checkpoint before returning,
 including on an idle source. A resumed watch confirms exactly the requested
 checkpoint. Each successful frame carries a checkpoint for a completed source
 prefix. A nil event is progress without a document change. A consumer persists
 the checkpoint only after all required work through that frame succeeds.
 Checkpoints are opaque to consumers and cannot be ordered by their byte values.
 
+An explicit `WatchStartForScan` instead establishes an initial C0 usable by
+`ScanDocuments.AtLeast` and inclusive replay. C0 is a lower bound, not an already
+consumed event prefix. `CaughtUp` distinguishes a successfully observed source
+watermark from filtered progress. An empty source batch alone is insufficient;
+the [extension's watermark proof](2026-09-15-watch-scan-boundary.md#watermark-proof)
+retains an unfinished committed target across page checkpoints and accounts for
+replica-set versus mongos ordering. `SourceBytes` counts visible raw frame bytes.
+
 `Event.Id` preserves its existing meaning as the document storage key.
 `Event.ChangeID` identifies one source change stably across watches and retries.
 A change identity is independent of the consumer's processed checkpoint.
 Backend-native token fields are absent from the shared Event type.
+Event collection and document ID copy existing StoredDoc metadata, preserving
+logical identity when a deletion has nil Document.
 
 The Mongo implementation's private versioned envelope binds the physical
 namespace and collection UUID, logical database, collection selection,
-`IncludeBefore`, and complete BSON resume token. It validates the encoding
+`IncludeBefore`, and complete BSON resume token or explicit committed scan-start
+context. It validates the encoding
 strictly. Source identity comes from the Mongo collection, so replacing the
 Store, client, or Puller does not invalidate a retained continuation. A new
 physical collection incarnation does invalidate it. Native event tokens mark
 event boundaries; idle native-cursor tokens provide ordered progress without
 requiring another document change. This keeps a batch's later resume position
 from being saved before its last event is processed.
+
+An unfinished native watermark target is also retained privately until its proof
+is delivered. The target describes catch-up work; it never replaces the completed
+prefix in the token used for resuming source events.
 
 ### Opening, routing, and failures
 
@@ -93,18 +112,20 @@ If neither source pre-image nor current enrichment can establish membership,
 the stream returns `WatchPayloadUnavailable`. It neither leaks an event from
 another collection nor skips an event whose membership is unknown.
 
-An ordinary-collections watch can emit a physical delete using document identity
-alone. Non-delete events require available document enrichment. `Document` may
-reflect a later lookup state; `Before` is exposed only when requested and
+Physical deletion produces progress before image-dependent collection routing.
+Non-delete events require available document enrichment. `Document` may
+reflect a later committed lookup state; `Before` is exposed only when requested and
 available from the source. This API does not promise retained historical payloads
 or enable Mongo pre-images. Source capability and retention remain operational
 prerequisites for a scope that needs those images or routing metadata.
 
 The [deletion lifecycle](../../../../docs/design/server/core/storage/03.stores.md#document-deletion-and-physical-cleanup)
 distinguishes logical tombstone updates from physical removal. Raw Puller events
-retain that distinction; business conversion ignores physical deletion. Store
-Watch instead uses `EventDelete` with nil `Document` for both source changes,
-so its event type alone is not the business deletion contract.
+retain that distinction; business conversion ignores physical deletion. The
+original Store Watch conversion exposed both as `EventDelete` with nil Document.
+The scan-boundary extension preserves that payload convention for logical deletion
+and filters physical cleanup into progress. Deletion identity comes from existing
+StoredDoc metadata, not from retained business data or a reversible hash.
 
 ## Alternatives
 
@@ -156,7 +177,7 @@ changing CRUD behavior. Fresh watches may create an empty selected physical
 namespace, requiring additional collection-creation permission. Existing
 watches also need metadata
 access to obtain the UUID. Scope isolation can stop a specific-collection watch
-when a physical delete or missing lookup lacks routing metadata, even if the
+when a non-cleanup change or missing lookup lacks routing metadata, even if the
 caller did not request `Before`. Operators must provide source history and
 capabilities appropriate to their selected watch scope. Optional images do not
 guarantee historical snapshots.
@@ -177,10 +198,10 @@ completion cannot define consumer checkpoint validity.
 
 | Deferred work and owner | Cost and constraint retained here |
 |---|---|
-| Puller ingestion through the Store, described by the [Puller architecture](../../../../docs/design/server/puller/01.architecture.md) | Requires replacing direct Mongo watcher wiring and mapping Store frames/errors into ingestion; source codecs and native types must remain inside Store implementations |
+| Native Puller ingestion, described by the [Puller architecture](../../../../docs/design/server/puller/01.architecture.md) | Continues its direct native capture; routing it through Store Watch is not a prerequisite of replication Pull. Store source codecs remain private to their adapters. |
 | [Local replay](../../proposed/architecture/2026-09-07-local-puller-subscription-replay.md) and [history-gap recovery](../../proposed/architecture/2026-09-07-puller-history-gap-recovery.md) | Requires durable continuity and retention boundaries plus consumer-visible failures; Store errors provide a source failure without implementing Puller generations or recovery |
 | Multi-source discovery and aggregation in Puller, and [dedicated read/write routing](../../proposed/architecture/2026-09-07-dedicated-backend-read-write-routing.md) | Requires source inventory, ownership, and progress aggregation; one Store watch remains explicitly scoped, and separate source checkpoints must not be compared or combined as a scalar |
-| [Indexer rebuild](../../proposed/architecture/2026-09-07-indexer-recovery-lifecycle.md) and [filtered subscription snapshots](../../proposed/bug-fix/2026-09-07-realtime-filtered-snapshots.md) | Requires scan/replay boundaries and consumer recovery integration; an initial Store checkpoint is not a snapshot or a rebuild mechanism |
+| [Indexer rebuild](../../proposed/architecture/2026-09-07-indexer-recovery-lifecycle.md) and [filtered subscription snapshots](../../proposed/bug-fix/2026-09-07-realtime-filtered-snapshots.md) | Requires consumer recovery integration; the scan-boundary extension supplies overlap, but neither an ordinary current checkpoint nor C0 creates a snapshot or performs a rebuild |
 | [Trigger before-images](../../proposed/feature/2026-09-07-trigger-before-images.md) and [delivery idempotency](../../proposed/architecture/2026-09-07-trigger-delivery-idempotency.md) | Requires retained payloads, transport changes, durable delivery/outbox decisions, and consumer state; optional Store images and ChangeID do not provide those guarantees |
 | [Streamer durable progress](../../proposed/architecture/2026-09-07-streamer-durable-progress.md) and [SDK offline replication](../../proposed/feature/2026-09-07-sdk-offline-replication.md) | Requires progress persistence and delivery/acknowledgment policy in those consumers; receiving or closing a Store frame is not an end-client acknowledgment |
 

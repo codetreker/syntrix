@@ -15,6 +15,7 @@ import (
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
+	"go.mongodb.org/mongo-driver/mongo/readpref"
 )
 
 const watchCleanupTimeout = 5 * time.Second
@@ -41,10 +42,18 @@ type documentWatch struct {
 	err      error
 	closed   bool
 	closeErr error
+	session  mongo.Session
+	resuming bool
+	target   string
 }
 
 func (m *documentStore) Watch(ctx context.Context, database, collectionName string, after types.WatchCheckpoint, opts types.WatchOptions) (types.WatchStream, error) {
-	w := &documentWatch{binding: watchCheckpoint{Version: 1, Database: database, Collection: collectionName, IncludeBefore: opts.IncludeBefore}}
+	w := &documentWatch{binding: watchCheckpoint{Version: 2, Database: database, Collection: collectionName, IncludeBefore: opts.IncludeBefore}, resuming: after != ""}
+	var err error
+	opts, err = opts.Resolve(after)
+	if err != nil {
+		return nil, w.failure(types.WatchInvalidScope, err)
+	}
 	if database == "" {
 		return nil, w.failure(types.WatchInvalidScope, errors.New("logical database must be nonempty"))
 	}
@@ -63,6 +72,10 @@ func (m *documentStore) Watch(ctx context.Context, database, collectionName stri
 		}
 	}
 	collection := m.getCollection(collectionName)
+	collection, err = collection.Clone(options.Collection().SetReadPreference(readpref.Primary()))
+	if err != nil {
+		return nil, w.classify(err)
+	}
 	readSource := m.readSource
 	if readSource == nil {
 		readSource = m.watchSource
@@ -82,14 +95,21 @@ func (m *documentStore) Watch(ctx context.Context, database, collectionName stri
 		bson.D{{Key: "documentKey._id", Value: bson.D{{Key: "$regex", Value: "^" + regexp.QuoteMeta(database) + ":[0-9a-f]{32}$"}}}},
 		bson.D{{Key: "operationType", Value: bson.D{{Key: "$nin", Value: bson.A{"insert", "update", "replace", "delete"}}}}},
 	}}}}}}
-	// A zero initial batch yields an actual server position even on an idle
-	// source. Subsequent getMore calls use the server's default batch size.
-	nativeOptions := options.ChangeStream().SetBatchSize(0).SetFullDocument(options.UpdateLookup).SetMaxAwaitTime(time.Second)
-	if opts.IncludeBefore || collectionName != "" {
-		nativeOptions.SetFullDocumentBeforeChange(options.WhenAvailable)
+	// Fresh watches need an empty initial batch to capture the starting position.
+	// Replay already has a position and can fetch useful work immediately.
+	nativeOptions := options.ChangeStream().SetBatchSize(0).SetFullDocument(options.UpdateLookup).SetMaxAwaitTime(opts.MaxAwaitTime)
+	if after != "" || opts.StartMode == types.WatchStartForScan {
+		nativeOptions.SetBatchSize(100)
 	}
+	// Preimages recover identity when a later physical cleanup removes lookup
+	// data, including database-wide watches which have no collection predicate.
+	nativeOptions.SetFullDocumentBeforeChange(options.WhenAvailable)
 	if after != "" {
-		nativeOptions.SetResumeAfter(resumed.Token)
+		if resumed.Start != nil {
+			nativeOptions.SetStartAtOperationTime(resumed.Start)
+		} else {
+			nativeOptions.SetResumeAfter(resumed.Token)
+		}
 	}
 	open := m.openStream
 	if open == nil {
@@ -98,10 +118,50 @@ func (m *documentStore) Watch(ctx context.Context, database, collectionName stri
 		}
 	}
 	w.ctx, w.cancel = context.WithCancel(ctx)
-	w.native, err = open(w.ctx, collection, pipeline, nativeOptions)
+	if opts.StartMode == types.WatchStartForScan {
+		w.ctx, w.session, err = captureWatchBoundary(w.ctx, collection, &w.binding)
+		if err == nil {
+			nativeOptions.SetStartAtOperationTime(w.binding.Start)
+		}
+	} else if resumed.Start != nil {
+		w.ctx, w.session, err = watchReadSession(w.ctx, collection.Database().Client(), &resumed)
+	}
 	if err != nil {
 		w.cancel()
 		return nil, w.classify(err)
+	}
+	if after != "" || opts.StartMode == types.WatchStartForScan {
+		w.binding.Target = resumed.Target
+		if len(w.binding.Target) == 0 {
+			readTarget := m.readWatchTarget
+			if readTarget == nil {
+				readTarget = m.watchTarget
+			}
+			w.binding.Target, err = readTarget(w.ctx, collection, w.binding)
+			if err != nil {
+				w.cancel()
+				if w.session != nil {
+					w.session.EndSession(ctx)
+				}
+				return nil, w.classify(err)
+			}
+		}
+		w.target, err = watchTokenOrderKey(w.binding.Target)
+		if err != nil {
+			w.cancel()
+			if w.session != nil {
+				w.session.EndSession(ctx)
+			}
+			return nil, w.failure(types.WatchInvalidCheckpoint, err)
+		}
+	}
+	w.native, err = open(w.ctx, collection, pipeline, nativeOptions)
+	if err != nil {
+		w.cancel()
+		if w.session != nil {
+			w.session.EndSession(ctx)
+		}
+		return nil, w.classifyStream(err)
 	}
 	currentSource, err := readSource(w.ctx, collection, false)
 	if err != nil || source != currentSource {
@@ -114,12 +174,24 @@ func (m *documentStore) Watch(ctx context.Context, database, collectionName stri
 	}
 	if after != "" {
 		w.initial = after
+	} else if w.binding.Start != nil {
+		initial := w.binding
+		initial.Target = nil
+		w.initial, err = initial.marshal()
+		if err != nil {
+			return nil, w.terminate(w.failure(types.WatchInvalidEvent, err))
+		}
 	} else {
 		token := w.native.ResumeToken()
 		if len(token) == 0 {
 			return nil, w.terminate(w.failure(types.WatchUnsupported, errors.New("source supplied no initial resume position")))
 		}
 		w.initial, err = w.binding.encode(token)
+		if err != nil {
+			return nil, w.terminate(w.failure(types.WatchInvalidEvent, err))
+		}
+		w.binding.Target = append(bson.Raw(nil), token...)
+		w.target, err = watchTokenOrderKey(token)
 		if err != nil {
 			return nil, w.terminate(w.failure(types.WatchInvalidEvent, err))
 		}
@@ -135,12 +207,13 @@ func (m *documentStore) Watch(ctx context.Context, database, collectionName stri
 }
 
 func (m *documentStore) watchSource(ctx context.Context, collection *mongo.Collection, create bool) (watchSource, error) {
-	specs, err := m.db.ListCollectionSpecifications(ctx, bson.D{{Key: "name", Value: collection.Name()}})
+	db := m.db.Client().Database(m.db.Name(), options.Database().SetReadPreference(readpref.Primary()))
+	specs, err := db.ListCollectionSpecifications(ctx, bson.D{{Key: "name", Value: collection.Name()}})
 	if err != nil {
 		return watchSource{}, err
 	}
 	if len(specs) == 0 && create {
-		err := m.db.CreateCollection(ctx, collection.Name())
+		err := db.CreateCollection(ctx, collection.Name())
 		var command mongo.CommandError
 		if err != nil && !(errors.As(err, &command) && command.Code == 48) {
 			return watchSource{}, err
@@ -183,9 +256,15 @@ func (w *documentWatch) Next(ctx context.Context) (types.WatchFrame, error) {
 	}
 	var event *types.Event
 	var token bson.Raw
+	var sourceBytes int64
 	if hasEvent {
+		var raw bson.Raw
+		if err := w.native.Decode(&raw); err != nil {
+			return types.WatchFrame{}, w.terminate(w.failure(types.WatchInvalidEvent, err))
+		}
+		sourceBytes = int64(len(raw))
 		var change changeStreamEvent
-		if err := w.native.Decode(&change); err != nil {
+		if err := bson.Unmarshal(raw, &change); err != nil {
 			return types.WatchFrame{}, w.terminate(w.failure(types.WatchInvalidEvent, err))
 		}
 		// ResumeToken may already be the batch PBRT when this is its last event.
@@ -201,14 +280,31 @@ func (w *documentWatch) Next(ctx context.Context) (types.WatchFrame, error) {
 		}
 	} else {
 		if err := w.native.Err(); err != nil {
-			return types.WatchFrame{}, w.terminate(w.classify(err))
+			return types.WatchFrame{}, w.terminate(w.classifyStream(err))
 		}
 		if w.native.ID() == 0 {
 			return types.WatchFrame{}, w.terminate(w.failure(types.WatchSourceUnavailable, errors.New("source cursor exhausted")))
 		}
 		token = w.native.ResumeToken()
 	}
-	checkpoint, err := w.binding.encode(token)
+	caughtUp := false
+	binding := w.binding
+	if !hasEvent {
+		key, err := watchTokenOrderKey(token)
+		if err != nil {
+			return types.WatchFrame{}, w.terminate(w.failure(types.WatchInvalidEvent, err))
+		}
+		// PBRT alone is only a scanned prefix; a filtered backlog can yield many
+		// empty batches. The target also bounds the committed work for this drain.
+		// MongoDB's _data string preserves complete native token ordering:
+		// https://github.com/mongodb/mongo/blob/b41cda4fe697dce6fd9b83b3805362ccc02fbeb3/src/mongo/db/pipeline/resume_token.h#L131-L143
+		caughtUp = key >= w.target
+		if caughtUp {
+			binding.Target = nil
+			w.binding.Target = nil
+		}
+	}
+	checkpoint, err := binding.encode(token)
 	if err != nil {
 		return types.WatchFrame{}, w.terminate(w.failure(types.WatchInvalidEvent, err))
 	}
@@ -218,7 +314,7 @@ func (w *documentWatch) Next(ctx context.Context) (types.WatchFrame, error) {
 	if err := w.ctx.Err(); err != nil {
 		return types.WatchFrame{}, w.terminate(w.classify(err))
 	}
-	return types.WatchFrame{Event: event, Checkpoint: checkpoint}, nil
+	return types.WatchFrame{Event: event, Checkpoint: checkpoint, CaughtUp: caughtUp, SourceBytes: sourceBytes}, nil
 }
 
 func (w *documentWatch) Close() error {
@@ -244,6 +340,9 @@ func (w *documentWatch) terminate(err error) error {
 		if closeErr := w.native.Close(ctx); closeErr != nil {
 			w.closeErr = w.classify(closeErr)
 		}
+		if w.session != nil {
+			w.session.EndSession(ctx)
+		}
 	}
 	w.err = errors.Join(err, w.closeErr)
 	return w.err
@@ -264,15 +363,25 @@ func (w *documentWatch) classify(err error) error {
 		switch {
 		case server.HasErrorCode(13), server.HasErrorCode(18):
 			code = types.WatchPermissionDenied
-		case server.HasErrorCode(136), server.HasErrorCode(286):
+		case server.HasErrorCode(136), server.HasErrorCode(280), server.HasErrorCode(286):
 			code = types.WatchHistoryUnavailable
-		case server.HasErrorCode(260):
+		case server.HasErrorCode(260), server.HasErrorCode(40647), server.HasErrorCode(40648):
 			code = types.WatchInvalidCheckpoint
 		case server.HasErrorCode(40573), server.HasErrorCode(115), server.HasErrorCode(303), server.HasErrorCode(20):
 			code = types.WatchUnsupported
 		}
 	}
 	return w.failure(code, err)
+}
+
+func (w *documentWatch) classifyStream(err error) error {
+	var server mongo.ServerError
+	// FailedToParse is meaningful as a token error only for native replay;
+	// ordinary reads and source metadata commands can fail parsing separately.
+	if w.resuming && errors.As(err, &server) && server.HasErrorCode(9) {
+		return w.failure(types.WatchInvalidCheckpoint, err)
+	}
+	return w.classify(err)
 }
 
 type changeStreamEvent struct {
@@ -292,9 +401,11 @@ type changeStreamEvent struct {
 
 func (w *documentWatch) convertChangeEvent(change changeStreamEvent) (*types.Event, error) {
 	switch change.OperationType {
+	case "delete":
+		return nil, nil
 	case "drop", "rename", "dropDatabase", "invalidate":
 		return nil, w.failure(types.WatchSourceMismatch, fmt.Errorf("source lifecycle event: %s", change.OperationType))
-	case "insert", "update", "replace", "delete":
+	case "insert", "update", "replace":
 	default:
 		return nil, w.failure(types.WatchInvalidEvent, fmt.Errorf("unsupported source event: %s", change.OperationType))
 	}
@@ -330,19 +441,34 @@ func (w *documentWatch) convertChangeEvent(change changeStreamEvent) (*types.Eve
 			return nil, nil
 		}
 	}
-	if change.OperationType != "delete" && change.FullDocument == nil {
+	logicalDelete := false
+	if change.OperationType == "update" {
+		if change.UpdateDescription == nil {
+			return nil, w.failure(types.WatchInvalidEvent, errors.New("update has no immutable update description"))
+		}
+		if deleted, changed := change.UpdateDescription.UpdatedFields["deleted"]; changed {
+			var ok bool
+			logicalDelete, ok = deleted.(bool)
+			if !ok {
+				return nil, w.failure(types.WatchInvalidEvent, errors.New("deleted update is not boolean"))
+			}
+		}
+	}
+	if change.FullDocument == nil && !logicalDelete {
 		return nil, w.failure(types.WatchPayloadUnavailable, errors.New("source document enrichment is unavailable"))
 	}
 	if change.ClusterTime.T == 0 {
 		return nil, w.failure(types.WatchInvalidEvent, errors.New("source event has no cluster time"))
 	}
-	event := &types.Event{Id: id, ChangeID: w.binding.Source.changeID(change.ID), Database: w.binding.Database, Timestamp: int64(change.ClusterTime.T) * int64(time.Second)}
+	logicalID, err := types.LogicalDocumentID(metadata)
+	if err != nil {
+		return nil, w.failure(types.WatchPayloadUnavailable, errors.New("source document identity is unavailable"))
+	}
+	event := &types.Event{Id: id, ChangeID: w.binding.Source.changeID(change.ID), Database: w.binding.Database, Collection: metadata.Collection, DocumentID: logicalID, Timestamp: int64(change.ClusterTime.T) * int64(time.Second)}
 	if w.binding.IncludeBefore {
 		event.Before = change.FullDocumentBeforeChange
 	}
 	switch change.OperationType {
-	case "delete":
-		event.Type = types.EventDelete
 	case "insert", "replace":
 		event.Type = types.EventCreate
 		event.Document = change.FullDocument
@@ -353,15 +479,8 @@ func (w *documentWatch) convertChangeEvent(change changeStreamEvent) (*types.Eve
 	case "update":
 		event.Type = types.EventUpdate
 		event.Document = change.FullDocument
-		if change.UpdateDescription == nil {
-			return nil, w.failure(types.WatchInvalidEvent, errors.New("update has no immutable update description"))
-		}
 		if deleted, changed := change.UpdateDescription.UpdatedFields["deleted"]; changed {
-			deleted, ok := deleted.(bool)
-			if !ok {
-				return nil, w.failure(types.WatchInvalidEvent, errors.New("deleted update is not boolean"))
-			}
-			if deleted {
+			if deleted.(bool) {
 				event.Type = types.EventDelete
 				event.Document = nil
 			} else {

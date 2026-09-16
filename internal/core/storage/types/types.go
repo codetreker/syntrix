@@ -132,8 +132,9 @@ type DocumentStore interface {
 
 	// Watch observes one logical database. An empty collection selects its ordinary
 	// data collections; a system collection must be selected explicitly. Empty after
-	// starts at a source-established current boundary. A checkpoint resumes after
-	// its completed prefix and must belong to the same source, scope, and options.
+	// starts at a source-established current boundary unless StartMode requests a
+	// scan boundary. Resume preserves that boundary's inclusive or completed-prefix
+	// semantics and requires the same source, scope, and IncludeBefore option.
 	Watch(ctx context.Context, database string, collection string, after WatchCheckpoint, opts WatchOptions) (WatchStream, error)
 
 	// Close closes the connection to the backend
@@ -165,6 +166,10 @@ type SourceScanRequest struct {
 	// MaxBytes limits the BSON bytes of the whole page; zero disables this limit.
 	MaxBytes    int64
 	Consistency ReadConsistency
+	// AtLeast requires committed reads covering a WatchStartForScan initial
+	// checkpoint from this exact source and scope. Other checkpoints are rejected.
+	// Pages remain moving reads, not a snapshot held across requests.
+	AtLeast WatchCheckpoint
 }
 
 type SourceScanPage struct {
@@ -267,10 +272,17 @@ const (
 type Event struct {
 	// ChangeID identifies one source change across watches and retries. Id remains
 	// the affected document's storage key; neither field is an ordered checkpoint.
-	ChangeID string     `json:"changeId,omitempty"`
-	Id       string     `json:"id"`
-	Database string     `json:"database"`
-	Type     EventType  `json:"type"`
+	ChangeID string `json:"changeId,omitempty"`
+	Id       string `json:"id"`
+	Database string `json:"database"`
+	// Collection and DocumentID copy StoredDoc metadata so logical identity
+	// survives delete events whose Document is nil.
+	Collection string `json:"collection"`
+	DocumentID string `json:"documentId"`
+	// Type describes the source operation and is not inferred from a later image.
+	Type EventType `json:"type"`
+	// Document is the committed state at the event or a later committed state of
+	// that logical document. Consumers needing state must inspect its Deleted flag.
 	Document *StoredDoc `json:"document,omitempty"` // Nil for delete
 	Before   *StoredDoc `json:"before,omitempty"`   // Previous state, if available
 	// Timestamp is Unix nanoseconds at the source's available precision. It is

@@ -27,6 +27,7 @@ type documentStore struct {
 	softDeleteRetention time.Duration
 	openStream          func(context.Context, *mongo.Collection, mongo.Pipeline, *options.ChangeStreamOptions) (changeStream, error)
 	readSource          func(context.Context, *mongo.Collection, bool) (watchSource, error)
+	readWatchTarget     func(context.Context, *mongo.Collection, watchCheckpoint) (bson.Raw, error)
 }
 
 // NewDocumentStore initializes a new MongoDB document store
@@ -201,6 +202,9 @@ func (m *documentStore) ScanDocuments(ctx context.Context, database string, requ
 	if err := request.Validate(database); err != nil {
 		return types.SourceScanPage{}, err
 	}
+	if request.AtLeast != "" {
+		return m.scanAtWatchBoundary(ctx, database, request)
+	}
 	if err := m.ensureSourceIndexes(ctx); err != nil {
 		return types.SourceScanPage{}, err
 	}
@@ -212,6 +216,10 @@ func (m *documentStore) ScanDocuments(ctx context.Context, database string, requ
 			return types.SourceScanPage{}, err
 		}
 	}
+	return scanDocumentPage(ctx, collection, database, request)
+}
+
+func scanDocumentPage(ctx context.Context, collection *mongo.Collection, database string, request types.SourceScanRequest) (types.SourceScanPage, error) {
 	filter := bson.D{{Key: "database", Value: database}, {Key: "collection", Value: request.Collection}}
 	if request.AfterID != "" {
 		filter = append(filter, bson.E{Key: "fullpath", Value: bson.M{"$gt": request.Collection + "/" + request.AfterID}})

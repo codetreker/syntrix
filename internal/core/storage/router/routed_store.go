@@ -58,6 +58,9 @@ func (s *RoutedDocumentStore) ScanDocuments(ctx context.Context, database string
 	if request.Consistency == types.ReadAuthoritative {
 		op = types.OpWrite
 	}
+	if request.AtLeast != "" {
+		op = types.OpWatch
+	}
 	store, err := s.router.Select(database, op)
 	if err != nil {
 		return types.SourceScanPage{}, err
@@ -140,6 +143,9 @@ func (s *RoutedDocumentStore) Watch(ctx context.Context, database string, collec
 			Collection: collection,
 			Cause:      ErrDatabaseRequired,
 		}
+	}
+	if _, err := opts.Resolve(after); err != nil {
+		return nil, &types.WatchError{Code: types.WatchInvalidScope, Database: database, Collection: collection, Cause: err}
 	}
 	store, err := s.router.Select(database, types.OpWatch)
 	if err != nil {
