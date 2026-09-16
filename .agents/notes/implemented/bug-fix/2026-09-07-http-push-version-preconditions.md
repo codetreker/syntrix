@@ -36,15 +36,16 @@ the extracted precondition separately while continuing to strip protected fields
 `NewStoredDoc` retains its version-1 initialization; client versions are not copied
 into stored metadata. Storage owns resulting versions.
 
-The change reuses Query's existing live-target version comparison and atomic
-write predicates. Omitted versions remain absent across gRPC through the existing
-`-1` encoding; zero and all supported positive int64 values retain their values.
-No protobuf, SDK, action, or conflict-response contract changes are introduced.
-In particular, `create` with version 1 remains accepted, and zero is an equality
-precondition on an existing live target, not an insert-only instruction.
+The original repair reused Query's live-target comparison and atomic write
+predicates without changing the action or conflict-response contract. It used
+`-1` to preserve omitted versions across the then-existing gRPC contract. The
+[complete conditional-write decision](2026-09-07-replication-push-version-checks.md)
+now owns explicit actions, protobuf optional version presence, tombstone-aware
+reads, and structured conflicts. Exact extraction remains unchanged: `create`
+with version 1 is accepted, and zero is an equality precondition on live targets.
 
-Push's initial lookup and all three conflict lookups now explicitly request
-`ReadOptions{Consistency: ReadAuthoritative}`. The routed store selects that
+Push's initial and conflict lookups explicitly request
+`ReadOptions{Consistency: ReadAuthoritative, ShowDeleted: true}`. The routed store selects that
 logical database's `OpWrite` source and forwards the option. Mongo clones the
 collection handle for this call with primary read preference, preserving shared
 client/collection settings. Ordinary `Get`, `GetMany`, and `Query` retain their
@@ -54,7 +55,8 @@ configured read behavior.
 read routing; unsupported modes and multiple values fail. Authoritative-source
 selection and read errors propagate without a replica fallback. Push also
 propagates non-`ErrNotFound` conflict-read errors instead of returning an
-incomplete success response. Genuine absence still follows the existing paths.
+incomplete success response. The complete conditional-write decision defines
+missing and tombstoned outcomes independently of the read-routing option.
 
 Authoritative selection requires a writer-capable backend topology. A Mongo
 connection explicitly pinned to a secondary is not made writer-capable by setting
@@ -80,10 +82,12 @@ requirement visible and forwards it through the existing interface.
 hide a correctness requirement from the storage call. `ReadOptions` exposes the
 request and supports validation without changing ordinary read routing.
 
-**Implement strict create/update/delete semantics with this repair** would also
-address absent and tombstoned targets, but requires Query/storage predicates and
-a coordinated conflict/protocol migration. Those guarantees remain owned by the
-[original proposal](../../proposed/bug-fix/2026-09-07-replication-push-version-checks.md).
+**Implement strict create/update/delete semantics with the HTTP repair** would
+also have addressed absent and tombstoned targets, but required Query/storage
+predicates and coordinated conflict/protocol changes outside that repair.
+The [later conditional-write decision](2026-09-07-replication-push-version-checks.md)
+delivers the missing-target safety; strict insert-only create remains separately
+[proposed](../../proposed/feature/2026-09-07-replication-push-insert-only.md).
 
 ## Consequences
 
@@ -93,11 +97,8 @@ subject to the write predicate and other storage outcomes. The original
 [replication reference](../../../../docs/reference/replication.md#version-preconditions)
 now describes the accepted input and current limits.
 
-This repair does not establish complete conditional-write safety. Query still
-takes its not-found/Create branch before checking the precondition, so a missing
-or deleted target can be recreated. Concurrent deletion can still leave an
-incomplete conflict result when the authoritative lookup returns `ErrNotFound`.
-Other conflict-read errors now propagate. The original proposal retains these
-bugs, strict action/version combinations, tombstone-aware reads, structured
-conflicts, and protocol migration. Retries after a lost response remain ambiguous;
-version checks do not establish exactly-once effects.
+The original extraction repair did not close the not-found/Create branch or
+represent absent conflict targets. The later conditional-write decision closes
+those gaps while preserving the local decoder and authoritative read option.
+Strict insert-only create remains a separate semantic decision. Retries after a
+lost response remain ambiguous; version checks do not establish exactly-once effects.

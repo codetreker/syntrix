@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"net/http"
 	"net/http/httptest"
@@ -25,7 +26,7 @@ func TestHandlePush(t *testing.T) {
 	server := createTestServer(mockService, nil, nil)
 
 	resp := &storage.ReplicationPushResponse{
-		Conflicts: []*storage.StoredDoc{},
+		Conflicts: []storage.ReplicationPushConflict{},
 	}
 
 	mockService.On("Push", mock.Anything, "default", mock.AnythingOfType("types.ReplicationPushRequest")).Return(resp, nil)
@@ -34,7 +35,7 @@ func TestHandlePush(t *testing.T) {
 		Collection: "rooms/room-1/messages",
 		Changes: []ReplicaChange{
 			{
-				Doc: model.Document{"id": "msg-1", "name": "Bob", "version": float64(1)},
+				Action: "update", Doc: model.Document{"id": "msg-1", "name": "Bob", "version": float64(1)},
 			},
 		},
 	}
@@ -47,6 +48,99 @@ func TestHandlePush(t *testing.T) {
 	assert.Equal(t, http.StatusOK, rr.Code)
 }
 
+func TestHandlePushRejectsMalformedLaterChange(t *testing.T) {
+	for _, invalid := range []string{
+		`{"document":{"id":"bad"}}`,
+		`{"action":"","document":{"id":"bad"}}`,
+		`{"action":"upsert","document":{"id":"bad"}}`,
+		`{"action":"update","document":{"id":"bad","value":"\ud800"}}`,
+	} {
+		t.Run(invalid, func(t *testing.T) {
+			service := new(MockQueryService)
+			body := `{"collection":"users","changes":[{"action":"create","document":{"id":"first"}},` + invalid + `]}`
+			req := httptest.NewRequest(http.MethodPost, "/replication/v1/databases/default/push", bytes.NewBufferString(body))
+			rr := httptest.NewRecorder()
+			createTestServer(service, nil, nil).ServeHTTP(rr, req)
+			require.Equal(t, http.StatusBadRequest, rr.Code, rr.Body.String())
+			service.AssertNotCalled(t, "Push", mock.Anything, mock.Anything, mock.Anything)
+		})
+	}
+}
+
+func TestHandlePushStructuredConflicts(t *testing.T) {
+	service := new(MockQueryService)
+	tombstone := storage.NewStoredDoc("default", "users", "dead", nil)
+	tombstone.Deleted, tombstone.Version = true, 2
+	live := storage.NewStoredDoc("default", "users", "alice", map[string]any{"id": "forged", "deleted": true})
+	live.Version = 2
+	service.On("Push", mock.Anything, "default", mock.Anything).Return(&storage.ReplicationPushResponse{
+		Conflicts: []storage.ReplicationPushConflict{
+			{ChangeIndex: 0, ID: "gone", Reason: storage.PushMissing},
+			{ChangeIndex: 1, ID: "dead", Reason: storage.PushTombstoned, Current: &tombstone},
+			{ChangeIndex: 2, ID: "alice", Reason: storage.PushVersionMismatch, Current: &live},
+		},
+	}, nil).Once()
+	body := `{"collection":"users","changes":[{"action":"update","document":{"id":"gone","version":1}},{"action":"delete","document":{"id":"dead","version":1}},{"action":"update","document":{"id":"alice","version":1}}]}`
+	req := httptest.NewRequest(http.MethodPost, "/replication/v1/databases/default/push", bytes.NewBufferString(body))
+	rr := httptest.NewRecorder()
+	createTestServer(service, nil, nil).ServeHTTP(rr, req)
+	require.Equal(t, http.StatusOK, rr.Code, rr.Body.String())
+	var response ReplicaPushResponse
+	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &response))
+	require.Len(t, response.Conflicts, 3)
+	require.Equal(t, 0, response.Conflicts[0].ChangeIndex)
+	require.Nil(t, response.Conflicts[0].Current)
+	require.Contains(t, rr.Body.String(), `"current":null`)
+	require.Equal(t, 1, response.Conflicts[1].ChangeIndex)
+	require.Equal(t, true, response.Conflicts[1].Current["deleted"])
+	require.Equal(t, float64(2), response.Conflicts[1].Current["version"])
+	require.Equal(t, "alice", response.Conflicts[2].Current["id"])
+	require.NotContains(t, response.Conflicts[2].Current, "deleted")
+	service.AssertExpectations(t)
+}
+
+func TestHandlePushRejectsInvalidResult(t *testing.T) {
+	current := storage.NewStoredDoc("default", "users", "alice", map[string]any{"unsupported": make(chan int)})
+	current.Version = 2
+	for _, result := range []*storage.ReplicationPushResponse{
+		nil,
+		{Conflicts: []storage.ReplicationPushConflict{{ChangeIndex: 1, ID: "alice", Reason: storage.PushMissing}}},
+		{Conflicts: []storage.ReplicationPushConflict{{ChangeIndex: 0, ID: "alice", Reason: storage.PushVersionMismatch, Current: &current}}},
+	} {
+		service := new(MockQueryService)
+		service.On("Push", mock.Anything, "default", mock.Anything).Return(result, nil).Once()
+		request := httptest.NewRequest(http.MethodPost, "/replication/v1/databases/default/push", bytes.NewBufferString(`{"collection":"users","changes":[{"action":"update","document":{"id":"alice","version":1}}]}`))
+		rr := httptest.NewRecorder()
+		createTestServer(service, nil, nil).ServeHTTP(rr, request)
+		require.Equal(t, http.StatusInternalServerError, rr.Code, rr.Body.String())
+		service.AssertExpectations(t)
+	}
+}
+
+func TestHandlePushQueryValidationAndWriteErrors(t *testing.T) {
+	for _, queryErr := range []error{model.ErrInvalidQuery, model.ErrQueryWorkLimit, nil} {
+		service := new(MockQueryService)
+		service.On("Push", mock.Anything, "default", mock.Anything).Return(&storage.ReplicationPushResponse{}, queryErr).Once()
+		request := httptest.NewRequest(http.MethodPost, "/replication/v1/databases/default/push", bytes.NewBufferString(`{"collection":"users","changes":[{"action":"update","document":{"id":"alice"}}]}`))
+		if queryErr != nil {
+			rr := httptest.NewRecorder()
+			createTestServer(service, nil, nil).ServeHTTP(rr, request)
+			if queryErr == model.ErrQueryWorkLimit {
+				require.Equal(t, http.StatusUnprocessableEntity, rr.Code)
+				require.Contains(t, rr.Body.String(), "REPLICATION_BUDGET_EXCEEDED")
+			} else {
+				require.Equal(t, http.StatusBadRequest, rr.Code)
+			}
+		} else {
+			rr := newPullRecorder()
+			rr.writeErr = io.ErrClosedPipe
+			createTestServer(service, nil, nil).ServeHTTP(rr, request)
+			require.Empty(t, rr.Body.String())
+		}
+		service.AssertExpectations(t)
+	}
+}
+
 func TestHandlePush_VersionPrecondition(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -54,7 +148,7 @@ func TestHandlePush_VersionPrecondition(t *testing.T) {
 		action  string
 		version *int64
 	}{
-		{name: "omitted"},
+		{name: "omitted", action: "update"},
 		{name: "explicit zero", field: `,"version":0`, action: "update", version: replicationVersion(0)},
 		{name: "negative zero", field: `,"version":-0`, action: "update", version: replicationVersion(0)},
 		{name: "create version one", field: `,"version":1`, action: "create", version: replicationVersion(1)},
@@ -77,6 +171,7 @@ func TestHandlePush_VersionPrecondition(t *testing.T) {
 			require.Equal(t, http.StatusOK, rr.Code, rr.Body.String())
 			require.Len(t, captured.Changes, 1)
 			assert.Equal(t, tc.version, captured.Changes[0].BaseVersion)
+			assert.Equal(t, storage.PushAction(tc.action), captured.Changes[0].Action)
 			assert.Equal(t, "rooms/room-1/messages", captured.Collection)
 			doc := captured.Changes[0].Doc
 			require.NotNil(t, doc)
@@ -109,9 +204,9 @@ func TestHandlePush_InvalidVersion(t *testing.T) {
 			t.Run(fmt.Sprintf("%s/second=%t", version, second), func(t *testing.T) {
 				service := new(MockQueryService)
 				service.On("Push", mock.Anything, mock.Anything, mock.Anything).Return(&storage.ReplicationPushResponse{}, nil).Maybe()
-				changes := fmt.Sprintf(`{"document":{"id":"invalid","version":%s}}`, version)
+				changes := fmt.Sprintf(`{"action":"update","document":{"id":"invalid","version":%s}}`, version)
 				if second {
-					changes = `{"document":{"id":"valid","version":1}},` + changes
+					changes = `{"action":"update","document":{"id":"valid","version":1}},` + changes
 				}
 				body := `{"collection":"rooms","changes":[` + changes + `]}`
 				req := httptest.NewRequest(http.MethodPost, "/replication/v1/databases/default/push", bytes.NewBufferString(body))
@@ -233,9 +328,9 @@ func TestHandlePush_QueryEngineVersionPrecondition(t *testing.T) {
 				if tc.conflict {
 					assert.Zero(t, store.mutations)
 					require.Len(t, response.Conflicts, 1)
-					assert.Equal(t, "doc", response.Conflicts[0]["id"])
-					assert.Equal(t, "current", response.Conflicts[0]["name"])
-					assert.Equal(t, float64(5), response.Conflicts[0]["version"])
+					assert.Equal(t, "doc", response.Conflicts[0].ID)
+					assert.Equal(t, "current", response.Conflicts[0].Current["name"])
+					assert.Equal(t, float64(5), response.Conflicts[0].Current["version"])
 					return
 				}
 				assert.Empty(t, response.Conflicts)
@@ -266,7 +361,7 @@ func TestHandlePush_MissingCollection(t *testing.T) {
 	mockService := new(MockQueryService)
 	server := createTestServer(mockService, nil, nil)
 
-	reqBody := ReplicaPushRequest{Collection: "", Changes: []ReplicaChange{{Doc: model.Document{"id": "1"}}}}
+	reqBody := ReplicaPushRequest{Collection: "", Changes: []ReplicaChange{{Action: "update", Doc: model.Document{"id": "1"}}}}
 	body, _ := json.Marshal(reqBody)
 	req, _ := http.NewRequest("POST", "/replication/v1/databases/default/push", bytes.NewBuffer(body))
 	rr := httptest.NewRecorder()
@@ -280,7 +375,7 @@ func TestHandlePush_InvalidCollection(t *testing.T) {
 	mockService := new(MockQueryService)
 	server := createTestServer(mockService, nil, nil)
 
-	reqBody := ReplicaPushRequest{Collection: "rooms!", Changes: []ReplicaChange{{Doc: model.Document{"id": "1"}}}}
+	reqBody := ReplicaPushRequest{Collection: "rooms!", Changes: []ReplicaChange{{Action: "update", Doc: model.Document{"id": "1"}}}}
 	body, _ := json.Marshal(reqBody)
 	req, _ := http.NewRequest("POST", "/replication/v1/databases/default/push", bytes.NewBuffer(body))
 	rr := httptest.NewRecorder()
@@ -294,7 +389,7 @@ func TestHandlePush_DocValidationFail(t *testing.T) {
 	mockService := new(MockQueryService)
 	server := createTestServer(mockService, nil, nil)
 
-	reqBody := ReplicaPushRequest{Collection: "rooms", Changes: []ReplicaChange{{Doc: model.Document{"id": ""}}}}
+	reqBody := ReplicaPushRequest{Collection: "rooms", Changes: []ReplicaChange{{Action: "update", Doc: model.Document{"id": ""}}}}
 	body, _ := json.Marshal(reqBody)
 	req, _ := http.NewRequest("POST", "/replication/v1/databases/default/push", bytes.NewBuffer(body))
 	rr := httptest.NewRecorder()
@@ -308,7 +403,7 @@ func TestHandlePush_MissingDocID(t *testing.T) {
 	mockService := new(MockQueryService)
 	server := createTestServer(mockService, nil, nil)
 
-	reqBody := ReplicaPushRequest{Collection: "rooms", Changes: []ReplicaChange{{Doc: model.Document{"name": "Bob"}}}}
+	reqBody := ReplicaPushRequest{Collection: "rooms", Changes: []ReplicaChange{{Action: "update", Doc: model.Document{"name": "Bob"}}}}
 	body, _ := json.Marshal(reqBody)
 	req, _ := http.NewRequest("POST", "/replication/v1/databases/default/push", bytes.NewBuffer(body))
 	rr := httptest.NewRecorder()
@@ -338,7 +433,7 @@ func TestHandlePush_EngineError(t *testing.T) {
 
 	mockService.On("Push", mock.Anything, "default", mock.AnythingOfType("types.ReplicationPushRequest")).Return(nil, errors.New("boom"))
 
-	reqBody := ReplicaPushRequest{Collection: "rooms", Changes: []ReplicaChange{{Doc: model.Document{"id": "1"}}}}
+	reqBody := ReplicaPushRequest{Collection: "rooms", Changes: []ReplicaChange{{Action: "update", Doc: model.Document{"id": "1"}}}}
 	body, _ := json.Marshal(reqBody)
 	req, _ := http.NewRequest("POST", "/replication/v1/databases/default/push", bytes.NewBuffer(body))
 	rr := httptest.NewRecorder()
@@ -354,6 +449,7 @@ func TestHandlePush_FlattensConflicts(t *testing.T) {
 	server := createTestServer(mockService, nil, nil)
 
 	conflictDoc := &storage.StoredDoc{
+		Database:   "default",
 		Id:         "rooms/room-1/messages/msg-1",
 		Fullpath:   "rooms/room-1/messages/msg-1",
 		Collection: "rooms/room-1/messages",
@@ -361,13 +457,13 @@ func TestHandlePush_FlattensConflicts(t *testing.T) {
 		Version:    2,
 	}
 	mockService.On("Push", mock.Anything, "default", mock.AnythingOfType("types.ReplicationPushRequest")).Return(&storage.ReplicationPushResponse{
-		Conflicts: []*storage.StoredDoc{conflictDoc},
+		Conflicts: []storage.ReplicationPushConflict{{ChangeIndex: 0, ID: "msg-1", Reason: storage.PushVersionMismatch, Current: conflictDoc}},
 	}, nil)
 
 	pushReq := ReplicaPushRequest{
 		Collection: "rooms/room-1/messages",
 		Changes: []ReplicaChange{
-			{Doc: model.Document{"id": "msg-1", "name": "Bob", "version": float64(1)}},
+			{Action: "update", Doc: model.Document{"id": "msg-1", "name": "Bob", "version": float64(1)}},
 		},
 	}
 	body, _ := json.Marshal(pushReq)
@@ -381,7 +477,7 @@ func TestHandlePush_FlattensConflicts(t *testing.T) {
 	var resp ReplicaPushResponse
 	assert.NoError(t, json.Unmarshal(rr.Body.Bytes(), &resp))
 	assert.Len(t, resp.Conflicts, 1)
-	assert.Equal(t, "msg-1", resp.Conflicts[0]["id"])
+	assert.Equal(t, "msg-1", resp.Conflicts[0].ID)
 	mockService.AssertExpectations(t)
 }
 
@@ -414,7 +510,7 @@ func TestHandlePush_ValidateReplicationPushError(t *testing.T) {
 	pushReq := ReplicaPushRequest{
 		Collection: "rooms/room-1/messages",
 		Changes: []ReplicaChange{
-			{Doc: model.Document{"id": "msg-3", "version": float64(1)}},
+			{Action: "update", Doc: model.Document{"id": "msg-3", "version": float64(1)}},
 		},
 	}
 	body, _ := json.Marshal(pushReq)
@@ -422,7 +518,7 @@ func TestHandlePush_ValidateReplicationPushError(t *testing.T) {
 	rr := httptest.NewRecorder()
 
 	orig := validateReplicationPushFn
-	validateReplicationPushFn = func(storage.ReplicationPushRequest) error {
+	validateReplicationPushFn = func(string, storage.ReplicationPushRequest) error {
 		return errors.New("forced validation error")
 	}
 	defer func() { validateReplicationPushFn = orig }()

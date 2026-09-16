@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"sync"
 
+	"github.com/syntrixbase/syntrix/internal/query/wire"
 	"github.com/syntrixbase/syntrix/internal/server/ratelimit"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/reflection"
@@ -69,6 +70,7 @@ func New(cfg Config, logger *slog.Logger) Service {
 	// Initialize gRPC server immediately to allow registration
 	opts := []grpc.ServerOption{
 		grpc.MaxConcurrentStreams(uint32(s.cfg.GRPCMaxConcurrent)),
+		grpc.MaxRecvMsgSize(wire.MaxGRPCBytes),
 		s.unaryInterceptors(),
 		s.streamInterceptors(),
 	}

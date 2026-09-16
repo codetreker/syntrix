@@ -184,21 +184,6 @@ func validateReplicationPull(database string, req storage.ReplicationPullRequest
 	return querycore.ValidatePullRequest(database, req)
 }
 
-func validateReplicationPush(req storage.ReplicationPushRequest) error {
-	if err := helper.CheckCollectionPath(req.Collection); err != nil {
-		return fmt.Errorf("invalid collection: %w", err)
-	}
-	for _, change := range req.Changes {
-		if change.Doc == nil {
-			return errors.New("change document cannot be nil")
-		}
-		if err := helper.CheckDocumentPath(change.Doc.Fullpath); err != nil {
-			return fmt.Errorf("invalid document path in change: %w", err)
-		}
-		// Ensure document path matches collection prefix
-		if !strings.HasPrefix(change.Doc.Fullpath, req.Collection+"/") {
-			return fmt.Errorf("document path %s does not belong to collection %s", change.Doc.Fullpath, req.Collection)
-		}
-	}
-	return nil
+func validateReplicationPush(database string, req storage.ReplicationPushRequest) error {
+	return querycore.ValidatePushRequest(database, req)
 }

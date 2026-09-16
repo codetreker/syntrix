@@ -180,121 +180,98 @@ func TestServer_StateMachine_HappyPath(t *testing.T) {
 }
 
 func TestServer_StateMachine_LiveDowngrade(t *testing.T) {
-	// Scenario: Live mode -> Channel overflow -> Switch to Catch-up -> Replay -> Switch back to Live
-
-	// Setup with small channel size to force overflow
 	cfg := config.GRPCConfig{ChannelSize: 1}
-
 	var replayCount int
 	var mu sync.Mutex
-
-	replayEvt2 := &events.StoreChangeEvent{
-		EventID:     "replay-2",
-		ClusterTime: events.ClusterTime{T: 103, I: 1}, // Newer than overflow events
+	replayEvt := &events.StoreChangeEvent{
+		EventID: "replay-2", Backend: "db1", ClusterTime: events.ClusterTime{T: 103, I: 1},
 	}
-
 	source := &controllableEventSource{
 		replayFunc: func(ctx context.Context, after map[string]string, coalesce bool) (events.Iterator, error) {
 			mu.Lock()
-			defer mu.Unlock()
 			replayCount++
-			t.Logf("Replay called. Count: %d", replayCount)
-			// Return the event, assuming only overflow triggers replay (or if initial replay happens, it gets this too, which is fine)
-			return &controllableIterator{events: []*events.StoreChangeEvent{replayEvt2}}, nil
+			mu.Unlock()
+			return &controllableIterator{events: []*events.StoreChangeEvent{replayEvt}}, nil
 		},
 	}
 	server := NewServer(cfg, source, nil)
-
-	// Init the server to start the event loop
 	server.Init()
-	defer server.Shutdown()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	stream := &mockStream{ctx: ctx, t: t}
-
-	// 1. Initial connection (empty replay -> live)
-
-	// Run Subscribe
-	go func() {
-		req := &pullerv1.SubscribeRequest{
-			ConsumerId: "overflow-consumer",
-			// After:      "cursor", // Force catchup mode if needed, but here we test live downgrade
-		}
-		server.Subscribe(req, stream)
-	}()
-
-	time.Sleep(100 * time.Millisecond) // Wait for live mode
-
-	// 2. Fill the channel (size 1)
-	evt1 := &events.StoreChangeEvent{EventID: "evt-1", ClusterTime: events.ClusterTime{T: 100}}
-
-	// Let's make stream.Send block for the first event
+	sendEntered := make(chan struct{})
 	sendBlock := make(chan struct{})
 	stream.On("Send", mock.MatchedBy(func(event *pullerv1.PullerEvent) bool {
-		return event.ChangeEvent.EventId == "evt-1"
+		return event.ChangeEvent != nil && event.ChangeEvent.EventId == "evt-1"
 	})).Run(func(args mock.Arguments) {
-		t.Log("Blocking Send(evt-1)")
-		<-sendBlock // Block here
-		t.Log("Unblocking Send(evt-1)")
+		close(sendEntered)
+		select {
+		case <-sendBlock:
+		case <-ctx.Done():
+		}
 	}).Return(nil).Once()
-
-	// Broadcast evt-1. It will be picked up and stuck in Send.
-	t.Log("Emitting evt-1")
-	source.EmitEvent(context.Background(), "db1", evt1)
-	time.Sleep(50 * time.Millisecond)
-
-	// Now channel is empty (item picked up), but consumer is blocked.
-	// Broadcast evt-2. It goes to channel (size 1). Channel full.
-	t.Log("Emitting evt-2")
-	evt2 := &events.StoreChangeEvent{EventID: "evt-2", ClusterTime: events.ClusterTime{T: 101}}
-	source.EmitEvent(context.Background(), "db1", evt2)
-	time.Sleep(50 * time.Millisecond)
-
-	// Broadcast evt-3. Channel full -> Overflow!
-	t.Log("Emitting evt-3")
-	evt3 := &events.StoreChangeEvent{EventID: "evt-3", ClusterTime: events.ClusterTime{T: 102}}
-	source.EmitEvent(context.Background(), "db1", evt3)
-	time.Sleep(50 * time.Millisecond)
-
-	// Expect evt-2 to be sent as well (it was in the channel)
 	stream.On("Send", mock.MatchedBy(func(event *pullerv1.PullerEvent) bool {
-		return event.ChangeEvent.EventId == "evt-2"
+		return event.ChangeEvent != nil && event.ChangeEvent.EventId == "evt-2"
 	})).Return(nil).Once()
-
-	// Expect the second replay event to be sent eventually
 	replayDone := make(chan struct{})
 	stream.On("Send", mock.MatchedBy(func(event *pullerv1.PullerEvent) bool {
-		if event.ChangeEvent.EventId == "replay-2" {
-			close(replayDone)
-			return true
+		return event.ChangeEvent != nil && event.ChangeEvent.EventId == "replay-2"
+	})).Run(func(args mock.Arguments) {
+		close(replayDone)
+	}).Return(nil).Once()
+
+	subscribeDone := make(chan error, 1)
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case err := <-subscribeDone:
+			if err != nil {
+				t.Errorf("Subscribe returned an error: %v", err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Error("Timeout waiting for Subscribe to stop")
 		}
-		return false
-	})).Return(nil).Once()
+		server.Shutdown()
+	})
+	go func() {
+		subscribeDone <- server.Subscribe(&pullerv1.SubscribeRequest{ConsumerId: "overflow-consumer"}, stream)
+	}()
 
-	// Now unblock Send
-	t.Log("Closing sendBlock")
+	registrationPoll := time.NewTicker(time.Millisecond)
+	defer registrationPoll.Stop()
+	for server.subs.Count() != 1 {
+		select {
+		case <-registrationPoll.C:
+		case <-ctx.Done():
+			t.Fatal("Timeout waiting for subscriber registration")
+		}
+	}
+	if err := source.EmitEvent(ctx, "db1", &events.StoreChangeEvent{EventID: "evt-1", ClusterTime: events.ClusterTime{T: 100}}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-sendEntered:
+	case <-ctx.Done():
+		t.Fatal("Timeout waiting for the first Send to block")
+	}
+
+	// The downgrade scenario requires overflow to be fully published before
+	// Send resumes. EmitEvent only enqueues asynchronous broadcast work.
+	server.subs.Broadcast(&events.StoreChangeEvent{EventID: "evt-2", Backend: "db1", ClusterTime: events.ClusterTime{T: 101}})
+	server.subs.Broadcast(&events.StoreChangeEvent{EventID: "evt-3", Backend: "db1", ClusterTime: events.ClusterTime{T: 102}})
 	close(sendBlock)
-
-	// The server should:
-	// 1. Finish sending evt-1.
-	// 2. Detect overflow (evt-3 caused it).
-	// 3. Switch to Catch-up mode.
-	// 4. Call Replay again (replayCount becomes 2).
-	// 5. Send replay-2.
 
 	select {
 	case <-replayDone:
-	// Success
-	case <-time.After(2 * time.Second):
+	case <-ctx.Done():
 		t.Fatal("Timeout waiting for replay event after overflow")
 	}
-
 	mu.Lock()
 	if replayCount < 1 {
 		t.Errorf("Expected at least 1 replay, got %d", replayCount)
 	}
 	mu.Unlock()
+	stream.AssertExpectations(t)
 }
 
 func TestServer_Boundary_EmptyReplay(t *testing.T) {

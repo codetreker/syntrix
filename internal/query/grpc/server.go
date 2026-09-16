@@ -168,14 +168,25 @@ func (s *Server) Pull(ctx context.Context, req *pb.PullRequest) (*pb.PullRespons
 
 // Push sends documents for replication.
 func (s *Server) Push(ctx context.Context, req *pb.PushRequest) (*pb.PushResponse, error) {
-	pushReq := protoToPushRequest(req)
-
-	resp, err := s.service.Push(ctx, req.Database, pushReq)
+	pushReq, err := wire.DecodePushRequest(req)
 	if err != nil {
 		return nil, errorToStatus(err)
 	}
-
-	return pushResponseToProto(resp), nil
+	if err := core.ValidatePushRequest(req.Database, pushReq); err != nil {
+		return nil, errorToStatus(err)
+	}
+	resp, err := s.service.Push(ctx, req.Database, pushReq)
+	if err != nil {
+		if _, ok := status.FromError(err); ok {
+			return nil, err
+		}
+		return nil, errorToStatus(err)
+	}
+	encoded, err := wire.EncodePushResponse(req.Database, pushReq, resp)
+	if err != nil {
+		return nil, errorToStatus(err)
+	}
+	return encoded, nil
 }
 
 // ============================================================================

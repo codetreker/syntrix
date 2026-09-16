@@ -122,7 +122,10 @@ App
 1) Read batch from Outbox (bounded size).
 2) Send `/replication/v1/databases/{database}/push` with `{collection, changes}`.
 3) On success, remove sent entries from Outbox.
-4) If `conflicts` returned, upsert them to RxDB and emit `onConflict(conflicts, locals?)`.
+4) Correlate structured conflicts to sent entries by `changeIndex`. Apply a non-null
+   `current` document or tombstone; treat null as authoritative absence under the
+   selected resolution policy. Emit `onConflict(conflicts, locals?)` with the reason
+   and original request item. Do not upsert the conflict wrapper as a document.
 5) Errors: retry with backoff, keep Outbox intact.
 
 ### Realtime trigger policy
@@ -155,7 +158,9 @@ App
 - `hooks`: callbacks listed above
 
 ## Conflict Handling Options
-- Default: server-wins (upsert conflicts, clear outbox entries for those ids).
+- Default: server-wins (apply each conflict's nullable `current` state and resolve
+  the matching Outbox entry by request position; duplicate IDs can represent
+  different operations).
 - Custom: app-provided merge in `onConflict`, then enqueue merged doc back to Outbox for retry.
 
 ## Cleanup

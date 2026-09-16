@@ -2,16 +2,12 @@ package grpc
 
 import (
 	"encoding/json"
-	"math"
-	"strconv"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 	pb "github.com/syntrixbase/syntrix/api/gen/query/v1"
 	"github.com/syntrixbase/syntrix/internal/core/storage"
 	"github.com/syntrixbase/syntrix/pkg/model"
-	"google.golang.org/protobuf/proto"
 )
 
 func TestStoredDocToProto(t *testing.T) {
@@ -296,85 +292,4 @@ func TestPullRequestConversions(t *testing.T) {
 		assert.Empty(t, result.Collection)
 	})
 
-}
-
-func TestPushRequestConversions(t *testing.T) {
-	for _, version := range []int64{-1, 0, 5, 9007199254740993, math.MaxInt64} {
-		t.Run("base version roundtrip/"+strconv.FormatInt(version, 10), func(t *testing.T) {
-			change := storage.ReplicationPushChange{
-				Doc: &storage.StoredDoc{Id: "doc1", Collection: "users", Version: 1},
-			}
-			if version >= 0 {
-				change.BaseVersion = &version
-			}
-			encoded := pushChangeToProto(change)
-			assert.Equal(t, version, encoded.BaseVersion)
-			assert.Equal(t, int64(1), encoded.Document.Version)
-
-			wire, err := proto.Marshal(encoded)
-			require.NoError(t, err)
-			var received pb.PushChange
-			require.NoError(t, proto.Unmarshal(wire, &received))
-			decoded := protoToPushChange(&received)
-			assert.Equal(t, change.BaseVersion, decoded.BaseVersion)
-			assert.Equal(t, "doc1", decoded.Doc.Id)
-			assert.Equal(t, int64(1), decoded.Doc.Version)
-		})
-	}
-
-	t.Run("protoToPushRequest", func(t *testing.T) {
-		data, _ := json.Marshal(map[string]interface{}{"name": "test"})
-		baseVersion := int64(5)
-		proto := &pb.PushRequest{
-			Database:   "database1",
-			Collection: "users",
-			Changes: []*pb.PushChange{
-				{
-					Document:    &pb.Document{Id: "doc1", Data: data},
-					BaseVersion: baseVersion,
-				},
-			},
-		}
-
-		result := protoToPushRequest(proto)
-
-		assert.Equal(t, "users", result.Collection)
-		assert.Len(t, result.Changes, 1)
-		assert.Equal(t, "doc1", result.Changes[0].Doc.Id)
-		assert.NotNil(t, result.Changes[0].BaseVersion)
-		assert.Equal(t, int64(5), *result.Changes[0].BaseVersion)
-	})
-
-	t.Run("protoToPushRequest nil", func(t *testing.T) {
-		result := protoToPushRequest(nil)
-		assert.Empty(t, result.Collection)
-	})
-
-	t.Run("protoToPushChange with negative baseVersion", func(t *testing.T) {
-		change := &pb.PushChange{
-			Document:    &pb.Document{Id: "doc1"},
-			BaseVersion: -1,
-		}
-
-		result := protoToPushChange(change)
-
-		assert.Nil(t, result.BaseVersion) // -1 means no conflict detection
-	})
-
-	t.Run("pushResponseToProto", func(t *testing.T) {
-		resp := &storage.ReplicationPushResponse{
-			Conflicts: []*storage.StoredDoc{
-				{Id: "conflict1"},
-			},
-		}
-
-		result := pushResponseToProto(resp)
-
-		assert.Len(t, result.Conflicts, 1)
-	})
-
-	t.Run("pushResponseToProto nil", func(t *testing.T) {
-		result := pushResponseToProto(nil)
-		assert.Nil(t, result)
-	})
 }

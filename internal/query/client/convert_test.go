@@ -1,8 +1,6 @@
 package client
 
 import (
-	"math"
-	"strconv"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -293,27 +291,4 @@ func TestFiltersToProto(t *testing.T) {
 		assert.Equal(t, "age", result[0].Field)
 		assert.Equal(t, "active", result[1].Field)
 	})
-}
-
-func TestPushChangeToProto(t *testing.T) {
-	for _, version := range []int64{-1, 0, 5, 9007199254740993, math.MaxInt64} {
-		t.Run(strconv.FormatInt(version, 10), func(t *testing.T) {
-			change := storage.ReplicationPushChange{
-				Doc: &storage.StoredDoc{
-					Id:       "doc1",
-					Fullpath: "users/doc1",
-					Version:  1,
-					Data:     map[string]interface{}{"name": "Alice"},
-				},
-			}
-			if version >= 0 {
-				change.BaseVersion = &version
-			}
-			result := pushChangeToProto(change)
-
-			assert.Equal(t, "doc1", result.Document.Id)
-			assert.Equal(t, int64(1), result.Document.Version)
-			assert.Equal(t, version, result.BaseVersion)
-		})
-	}
 }

@@ -37,7 +37,8 @@ service QueryService {
 // ============================================================================
 
 // Document represents a stored document.
-// The document data is stored as JSON bytes for flexibility.
+// Data uses the codec specified by each RPC: ordinary JSON for CRUD,
+// typed values for Query, Pull, and Push.
 message Document {
   // Unique document identifier (database:hash(fullpath)).
   string id = 1;
@@ -269,13 +270,22 @@ message PullResponse {
 // Replication: Push
 // ============================================================================
 
+enum PushAction {
+  PUSH_ACTION_UNSPECIFIED = 0;
+  PUSH_ACTION_CREATE = 1;
+  PUSH_ACTION_UPDATE = 2;
+  PUSH_ACTION_DELETE = 3;
+}
+
 message PushChange {
-  // Document to push.
+  // Document to push. Data is a typed-value object or typed null.
   Document document = 1;
 
   // Base version known to the client (for conflict detection).
-  // Use -1 or omit to skip conflict detection.
-  int64 base_version = 2;
+  // Absence skips the version condition; zero is an explicit condition.
+  optional int64 base_version = 2;
+
+  PushAction action = 3;
 }
 
 message PushRequest {
@@ -289,7 +299,14 @@ message PushRequest {
   repeated PushChange changes = 3;
 }
 
+message PushConflict {
+  int32 change_index = 1;
+  string id = 2;
+  string reason = 3;
+  // Absent when the document is missing. Data uses typed values.
+  Document current = 4;
+}
+
 message PushResponse {
-  // Documents that conflicted during push.
-  repeated Document conflicts = 1;
+  repeated PushConflict conflicts = 1;
 }

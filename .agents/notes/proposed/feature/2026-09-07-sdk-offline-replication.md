@@ -10,7 +10,7 @@ The SDK exposes replication components without a working durable synchronization
 
 Complete collection-scoped pull, push, persistence, and lifecycle coordination through an explicit public API. Namespace local documents, checkpoints, and queued mutations by endpoint, authenticated account, database, and collection so switching accounts cannot replay another account's writes.
 
-Pull applies documents and tombstones durably before committing the server-issued checkpoint. Push retains each queued mutation and its base version until an acknowledged result is recorded; conflicts remain available to the documented resolution hook. A local edit and its outbox entry must become durable together. Define the adapter's transactional requirements and stored schema before implementation; any existing application-owned local data requires an explicit migration, without inferred format fallbacks.
+Pull applies documents and tombstones durably before committing the server-issued checkpoint. Push retains each queued mutation and its base version until an acknowledged result is recorded. Structured conflicts correlate by zero-based request position, including repeated document IDs; the nullable current state and reason remain available to the resolution hook. Absence must not be passed to a document upsert. A local edit and its outbox entry must become durable together. Define the adapter's transactional requirements and stored schema before implementation; any existing application-owned local data requires an explicit migration, without inferred format fallbacks.
 
 ### Lossless Local Storage and Write Transport
 
@@ -51,7 +51,7 @@ business values. A lossless encoding must be agreed across both ends.
 
 ## Dependencies
 
-[Push version checks](../bug-fix/2026-09-07-replication-push-version-checks.md), implemented [Pull cursor progress and manual transport](../../implemented/bug-fix/2026-09-07-replication-pull-cursor-progress.md), and [realtime resume](2026-09-07-realtime-client-resume.md) own server and transport guarantees. Manual Pull does not persist local documents/checkpoints or implement this proposal's coordinator and outbox.
+implemented [Push version checks](../../implemented/bug-fix/2026-09-07-replication-push-version-checks.md), implemented [Pull cursor progress and manual transport](../../implemented/bug-fix/2026-09-07-replication-pull-cursor-progress.md), and [realtime resume](2026-09-07-realtime-client-resume.md) own server and transport guarantees. Manual Pull does not persist local documents/checkpoints or implement this proposal's coordinator and outbox.
 
 ## Risks
 

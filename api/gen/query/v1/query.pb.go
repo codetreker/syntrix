@@ -21,8 +21,61 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+type PushAction int32
+
+const (
+	PushAction_PUSH_ACTION_UNSPECIFIED PushAction = 0
+	PushAction_PUSH_ACTION_CREATE      PushAction = 1
+	PushAction_PUSH_ACTION_UPDATE      PushAction = 2
+	PushAction_PUSH_ACTION_DELETE      PushAction = 3
+)
+
+// Enum value maps for PushAction.
+var (
+	PushAction_name = map[int32]string{
+		0: "PUSH_ACTION_UNSPECIFIED",
+		1: "PUSH_ACTION_CREATE",
+		2: "PUSH_ACTION_UPDATE",
+		3: "PUSH_ACTION_DELETE",
+	}
+	PushAction_value = map[string]int32{
+		"PUSH_ACTION_UNSPECIFIED": 0,
+		"PUSH_ACTION_CREATE":      1,
+		"PUSH_ACTION_UPDATE":      2,
+		"PUSH_ACTION_DELETE":      3,
+	}
+)
+
+func (x PushAction) Enum() *PushAction {
+	p := new(PushAction)
+	*p = x
+	return p
+}
+
+func (x PushAction) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (PushAction) Descriptor() protoreflect.EnumDescriptor {
+	return file_query_proto_enumTypes[0].Descriptor()
+}
+
+func (PushAction) Type() protoreflect.EnumType {
+	return &file_query_proto_enumTypes[0]
+}
+
+func (x PushAction) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use PushAction.Descriptor instead.
+func (PushAction) EnumDescriptor() ([]byte, []int) {
+	return file_query_proto_rawDescGZIP(), []int{0}
+}
+
 // Document represents a stored document.
-// The document data is stored as JSON bytes for flexibility.
+// Data uses the codec specified by each RPC: ordinary JSON for CRUD,
+// typed values for Query, Pull, and Push.
 type Document struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Unique document identifier (database:hash(fullpath)).
@@ -1174,11 +1227,12 @@ func (x *PullResponse) GetWireVersion() uint32 {
 
 type PushChange struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// Document to push.
+	// Document to push. Data is a typed-value object or typed null.
 	Document *Document `protobuf:"bytes,1,opt,name=document,proto3" json:"document,omitempty"`
 	// Base version known to the client (for conflict detection).
-	// Use -1 or omit to skip conflict detection.
-	BaseVersion   int64 `protobuf:"varint,2,opt,name=base_version,json=baseVersion,proto3" json:"base_version,omitempty"`
+	// Absence skips the version condition; zero is an explicit condition.
+	BaseVersion   *int64     `protobuf:"varint,2,opt,name=base_version,json=baseVersion,proto3,oneof" json:"base_version,omitempty"`
+	Action        PushAction `protobuf:"varint,3,opt,name=action,proto3,enum=syntrix.query.v1.PushAction" json:"action,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1221,10 +1275,17 @@ func (x *PushChange) GetDocument() *Document {
 }
 
 func (x *PushChange) GetBaseVersion() int64 {
-	if x != nil {
-		return x.BaseVersion
+	if x != nil && x.BaseVersion != nil {
+		return *x.BaseVersion
 	}
 	return 0
+}
+
+func (x *PushChange) GetAction() PushAction {
+	if x != nil {
+		return x.Action
+	}
+	return PushAction_PUSH_ACTION_UNSPECIFIED
 }
 
 type PushRequest struct {
@@ -1290,17 +1351,85 @@ func (x *PushRequest) GetChanges() []*PushChange {
 	return nil
 }
 
+type PushConflict struct {
+	state       protoimpl.MessageState `protogen:"open.v1"`
+	ChangeIndex int32                  `protobuf:"varint,1,opt,name=change_index,json=changeIndex,proto3" json:"change_index,omitempty"`
+	Id          string                 `protobuf:"bytes,2,opt,name=id,proto3" json:"id,omitempty"`
+	Reason      string                 `protobuf:"bytes,3,opt,name=reason,proto3" json:"reason,omitempty"`
+	// Absent when the document is missing. Data uses typed values.
+	Current       *Document `protobuf:"bytes,4,opt,name=current,proto3" json:"current,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PushConflict) Reset() {
+	*x = PushConflict{}
+	mi := &file_query_proto_msgTypes[20]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PushConflict) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PushConflict) ProtoMessage() {}
+
+func (x *PushConflict) ProtoReflect() protoreflect.Message {
+	mi := &file_query_proto_msgTypes[20]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PushConflict.ProtoReflect.Descriptor instead.
+func (*PushConflict) Descriptor() ([]byte, []int) {
+	return file_query_proto_rawDescGZIP(), []int{20}
+}
+
+func (x *PushConflict) GetChangeIndex() int32 {
+	if x != nil {
+		return x.ChangeIndex
+	}
+	return 0
+}
+
+func (x *PushConflict) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *PushConflict) GetReason() string {
+	if x != nil {
+		return x.Reason
+	}
+	return ""
+}
+
+func (x *PushConflict) GetCurrent() *Document {
+	if x != nil {
+		return x.Current
+	}
+	return nil
+}
+
 type PushResponse struct {
-	state protoimpl.MessageState `protogen:"open.v1"`
-	// Documents that conflicted during push.
-	Conflicts     []*Document `protobuf:"bytes,1,rep,name=conflicts,proto3" json:"conflicts,omitempty"`
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Conflicts     []*PushConflict        `protobuf:"bytes,1,rep,name=conflicts,proto3" json:"conflicts,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *PushResponse) Reset() {
 	*x = PushResponse{}
-	mi := &file_query_proto_msgTypes[20]
+	mi := &file_query_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1312,7 +1441,7 @@ func (x *PushResponse) String() string {
 func (*PushResponse) ProtoMessage() {}
 
 func (x *PushResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_query_proto_msgTypes[20]
+	mi := &file_query_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1325,10 +1454,10 @@ func (x *PushResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PushResponse.ProtoReflect.Descriptor instead.
 func (*PushResponse) Descriptor() ([]byte, []int) {
-	return file_query_proto_rawDescGZIP(), []int{20}
+	return file_query_proto_rawDescGZIP(), []int{21}
 }
 
-func (x *PushResponse) GetConflicts() []*Document {
+func (x *PushResponse) GetConflicts() []*PushConflict {
 	if x != nil {
 		return x.Conflicts
 	}
@@ -1428,19 +1557,32 @@ const file_query_proto_rawDesc = "" +
 	"checkpoint\x18\x02 \x01(\tR\n" +
 	"checkpoint\x12\x1b\n" +
 	"\tcaught_up\x18\x03 \x01(\bR\bcaughtUp\x12!\n" +
-	"\fwire_version\x18\x04 \x01(\rR\vwireVersion\"g\n" +
+	"\fwire_version\x18\x04 \x01(\rR\vwireVersion\"\xb3\x01\n" +
 	"\n" +
 	"PushChange\x126\n" +
-	"\bdocument\x18\x01 \x01(\v2\x1a.syntrix.query.v1.DocumentR\bdocument\x12!\n" +
-	"\fbase_version\x18\x02 \x01(\x03R\vbaseVersion\"\x81\x01\n" +
+	"\bdocument\x18\x01 \x01(\v2\x1a.syntrix.query.v1.DocumentR\bdocument\x12&\n" +
+	"\fbase_version\x18\x02 \x01(\x03H\x00R\vbaseVersion\x88\x01\x01\x124\n" +
+	"\x06action\x18\x03 \x01(\x0e2\x1c.syntrix.query.v1.PushActionR\x06actionB\x0f\n" +
+	"\r_base_version\"\x81\x01\n" +
 	"\vPushRequest\x12\x1a\n" +
 	"\bdatabase\x18\x01 \x01(\tR\bdatabase\x12\x1e\n" +
 	"\n" +
 	"collection\x18\x02 \x01(\tR\n" +
 	"collection\x126\n" +
-	"\achanges\x18\x03 \x03(\v2\x1c.syntrix.query.v1.PushChangeR\achanges\"H\n" +
-	"\fPushResponse\x128\n" +
-	"\tconflicts\x18\x01 \x03(\v2\x1a.syntrix.query.v1.DocumentR\tconflicts2\xeb\x05\n" +
+	"\achanges\x18\x03 \x03(\v2\x1c.syntrix.query.v1.PushChangeR\achanges\"\x8f\x01\n" +
+	"\fPushConflict\x12!\n" +
+	"\fchange_index\x18\x01 \x01(\x05R\vchangeIndex\x12\x0e\n" +
+	"\x02id\x18\x02 \x01(\tR\x02id\x12\x16\n" +
+	"\x06reason\x18\x03 \x01(\tR\x06reason\x124\n" +
+	"\acurrent\x18\x04 \x01(\v2\x1a.syntrix.query.v1.DocumentR\acurrent\"L\n" +
+	"\fPushResponse\x12<\n" +
+	"\tconflicts\x18\x01 \x03(\v2\x1e.syntrix.query.v1.PushConflictR\tconflicts*q\n" +
+	"\n" +
+	"PushAction\x12\x1b\n" +
+	"\x17PUSH_ACTION_UNSPECIFIED\x10\x00\x12\x16\n" +
+	"\x12PUSH_ACTION_CREATE\x10\x01\x12\x16\n" +
+	"\x12PUSH_ACTION_UPDATE\x10\x02\x12\x16\n" +
+	"\x12PUSH_ACTION_DELETE\x10\x032\xeb\x05\n" +
 	"\fQueryService\x12Z\n" +
 	"\vGetDocument\x12$.syntrix.query.v1.GetDocumentRequest\x1a%.syntrix.query.v1.GetDocumentResponse\x12c\n" +
 	"\x0eCreateDocument\x12'.syntrix.query.v1.CreateDocumentRequest\x1a(.syntrix.query.v1.CreateDocumentResponse\x12f\n" +
@@ -1463,70 +1605,75 @@ func file_query_proto_rawDescGZIP() []byte {
 	return file_query_proto_rawDescData
 }
 
-var file_query_proto_msgTypes = make([]protoimpl.MessageInfo, 21)
+var file_query_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
+var file_query_proto_msgTypes = make([]protoimpl.MessageInfo, 22)
 var file_query_proto_goTypes = []any{
-	(*Document)(nil),                // 0: syntrix.query.v1.Document
-	(*Filter)(nil),                  // 1: syntrix.query.v1.Filter
-	(*OrderBy)(nil),                 // 2: syntrix.query.v1.OrderBy
-	(*Query)(nil),                   // 3: syntrix.query.v1.Query
-	(*GetDocumentRequest)(nil),      // 4: syntrix.query.v1.GetDocumentRequest
-	(*GetDocumentResponse)(nil),     // 5: syntrix.query.v1.GetDocumentResponse
-	(*CreateDocumentRequest)(nil),   // 6: syntrix.query.v1.CreateDocumentRequest
-	(*CreateDocumentResponse)(nil),  // 7: syntrix.query.v1.CreateDocumentResponse
-	(*ReplaceDocumentRequest)(nil),  // 8: syntrix.query.v1.ReplaceDocumentRequest
-	(*ReplaceDocumentResponse)(nil), // 9: syntrix.query.v1.ReplaceDocumentResponse
-	(*PatchDocumentRequest)(nil),    // 10: syntrix.query.v1.PatchDocumentRequest
-	(*PatchDocumentResponse)(nil),   // 11: syntrix.query.v1.PatchDocumentResponse
-	(*DeleteDocumentRequest)(nil),   // 12: syntrix.query.v1.DeleteDocumentRequest
-	(*DeleteDocumentResponse)(nil),  // 13: syntrix.query.v1.DeleteDocumentResponse
-	(*ExecuteQueryRequest)(nil),     // 14: syntrix.query.v1.ExecuteQueryRequest
-	(*ExecuteQueryResponse)(nil),    // 15: syntrix.query.v1.ExecuteQueryResponse
-	(*PullRequest)(nil),             // 16: syntrix.query.v1.PullRequest
-	(*PullResponse)(nil),            // 17: syntrix.query.v1.PullResponse
-	(*PushChange)(nil),              // 18: syntrix.query.v1.PushChange
-	(*PushRequest)(nil),             // 19: syntrix.query.v1.PushRequest
-	(*PushResponse)(nil),            // 20: syntrix.query.v1.PushResponse
+	(PushAction)(0),                 // 0: syntrix.query.v1.PushAction
+	(*Document)(nil),                // 1: syntrix.query.v1.Document
+	(*Filter)(nil),                  // 2: syntrix.query.v1.Filter
+	(*OrderBy)(nil),                 // 3: syntrix.query.v1.OrderBy
+	(*Query)(nil),                   // 4: syntrix.query.v1.Query
+	(*GetDocumentRequest)(nil),      // 5: syntrix.query.v1.GetDocumentRequest
+	(*GetDocumentResponse)(nil),     // 6: syntrix.query.v1.GetDocumentResponse
+	(*CreateDocumentRequest)(nil),   // 7: syntrix.query.v1.CreateDocumentRequest
+	(*CreateDocumentResponse)(nil),  // 8: syntrix.query.v1.CreateDocumentResponse
+	(*ReplaceDocumentRequest)(nil),  // 9: syntrix.query.v1.ReplaceDocumentRequest
+	(*ReplaceDocumentResponse)(nil), // 10: syntrix.query.v1.ReplaceDocumentResponse
+	(*PatchDocumentRequest)(nil),    // 11: syntrix.query.v1.PatchDocumentRequest
+	(*PatchDocumentResponse)(nil),   // 12: syntrix.query.v1.PatchDocumentResponse
+	(*DeleteDocumentRequest)(nil),   // 13: syntrix.query.v1.DeleteDocumentRequest
+	(*DeleteDocumentResponse)(nil),  // 14: syntrix.query.v1.DeleteDocumentResponse
+	(*ExecuteQueryRequest)(nil),     // 15: syntrix.query.v1.ExecuteQueryRequest
+	(*ExecuteQueryResponse)(nil),    // 16: syntrix.query.v1.ExecuteQueryResponse
+	(*PullRequest)(nil),             // 17: syntrix.query.v1.PullRequest
+	(*PullResponse)(nil),            // 18: syntrix.query.v1.PullResponse
+	(*PushChange)(nil),              // 19: syntrix.query.v1.PushChange
+	(*PushRequest)(nil),             // 20: syntrix.query.v1.PushRequest
+	(*PushConflict)(nil),            // 21: syntrix.query.v1.PushConflict
+	(*PushResponse)(nil),            // 22: syntrix.query.v1.PushResponse
 }
 var file_query_proto_depIdxs = []int32{
-	1,  // 0: syntrix.query.v1.Query.filters:type_name -> syntrix.query.v1.Filter
-	2,  // 1: syntrix.query.v1.Query.order_by:type_name -> syntrix.query.v1.OrderBy
-	0,  // 2: syntrix.query.v1.GetDocumentResponse.document:type_name -> syntrix.query.v1.Document
-	0,  // 3: syntrix.query.v1.CreateDocumentRequest.document:type_name -> syntrix.query.v1.Document
-	0,  // 4: syntrix.query.v1.ReplaceDocumentRequest.document:type_name -> syntrix.query.v1.Document
-	1,  // 5: syntrix.query.v1.ReplaceDocumentRequest.filters:type_name -> syntrix.query.v1.Filter
-	0,  // 6: syntrix.query.v1.ReplaceDocumentResponse.document:type_name -> syntrix.query.v1.Document
-	0,  // 7: syntrix.query.v1.PatchDocumentRequest.document:type_name -> syntrix.query.v1.Document
-	1,  // 8: syntrix.query.v1.PatchDocumentRequest.filters:type_name -> syntrix.query.v1.Filter
-	0,  // 9: syntrix.query.v1.PatchDocumentResponse.document:type_name -> syntrix.query.v1.Document
-	1,  // 10: syntrix.query.v1.DeleteDocumentRequest.filters:type_name -> syntrix.query.v1.Filter
-	3,  // 11: syntrix.query.v1.ExecuteQueryRequest.query:type_name -> syntrix.query.v1.Query
-	0,  // 12: syntrix.query.v1.ExecuteQueryResponse.documents:type_name -> syntrix.query.v1.Document
-	2,  // 13: syntrix.query.v1.ExecuteQueryResponse.effective_order:type_name -> syntrix.query.v1.OrderBy
-	0,  // 14: syntrix.query.v1.PullResponse.documents:type_name -> syntrix.query.v1.Document
-	0,  // 15: syntrix.query.v1.PushChange.document:type_name -> syntrix.query.v1.Document
-	18, // 16: syntrix.query.v1.PushRequest.changes:type_name -> syntrix.query.v1.PushChange
-	0,  // 17: syntrix.query.v1.PushResponse.conflicts:type_name -> syntrix.query.v1.Document
-	4,  // 18: syntrix.query.v1.QueryService.GetDocument:input_type -> syntrix.query.v1.GetDocumentRequest
-	6,  // 19: syntrix.query.v1.QueryService.CreateDocument:input_type -> syntrix.query.v1.CreateDocumentRequest
-	8,  // 20: syntrix.query.v1.QueryService.ReplaceDocument:input_type -> syntrix.query.v1.ReplaceDocumentRequest
-	10, // 21: syntrix.query.v1.QueryService.PatchDocument:input_type -> syntrix.query.v1.PatchDocumentRequest
-	12, // 22: syntrix.query.v1.QueryService.DeleteDocument:input_type -> syntrix.query.v1.DeleteDocumentRequest
-	14, // 23: syntrix.query.v1.QueryService.ExecuteQuery:input_type -> syntrix.query.v1.ExecuteQueryRequest
-	16, // 24: syntrix.query.v1.QueryService.Pull:input_type -> syntrix.query.v1.PullRequest
-	19, // 25: syntrix.query.v1.QueryService.Push:input_type -> syntrix.query.v1.PushRequest
-	5,  // 26: syntrix.query.v1.QueryService.GetDocument:output_type -> syntrix.query.v1.GetDocumentResponse
-	7,  // 27: syntrix.query.v1.QueryService.CreateDocument:output_type -> syntrix.query.v1.CreateDocumentResponse
-	9,  // 28: syntrix.query.v1.QueryService.ReplaceDocument:output_type -> syntrix.query.v1.ReplaceDocumentResponse
-	11, // 29: syntrix.query.v1.QueryService.PatchDocument:output_type -> syntrix.query.v1.PatchDocumentResponse
-	13, // 30: syntrix.query.v1.QueryService.DeleteDocument:output_type -> syntrix.query.v1.DeleteDocumentResponse
-	15, // 31: syntrix.query.v1.QueryService.ExecuteQuery:output_type -> syntrix.query.v1.ExecuteQueryResponse
-	17, // 32: syntrix.query.v1.QueryService.Pull:output_type -> syntrix.query.v1.PullResponse
-	20, // 33: syntrix.query.v1.QueryService.Push:output_type -> syntrix.query.v1.PushResponse
-	26, // [26:34] is the sub-list for method output_type
-	18, // [18:26] is the sub-list for method input_type
-	18, // [18:18] is the sub-list for extension type_name
-	18, // [18:18] is the sub-list for extension extendee
-	0,  // [0:18] is the sub-list for field type_name
+	2,  // 0: syntrix.query.v1.Query.filters:type_name -> syntrix.query.v1.Filter
+	3,  // 1: syntrix.query.v1.Query.order_by:type_name -> syntrix.query.v1.OrderBy
+	1,  // 2: syntrix.query.v1.GetDocumentResponse.document:type_name -> syntrix.query.v1.Document
+	1,  // 3: syntrix.query.v1.CreateDocumentRequest.document:type_name -> syntrix.query.v1.Document
+	1,  // 4: syntrix.query.v1.ReplaceDocumentRequest.document:type_name -> syntrix.query.v1.Document
+	2,  // 5: syntrix.query.v1.ReplaceDocumentRequest.filters:type_name -> syntrix.query.v1.Filter
+	1,  // 6: syntrix.query.v1.ReplaceDocumentResponse.document:type_name -> syntrix.query.v1.Document
+	1,  // 7: syntrix.query.v1.PatchDocumentRequest.document:type_name -> syntrix.query.v1.Document
+	2,  // 8: syntrix.query.v1.PatchDocumentRequest.filters:type_name -> syntrix.query.v1.Filter
+	1,  // 9: syntrix.query.v1.PatchDocumentResponse.document:type_name -> syntrix.query.v1.Document
+	2,  // 10: syntrix.query.v1.DeleteDocumentRequest.filters:type_name -> syntrix.query.v1.Filter
+	4,  // 11: syntrix.query.v1.ExecuteQueryRequest.query:type_name -> syntrix.query.v1.Query
+	1,  // 12: syntrix.query.v1.ExecuteQueryResponse.documents:type_name -> syntrix.query.v1.Document
+	3,  // 13: syntrix.query.v1.ExecuteQueryResponse.effective_order:type_name -> syntrix.query.v1.OrderBy
+	1,  // 14: syntrix.query.v1.PullResponse.documents:type_name -> syntrix.query.v1.Document
+	1,  // 15: syntrix.query.v1.PushChange.document:type_name -> syntrix.query.v1.Document
+	0,  // 16: syntrix.query.v1.PushChange.action:type_name -> syntrix.query.v1.PushAction
+	19, // 17: syntrix.query.v1.PushRequest.changes:type_name -> syntrix.query.v1.PushChange
+	1,  // 18: syntrix.query.v1.PushConflict.current:type_name -> syntrix.query.v1.Document
+	21, // 19: syntrix.query.v1.PushResponse.conflicts:type_name -> syntrix.query.v1.PushConflict
+	5,  // 20: syntrix.query.v1.QueryService.GetDocument:input_type -> syntrix.query.v1.GetDocumentRequest
+	7,  // 21: syntrix.query.v1.QueryService.CreateDocument:input_type -> syntrix.query.v1.CreateDocumentRequest
+	9,  // 22: syntrix.query.v1.QueryService.ReplaceDocument:input_type -> syntrix.query.v1.ReplaceDocumentRequest
+	11, // 23: syntrix.query.v1.QueryService.PatchDocument:input_type -> syntrix.query.v1.PatchDocumentRequest
+	13, // 24: syntrix.query.v1.QueryService.DeleteDocument:input_type -> syntrix.query.v1.DeleteDocumentRequest
+	15, // 25: syntrix.query.v1.QueryService.ExecuteQuery:input_type -> syntrix.query.v1.ExecuteQueryRequest
+	17, // 26: syntrix.query.v1.QueryService.Pull:input_type -> syntrix.query.v1.PullRequest
+	20, // 27: syntrix.query.v1.QueryService.Push:input_type -> syntrix.query.v1.PushRequest
+	6,  // 28: syntrix.query.v1.QueryService.GetDocument:output_type -> syntrix.query.v1.GetDocumentResponse
+	8,  // 29: syntrix.query.v1.QueryService.CreateDocument:output_type -> syntrix.query.v1.CreateDocumentResponse
+	10, // 30: syntrix.query.v1.QueryService.ReplaceDocument:output_type -> syntrix.query.v1.ReplaceDocumentResponse
+	12, // 31: syntrix.query.v1.QueryService.PatchDocument:output_type -> syntrix.query.v1.PatchDocumentResponse
+	14, // 32: syntrix.query.v1.QueryService.DeleteDocument:output_type -> syntrix.query.v1.DeleteDocumentResponse
+	16, // 33: syntrix.query.v1.QueryService.ExecuteQuery:output_type -> syntrix.query.v1.ExecuteQueryResponse
+	18, // 34: syntrix.query.v1.QueryService.Pull:output_type -> syntrix.query.v1.PullResponse
+	22, // 35: syntrix.query.v1.QueryService.Push:output_type -> syntrix.query.v1.PushResponse
+	28, // [28:36] is the sub-list for method output_type
+	20, // [20:28] is the sub-list for method input_type
+	20, // [20:20] is the sub-list for extension type_name
+	20, // [20:20] is the sub-list for extension extendee
+	0,  // [0:20] is the sub-list for field type_name
 }
 
 func init() { file_query_proto_init() }
@@ -1534,18 +1681,20 @@ func file_query_proto_init() {
 	if File_query_proto != nil {
 		return
 	}
+	file_query_proto_msgTypes[18].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_query_proto_rawDesc), len(file_query_proto_rawDesc)),
-			NumEnums:      0,
-			NumMessages:   21,
+			NumEnums:      1,
+			NumMessages:   22,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
 		GoTypes:           file_query_proto_goTypes,
 		DependencyIndexes: file_query_proto_depIdxs,
+		EnumInfos:         file_query_proto_enumTypes,
 		MessageInfos:      file_query_proto_msgTypes,
 	}.Build()
 	File_query_proto = out.File

@@ -212,15 +212,3 @@ func filtersToProto(filters model.Filters) []*pb.Filter {
 // ============================================================================
 // Push change conversion
 // ============================================================================
-
-// pushChangeToProto converts storage.ReplicationPushChange to proto.
-func pushChangeToProto(c storage.ReplicationPushChange) *pb.PushChange {
-	var baseVersion int64 = -1
-	if c.BaseVersion != nil {
-		baseVersion = *c.BaseVersion
-	}
-	return &pb.PushChange{
-		Document:    storedDocToProto(c.Doc),
-		BaseVersion: baseVersion,
-	}
-}
