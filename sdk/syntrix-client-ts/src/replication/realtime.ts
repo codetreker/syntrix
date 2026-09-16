@@ -435,7 +435,10 @@ export class RealtimeClient {
             this.fail(attempt, error, false);
           }
         } else if (msg.id && this.subscriptions.get(msg.id)?.sent) {
-          this.subscriptions.get(msg.id)!.failed = true;
+          const sub = this.subscriptions.get(msg.id)!;
+          const snapshotError = sub.acknowledged
+            && (msg.payload?.code === 'snapshot_failed' || msg.payload?.code === 'snapshot_limit');
+          if (!snapshotError) sub.failed = true;
           this.reportError(error, msg.id);
         } else if (!msg.id) {
           this.reportError(error);

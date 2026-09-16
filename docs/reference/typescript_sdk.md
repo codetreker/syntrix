@@ -283,7 +283,8 @@ authentication sends an `auth` message containing the token and database.
 | `rt.subscribe(options, callbacks?)` | Return a `subId` synchronously; register immediately if authenticated, otherwise retain locally |
 | `rt.on(name, callback)` | Set one global observer for that event; subscription callbacks remain independent |
 | Event or snapshot | Route by `subId` to its active subscription and the global observer; ignore messages for removed subscriptions |
-| Registration error | Notify the matching subscription and global error observer; retain the subscription for later reconnect |
+| Registration error | Notify the matching subscription and global error observer; retain the subscription for later reconnect while suppressing current-connection events |
+| `snapshot_failed` or `snapshot_limit` after registration ACK | Notify the matching subscription and global error observer; preserve the active subscription and live events without another `onReady` |
 | Connection or authentication failure | Notify active subscriptions and the global error observer once for that failed attempt |
 | Last unsubscribe | Leave the client-owned connection open |
 | `disconnect()` | Stop socket and timers, reject a pending connection, retain subscriptions and callbacks for explicit reconnect |

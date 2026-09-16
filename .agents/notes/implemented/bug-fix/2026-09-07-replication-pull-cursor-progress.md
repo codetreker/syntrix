@@ -89,8 +89,12 @@ shares per-client synchronization with Hub-owned channel closure. The Hub signal
 pending senders before waiting for the send lock, preventing a full queue from
 holding up deregistration or shutdown. Late results after closure are discarded.
 Collection or encoding failure produces `snapshot_failed`; exceeding either size bound produces
-`snapshot_limit`. No successful prefix is sent. The ordinary JSON message schema
-is unchanged. Filter matching and coordination with live delivery remain owned by
+`snapshot_limit`. No successful prefix is sent. These two errors leave an active,
+acknowledged SDK subscription eligible for live events and notify its existing
+error observers: failure to collect initial state does not revoke registration.
+Pre-ACK failures and other error codes retain terminal handling; a snapshot error
+cannot revive a failed subscription. The ordinary JSON message schema is unchanged.
+Filter matching and coordination with live delivery remain owned by
 the [filtered snapshot proposal](../../proposed/bug-fix/2026-09-07-realtime-filtered-snapshots.md).
 
 ### Authorization Profile

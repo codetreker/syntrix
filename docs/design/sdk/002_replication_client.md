@@ -183,6 +183,10 @@ The server sends WebSocket Ping frames; browsers automatically respond with Pong
 - Subscription callbacks are keyed by `subId`; global observers remain separate.
   Each registration ACK triggers `onReady` once for that connection. Events can
   precede the ACK; readiness guarantees neither replay nor snapshot completion.
+- For an active acknowledged subscription, `snapshot_failed` and `snapshot_limit`
+  notify subscription and global error observers without disabling live delivery.
+  Registration rejection and other error codes retain their failure behavior;
+  a later snapshot error cannot revive a failed or removed subscription.
 - Unsubscribe releases one subscription, leaving the shared connection open.
   `disconnect()` stops transport work but retains logical subscriptions;
   `dispose()` clears them permanently. Logout disposes the WebSocket client.

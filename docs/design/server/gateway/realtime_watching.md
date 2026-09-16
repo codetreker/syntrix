@@ -348,6 +348,7 @@ sent in the existing snapshot envelope.
 | Connection closure | Wakes pending snapshot enqueue and discards late snapshot or error responses |
 | Collection or encoding failure | Correlated `error` message with code `snapshot_failed`; no successful prefix |
 | Document or byte limit exceeded | Correlated `error` message with code `snapshot_limit`; use paginated Pull for larger state |
+| Snapshot error after subscription ACK | The subscription remains active; SDK error observers are notified and subsequent live events continue |
 
 Snapshot enqueue and outbound channel closure share per-client synchronization.
 Closure signals waiting senders before acquiring the closing lock, so a full

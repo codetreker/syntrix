@@ -83,6 +83,8 @@ Convenience subscriptions share one automatically connected WebSocket and have
 independent callbacks. `onReady` signals registration after authentication, both
 initially and after reconnect; schedule reconciliation there when missed changes
 must be fetched. Readiness does not mean historical data or a snapshot is complete.
+After registration is acknowledged, `snapshot_failed` and `snapshot_limit` notify
+`onError` while preserving the active subscription and subsequent live events.
 
 The last unsubscribe leaves the connection open. Use `disconnect()` to stop it
 while retaining subscriptions for explicit reconnect, or `dispose()` for permanent

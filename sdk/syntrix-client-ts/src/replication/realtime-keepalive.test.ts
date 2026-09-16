@@ -432,6 +432,74 @@ describe('Realtime subscription lifecycle', () => {
     expect(ws.readyState).toBe(ControlledWebSocket.OPEN);
   });
 
+  for (const code of ['snapshot_failed', 'snapshot_limit']) {
+    it(`preserves acknowledged live delivery after ${code}`, async () => {
+      const client = create();
+      const a = { onReady: mock(() => {}), onEvent: mock(() => {}), onError: mock(() => {}) };
+      const b = { onReady: mock(() => {}), onEvent: mock(() => {}), onError: mock(() => {}) };
+      const globalEvent = mock(() => {});
+      const globalError = mock(() => {});
+      client.on('onEvent', globalEvent).on('onError', globalError);
+      const aId = client.subscribe({ ...query, sendSnapshot: true }, a);
+      const bId = client.subscribe(query, b);
+      const ws = await connect(client);
+      ws.ready(aId);
+      ws.ready(bId);
+      ws.receive({ type: 'error', id: aId, payload: { code, message: 'Initial snapshot unavailable' } });
+      expect(a.onError).toHaveBeenCalledTimes(1);
+      expect(globalError).toHaveBeenCalledTimes(1);
+      expect(b.onError).not.toHaveBeenCalled();
+      ws.receive(event(aId));
+      ws.receive(event(bId));
+      expect(a.onEvent).toHaveBeenCalledTimes(1);
+      expect(b.onEvent).toHaveBeenCalledTimes(1);
+      expect(globalEvent).toHaveBeenCalledTimes(2);
+      ws.ready(aId);
+      expect(a.onReady).toHaveBeenCalledTimes(1);
+      expect(b.onReady).toHaveBeenCalledTimes(1);
+      expect(client.getState()).toBe('connected');
+      expect(ws.messages('subscribe')).toHaveLength(2);
+      expect(ws.messages('unsubscribe')).toHaveLength(0);
+      expect(ControlledWebSocket.instances).toHaveLength(1);
+
+      client.unsubscribe(aId);
+      ws.receive(event(aId));
+      ws.receive({ type: 'error', id: aId, payload: { code, message: 'Late snapshot failure' } });
+      expect(a.onEvent).toHaveBeenCalledTimes(1);
+      expect(globalEvent).toHaveBeenCalledTimes(2);
+      expect(a.onError).toHaveBeenCalledTimes(1);
+      expect(globalError).toHaveBeenCalledTimes(1);
+      expect(ws.messages('unsubscribe')).toHaveLength(1);
+    });
+  }
+
+  for (const { acknowledged, code } of [
+    { acknowledged: false, code: 'snapshot_failed' },
+    { acknowledged: false, code: 'snapshot_limit' },
+    { acknowledged: true, code: 'permission_denied' },
+  ]) {
+    it(`retains terminal subscription errors: acknowledged=${acknowledged}, code=${code}`, async () => {
+      const client = create();
+      const onReady = mock(() => {});
+      const onEvent = mock(() => {});
+      const onError = mock(() => {});
+      const id = client.subscribe({ ...query, sendSnapshot: true }, { onReady, onEvent, onError });
+      const ws = await connect(client);
+      if (acknowledged) ws.ready(id);
+      ws.receive({ type: 'error', id, payload: { code, message: 'Subscription unavailable' } });
+      ws.ready(id);
+      ws.receive(event(id));
+      expect(onReady).toHaveBeenCalledTimes(acknowledged ? 1 : 0);
+      expect(onEvent).not.toHaveBeenCalled();
+      expect(onError).toHaveBeenCalledTimes(1);
+
+      // A late snapshot error must not revive a registration already rejected.
+      ws.receive({ type: 'error', id, payload: { code: 'snapshot_failed', message: 'Late snapshot failure' } });
+      ws.receive(event(id));
+      expect(onEvent).not.toHaveBeenCalled();
+    });
+  }
+
   it('does not send or restore a subscription removed before authentication', async () => {
     const client = create();
     const ready = mock(() => {});
