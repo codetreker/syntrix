@@ -109,7 +109,7 @@ func NewFactory(ctx context.Context, cfg config.Config) (StorageFactory, error) 
 	f.docStore = router.NewRoutedDocumentStore(router.NewDatabaseDocumentRouter(defaultDocRouter, databaseDocRouters))
 
 	// 3. Initialize User Store
-	userStore, err := f.createUserStore(cfg)
+	userStore, err := f.createUserStore(ctx, cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -138,7 +138,7 @@ func NewFactory(ctx context.Context, cfg config.Config) (StorageFactory, error) 
 	// 5. Initialize Database Store (uses same postgres as user store)
 	if f.postgresDB != nil {
 		// Ensure databases table exists
-		if err := dbpostgres.EnsureSchema(f.postgresDB); err != nil {
+		if err := dbpostgres.EnsureSchema(ctx, f.postgresDB); err != nil {
 			return nil, fmt.Errorf("failed to ensure databases schema: %w", err)
 		}
 		f.dbStore = dbpostgres.NewStore(f.postgresDB, "databases")
@@ -172,7 +172,7 @@ func (f *factory) createDocumentRouter(cfg config.DocumentTopology) (types.Docum
 	return nil, fmt.Errorf("unsupported strategy: %s", cfg.Strategy)
 }
 
-func (f *factory) createUserStore(cfg config.Config) (types.UserStore, error) {
+func (f *factory) createUserStore(ctx context.Context, cfg config.Config) (types.UserStore, error) {
 	backendName := cfg.Topology.User.Primary
 	backendCfg, ok := cfg.Backends[backendName]
 	if !ok {
@@ -185,12 +185,12 @@ func (f *factory) createUserStore(cfg config.Config) (types.UserStore, error) {
 		if err != nil {
 			return nil, fmt.Errorf("failed to connect to postgres: %w", err)
 		}
-		if err := db.Ping(); err != nil {
+		if err := db.PingContext(ctx); err != nil {
 			db.Close()
 			return nil, fmt.Errorf("failed to ping postgres: %w", err)
 		}
 		// Ensure auth_users table exists
-		if err := postgres.EnsureSchema(db); err != nil {
+		if err := postgres.EnsureSchema(ctx, db); err != nil {
 			db.Close()
 			return nil, fmt.Errorf("failed to ensure postgres schema: %w", err)
 		}

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/lib/pq"
+	"github.com/syntrixbase/syntrix/internal/core/storage/postgres/schema"
 	"github.com/syntrixbase/syntrix/internal/core/storage/types"
 	"github.com/zeebo/blake3"
 )
@@ -31,8 +32,8 @@ func NewUserStore(db *sql.DB, tableName string) types.UserStore {
 }
 
 // EnsureSchema creates the auth_users table and indexes if they don't exist.
-func EnsureSchema(db *sql.DB) error {
-	schema := `
+func EnsureSchema(ctx context.Context, db *sql.DB) error {
+	statements := `
 CREATE TABLE IF NOT EXISTS auth_users (
     id              VARCHAR(64) PRIMARY KEY,
     username        VARCHAR(255) NOT NULL,
@@ -52,8 +53,7 @@ CREATE TABLE IF NOT EXISTS auth_users (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_auth_users_username ON auth_users(username);
 CREATE INDEX IF NOT EXISTS idx_auth_users_disabled ON auth_users(disabled) WHERE disabled = true;
 `
-	_, err := db.Exec(schema)
-	return err
+	return schema.Ensure(ctx, db, statements)
 }
 
 func (s *userStore) CreateUser(ctx context.Context, user *types.User) error {
@@ -269,19 +269,10 @@ func (s *userStore) UpdateUserLoginStats(ctx context.Context, id string, lastLog
 }
 
 func (s *userStore) EnsureIndexes(ctx context.Context) error {
-	// Create unique index on username if it doesn't exist
-	_, err := s.db.ExecContext(ctx, `
-		CREATE UNIQUE INDEX IF NOT EXISTS idx_auth_users_username ON auth_users(username)
-	`)
-	if err != nil {
-		return err
-	}
-
-	// Create partial index on disabled for efficient queries
-	_, err = s.db.ExecContext(ctx, `
-		CREATE INDEX IF NOT EXISTS idx_auth_users_disabled ON auth_users(disabled) WHERE disabled = true
-	`)
-	return err
+	return schema.Ensure(ctx, s.db,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_auth_users_username ON auth_users(username)`,
+		`CREATE INDEX IF NOT EXISTS idx_auth_users_disabled ON auth_users(disabled) WHERE disabled = true`,
+	)
 }
 
 func (s *userStore) Close(ctx context.Context) error {

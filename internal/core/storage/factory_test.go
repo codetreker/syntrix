@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"errors"
 	"testing"
 	"time"
@@ -44,6 +45,71 @@ func setupMockProvider() {
 	}
 }
 
+func expectSchemaInitialization(mock sqlmock.Sqlmock, table string) {
+	mock.ExpectBegin()
+	mock.ExpectExec("SELECT pg_advisory_xact_lock").WithArgs(sqlmock.AnyArg()).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("CREATE TABLE IF NOT EXISTS " + table).WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectCommit()
+}
+
+type cancelOnLock struct{ cancel context.CancelFunc }
+
+func (a cancelOnLock) Match(driver.Value) bool {
+	a.cancel()
+	return true
+}
+
+func TestNewFactoryInitializationCancellation(t *testing.T) {
+	for _, phase := range []string{"ping", "users", "databases"} {
+		t.Run(phase, func(t *testing.T) {
+			setupMockProvider()
+			defer teardownMockProvider()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			db, mock, err := sqlmock.New(sqlmock.MonitorPingsOption(true))
+			require.NoError(t, err)
+			newPostgresDB = func(config.PostgresConfig) (*sql.DB, error) {
+				if phase == "ping" {
+					cancel()
+				}
+				return db, nil
+			}
+			if phase != "ping" {
+				mock.ExpectPing()
+				if phase == "databases" {
+					expectSchemaInitialization(mock, "auth_users")
+				}
+				mock.ExpectBegin()
+				mock.ExpectExec("SELECT pg_advisory_xact_lock").WithArgs(cancelOnLock{cancel}).
+					WillDelayFor(time.Second).WillReturnResult(sqlmock.NewResult(0, 1))
+				mock.ExpectRollback()
+			}
+			mock.ExpectClose()
+			cfg := config.Config{
+				Backends: map[string]config.BackendConfig{
+					"primary":       {Type: "mongo"},
+					"postgres_user": {Type: "postgres", Postgres: config.PostgresConfig{DSN: "postgres://test"}},
+				},
+				Topology: config.TopologyConfig{
+					Document: config.DocumentTopology{
+						BaseTopology:   config.BaseTopology{Primary: "primary", Strategy: "single"},
+						DataCollection: "docs", SysCollection: "sys",
+					},
+					User:       config.CollectionTopology{BaseTopology: config.BaseTopology{Primary: "postgres_user", Strategy: "single"}},
+					Revocation: config.CollectionTopology{BaseTopology: config.BaseTopology{Primary: "primary", Strategy: "single"}},
+				},
+			}
+			factory, err := NewFactory(ctx, cfg)
+			require.ErrorIs(t, err, context.Canceled)
+			require.Nil(t, factory, "initialization failure must not publish a factory")
+			// database/sql may finish the context-triggered rollback on its watcher.
+			require.EventuallyWithT(t, func(c *assert.CollectT) {
+				require.NoError(c, mock.ExpectationsWereMet())
+			}, time.Second, time.Millisecond)
+		})
+	}
+}
+
 func setupMockPostgres() sqlmock.Sqlmock {
 	db, mock, _ := sqlmock.New()
 	newPostgresDB = func(cfg config.PostgresConfig) (*sql.DB, error) {
@@ -51,10 +117,8 @@ func setupMockPostgres() sqlmock.Sqlmock {
 	}
 	// Mock successful ping
 	mock.ExpectPing()
-	// Mock EnsureSchema call for auth_users (CREATE TABLE IF NOT EXISTS ...)
-	mock.ExpectExec("CREATE TABLE IF NOT EXISTS auth_users").WillReturnResult(sqlmock.NewResult(0, 0))
-	// Mock EnsureSchema call for databases
-	mock.ExpectExec("CREATE TABLE IF NOT EXISTS databases").WillReturnResult(sqlmock.NewResult(0, 0))
+	expectSchemaInitialization(mock, "auth_users")
+	expectSchemaInitialization(mock, "databases")
 	return mock
 }
 
@@ -199,8 +263,8 @@ func TestNewFactory_ReadWriteSplit(t *testing.T) {
 		return db, nil
 	}
 	mock.ExpectPing()
-	mock.ExpectExec("CREATE TABLE IF NOT EXISTS auth_users").WillReturnResult(sqlmock.NewResult(0, 0))
-	mock.ExpectExec("CREATE TABLE IF NOT EXISTS databases").WillReturnResult(sqlmock.NewResult(0, 0))
+	expectSchemaInitialization(mock, "auth_users")
+	expectSchemaInitialization(mock, "databases")
 
 	cfg := config.Config{
 		Backends: map[string]config.BackendConfig{
@@ -359,7 +423,7 @@ func TestNewFactory_RouterErrors(t *testing.T) {
 			return db, nil
 		}
 		mock.ExpectPing()
-		mock.ExpectExec("CREATE TABLE IF NOT EXISTS auth_users").WillReturnResult(sqlmock.NewResult(0, 0))
+		expectSchemaInitialization(mock, "auth_users")
 
 		cfg := config.Config{
 			Backends: map[string]config.BackendConfig{
@@ -384,7 +448,7 @@ func TestNewFactory_RouterErrors(t *testing.T) {
 			return db, nil
 		}
 		mock.ExpectPing()
-		mock.ExpectExec("CREATE TABLE IF NOT EXISTS auth_users").WillReturnResult(sqlmock.NewResult(0, 0))
+		expectSchemaInitialization(mock, "auth_users")
 
 		cfg := config.Config{
 			Backends: map[string]config.BackendConfig{
@@ -407,7 +471,7 @@ func TestNewFactory_RouterErrors(t *testing.T) {
 			return db, nil
 		}
 		mock.ExpectPing()
-		mock.ExpectExec("CREATE TABLE IF NOT EXISTS auth_users").WillReturnResult(sqlmock.NewResult(0, 0))
+		expectSchemaInitialization(mock, "auth_users")
 
 		cfg := config.Config{
 			Backends: map[string]config.BackendConfig{
@@ -665,7 +729,10 @@ func TestNewFactory_PostgresErrors(t *testing.T) {
 			return db, nil
 		}
 		mock.ExpectPing()
+		mock.ExpectBegin()
+		mock.ExpectExec("SELECT pg_advisory_xact_lock").WithArgs(sqlmock.AnyArg()).WillReturnResult(sqlmock.NewResult(0, 1))
 		mock.ExpectExec("CREATE TABLE IF NOT EXISTS auth_users").WillReturnError(errors.New("schema error"))
+		mock.ExpectRollback()
 
 		cfg := config.Config{
 			Backends: map[string]config.BackendConfig{

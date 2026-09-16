@@ -319,10 +319,16 @@ func TestEnsureIndexes_Success(t *testing.T) {
 	db, mock, store := setupMock(t)
 	defer db.Close()
 
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT pg_advisory_xact_lock\(\$1\)`).
+		WithArgs(int64(0x53594e5452495801)).
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_auth_users_username`).
 		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(`CREATE INDEX IF NOT EXISTS idx_auth_users_disabled`).
 		WillReturnResult(sqlmock.NewResult(0, 0))
+
+	mock.ExpectCommit()
 
 	err := store.EnsureIndexes(ctx)
 	assert.NoError(t, err)
@@ -336,8 +342,14 @@ func TestEnsureIndexes_Error(t *testing.T) {
 	db, mock, store := setupMock(t)
 	defer db.Close()
 
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT pg_advisory_xact_lock\(\$1\)`).
+		WithArgs(int64(0x53594e5452495801)).
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_auth_users_username`).
 		WillReturnError(errors.New("index creation failed"))
+
+	mock.ExpectRollback()
 
 	err := store.EnsureIndexes(ctx)
 	assert.Error(t, err)
@@ -409,10 +421,16 @@ func TestEnsureSchema_Success(t *testing.T) {
 	require.NoError(t, err)
 	defer db.Close()
 
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT pg_advisory_xact_lock\(\$1\)`).
+		WithArgs(int64(0x53594e5452495801)).
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec("CREATE TABLE IF NOT EXISTS auth_users").
 		WillReturnResult(sqlmock.NewResult(0, 0))
 
-	err = EnsureSchema(db)
+	mock.ExpectCommit()
+
+	err = EnsureSchema(context.Background(), db)
 	assert.NoError(t, err)
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
@@ -422,10 +440,16 @@ func TestEnsureSchema_Error(t *testing.T) {
 	require.NoError(t, err)
 	defer db.Close()
 
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT pg_advisory_xact_lock\(\$1\)`).
+		WithArgs(int64(0x53594e5452495801)).
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec("CREATE TABLE IF NOT EXISTS auth_users").
 		WillReturnError(errors.New("db error"))
 
-	err = EnsureSchema(db)
+	mock.ExpectRollback()
+
+	err = EnsureSchema(context.Background(), db)
 	assert.Error(t, err)
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
