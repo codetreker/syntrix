@@ -1,79 +1,203 @@
 package rest
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"log/slog"
 	"net/http"
-	"strconv"
+	"time"
 
+	databasecore "github.com/syntrixbase/syntrix/internal/core/database"
 	"github.com/syntrixbase/syntrix/internal/core/storage"
+	storagetypes "github.com/syntrixbase/syntrix/internal/core/storage/types"
 	"github.com/syntrixbase/syntrix/internal/helper"
+	querycore "github.com/syntrixbase/syntrix/internal/query/core"
+	"github.com/syntrixbase/syntrix/internal/query/wire"
 	"github.com/syntrixbase/syntrix/pkg/model"
-
-	"github.com/gorilla/schema"
 )
 
 var validateReplicationPushFn = validateReplicationPush
 
-func (h *Handler) handlePull(w http.ResponseWriter, r *http.Request) {
-	var reqBody ReplicaPullRequest
-	decoder := schema.NewDecoder()
-	decoder.IgnoreUnknownKeys(true)
-	if err := decoder.Decode(&reqBody, r.URL.Query()); err != nil {
-		slog.Warn("Pull: invalid query parameters", "error", err)
-		writeError(w, http.StatusBadRequest, ErrCodeBadRequest, "Invalid query parameters")
-		return
-	}
+const pullResponseWriteTimeout = 10 * time.Second
 
-	if reqBody.Collection == "" {
-		slog.Warn("Pull: missing collection")
-		writeError(w, http.StatusBadRequest, ErrCodeBadRequest, "Collection is required")
-		return
-	}
-
-	checkpointInt, err := strconv.ParseInt(reqBody.Checkpoint, 10, 64)
+func decodePullRequest(body io.Reader) (storage.ReplicationPullRequest, error) {
+	data, err := io.ReadAll(body)
 	if err != nil {
-		slog.Warn("Pull: invalid checkpoint", "error", err)
-		writeError(w, http.StatusBadRequest, ErrCodeBadRequest, "Invalid checkpoint")
+		return storage.ReplicationPullRequest{}, err
+	}
+	if err := model.ValidateJSONUnicode(data); err != nil {
+		return storage.ReplicationPullRequest{}, err
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	token, err := decoder.Token()
+	if err != nil || token != json.Delim('{') {
+		return storage.ReplicationPullRequest{}, errors.New("pull request must be an object")
+	}
+	var req storage.ReplicationPullRequest
+	var semanticErr error
+	seen := make(map[string]bool)
+	for decoder.More() {
+		token, err := decoder.Token()
+		if err != nil {
+			return req, err
+		}
+		key, ok := token.(string)
+		if !ok || seen[key] {
+			return req, errors.New("duplicate pull request field")
+		}
+		seen[key] = true
+		var raw json.RawMessage
+		if err := decoder.Decode(&raw); err != nil {
+			return req, err
+		}
+		switch key {
+		case "collection":
+			if bytes.Equal(raw, []byte("null")) {
+				return req, errors.New("collection must be a string")
+			}
+			if err := json.Unmarshal(raw, &req.Collection); err != nil {
+				return req, err
+			}
+		case "checkpoint":
+			if bytes.Equal(raw, []byte("null")) {
+				continue
+			}
+			if len(raw) > 0 && (raw[0] == '-' || (raw[0] >= '0' && raw[0] <= '9')) {
+				semanticErr = &storagetypes.WatchError{Code: storagetypes.WatchHistoryUnavailable}
+				continue
+			}
+			if err := json.Unmarshal(raw, &req.Checkpoint); err != nil {
+				return req, err
+			}
+			if len(req.Checkpoint) > querycore.MaxPullCursorBytes {
+				semanticErr = &http.MaxBytesError{Limit: querycore.MaxPullCursorBytes}
+			}
+		case "limit":
+			if bytes.Equal(raw, []byte("null")) {
+				return req, errors.New("limit must be an integer")
+			}
+			if err := json.Unmarshal(raw, &req.Limit); err != nil {
+				return req, err
+			}
+		default:
+			return req, errors.New("unknown pull request field")
+		}
+	}
+	if _, err := decoder.Token(); err != nil {
+		return req, err
+	}
+	if err := decoder.Decode(new(any)); err != io.EOF {
+		return req, errors.New("pull request must contain one object")
+	}
+	return req, semanticErr
+}
+
+func writePullError(w http.ResponseWriter, err error) {
+	if errors.Is(err, context.Canceled) {
+		w.WriteHeader(499)
 		return
 	}
-
-	req := storage.ReplicationPullRequest{
-		Collection: reqBody.Collection,
-		Checkpoint: checkpointInt,
-		Limit:      reqBody.Limit,
-	}
-
-	if err := validateReplicationPull(req); err != nil {
-		slog.Warn("Pull: validation error", "error", err)
-		writeError(w, http.StatusBadRequest, ErrCodeBadRequest, "Invalid replication parameters")
+	if errors.Is(err, context.DeadlineExceeded) {
+		writeError(w, http.StatusGatewayTimeout, "DEADLINE_EXCEEDED", "Pull deadline exceeded")
 		return
 	}
+	var tooLarge *http.MaxBytesError
+	if errors.As(err, &tooLarge) {
+		writeError(w, http.StatusRequestEntityTooLarge, ErrCodeRequestTooLarge, "Pull request exceeds size limit")
+		return
+	}
+	if errors.Is(err, model.ErrQueryWorkLimit) {
+		writeError(w, http.StatusUnprocessableEntity, "REPLICATION_BUDGET_EXCEEDED", "Replication page exceeds work or size limits")
+		return
+	}
+	var failure *storagetypes.WatchError
+	if errors.As(err, &failure) {
+		switch failure.Code {
+		case storagetypes.WatchInvalidScope, storagetypes.WatchInvalidCheckpoint, storagetypes.WatchScopeMismatch:
+			writeError(w, http.StatusBadRequest, ErrCodeBadRequest, "Invalid replication parameters")
+		case storagetypes.WatchSourceMismatch, storagetypes.WatchHistoryUnavailable, storagetypes.WatchPayloadUnavailable:
+			writeError(w, http.StatusConflict, "RESYNC_REQUIRED", "Restart replication with an empty checkpoint")
+		case storagetypes.WatchUnsupported:
+			writeError(w, http.StatusNotImplemented, "REPLICATION_UNSUPPORTED", "Replication is unsupported by this source")
+		case storagetypes.WatchSourceUnavailable:
+			writeError(w, http.StatusServiceUnavailable, "REPLICATION_UNAVAILABLE", "Replication source is unavailable")
+		case storagetypes.WatchPermissionDenied:
+			writeError(w, http.StatusForbidden, ErrCodeForbidden, "Replication permission denied")
+		default:
+			writeError(w, http.StatusInternalServerError, ErrCodeInternalError, "Failed to pull changes")
+		}
+		return
+	}
+	writeError(w, http.StatusInternalServerError, ErrCodeInternalError, "Failed to pull changes")
+}
 
+func (h *Handler) handlePull(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), querycore.PullHardTimeout)
+	defer cancel()
+	deadline, _ := ctx.Deadline()
+	// The server's general write timeout includes handler execution. Reserve
+	// time to transmit the bounded page after the processing deadline.
+	if err := http.NewResponseController(w).SetWriteDeadline(deadline.Add(pullResponseWriteTimeout)); err != nil {
+		slog.ErrorContext(ctx, "Failed to set replication response deadline", "error", err)
+		writeError(w, http.StatusInternalServerError, ErrCodeInternalError, "Cannot establish replication response deadline")
+		return
+	}
+	req, err := decodePullRequest(http.MaxBytesReader(w, r.Body, querycore.MaxPullRequestBytes))
+	if err != nil {
+		var tooLarge *http.MaxBytesError
+		var failure *storagetypes.WatchError
+		if errors.As(err, &tooLarge) || errors.As(err, &failure) {
+			writePullError(w, err)
+		} else {
+			writeError(w, http.StatusBadRequest, ErrCodeBadRequest, "Invalid pull request body")
+		}
+		return
+	}
 	database, ok := h.databaseOrError(w, r)
 	if !ok {
 		return
 	}
-
-	slog.Info("Pull: started", "collection", req.Collection, "checkpoint", req.Checkpoint, "limit", req.Limit)
-
-	resp, err := h.engine.Pull(r.Context(), database, req)
-	if err != nil {
-		writeInternalError(w, err, "Failed to pull changes")
+	if current, ok := databasecore.FromContext(ctx); ok {
+		req.DatabaseIdentity = current.ID
+	} else if h.dbValidator == nil {
+		req.DatabaseIdentity = database
+	} else {
+		writeError(w, http.StatusInternalServerError, ErrCodeInternalError, "Database validation context is missing")
 		return
 	}
-
-	flatDocs := make([]model.Document, len(resp.Documents))
-	for i, doc := range resp.Documents {
-		flatDocs[i] = flattenDocument(doc)
+	if err := validateReplicationPull(database, req); err != nil {
+		writePullError(w, err)
+		return
 	}
-
-	slog.Info("Pull: completed", "collection", req.Collection, "returned_docs", len(flatDocs), "new_checkpoint", resp.Checkpoint)
-
-	writeJSON(w, http.StatusOK, ReplicaPullResponse{
-		Documents:  flatDocs,
-		Checkpoint: strconv.FormatInt(resp.Checkpoint, 10),
-	})
+	if req.Limit == 0 {
+		req.Limit = querycore.DefaultPullLimit
+	}
+	if err := ctx.Err(); err != nil {
+		writePullError(w, err)
+		return
+	}
+	resp, err := h.engine.Pull(ctx, database, req)
+	if err != nil {
+		writePullError(w, err)
+		return
+	}
+	encoded, err := wire.EncodeJSONPullPage(resp)
+	if err != nil {
+		writePullError(w, err)
+		return
+	}
+	if err := ctx.Err(); err != nil {
+		writePullError(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	if _, err := w.Write(encoded); err != nil {
+		slog.WarnContext(ctx, "Failed to write replication response", "error", err)
+	}
 }
 
 func (h *Handler) handlePush(w http.ResponseWriter, r *http.Request) {

@@ -11,6 +11,35 @@ export interface QueryPage<T> {
   effectiveOrder: QueryOrder[];
 }
 
+export interface PullOptions {
+  /** Omit or pass null to begin a new bootstrap. Retain opaque checkpoints verbatim. */
+  checkpoint?: string | null;
+  /** Maximum returned documents; defaults to 100 and must be between 1 and 1000. */
+  limit?: number;
+  signal?: AbortSignal;
+}
+
+export interface PullDocumentMetadata {
+  readonly id: string;
+  readonly collection: string;
+  readonly version: bigint;
+  readonly createdAt: bigint;
+  readonly updatedAt: bigint;
+}
+
+export type PullDocument<T> =
+  | (Omit<T, keyof PullDocumentMetadata | 'deleted'> & PullDocumentMetadata & { deleted?: false })
+  | (Pick<PullDocumentMetadata, 'id' | 'collection'> &
+      Partial<Omit<PullDocumentMetadata, 'id' | 'collection'>> & { deleted: true });
+
+export interface PullPage<T> {
+  documents: PullDocument<T>[];
+  /** Persist atomically with applying every document in this page. */
+  checkpoint: string;
+  /** True only when the source proves the returned progress has caught up. */
+  caughtUp: boolean;
+}
+
 export interface DocumentReference<T> {
   id: string;
   path: string;

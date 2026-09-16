@@ -280,7 +280,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 
 	// Replication Operations (use longer timeout for potentially large data transfers)
 	// URL format: /replication/v1/databases/{database}/pull
-	mux.HandleFunc("GET /replication/v1/databases/{database}/pull", withTimeout(h.withDatabaseValidation(h.protected(h.handlePull)), LongRequestTimeout))
+	mux.HandleFunc("POST /replication/v1/databases/{database}/pull", withTimeout(h.protected(h.withDatabaseValidation(h.pullAuthorized(h.handlePull))), DefaultRequestTimeout))
 	mux.HandleFunc("POST /replication/v1/databases/{database}/push", withTimeout(maxBodySize(h.withDatabaseValidation(h.protected(h.handlePush)), LargeMaxBodySize), LongRequestTimeout))
 
 	// Trigger Internal Operations

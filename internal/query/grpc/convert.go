@@ -253,9 +253,11 @@ func protoToFilters(filters []*pb.Filter) model.Filters {
 // pullRequestToProto converts storage.ReplicationPullRequest to proto.
 func pullRequestToProto(req storage.ReplicationPullRequest) *pb.PullRequest {
 	return &pb.PullRequest{
-		Collection: req.Collection,
-		Checkpoint: req.Checkpoint,
-		Limit:      int32(req.Limit),
+		DatabaseIdentity: req.DatabaseIdentity,
+		WireVersion:      2,
+		Collection:       req.Collection,
+		Checkpoint:       req.Checkpoint,
+		Limit:            int32(req.Limit),
 	}
 }
 
@@ -265,20 +267,10 @@ func protoToPullRequest(req *pb.PullRequest) storage.ReplicationPullRequest {
 		return storage.ReplicationPullRequest{}
 	}
 	return storage.ReplicationPullRequest{
-		Collection: req.Collection,
-		Checkpoint: req.Checkpoint,
-		Limit:      int(req.Limit),
-	}
-}
-
-// pullResponseToProto converts storage.ReplicationPullResponse to proto.
-func pullResponseToProto(resp *storage.ReplicationPullResponse) *pb.PullResponse {
-	if resp == nil {
-		return nil
-	}
-	return &pb.PullResponse{
-		Documents:  storedDocsToProto(resp.Documents),
-		Checkpoint: resp.Checkpoint,
+		DatabaseIdentity: req.DatabaseIdentity,
+		Collection:       req.Collection,
+		Checkpoint:       req.Checkpoint,
+		Limit:            int(req.Limit),
 	}
 }
 

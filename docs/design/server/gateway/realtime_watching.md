@@ -324,11 +324,40 @@ All messages follow a standard JSON envelope:
 
 ```json
 {
+  "id": "sub-room-123",
   "type": "snapshot",
-  "subId": "sub-room-123",
-  "docs": [ ... ]
+  "payload": {
+    "subId": "sub-room-123",
+    "documents": [ ... ]
+  }
 }
 ```
+
+For `sendSnapshot: true`, the Gateway drains opaque replication Pull pages through
+`caughtUp`, applying each upsert and deletion by document ID. A page can end on
+bytes or source work before reaching its document-count limit; sending that page
+alone would leave an incomplete snapshot. Only the completed retained state is
+sent in the existing snapshot envelope.
+
+| Snapshot constraint | Behavior |
+|---|---|
+| Retained live documents | At most 1000; replayed updates replace the same ID and deletions remove it |
+| Serialized snapshot payload | At most 16 MiB including `subId` and the document-array envelope |
+| Collection deadline | 10 seconds across all Pull pages and snapshot encoding |
+| Connection queue deadline | A separate 10 seconds for the snapshot or error |
+| Connection closure | Wakes pending snapshot enqueue and discards late snapshot or error responses |
+| Collection or encoding failure | Correlated `error` message with code `snapshot_failed`; no successful prefix |
+| Document or byte limit exceeded | Correlated `error` message with code `snapshot_limit`; use paginated Pull for larger state |
+| Snapshot error after subscription ACK | The subscription remains active; SDK error observers are notified and subsequent live events continue |
+
+Snapshot enqueue and outbound channel closure share per-client synchronization.
+Closure signals waiting senders before acquiring the closing lock, so a full
+queue cannot make deregistration or Hub shutdown wait out the delivery deadline.
+Queue timeout or connection closure can prevent delivery; it never converts an
+incomplete result into a snapshot. Subscription acknowledgment does not imply
+snapshot completion. This collection-wide state does not apply subscription
+filters or establish an atomic handoff to live events; those guarantees remain in
+the [filtered snapshot proposal](../../../../.agents/notes/proposed/bug-fix/2026-09-07-realtime-filtered-snapshots.md).
 
 **Server pushes (Delta):**
 

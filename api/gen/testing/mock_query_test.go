@@ -146,7 +146,7 @@ func TestMockQueryServiceClient_PullAndPush(t *testing.T) {
 		mockClient := NewMockQueryServiceClient()
 		mockClient.On("Pull", mock.Anything, mock.Anything).Return(&queryv1.PullResponse{
 			Documents:  []*queryv1.Document{{Id: "doc1"}},
-			Checkpoint: 12345,
+			Checkpoint: "source-position",
 		}, nil)
 
 		resp, err := mockClient.Pull(ctx, &queryv1.PullRequest{
@@ -156,7 +156,7 @@ func TestMockQueryServiceClient_PullAndPush(t *testing.T) {
 
 		require.NoError(t, err)
 		assert.Len(t, resp.Documents, 1)
-		assert.Equal(t, int64(12345), resp.Checkpoint)
+		assert.Equal(t, "source-position", resp.Checkpoint)
 		mockClient.AssertExpectations(t)
 	})
 

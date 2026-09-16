@@ -69,8 +69,9 @@ type ReplicaPullRequest struct {
 }
 
 type ReplicaPullResponse struct {
-	Documents  []model.Document `json:"documents"`
-	Checkpoint string           `json:"checkpoint"`
+	Documents  []json.RawMessage `json:"documents"`
+	Checkpoint string            `json:"checkpoint"`
+	CaughtUp   bool              `json:"caughtUp"`
 }
 
 type UpdateDocumentRequest struct {

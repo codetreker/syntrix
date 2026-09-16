@@ -189,17 +189,16 @@ func TestMultiDatabase_ReplicationIsolation(t *testing.T) {
 	env := setupServiceEnv(t, "")
 	defer env.Cancel()
 
+	tokenA := env.GetToken(t, "replication-owner-a", "user")
+	tokenB := env.GetToken(t, "replication-owner-b", "user")
 	databaseA := "database-a"
 	databaseB := "database-b"
-
-	// Ensure databases exist
 	env.EnsureDatabase(t, databaseA)
 	env.EnsureDatabase(t, databaseB)
+	tokenA = replicationAdminToken(t, env, databaseA, tokenA)
+	tokenB = replicationAdminToken(t, env, databaseB, tokenB)
 
-	tokenA := env.GetTokenForDatabase(t, databaseA, "user-a", "user")
-	tokenB := env.GetTokenForDatabase(t, databaseB, "user-b", "user")
-
-	collection := "repl_docs"
+	collection := env.testPrefix + "_repl_docs"
 
 	// 1. Database A creates a document via REST
 	docData := map[string]interface{}{
@@ -209,18 +208,8 @@ func TestMultiDatabase_ReplicationIsolation(t *testing.T) {
 	require.Equal(t, http.StatusCreated, resp.StatusCode)
 	resp.Body.Close()
 
-	// 2. Database B PULLs (Should get nothing)
-	pullURL := fmt.Sprintf("/replication/v1/databases/%s/pull?collection=%s&checkpoint=0&limit=100", databaseB, collection)
-	resp = env.MakeRequest(t, "GET", pullURL, nil, tokenB)
-	require.Equal(t, http.StatusOK, resp.StatusCode)
-
-	var pullRes map[string]interface{}
-	err := json.NewDecoder(resp.Body).Decode(&pullRes)
-	require.NoError(t, err)
-	resp.Body.Close()
-
-	docs := pullRes["documents"].([]interface{})
-	assert.Empty(t, docs, "Database B should pull 0 documents")
+	pullB := pullReplicationPage(t, env, databaseB, collection, "", 100, tokenB)
+	assert.Empty(t, pullB.Documents, "Database B should pull 0 documents")
 
 	// 3. Database B PUSHes a document
 	pushReq := map[string]interface{}{
@@ -239,21 +228,15 @@ func TestMultiDatabase_ReplicationIsolation(t *testing.T) {
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 	resp.Body.Close()
 
-	// 4. Database A PULLs (Should see only Doc A, not Doc B)
-	pullURLForA := fmt.Sprintf("/replication/v1/databases/%s/pull?collection=%s&checkpoint=0&limit=100", databaseA, collection)
-	resp = env.MakeRequest(t, "GET", pullURLForA, nil, tokenA)
-	require.Equal(t, http.StatusOK, resp.StatusCode)
-
-	err = json.NewDecoder(resp.Body).Decode(&pullRes)
-	require.NoError(t, err)
+	pullA := pullReplicationPage(t, env, databaseA, collection, "", 100, tokenA)
+	require.Len(t, pullA.Documents, 1)
+	assert.Equal(t, "Repl Doc A", pullA.Documents[0]["title"])
+	assert.NotEqual(t, "doc-b", pullA.Documents[0].GetID())
+	resp = env.MakeRequest(t, http.MethodPost, fmt.Sprintf("/replication/v1/databases/%s/pull", databaseB), map[string]any{
+		"collection": collection, "checkpoint": pullA.Checkpoint,
+	}, tokenB)
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode, "checkpoint must remain bound to its database")
 	resp.Body.Close()
-
-	docsA := pullRes["documents"].([]interface{})
-	// Should contain Doc A (maybe) but definitely NOT Doc B
-	for _, d := range docsA {
-		docMap := d.(map[string]interface{})
-		assert.NotEqual(t, "doc-b", docMap["id"], "Database A should not see Database B's document")
-	}
 }
 
 func readUntilType(t *testing.T, ws *websocket.Conn, targetType string) BaseMessage {

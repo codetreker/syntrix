@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +15,37 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestResponseDeadlineThroughMiddleware(t *testing.T) {
+	srv := New(Config{}, nil).(*serverImpl)
+	handler := srv.wrapMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := http.NewResponseController(w).SetWriteDeadline(time.Now().Add(2 * time.Second)); err != nil {
+			t.Error(err)
+			http.Error(w, "deadline unavailable", http.StatusInternalServerError)
+			return
+		}
+		select {
+		case <-time.After(150 * time.Millisecond):
+		case <-r.Context().Done():
+			return
+		}
+		_, err := io.WriteString(w, "completed")
+		assert.NoError(t, err)
+	}))
+	httpServer := httptest.NewUnstartedServer(handler)
+	httpServer.Config.WriteTimeout = 50 * time.Millisecond
+	httpServer.Start()
+	defer httpServer.Close()
+	client := httpServer.Client()
+	client.Timeout = 3 * time.Second
+	response, err := client.Get(httpServer.URL)
+	require.NoError(t, err)
+	defer response.Body.Close()
+	data, err := io.ReadAll(response.Body)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, response.StatusCode)
+	require.Equal(t, "completed", string(data))
+}
 
 func TestRequestIDMiddleware(t *testing.T) {
 	srv := New(Config{}, nil).(*serverImpl)

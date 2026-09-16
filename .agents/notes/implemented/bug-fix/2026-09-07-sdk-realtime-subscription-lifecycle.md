@@ -23,6 +23,7 @@ connection initiation explicit.
 | Subscribe | Store options and callbacks by `subId`; send after authentication |
 | Event or snapshot | Dispatch to the matching active subscription and the global observer, including before its registration ACK |
 | Subscription error | Correlate the request ID; notify that subscription and the global error observer |
+| `snapshot_failed` or `snapshot_limit` after registration ACK | Notify the existing error observers while preserving an active subscription and subsequent live events |
 | Connection or authentication failure | Notify active subscriptions and the global error observer once for the failed attempt |
 | `subscribe_ack` | Invoke subscription `onReady` once per connection registration; ignore duplicate ACKs |
 | Unsubscribe | Remove that subscription's callbacks and registration state; preserve the shared connection |
@@ -33,7 +34,9 @@ connection initiation explicit.
 `onReady` means registration succeeded. It does not establish historical delivery
 or snapshot completion; applications can schedule reconciliation from it after
 initial registration and reconnect. A failed registration remains locally active
-until unsubscribe and can register again on a later connection. Global `.on(...)`
+until unsubscribe and can register again on a later connection. The two snapshot
+error codes are nonterminal only after registration acknowledgment; they cannot
+revive a previously failed or removed subscription. Global `.on(...)`
 retains one observer per event; convenience subscriptions do not replace it.
 Synchronous callback exceptions are reported separately from protocol parsing and do not
 prevent dispatch to other eligible callbacks.

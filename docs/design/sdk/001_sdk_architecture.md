@@ -96,7 +96,11 @@ pkg/syntrix-client-ts/src/
 
 ## 5. Replication (Overview)
 
-Reuse `StorageClient` transports for pull/push; realtime events trigger pulls; checkpoints advance via pull responses. Details are in [002_replication_client.md](002_replication_client.md).
+`SyntrixClient.pull` provides one authenticated manual page through the dedicated
+replication HTTP route and shared session handling. It decodes typed values and
+leaves local state/checkpoint transactions to the application. The automatic
+coordinator, realtime-triggered scheduling, and durable outbox remain planned;
+details are in [002_replication_client.md](002_replication_client.md).
 
 ## 6. Primary Test Coverage (Planned/Implemented)
 
@@ -104,6 +108,6 @@ Reuse `StorageClient` transports for pull/push; realtime events trigger pulls; c
 - TriggerClient: reject create without id; batch forwards writes; get returns null on empty; missing token fails fast.
 - Auth layer: serialized refresh under concurrent 401s; hooks fire correctly; realtime auth failure retries once then surfaces.
 - Realtime: WS auth ack gates resubscribe; SSE delivers events/snapshots with header auth; inactivity triggers reconnect.
-- Replication (per 002): auth failures do not advance checkpoint; refresh then resume; realtime-triggered pull scheduling coalesces; outbox/pull concurrency keeps checkpoint correct.
+- Manual Pull: typed page validation, request routing, cancellation, and session replacement. Planned coordinator coverage includes realtime-trigger coalescing and local state/checkpoint atomicity.
 
 More error corners and perf cases will be added as features land.
