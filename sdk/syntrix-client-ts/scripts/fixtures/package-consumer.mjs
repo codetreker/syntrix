@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createTestLockManager } from './test-locks.mjs';
 
 // Resolve every SDK import from this isolated installation, never from the workspace.
 const remote = await import('@syntrix/client');
@@ -106,3 +107,38 @@ for (const fault of ['document', 'metadata', 'checkpoint']) {
     await meta.remove();
   }
 }
+
+const token = (subject) => `eyJhbGciOiJub25lIn0.${Buffer.from(JSON.stringify({ sub: subject, oid: subject, exp: 1 })).toString('base64url')}.signature`;
+const client = new remote.SyntrixClient('https://packed.invalid/base', {
+  database: 'app', auth: { token: token('alice') },
+});
+// The installed REST provider and the bundled local session load distinct
+// module graphs. Their ownership fence must still be shared on this provider.
+const provider = client.tokenProvider;
+let session = await local.createLocalSession(provider);
+const lockManager = createTestLockManager();
+const options = {
+  endpoint: 'https://packed.invalid/base/', database: 'app', name: crypto.randomUUID(), alias: 'activeUsers',
+  source: { collection: 'users', filters: [] }, lockManager,
+};
+let alias = await local.openAliasStorage({ ...options, session });
+await alias.set('specified-id', { counter: 9007199254740993n, type: 'business', _deleted: 'business' });
+assert.equal((await alias.get('specified-id')).counter, 9007199254740993n);
+await alias.close();
+await session.close();
+session = await local.createLocalSession(provider);
+alias = await local.openAliasStorage({ ...options, session });
+assert.equal((await alias.get('specified-id')).counter, 9007199254740993n);
+await alias.delete('specified-id');
+assert.equal(await alias.get('specified-id'), null);
+await alias.set('specified-id', { counter: 9007199254740994n });
+assert.equal((await alias.get('specified-id')).counter, 9007199254740994n);
+provider.setToken(token('bob'));
+await provider.getToken();
+await assert.rejects(alias.get('specified-id'));
+const bob = await local.createLocalSession(provider);
+const isolated = await local.openAliasStorage({ ...options, session: bob });
+assert.equal(await isolated.get('specified-id'), null);
+await isolated.close();
+await bob.close();
+console.log('Packed local storage: exact values, offline reopen, same-ID recreation and cross-bundle account isolation passed');

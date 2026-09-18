@@ -1,6 +1,6 @@
 # Replication Client Design (RxDB + Syntrix replication/realtime)
 
-**Status:** Manual Pull, WebSocket lifecycle, and a private native replication runtime are implemented. The server also supports matching-set query sources, complete result windows, and bound database identity checks. Their SDK adapters, the public local database API, and automatic HTTP synchronization remain planned.
+**Status:** Manual Pull, WebSocket lifecycle, a private native replication runtime, and private local alias storage are implemented. The server also supports matching-set query sources, complete result windows, and bound database identity checks. Their SDK adapters, the public local database API, and automatic HTTP synchronization remain planned.
 
 ## Context & Why
 - We need offline-first replication for web clients using RxDB as local store.
@@ -28,7 +28,7 @@
 
 ## Data Model (flattened)
 - Decoded fields: `id`, `collection`, optional deletion flag and server metadata, plus business fields. HTTP uses recursive typed values; int64 values decode to bigint.
-- The private runtime accepts storage records and source adapters. The application-facing local schema, typed-value persistence codec, and query indexes remain part of the local database implementation.
+- The private runtime accepts storage records and source adapters. Private alias storage supplies a lossless typed-value schema, local CRUD, identity fences, and clean compaction. Public local types and query indexes remain part of the local API integration.
 - Tombstones clear former business fields. Minimal logical deletions contain only identity and `deleted: true`; timestamps and version can be absent. Physical cleanup is not another business deletion. See [deletion semantics](../server/core/storage/03.stores.md#document-deletion-and-physical-cleanup).
 
 ## Implemented Manual Pull
@@ -134,21 +134,155 @@ records the patch obligations, alternatives, and lifecycle costs. Passing native
 or fake-IndexedDB tests does not establish complete browser synchronization or
 power-loss guarantees.
 
+## Private Local Alias Storage
+
+The lazy bundle owns Dexie-backed alias storage with raw revision CAS. These are
+internal building blocks; they do not expose `openLocal` or perform HTTP
+synchronization. The [local-storage decision](../../../.agents/notes/implemented/architecture/2026-09-18-sdk-local-storage.md)
+owns the persistence choices and their costs.
+
+### Identity and lifetime
+
+| Concern | Contract |
+|---|---|
+| Namespace | Hash the canonical endpoint, JWT subject, exact configured database string, local name, and alias; retain the original tuple for verification |
+| Endpoint | Preserve URL path prefixes, normalize equivalent trailing slashes, reject credentials/query/fragment |
+| Offline identity | Require a nonempty JWT `sub`, with matching `oid` if present; an expired token can open offline storage, while missing/malformed identity cannot select a fallback account |
+| Source binding | Freeze the source definition; initially unbound storage can accept local edits; CAS binds the first database ID/source hash and rejects later reassignment |
+| Session refresh | Same-subject refresh keeps ownership; a subject change invalidates admission before draining owned resources, including an opening alias |
+| Drain failure | Keep the failed owner's drain obligation observable; another account cannot proceed as if cleanup succeeded |
+| Bundle boundary | Ownership belongs to the token provider through a shared versioned capability, so the remote entry and lazy bundle use the same owners |
+
+JWT parsing chooses an offline namespace; it is not server authentication or a
+security boundary against malicious same-origin JavaScript. Different database
+URL spellings retain separate namespaces even if they resolve to the same ID.
+
+Captured work binds subject, session version, source-definition hash, physical
+epoch, native instance, and request ID. The network guard requires durable binding
+and source readiness and supplies `X-Syntrix-Expected-Database-Identity`. It does
+not send a request or replace the server's identity gate. Scope failure preserves
+local edits and the old binding; automatic source and Push adapters still own
+network orchestration.
+
+### Durable records and local operations
+
+| Record | Responsibility |
+|---|---|
+| `d` | Desired business state, logical ID, live/deleted/absent existence, edit token, settlement pin, and known wire metadata |
+| `m` | At most two source-generation membership slots and the last observed source metadata |
+| `c` | Source progress, generation, completion, and partial-delivery state |
+| Manifest | Namespace/source binding, active physical epoch, active/staged source generations, recovery intent, bounded issues, and upstream marker |
+| Native metadata | Assumed business state and durable replication progress; no separate outbox |
+
+Business payloads are recursive typed values stored as JSON strings. Int64 stays
+lossless and returns as bigint. Logical IDs are retained beside hashed physical
+keys and checked on access. Logical deletion and absence keep native
+`_deleted:false`; nonlive payloads are empty, and absence is not a tombstone shown
+by `showDeleted`. Recreating the same logical ID is allowed. Physical row order
+is not public logical-ID query order.
+
+Local reads combine business state from `d` with the latest source metadata from
+`m`; that metadata is not the revision of an unsent local edit. Visibility retains
+members and protected local work. Reads hide deletions unless requested and always
+hide absence. `set` creates or replaces, `update` shallow-merges only a live
+document, and deleting a missing/deleted document is idempotent. Generated IDs are
+available alongside explicit logical IDs. Reserved metadata cannot be written as
+business fields.
+
+```text
+alias shared lock -> current physical epoch -> view-write exclusive lock
+  -> read d + m -> evaluate frozen ifMatch -> desired + edit token + pin
+  -> raw revision CAS -> success, or reread and recompute on 409
+```
+
+CAS retries are limited to eight. All native fork/control writes and maintenance
+state changes use the same lock order and admission fence. Reads take the shared
+view lock. Conditions on version/time use the latest observed metadata, including
+metadata-only changes; other failures propagate. Locks cover local persistence,
+not HTTP waits. Pin and edited state commit together.
+
+Manifest and row feeds expose invalidation hints. A source-generation or physical
+epoch change requires rereading the manifest and rebuilding affected views.
+Cross-tab consumers observe persisted manifest changes; a hint is not authoritative
+state. Query evaluation and dynamic query watches are not implemented by this feed.
+
+### Admission and materialization limits
+
+| Default bound | Limit |
+|---|---:|
+| Encoded `d`/`m`/`c` row, including native system fields | 16 MiB |
+| Encoded manifest | 34 MiB |
+| Native metadata row, including its nested record and envelope | 17 MiB |
+| Raw data-read reservation pool | 64 MiB |
+| Separate control-read pool | Twice the manifest row limit: 68 MiB |
+| One underlying indexed seek/ID read | At most 4 rows, reduced to fit its pool |
+| Native handoff result | 128 MiB |
+| Known logical IDs per alias | 100,000, configurable |
+
+Every persistence entry checks the final stored row, including source, seed,
+recovery, and control writes. Recovery intents hold exactly two typed data-record
+snapshots for one target. Reads reserve capacity before materializing rows;
+retained snapshots remain charged within their owning scope. Physical scans must
+use an index-satisfied primary-key seek without a blocking sort. These encoded
+byte limits do not bound total JavaScript heap, native runtime queues, or future
+query caches.
+
+The storage uses raw collection storage rather than RxDocument/RxQuery views.
+Unused high-level event history and lazy document-cache tasks are disabled or
+drained against the pinned RxDB internals, while replication and invalidation
+feeds remain active. Upgrading RxDB requires checking that retained-buffer behavior.
+
+Capacity accounts for data, membership, control, manifest, and native metadata,
+including inactive storage awaiting cleanup. The default relies on browser quota
+and the known-ID cap; it does not add a 512 MiB alias cap. A configured byte cap
+requires authoritative accounting before writes, including cross-tab changes;
+these bounded rescans can add work. Capacity failures preserve pending state.
+
+### Clean physical compaction
+
+Source generation describes a remote member set; physical epoch describes local
+storage replacement. Compaction preserves the former and its source checkpoint.
+Statistics recommend maintenance under capacity pressure or when at least 1,000
+retired IDs form at least 25% of known IDs; callers schedule the attempt.
+
+```text
+stop native admission -> cancel/drain -> exclusive alias lock -> clean check
+  -> one shadow epoch -> native seed + assumed metadata + checkpoints
+  -> verify -> manifest CAS flip -> remove old fork and paired native metadata
+```
+
+Clean means source completion is active, no staged/partial generation exists, and
+there are no pending business differences, pins, issues, dirty markers, or recovery
+intents. The shadow keeps current live members and source control. Native seed
+builds assumed metadata with the new epoch's normal identifier; source checkpoint
+is preserved, while the local upstream checkpoint is regenerated. Any business
+Push during seed is an error, preventing copied rows from echoing upstream.
+
+A private maintenance capability reuses the exclusive lock for seed writes rather
+than reacquiring shared ownership. Thirty seconds without scan or durable seed
+progress aborts maintenance; this is an inactivity timeout, not a duration limit
+for a large collection. Quota must accommodate both epochs. After an ambiguous
+manifest write, reread the active epoch before removing either copy; startup removes
+confirmed inactive orphans and their explicitly paired native metadata. An unreadable
+manifest retains both copies. Only one shadow exists at a time.
+
 ## Remaining Local Database Integration
 
 The [offline replication proposal](../../../.agents/notes/proposed/feature/2026-09-07-sdk-offline-replication.md)
 owns these unimplemented capabilities:
 
-- Public local database creation and SDK-owned persistence with account/database
-  identity isolation; public types do not expose RxDB objects.
+- Public local database creation over the implemented private alias storage;
+  public types do not expose RxDB objects.
 - HTTP adapters for the server's matching-set and result-window sources and bound
   database identity header; map sources to independent local aliases, schedule
   window refreshes using realtime hints plus polling, and durably activate
   membership generations.
-- Local CRUD, lossless typed-value storage, local query results, and dynamic watch.
+- Public CRUD exposure, local query results, and dynamic watch over stored records
+  and manifest invalidations.
 - Automatic typed HTTP Push, durable acknowledgement/conflict reconciliation,
   cancellation, and recovery across restarts and reconnects.
-- Browser lifecycle, multi-tab ownership, storage cleanup, and end-to-end tests.
+- Automatic synchronization ownership and scheduling across tabs, and complete
+  browser-to-server end-to-end tests.
 
 Direct reads and writes retain the REST API. Push is an internal replication
 operation; a public manual Push method is not part of the local API. Native
@@ -236,5 +370,9 @@ interface RealtimeClientOptions {
   failures, cancellation, fresh-source readiness, bounded scans, and recovery with
   retained metadata.
 - Packed-package checks exercise the bundled runtime with no workspace fallback.
-- Public local API, query-source membership, real HTTP Push integration, and
-  browser end-to-end behavior require their own implementation and validation.
+- Private storage regressions cover identity, typed persistence, raw CAS,
+  metadata conditions, admission budgets, and clean compaction recovery. Real
+  browser multi-tab checks cover storage and locks; they do not establish power-loss
+  durability or complete browser-to-server synchronization.
+- Public local API, query-source membership application, local query/watch, and
+  real HTTP Push integration require their own implementation and validation.

@@ -18,7 +18,10 @@ integration; the runtime note owns the delivered mechanism. The
 [query-source contract](../../implemented/feature/2026-09-18-query-replication-source.md)
 now supplies matching-set events, complete result windows, generation identity,
 and authoritative bound database checks. Its SDK adapters and local membership
-application remain outstanding.
+application remain outstanding. The
+[private alias storage](../../implemented/architecture/2026-09-18-sdk-local-storage.md)
+now owns local identity, typed records, CAS CRUD, bounded storage access, and clean
+physical compaction; this proposal retains public API and synchronization integration.
 
 ## Proposal
 
@@ -31,12 +34,12 @@ to replication; no public manual Push method is required.
 |---|---|
 | Remote sources | Connect delivered matching-set and result-window HTTP sources to named local collection aliases; refresh windows using realtime hints plus polling |
 | Membership | Apply delivered source upsert/leave/delete events or complete window replacements and activate durable generations without treating every membership exit as a document deletion |
-| Local operations | Persist offline CRUD and support dynamic local query/watch results |
-| Identity | Isolate endpoint, account, bound database identity, source, and local alias; obsolete work cannot apply or send across reassignment |
+| Local operations | Expose the delivered private CRUD through the public local API and implement dynamic local query/watch results |
+| Identity | Connect source and Push adapters to delivered namespace/session/binding guards; obsolete work cannot apply or send across reassignment |
 | Initialization | Activate a complete source generation durably before uploading, while preserving pending local edits |
 | Upstream | Use native durable changed-document scanning and acknowledgement metadata; keep newer local edits when an earlier write is acknowledged |
 | Recovery | Restart from reliable metadata, reconcile uncertain outcomes, and retain pending edits during source rebuild |
-| Lifecycle | Coordinate browser ownership, cancellation, cleanup, and bounded retention |
+| Lifecycle | Coordinate automatic synchronization ownership across tabs and schedule delivered clean compaction without crossing pending work |
 
 Local document identity is the logical document segment of its collection path.
 Tombstones communicate deletion and must permit recreation with the same ID.
@@ -47,8 +50,9 @@ or a permanent document-lifecycle identity.
 
 Manual Pull and Query decode int64 values as bigint. Ordinary SDK document
 `set`/`update` still use JSON serialization, which rejects bigint. Converting to
-Number loses precision and numeric type. The local representation and the internal
-Push encoder must preserve both across edits, restart, retry, and conflicts.
+Number loses precision and numeric type. Private alias storage preserves these
+values as typed JSON strings. The remaining internal Push adapter must retain
+that representation across retry and conflicts.
 
 The [typed HTTP Push transport](../../implemented/bug-fix/2026-09-18-http-push-typed-values.md)
 already accepts the recursive typed representation used by Pull. The SDK's
@@ -66,10 +70,11 @@ Use the delivered runtime's page backpressure, fresh-source readiness, dirty-bit
 scheduling, and cancellation/drain contract. Durable local state and native
 metadata own pending work; there is no additional SDK Outbox requirement.
 
-The local storage layer still needs explicit row admission, schema and cleanup
-rules. Query scans and retained payload/order-key caches need independent byte
-limits and generation invalidation across tabs. Replication scan bounds alone do
-not establish those guarantees. The public API also needs browser capability
+Private alias storage supplies final-row admission, fixed records, paired metadata
+cleanup, indexed bounded reads, and row/manifest invalidations. Local query scans
+and retained payload/order-key caches still need their own byte limits and bounded
+generation rebuild across tabs. Storage invalidations alone do not establish those
+query guarantees. The public API also needs browser capability
 checks and clear failure behavior for quota exhaustion or unavailable storage.
 
 ## Alternatives
@@ -112,6 +117,9 @@ persistence, wire encoding, and conflict application.
 
 - [Private runtime](../../implemented/architecture/2026-09-18-sdk-native-replication-runtime.md)
   owns native protocol reliability and its publishable dependency bundle.
+- [Private alias storage](../../implemented/architecture/2026-09-18-sdk-local-storage.md)
+  owns namespace/session isolation, typed records, raw CAS, bounded persistence,
+  and clean physical compaction.
 - [Push version checks](../../implemented/bug-fix/2026-09-07-replication-push-version-checks.md),
   [create conflicts](../../implemented/bug-fix/2026-09-18-replication-push-create-conflict.md),
   and [typed HTTP Push](../../implemented/bug-fix/2026-09-18-http-push-typed-values.md)

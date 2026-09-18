@@ -87,11 +87,16 @@ RxDB, Dexie, and RxJS dependencies are bundled with the SDK; applications do not
 install or patch these dependencies themselves. Importing the remote client does
 not load the local runtime.
 
-There is no public `openLocal` API or automatic local synchronization yet. The
-private runtime does not make `pull()` persist data or add a public Push method.
+The private storage layer now provides account-scoped Dexie persistence, lossless
+typed values, local CRUD with revision CAS, identity guards, view invalidations,
+and clean physical compaction. These internal APIs are not exported for application
+use. They do not yet implement local query/watch or automatic HTTP synchronization.
+
+There is no public `openLocal` API yet. The private runtime and storage do not
+make `pull()` persist data or add a public Push method.
 Use document REST methods for direct writes. The
 [replication design](../design/sdk/002_replication_client.md) distinguishes the
-delivered runtime from the remaining local database work.
+delivered runtime and storage from the remaining local database integration.
 
 ### Authentication sessions
 
@@ -137,6 +142,13 @@ The second login version change prevents requests admitted while login was pendi
 from retrying under the newly installed account. Obsolete refresh results neither
 write credentials nor emit `onTokenRefresh`/`onAuthError`. If a hook synchronously
 changes sessions, refresh waiters reject rather than receiving a stale token.
+
+When private local storage is attached, refresh also checks JWT subject before
+installing credentials. Same-subject rotation retains its offline namespace;
+subject replacement invalidates old storage admission and drains owned work.
+This includes storage still opening when refresh completes. Failed cleanup remains
+an observable ownership failure rather than successful account handoff. The
+provider carries this ownership across the separately loaded local bundle.
 
 #### Requests and errors
 

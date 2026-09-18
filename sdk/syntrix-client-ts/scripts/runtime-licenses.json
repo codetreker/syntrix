@@ -1,0 +1,7 @@
+{
+  "event-reduce-js@6.0.0": {
+    "file": "third-party/event-reduce-js-6.0.0.LICENSE",
+    "sha256": "fae4e3d1830d0a8f795a06b07f4a8bbc343ff619fb6339de71f4b8986fa4242d",
+    "source": "https://github.com/pubkey/event-reduce/blob/52e54b9f5944c35435e8e9dbbbd58c2413294998/LICENSE"
+  }
+}

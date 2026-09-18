@@ -16,6 +16,9 @@ import { readBoundedChanges, validateBoundedReadOptions, type BoundedReadOptions
 
 export { getRxStorageDexie } from 'rxdb/plugins/storage-dexie';
 export { defaultConflictHandler, defaultHashSha256, fillWithDefaultSettings, getRxReplicationMetaInstanceSchema } from 'rxdb';
+export { createLocalSession } from './session.js';
+export { openAliasStorage } from './storage.js';
+export { compactAlias } from './compaction.js';
 
 export interface SourcePage<T, C extends object> {
   documents: WithDeletedAndAttachments<T>[];

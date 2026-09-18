@@ -28,6 +28,8 @@ try {
     throw new Error('Packed runtime dependency licenses are incomplete');
   }
   await copyFile(join(root, 'scripts/fixtures/package-consumer.mjs'), join(consumer, 'consumer.mjs'));
+  const locks = await readFile(join(root, 'src/internal/local/lock-manager.test-fixture.ts'), 'utf8');
+  await writeFile(join(consumer, 'test-locks.mjs'), new Bun.Transpiler({ loader: 'ts', target: 'browser' }).transformSync(locks));
   await writeFile(join(consumer, 'consumer.ts'),
     "import { SyntrixClient } from '@syntrix/client';\nconst client: typeof SyntrixClient = SyntrixClient;\nvoid client;\n");
   const require = createRequire(import.meta.url);
