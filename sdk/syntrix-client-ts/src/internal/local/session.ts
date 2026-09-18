@@ -19,18 +19,19 @@ export const createLocalSession = async (provider: TokenProvider): Promise<Local
   if (!supportsAuthOwnership(provider)) throw new Error('Local sessions require authentication lifecycle support');
   const version = provider.getSessionVersion();
   const controller = new AbortController();
+  const cancellation = new AuthSessionChangedError();
   let subject: string | undefined;
   const resources = new Set<LocalResource>();
   const pending = new Set<Promise<unknown>>();
   let closing: Promise<void> | undefined;
   let unregister = () => {};
   const assertCurrent = (): void => {
-    if (controller.signal.aborted || version !== provider.getSessionVersion()) throw new AuthSessionChangedError();
+    if (controller.signal.aborted || version !== provider.getSessionVersion()) throw cancellation;
   };
   const invalidationFailures: unknown[] = [];
   const invalidate = (): void => {
     if (controller.signal.aborted) return;
-    controller.abort();
+    controller.abort(cancellation);
     for (const resource of resources) {
       try { resource.invalidate(); } catch (error) { invalidationFailures.push(error); }
     }

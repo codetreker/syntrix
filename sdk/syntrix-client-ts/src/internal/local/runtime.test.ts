@@ -1,6 +1,16 @@
 import { describe, expect, test } from 'bun:test';
+import axios from 'axios';
 import { getRxStorageMemory } from 'rxdb/plugins/storage-memory';
-import { getUnderlyingPersistentStorage, now } from 'rxdb';
+import { getRxStorageDexie } from 'rxdb/plugins/storage-dexie';
+import { indexedDB, IDBKeyRange } from 'fake-indexeddb';
+import { getUnderlyingPersistentStorage, now, type RxStorage } from 'rxdb';
+import { AuthSessionChangedError } from '../../api/errors.js';
+import { DefaultTokenProvider } from '../auth/provider.js';
+import { setupAuthInterceptor } from '../auth/interceptor.js';
+import { createLocalSession } from './session.js';
+import { createTestLockManager } from './lock-manager.test-fixture.js';
+import { openAliasStorage } from './storage.js';
+import type { LocalRecord } from './storage-types.js';
 import {
   createLocalReplicationRuntime,
   defaultConflictHandler,
@@ -72,6 +82,176 @@ const fixture = async () => {
 };
 
 describe('private local replication runtime', () => {
+  for (const outcome of ['success', 'storage-error', 'unrelated-session-error', 'cleanup-error'] as const) {
+    test(`session cancellation drains a native alias read while preserving ${outcome}`, async () => {
+      const jwt = (sub: string) => `${btoa('{}')}.${btoa(JSON.stringify({ sub }))}.sig`.replace(/=/g, '');
+      const provider = new DefaultTokenProvider({ token: jwt('A') });
+      const session = await createLocalSession(provider);
+      const gate = deferred();
+      let entered = false;
+      let armed = false;
+      const fault = outcome === 'unrelated-session-error' ? new AuthSessionChangedError() : new Error(outcome);
+      const raw: { close(): Promise<unknown> }[] = [];
+      const dexie = getRxStorageDexie({ indexedDB, IDBKeyRange });
+      const storage: RxStorage<any, any> = { ...dexie, createStorageInstance: async params => {
+        const instance = await dexie.createStorageInstance(params);
+        raw.push(instance);
+        return new Proxy(instance, { get(target, property) {
+          if (property === 'findDocumentsById' && params.collectionName.startsWith('meta_')) {
+            return async (ids: string[], deleted: boolean) => {
+              const result = await target.findDocumentsById(ids, deleted);
+              if (armed) {
+                entered = true;
+                await gate.promise;
+                if (outcome === 'storage-error' || outcome === 'unrelated-session-error') throw fault;
+              }
+              return result;
+            };
+          }
+          if (property === 'close' && params.collectionName.startsWith('meta_') && outcome === 'cleanup-error') {
+            return async () => { await target.close(); throw fault; };
+          }
+          const value = Reflect.get(target, property, target);
+          return typeof value === 'function' ? value.bind(target) : value;
+        } });
+      } };
+      const alias = await openAliasStorage({ session, endpoint: 'https://example.test', database: 'app',
+        name: crypto.randomUUID(), alias: 'people', source: { collection: 'users', filters: [] },
+        lockManager: createTestLockManager(), storage });
+      const native = await alias.native(await alias.captureScope());
+      const errors: unknown[] = [];
+      let sourceCalls = 0;
+      armed = true;
+      const runtime = createLocalReplicationRuntime<LocalRecord, Cursor>({
+        identifier: native.identifier, forkInstance: native.fork, metaInstance: native.meta, ownerSignal: native.ownerSignal,
+        hashFunction: defaultHashSha256, conflictHandler: defaultConflictHandler,
+        readSource: async () => { sourceCalls++; throw new Error('Canceled startup must not reach source'); },
+        writeRemote: async () => { throw new Error('Canceled startup must not push'); },
+        onError: error => { errors.push(error); },
+      });
+      alias.registerNative({ invalidate() {}, close: () => runtime.close() });
+      try {
+        await until(() => entered);
+        provider.setToken(jwt('B'));
+        expect(runtime.stopped).toBe(true);
+        let tokenSettled = false;
+        const token = provider.getToken().then(value => { tokenSettled = true; return value; }, error => { tokenSettled = true; throw error; });
+        const tokenResult = token.then(value => ({ value }), error => ({ error }));
+        await tick();
+        expect(tokenSettled).toBe(false);
+        gate.resolve();
+        if (outcome === 'success') {
+          await runtime.close();
+          await alias.close();
+          expect(await tokenResult).toEqual({ value: jwt('B') });
+          expect(runtime.error).toBeUndefined();
+          expect(errors).toEqual([]);
+          await expect(alias.get('alice')).rejects.toBe(session.signal.reason);
+        } else {
+          if (outcome !== 'cleanup-error') await expect(runtime.close()).rejects.toBe(fault);
+          const closeError = await alias.close().catch(error => error);
+          if (outcome === 'cleanup-error') expect(closeError).toMatchObject({ code: 'LocalStorageCleanupFailed', cause: fault, cleanupErrors: [fault] });
+          else expect(closeError).toBe(fault);
+          expect(await tokenResult).toEqual({ error: closeError });
+          expect(provider.isAuthenticated()).toBe(false);
+        }
+        expect(sourceCalls).toBe(0);
+      } finally {
+        gate.resolve();
+        await Promise.allSettled([runtime.close(), alias.close(), session.close()]);
+        await Promise.allSettled(raw.map(instance => instance.close()));
+      }
+    }, 5000);
+  }
+
+  test('an already canceled owner cannot create a native runtime', async () => {
+    const f = await fixture();
+    const owner = new AbortController();
+    const reason = new AuthSessionChangedError();
+    owner.abort(reason);
+    try {
+      expect(() => createLocalReplicationRuntime({ ...f.config, ownerSignal: owner.signal })).toThrow(reason);
+      expect(await f.meta.findDocumentsById(['down|1', 'up|1'], true)).toEqual([]);
+    } finally { await f.close(); }
+  });
+
+  test('a canceled owner drains its checkpoint queue without admitting a later checkpoint hook', async () => {
+    const jwt = (sub: string) => `${btoa('{}')}.${btoa(JSON.stringify({ sub }))}.sig`.replace(/=/g, '');
+    const provider = new DefaultTokenProvider({ token: jwt('A') });
+    const session = await createLocalSession(provider);
+    const f = await fixture();
+    const gate = deferred();
+    let entered = false;
+    const write = f.meta.bulkWrite.bind(f.meta);
+    f.meta.bulkWrite = (rows, context) => session.track(async () => {
+      const result = await write(rows, context);
+      if (context === 'replication-set-checkpoint') { entered = true; await gate.promise; }
+      return result;
+    });
+    f.config.ownerSignal = session.signal;
+    const runtime = f.start();
+    session.register({ invalidate() {}, close: () => runtime.close() });
+    try {
+      await until(() => entered);
+      provider.setToken(jwt('B'));
+      gate.resolve();
+      await runtime.close();
+      expect(await provider.getToken()).toBe(jwt('B'));
+      expect(f.committed).toEqual([]);
+      expect(runtime.error).toBeUndefined();
+    } finally { gate.resolve(); await Promise.allSettled([session.close(), f.close()]); }
+  });
+
+  for (const point of ['before-interceptor', 'awaiting-token', 'in-flight'] as const) {
+    test(`account replacement drains native HTTP work canceled ${point}`, async () => {
+      const jwt = (sub: string) => `${btoa('{}')}.${btoa(JSON.stringify({ sub }))}.sig`.replace(/=/g, '');
+      const provider = new DefaultTokenProvider({ token: jwt('A') });
+      const session = await createLocalSession(provider);
+      const f = await fixture();
+      const tokenGate = deferred();
+      const getToken = provider.getToken.bind(provider);
+      let awaitingToken = false;
+      if (point === 'awaiting-token') provider.getToken = async () => {
+        awaitingToken = true;
+        await tokenGate.promise;
+        return getToken();
+      };
+      let sent = 0;
+      let started = false;
+      const http = axios.create({ adapter: async config => {
+        sent++;
+        if (point !== 'in-flight') throw new Error('Obsolete request reached transport');
+        return new Promise((_resolve, reject) => {
+          config.signal!.addEventListener!('abort', () => reject(new axios.CanceledError('canceled', config)), { once: true });
+        });
+      } });
+      setupAuthInterceptor(http, provider);
+      f.config.ownerSignal = session.signal;
+      f.config.readSource = (_checkpoint, _limit, signal) => session.track(async () => {
+        const request = http.get('/replication/pull', { signal });
+        started = true;
+        if (point === 'before-interceptor') provider.setToken(jwt('B'));
+        await request;
+        throw new Error('Obsolete response was admitted');
+      });
+      const runtime = f.start();
+      session.register({ invalidate() {}, close: () => runtime.close() });
+      try {
+        await until(() => point === 'before-interceptor' ? started : point === 'awaiting-token' ? awaitingToken : sent === 1);
+        if (point !== 'before-interceptor') provider.setToken(jwt('B'));
+        await runtime.close();
+        await session.close();
+        expect(await getToken()).toBe(jwt('B'));
+        expect(runtime.error).toBeUndefined();
+        expect(f.errors).toEqual([]);
+        expect(sent).toBe(point === 'in-flight' ? 1 : 0);
+      } finally {
+        tokenGate.resolve();
+        await Promise.allSettled([session.close(), f.close()]);
+      }
+    }, 3000);
+  }
+
   test('short and empty progress pages gate uploads until the durable terminal hook finishes', async () => {
     const f = await fixture();
     const hookGate = deferred();

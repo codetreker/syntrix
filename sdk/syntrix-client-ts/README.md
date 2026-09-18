@@ -115,6 +115,8 @@ failure rejects while local credentials remain cleared. Low-level
 after authentication.
 
 Authentication work and automatic retries remain bound to their original session.
+HTTP requests capture that session before asynchronous interceptors run, and their
+abort signals interrupt token and refresh waits during account replacement.
 Obsolete operations reject with `AuthSessionChangedError` (`AUTH_SESSION_CHANGED`)
 and cannot restore old credentials or retry under a new account. Custom
 `TokenProvider` implementations must expose synchronous `getSessionVersion()` and

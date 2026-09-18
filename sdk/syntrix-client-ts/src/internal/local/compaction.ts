@@ -95,6 +95,7 @@ const seed = async (access: MaintenanceAccess, previous: PhysicalStorage, next: 
   try {
     runtime = createLocalReplicationRuntime<LocalRecord, JsonObject>({
       identifier: next.identifier, forkInstance: next.fork, metaInstance: next.meta,
+      ownerSignal: access.ownerSignal,
       hashFunction: defaultHashSha256,
       conflictHandler: { isEqual: businessEqual, resolve: async conflict => conflict.realMasterState },
       pullBatchSize: 3, pushBatchSize: 3,

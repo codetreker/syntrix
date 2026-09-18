@@ -36,6 +36,7 @@ export interface LocalReplicationOptions<T, C extends object> {
   metaInstance: RxStorageInstance<RxStorageReplicationMeta<T, any>, any, any>;
   conflictHandler: RxConflictHandler<T>;
   hashFunction: HashFunction;
+  ownerSignal?: AbortSignal;
   pullBatchSize?: number;
   pushBatchSize?: number;
   readBounds?: BoundedReadOptions;
@@ -60,6 +61,7 @@ export interface LocalReplicationRuntime {
 export const createLocalReplicationRuntime = <T, C extends object>(
   options: LocalReplicationOptions<T, C>,
 ): LocalReplicationRuntime => {
+  options.ownerSignal?.throwIfAborted();
   const limits = validateBoundedReadOptions(options.readBounds);
   const pullBatchSize = options.pullBatchSize ?? 201;
   const pushBatchSize = options.pushBatchSize ?? 50;
@@ -87,12 +89,21 @@ export const createLocalReplicationRuntime = <T, C extends object>(
   let wire: Promise<unknown> = Promise.resolve();
   let pageToCommit: SourcePage<T, C> | undefined;
   let closing: Promise<void> | undefined;
+  // Only this owner or runtime can authorize cancellation during drain;
+  // another session's error and genuine storage failures remain observable.
+  const isCancellationReason = (error: unknown) => error === closedError ||
+    (abort.signal.aborted && error === abort.signal.reason) ||
+    (options.ownerSignal?.aborted === true && error === options.ownerSignal.reason);
+  const isCancellation = (error: unknown) => isCancellationReason(error) ||
+    (typeof error === 'object' && error !== null && 'code' in error && error.code === 'ERR_CANCELED' &&
+      'cause' in error && isCancellationReason(error.cause));
 
   const stop = () => {
     if (stopped) return;
     stopped = true;
     ready = false;
-    abort.abort();
+    abort.abort(options.ownerSignal?.aborted ? options.ownerSignal.reason : undefined);
+    options.ownerSignal?.removeEventListener('abort', stop);
     state?.events.canceled.next(true);
     subscriptions.forEach(subscription => subscription.unsubscribe());
     invalidations.complete();
@@ -120,7 +131,7 @@ export const createLocalReplicationRuntime = <T, C extends object>(
     void task.then(() => pending.delete(task), error => {
       pending.delete(task);
       if (stopped) {
-        if (!failed && error !== closedError && error !== abort.signal.reason) {
+        if (!failed && !isCancellation(error)) {
           failed = true;
           failure = error;
         }
@@ -269,6 +280,8 @@ export const createLocalReplicationRuntime = <T, C extends object>(
     },
     error: fail,
   }));
+  options.ownerSignal?.addEventListener('abort', stop, { once: true });
+  if (options.ownerSignal?.aborted) stop();
 
   const settle = async () => {
     while (true) {
@@ -301,7 +314,7 @@ export const createLocalReplicationRuntime = <T, C extends object>(
           try {
             await cancelRxStorageReplication(state);
           } catch (error) {
-            if (error !== closedError) throw error;
+            if (!isCancellation(error)) throw error;
           }
           if (failed) throw failure;
         })();

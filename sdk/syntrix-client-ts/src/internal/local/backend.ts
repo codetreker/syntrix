@@ -42,6 +42,7 @@ export class ReadBudget {
   constructor(readonly maxBytes: number) { positive(maxBytes, 'Read budget'); }
   get usedBytes() { return this.used; }
   get peakBytes() { return this.peak; }
+  get availableBytes() { return this.maxBytes - this.used; }
   async withReservation<T>(bytes: number, operation: () => Promise<T>): Promise<T> {
     positive(bytes, 'Read reservation');
     if (bytes > this.maxBytes - this.used) throw new LocalStorageError('LocalReadBudgetExceeded', 'Read would exceed the materialization budget');
@@ -156,7 +157,10 @@ const validateMetadata = async (row: RxDocumentData<RxStorageReplicationMeta<Loc
   }
 };
 
-export type AliasBackendOptions = { name: string; limits?: Partial<StorageLimits>; storage?: RxStorage<any, any>; beforeWrite?: BeforeWrite };
+export type AliasBackendOptions = {
+  name: string; limits?: Partial<StorageLimits>; storage?: RxStorage<any, any>; beforeWrite?: BeforeWrite;
+  writeMaterialization?: { data: ReadBudget; control: ReadBudget; maxRetainedBytes?: number; };
+};
 export type AliasBackend = {
   database: RxDatabase;
   limits: StorageLimits;
@@ -172,6 +176,11 @@ export type AliasBackend = {
 
 export const openAliasBackend = async (options: AliasBackendOptions): Promise<AliasBackend> => {
   const limits = validateStorageLimits(options.limits);
+  const writeBudgets = options.writeMaterialization ?? {
+    data: new ReadBudget(64 * 1024 * 1024), control: new ReadBudget(2 * limits.maxManifestBytes),
+  };
+  const maxWriteRetained = writeBudgets.maxRetainedBytes ?? 128 * 1024 * 1024;
+  positive(maxWriteRetained, 'Write result budget');
   const underlying = options.storage ?? getRxStorageDexie();
   const rawClosers = new Set<() => Promise<void>>();
   const guarded: RxStorage<any, any> = {
@@ -197,6 +206,18 @@ export const openAliasBackend = async (options: AliasBackendOptions): Promise<Al
             rawClosers.delete(close);
           };
           if (property === 'bulkWrite' && kind) return async (rows: BulkWriteRow<any>[], context: string) => {
+            const maximum = kind === 'record' ? limits.maxRecordBytes : kind === 'manifest' ? limits.maxManifestBytes : limits.maxMetadataBytes;
+            const pool = kind === 'manifest' ? writeBudgets.control : writeBudgets.data;
+            const seen = new WeakSet<object>();
+            let retained = 2;
+            const account = (document: object | undefined) => {
+              if (!document || seen.has(document)) return;
+              const bytes = encodedRowBytes(document);
+              if (bytes > maximum) throw new LocalStorageError('LocalRecordTooLarge', 'Encoded storage row exceeds its admission budget');
+              retained += bytes;
+              seen.add(document);
+              if (retained > maxWriteRetained) throw new LocalStorageError('LocalReadBudgetExceeded', 'Write result exceeds materialization budget');
+            };
             for (const { document } of rows) {
               if (kind === 'record') { validateRecord(document); await validateRecordIdentity(document); }
               else if (kind === 'manifest') {
@@ -208,10 +229,44 @@ export const openAliasBackend = async (options: AliasBackendOptions): Promise<Al
                 }
               }
               else await validateMetadata(document);
-              checkBytes(document, kind === 'record' ? limits.maxRecordBytes : kind === 'manifest' ? limits.maxManifestBytes : limits.maxMetadataBytes);
+            }
+            // RxDB retains the submitted rows alongside the response, and each
+            // conflict retains both its writeRow and the current stored row.
+            // Charge all input references before admitting implicit Dexie reads.
+            for (const row of rows) {
+              retained += encodedRowBytes({ document: null, ...(row.previous ? { previous: null } : {}) }) + 1;
+              account(row.document); account(row.previous);
+              if (retained > maxWriteRetained) throw new LocalStorageError('LocalReadBudgetExceeded', 'Write result exceeds materialization budget');
             }
             await options.beforeWrite?.(kind, params.collectionName, rows, context);
-            return target.bulkWrite(rows, context);
+            const error: Awaited<ReturnType<typeof target.bulkWrite>>['error'] = [];
+            const primary = getPrimaryFieldOfPrimaryKey(target.schema.primaryKey);
+            for (let offset = 0; offset < rows.length;) {
+              const limit = Math.min(4, Math.floor(pool.availableBytes / maximum), rows.length - offset);
+              if (limit < 1) throw new LocalStorageError('LocalReadBudgetExceeded', 'Write read exceeds materialization budget');
+              // Attachment-free Dexie writes return only CAS errors. Reserve
+              // their current documents and full error envelopes before its
+              // internal bulkGet can allocate them, including concurrent growth.
+              let count = 0; let envelopes = 0;
+              while (count < limit) {
+                const envelope = encodedRowBytes({ isError: true, status: 409,
+                  documentId: rows[offset + count].document[primary], writeRow: null, documentInDb: null, context }) + 1;
+                if (retained + (count + 1) * maximum + envelopes + envelope > maxWriteRetained) break;
+                envelopes += envelope; count++;
+              }
+              if (!count) throw new LocalStorageError('LocalReadBudgetExceeded', 'Write result exceeds materialization budget');
+              const chunk = rows.slice(offset, offset + count);
+              const result = await pool.withReservation(count * maximum, () => target.bulkWrite(chunk, context));
+              for (const failure of result.error) {
+                account(failure.writeRow.document); account(failure.writeRow.previous);
+                if ('documentInDb' in failure) account(failure.documentInDb);
+                retained += encodedRowBytes({ ...failure, writeRow: null, documentInDb: null }) + 1;
+                if (retained > maxWriteRetained) throw new LocalStorageError('LocalReadBudgetExceeded', 'Write result exceeds materialization budget');
+                error.push(failure);
+              }
+              offset += count;
+            }
+            return { error };
           };
           const value = Reflect.get(target, property, target);
           return typeof value === 'function' ? value.bind(target) : value;

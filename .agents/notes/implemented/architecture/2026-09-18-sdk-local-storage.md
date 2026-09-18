@@ -24,6 +24,8 @@ pending。逐 ID 清除原生历史又可能使旧状态重新上传。直接批
 | 物理 namespace | 规范 endpoint、JWT sub、精确配置 database、本地库名、alias 的 SHA-256；manifest 保存原 tuple 校验 |
 | 离线身份 | sub 非空，oid 存在时必须相同；允许过期 token 离线打开，拒绝缺失/畸形 token，不引入默认账号 |
 | 凭据变化 | 同 subject refresh 保留库；subject 改变先失效再 drain，覆盖尚未完成的 open；失败的 drain 不解除所有权义务 |
+| 正常取消 | session 使用稳定的取消原因；原生运行时仅识别所属已取消 signal 的同一原因或以其为 cause 的 Axios 取消，旧读取成功后的失效不会变成关闭故障；真实存储错误仍传播 |
+| HTTP 等待 | 请求构造时同步固定会话；凭据等待前和等待期间响应取消，避免旧请求等待正在 drain 自己的新凭据 |
 | bundle | 生命周期能力附在同一个 token provider 的版本化 Symbol hub 上，remote entry 与独立 lazy bundle 共享所有者 |
 | 数据库绑定 | 初始可 unbound 离线编辑；首次 CAS 绑定 databaseIdentity/sourceHash，之后不自动改绑 |
 | 请求准入 | 捕获 subject/session/source definition/physical epoch/native instance/request ID；就绪后提供预期数据库身份头 |
@@ -74,8 +76,11 @@ alias shared -> 当前 epoch -> view exclusive -> d/m + 冻结条件
 
 所有最终持久化入口，包括源状态应用、恢复、seed 和控制写，都检查实际行大小。recoveryIntent
 是同一目标的两份 DataRecord，不接受无界任意 JSON。读取前预留额度，作用域内仍持有
-的 snapshot 继续占额；物理扫描必须由主键索引提供有序 seek。上述界限不声称限制全局
-JavaScript heap、所有原生队列或尚未实现的查询缓存。
+的 snapshot 继续占额；物理扫描必须由主键索引提供有序 seek。bulk write 对底层隐式读取
+当前行也分块预留额度；保留的写入输入和冲突结果受 native handoff 预算约束，每次委派
+下一块之前按最坏行大小准入。额度不足明确失败，已成功块保持持久化，复制 checkpoint
+不能推进；重试通过原有逐行 CAS 协调部分成功。上述界限不声称限制全局 JavaScript heap、
+所有原生队列或尚未实现的查询缓存。
 
 仅使用 collection 的 raw storage，不使用 RxDocument/RxQuery。关闭未使用的高层
 change-event history 并同步排空 lazy document-cache tasks，保留真实 change feed。
@@ -124,6 +129,7 @@ reservation 限制单次物化，独立控制池避免 manifest 与业务记录�
 
 - 私有存储可以离线读写与重开；自动网络同步、源成员协调和公开本地 API 仍需集成。
 - 条件写、quota 和维护会显式失败；close/drain 失败保留可见错误，不能宣称安全切换账号。
+- 取消等待不会解除凭据 drain 义务；正常 session 取消可完成关闭，真实 I/O 和清理故障仍阻止新凭据安装。
 - 完整字节容量核对、clean 检查和 seed 都有扫描成本；没有性能或总 heap 的额外承诺。
 - 远程窗口沿用普通 Query 的索引滞后模型，可能暂时退出后重入；本地成员协调不得据此
   删除 pending，具体应用属于下游复制集成。

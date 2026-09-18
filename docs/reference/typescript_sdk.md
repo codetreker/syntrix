@@ -146,9 +146,11 @@ changes sessions, refresh waiters reject rather than receiving a stale token.
 When private local storage is attached, refresh also checks JWT subject before
 installing credentials. Same-subject rotation retains its offline namespace;
 subject replacement invalidates old storage admission and drains owned work.
-This includes storage still opening when refresh completes. Failed cleanup remains
-an observable ownership failure rather than successful account handoff. The
-provider carries this ownership across the separately loaded local bundle.
+This includes storage still opening when refresh completes. Expected cancellation
+of old native work does not prevent account replacement after that work drains;
+real storage and cleanup failures remain observable and prevent credential
+installation. The provider carries this ownership across the separately loaded
+local bundle.
 
 #### Requests and errors
 
@@ -157,15 +159,18 @@ provider carries this ownership across the separately loaded local bundle.
 local session changed; applications should stop that old operation rather than
 retrying it under a new identity.
 
-HTTP requests capture their session at first authentication-interceptor admission.
+HTTP requests capture their session synchronously when the Axios request is
+constructed, before asynchronous interceptors run.
 Token waits and 401/403 refresh/retry preserve and check that version. An old request
 cannot automatically refresh or retry using a new account. Missing access tokens
 remove any existing Authorization header. Authentication retry remains limited to
-one attempt.
+one attempt. A request's `AbortSignal` is checked before credential waits and can
+interrupt those waits, including a wait for shared refresh. Canceling one waiter
+does not cancel the shared refresh or release the provider's credential barrier.
 
-This does not bind ownership at the instant an SDK method is called, cancel an
-already admitted request, filter a successful old response, or undo server effects.
-An admitted request may still send or finish using its old token. See the
+SDK methods may capture ownership earlier; generic HTTP ownership does not cancel
+an already dispatched request, filter a successful old response, or undo server
+effects. A dispatched request may still finish using its old token. See the
 [authentication design](../design/sdk/003_authentication.md) for provider and
 transport ownership.
 

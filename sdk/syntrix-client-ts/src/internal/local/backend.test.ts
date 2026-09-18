@@ -3,7 +3,7 @@ import { indexedDB, IDBKeyRange } from 'fake-indexeddb';
 import { getRxStorageDexie } from 'rxdb/plugins/storage-dexie';
 import { getRxStorageMemory } from 'rxdb/plugins/storage-memory';
 import { addRxPlugin, type RxDatabase, type RxStorage } from 'rxdb';
-import { BackendCleanupError, countRows, encodedRowBytes, openAliasBackend, ReadBudget, validateStorageLimits, withMetadataScanPage, withRows, withScanPage } from './backend.js';
+import { BackendCleanupError, countRows, encodedRowBytes, openAliasBackend, ReadBudget, validateStorageLimits, withMetadataScanPage, withRows, withScanPage, type NativeRow } from './backend.js';
 import { decodeBusinessPayload, definitionHash, encodeBusinessPayload, freezeSourceDefinition, recordKey } from './records.js';
 import type { AliasManifest, DataRecord, LocalRecord } from './storage-types.js';
 
@@ -26,6 +26,156 @@ const nativeMeta = (row: LocalRecord) => ({ id: `${row.key}|0`, itemId: row.key,
   docData: { ...row, _deleted: false }, _deleted: false, _attachments: {}, _meta: { lwt: Date.now() }, _rev: '1-test' });
 
 describe('alias physical storage', () => {
+  const observedDexie = (pool: ReadBudget, observations: { kind: string; count: number; reserved: number; }[]): RxStorage<any, any> => {
+    const delegate = dexie();
+    return { ...delegate, async createStorageInstance(params) {
+      const raw = await delegate.createStorageInstance(params);
+      if (params.collectionName.startsWith('records_') || params.collectionName.startsWith('meta_')) {
+        const state = await raw.internals;
+        const original = state.dexieTable.bulkGet.bind(state.dexieTable);
+        state.dexieTable.bulkGet = ((ids: string[]) => {
+          observations.push({ kind: params.collectionName, count: ids.length, reserved: pool.usedBytes });
+          return original(ids);
+        }) as typeof state.dexieTable.bulkGet;
+      }
+      return raw;
+    } };
+  };
+
+  test('Dexie write-side reads are reserved and chunked for grown CAS conflicts and native metadata', async () => {
+    const pool = new ReadBudget(4096);
+    const observations: { kind: string; count: number; reserved: number; }[] = [];
+    const backend = await openAliasBackend({ name: name(), storage: observedDexie(pool, observations),
+      limits: { maxRecordBytes: 1024, maxMetadataBytes: 1100, maxManifestBytes: 2000 },
+      writeMaterialization: { data: pool, control: new ReadBudget(4000) } });
+    try {
+      const opened = await backend.openPhysical('p1');
+      const originals: NativeRow<DataRecord>[] = [];
+      for (let index = 0; index < 12; index++) {
+        originals.push(await backend.writeRecord(opened, await data(`race${index}`), undefined, 'seed') as NativeRow<DataRecord>);
+      }
+      for (let index = 0; index < 12; index += 2) {
+        await backend.writeRecord(opened, { ...originals[index], payload: encodeBusinessPayload({ text: 'x'.repeat(500) }) }, originals[index], 'grow');
+      }
+      observations.length = 0;
+      const result = await opened.fork.bulkWrite(originals.map(previous => ({ previous,
+        document: { ...previous, payload: encodeBusinessPayload({ edited: true }) } })), 'stale-batch');
+      expect(observations.map(read => [read.count, read.reserved])).toEqual([[4, 4096], [4, 4096], [4, 4096]]);
+      expect(result.error.map(error => error.documentId)).toEqual(originals.filter((_, index) => index % 2 === 0).map(row => row.key));
+      for (const failure of result.error) {
+        expect(failure.status).toBe(409);
+        if (failure.status === 409) expect(decodeBusinessPayload((failure.documentInDb as DataRecord).payload)).toEqual({ text: 'x'.repeat(500) });
+      }
+      const rows = await opened.fork.findDocumentsById(originals.map(row => row.key), false);
+      for (const row of rows) expect(decodeBusinessPayload((row as DataRecord).payload)).toEqual(
+        result.error.some(error => error.documentId === row.key) ? { text: 'x'.repeat(500) } : { edited: true });
+      observations.length = 0;
+      expect((await opened.meta.bulkWrite(originals.map(row => ({ document: nativeMeta(row) as any })), 'metadata')).error).toEqual([]);
+      expect(observations.map(read => [read.count, read.reserved])).toEqual([[3, 3300], [3, 3300], [3, 3300], [3, 3300]]);
+      expect(pool.usedBytes).toBe(0);
+      expect(pool.peakBytes).toBe(4096);
+    } finally { await backend.close(); }
+  });
+
+  test('write-result budget fails before further reads and partial CAS successes remain safely replayable', async () => {
+    const pool = new ReadBudget(4096);
+    const observations: { kind: string; count: number; reserved: number; }[] = [];
+    const backendName = name();
+    const options = { name: backendName, storage: observedDexie(pool, observations),
+      limits: { maxRecordBytes: 1024, maxMetadataBytes: 1100, maxManifestBytes: 2000 } };
+    let backend = await openAliasBackend(options);
+    const originals: NativeRow<DataRecord>[] = [];
+    let opened = await backend.openPhysical('p1');
+    for (let index = 0; index < 12; index++) originals.push(await backend.writeRecord(opened, await data(`replay${index}`), undefined, 'seed') as NativeRow<DataRecord>);
+    for (let index = 0; index < 12; index += 2) {
+      await backend.writeRecord(opened, { ...originals[index], payload: encodeBusinessPayload({ text: 'x'.repeat(500) }) }, originals[index], 'grow');
+    }
+    const writes = originals.map(previous => ({ previous, document: { ...previous, payload: encodeBusinessPayload({ edited: true }) } }));
+    const inputBytes = writes.reduce((sum, row) => sum + encodedRowBytes(row.document) + encodedRowBytes(row.previous) + encodedRowBytes({ document: null, previous: null }) + 1, 2);
+    await backend.close();
+    backend = await openAliasBackend({ ...options, writeMaterialization: {
+      data: pool, control: new ReadBudget(4000), maxRetainedBytes: inputBytes + 4 * 1024 + 1000,
+    } });
+    try {
+      opened = await backend.openPhysical('p1');
+      observations.length = 0;
+      await expect(opened.fork.bulkWrite(writes, 'budget')).rejects.toMatchObject({ code: 'LocalReadBudgetExceeded' });
+      expect(observations[0].count).toBe(4);
+      expect(observations.every(read => read.count <= 4 && read.reserved === read.count * 1024)).toBe(true);
+      const processed = observations.reduce((sum, read) => sum + read.count, 0);
+      expect(processed).toBeLessThan(12);
+      expect(pool.usedBytes).toBe(0);
+      const current = await opened.fork.findDocumentsById(originals.map(row => row.key), false);
+      for (let index = 0; index < 12; index++) {
+        const row = current.find(row => row.key === originals[index].key)!;
+        expect(decodeBusinessPayload((row as DataRecord).payload)).toEqual(index % 2 === 0 ? { text: 'x'.repeat(500) } :
+          index < processed ? { edited: true } : { count: 9007199254740993n });
+      }
+      // Retry each unapplied row using its authoritative revision. Successful
+      // rows from the rejected aggregate need neither rollback nor duplication.
+      for (const previous of current) {
+        const result = await opened.fork.bulkWrite([{ previous, document: { ...(previous as NativeRow<DataRecord>), payload: encodeBusinessPayload({ edited: true }) } }], 'replay');
+        expect(result.error).toEqual([]);
+      }
+      const replayed = await opened.fork.findDocumentsById(originals.map(row => row.key), false);
+      expect(replayed.map(row => decodeBusinessPayload((row as DataRecord).payload))).toEqual(Array.from({ length: 12 }, () => ({ edited: true })));
+    } finally { await backend.close(); }
+  });
+
+  test('write admission shares existing read reservations and releases implicit reads on storage errors', async () => {
+    const pool = new ReadBudget(4096);
+    const observations: { kind: string; count: number; reserved: number; }[] = [];
+    const delegate = observedDexie(pool, observations);
+    const failure = new Error('Dexie write failed');
+    const storage: RxStorage<any, any> = { ...delegate, async createStorageInstance(params) {
+      const raw = await delegate.createStorageInstance(params);
+      const write = raw.bulkWrite.bind(raw);
+      raw.bulkWrite = async (rows, context) => {
+        if (context === 'fail') { expect(pool.usedBytes).toBe(1024); throw failure; }
+        return write(rows, context);
+      };
+      return raw;
+    } };
+    const backend = await openAliasBackend({ name: name(), storage,
+      limits: { maxRecordBytes: 1024, maxMetadataBytes: 1100, maxManifestBytes: 2000 },
+      writeMaterialization: { data: pool, control: new ReadBudget(4000) } });
+    try {
+      const opened = await backend.openPhysical('p1');
+      await pool.withReservation(3072, async () => {
+        const rows = [await data('shared1'), await data('shared2')];
+        const nativeRows = rows.map(row => ({ document: { ...row, _attachments: {}, _deleted: false, _meta: { lwt: Date.now() }, _rev: '1-shared' } }));
+        expect((await opened.fork.bulkWrite(nativeRows, 'shared')).error).toEqual([]);
+        expect(observations.map(read => [read.count, read.reserved])).toEqual([[1, 4096], [1, 4096]]);
+        expect(pool.usedBytes).toBe(3072);
+      });
+      await expect(backend.writeRecord(opened, await data('failure'), undefined, 'fail')).rejects.toBe(failure);
+      expect(pool.usedBytes).toBe(0);
+      const reads = observations.length;
+      await expect(pool.withReservation(4096, async () => backend.writeRecord(opened, await data('blocked'), undefined, 'blocked'))).rejects.toMatchObject({ code: 'LocalReadBudgetExceeded' });
+      expect(observations.length).toBe(reads);
+      expect(pool.usedBytes).toBe(0);
+    } finally { await backend.close(); }
+  });
+
+  test('write handoff counts submitted documents and previous revisions before any implicit read', async () => {
+    const pool = new ReadBudget(4096);
+    const observations: { kind: string; count: number; reserved: number; }[] = [];
+    const backend = await openAliasBackend({ name: name(), storage: observedDexie(pool, observations),
+      limits: { maxRecordBytes: 1024, maxMetadataBytes: 1100, maxManifestBytes: 2000 },
+      writeMaterialization: { data: pool, control: new ReadBudget(4000), maxRetainedBytes: 1800 } });
+    try {
+      const opened = await backend.openPhysical('p1');
+      const document = await data('input');
+      const previous = { ...document, _attachments: {}, _deleted: false, _meta: { lwt: Date.now() }, _rev: '1-input' };
+      const enlarged = { ...previous, payload: encodeBusinessPayload({ text: 'x'.repeat(300) }) };
+      const rows = [{ previous: enlarged, document: { ...enlarged, _rev: '2-input' } },
+        { previous: enlarged, document: { ...enlarged, _rev: '2-other' } }];
+      await expect(opened.fork.bulkWrite(rows, 'input')).rejects.toMatchObject({ code: 'LocalReadBudgetExceeded' });
+      expect(observations).toEqual([]);
+      expect(pool.usedBytes).toBe(0);
+    } finally { await backend.close(); }
+  });
+
   test('Dexie persists exact typed rows, revisions and manifest across close and reopen', async () => {
     const options = { name: name(), storage: dexie() };
     let backend = await openAliasBackend(options);

@@ -42,7 +42,7 @@ a server authentication failure.
 
 | Consumer | Ownership checks |
 |---|---|
-| HTTP | Stamp the version at first authentication-interceptor admission, retain it through retry, and check around token waits and before processing an old 401/403, refreshing, or retrying |
+| HTTP | Stamp the version synchronously during Axios request construction, retain it through retry, and check around abortable credential waits and before processing an old 401/403, refreshing, or retrying |
 | HTTP without a token | Remove any existing Authorization header |
 | WebSocket | Capture a version per connection attempt, check token waits and authentication ACKs, and retain that version through automatic reconnect |
 | Explicit WebSocket connect | End an obsolete attempt and allow a new attempt under the current session |
@@ -85,10 +85,14 @@ client checks.
 - Existing server logout still revokes the submitted refresh token. Already issued
   access or derived refresh tokens follow existing server expiration and revocation
   rules; local invalidation does not revoke them all.
-- HTTP ownership begins at interceptor admission, not the instant an SDK method is
-  called. An already admitted request may still send or finish with its old token;
-  it cannot automatically retry under a new session. Successful old responses are
-  not filtered and remote effects are not rolled back.
+- HTTP ownership begins synchronously during request construction, before async
+  interceptors; SDK operations may bind an earlier session. Credential waits are
+  abortable so owned requests can drain during account replacement. An already
+  dispatched request may still finish with its old token; it cannot automatically
+  retry under a new session. Successful old responses are not generally filtered
+  and remote effects are not rolled back. The
+  [local-storage decision](../architecture/2026-09-18-sdk-local-storage.md) owns
+  credential-drain and native cancellation behavior for attached offline storage.
 - No global provider-to-transport registry is introduced. Owners of independently
   constructed transports must close them explicitly; session checks guard their
   later asynchronous work and prevent automatic reconnect across sessions.

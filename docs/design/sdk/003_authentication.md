@@ -39,8 +39,11 @@ Planned additional hooks remain `onAuthRetry` and `onRealtimeAuthError`; they ar
 not part of the delivered configuration. Applications own durable secret storage.
 
 ## Request Injection
-- Axios interceptor obtains the token through its configured provider and stamps
-  the provider version at first authentication-interceptor admission.
+- HTTP request construction synchronously captures the provider version before
+  Axios schedules asynchronous interceptors; retries preserve the captured version.
+- Credential waits check the request's cancellation signal before starting and
+  remain abortable while waiting, so an owned request cannot hold up the account
+  transition whose credentials it is waiting for.
 - Check the version before and after token acquisition. Attach
   `Authorization: Bearer <token>` when available; delete an existing Authorization
   header when no token is available.
@@ -115,11 +118,14 @@ Obsolete errors do not invoke `onAuthError` for the new session.
 `AuthSessionChangedError` extends `Error`, has code `AUTH_SESSION_CHANGED`, and has
 no HTTP status. Consumers preserve it rather than converting it to a server 401.
 
-HTTP ownership starts at interceptor admission, not the SDK call or an atomic
-network send. Admitted requests may still send or finish using old credentials;
-they cannot automatically retry using a new session. Successful old responses are
-not filtered, and remote effects are not rolled back. Normal refresh preserves
-the version and each request remains limited to one authentication retry.
+HTTP ownership starts synchronously when the Axios request is constructed, before
+its asynchronous authentication work. SDK operations that capture an earlier
+session retain that binding. Cancellation releases token and refresh waits without
+discarding the provider's credential-drain barrier. Already dispatched requests
+may finish using old credentials; they cannot automatically retry using a new
+session. Successful old responses are not generally filtered, and remote effects
+are not rolled back. Normal refresh preserves the version and each request remains
+limited to one authentication retry.
 
 Local integer comparisons and operation-identity checks add no server lookup or
 token-format change. Existing logout revokes the submitted refresh token; access

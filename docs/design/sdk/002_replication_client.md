@@ -150,6 +150,7 @@ owns the persistence choices and their costs.
 | Offline identity | Require a nonempty JWT `sub`, with matching `oid` if present; an expired token can open offline storage, while missing/malformed identity cannot select a fallback account |
 | Source binding | Freeze the source definition; initially unbound storage can accept local edits; CAS binds the first database ID/source hash and rejects later reassignment |
 | Session refresh | Same-subject refresh keeps ownership; a subject change invalidates admission before draining owned resources, including an opening alias |
+| Session cancellation | A stable owner cancellation reason fences obsolete results and is recognized during native drain, directly or as the exact cause of an Axios cancellation; successful I/O finishing after invalidation does not become a storage failure |
 | Drain failure | Keep the failed owner's drain obligation observable; another account cannot proceed as if cleanup succeeded |
 | Bundle boundary | Ownership belongs to the token provider through a shared versioned capability, so the remote entry and lazy bundle use the same owners |
 
@@ -223,9 +224,14 @@ Every persistence entry checks the final stored row, including source, seed,
 recovery, and control writes. Recovery intents hold exactly two typed data-record
 snapshots for one target. Reads reserve capacity before materializing rows;
 retained snapshots remain charged within their owning scope. Physical scans must
-use an index-satisfied primary-key seek without a blocking sort. These encoded
-byte limits do not bound total JavaScript heap, native runtime queues, or future
-query caches.
+use an index-satisfied primary-key seek without a blocking sort. Bulk writes also
+reserve capacity for the storage engine's implicit reads of current documents and
+split work into bounded chunks. The native handoff budget includes retained write
+inputs and conflict results; each next chunk must fit before it is dispatched.
+If admission fails, earlier successful writes remain durable, the operation fails,
+and replication must not advance its checkpoint. Retry reconciles those partial
+results through the existing per-row CAS rules. These encoded byte limits do not
+bound total JavaScript heap, native runtime queues, or future query caches.
 
 The storage uses raw collection storage rather than RxDocument/RxQuery views.
 Unused high-level event history and lazy document-cache tasks are disabled or

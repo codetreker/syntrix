@@ -1,6 +1,6 @@
 import { getChangedDocumentsSince, type RxStorage, type RxStorageReplicationMeta } from 'rxdb';
 import { Subject, type Observable, type Subscription } from 'rxjs';
-import { openAliasBackend, BackendCleanupError, ReadBudget, withRows, withScanPage, withMetadataScanPage, countRows, encodedRowBytes, type AliasBackend, type NativeRow, type NativeStorage, type PhysicalStorage } from './backend.js';
+import { openAliasBackend, BackendCleanupError, ReadBudget, validateStorageLimits, withRows, withScanPage, withMetadataScanPage, countRows, encodedRowBytes, type AliasBackend, type NativeRow, type NativeStorage, type PhysicalStorage } from './backend.js';
 import { createNamespace } from './identity.js';
 import { createAliasLocks, type AliasLockOwner, type ViewLockOwner } from './locks.js';
 import { businessEqual, canonicalJson, decodeBusinessPayload, definitionHash, encodeBusinessPayload, freezeSourceDefinition, frozenConditions, matchesConditions, projectDocument, recordKey, validateLogicalId, validateManifestIdentity, validateRecordIdentity } from './records.js';
@@ -12,6 +12,7 @@ export type AliasInvalidation = { type: 'row'; physicalEpoch: string; keys: stri
 export type MutationOptions = { ifMatch?: readonly LocalCondition[]; };
 export type AliasStats = { knownIds: number; rows: number; bytes: number; retired: number; quota?: number; usage?: number; shouldCompact: boolean; };
 export type MaintenanceAccess = {
+  ownerSignal: AbortSignal;
   backend: AliasBackend;
   manifest: NativeRow<AliasManifest>;
   limits: StorageLimits;
@@ -39,7 +40,7 @@ export type AliasStorage = {
   bind(scope: RequestScope, databaseIdentity: string, sourceHash: string): Promise<void>;
   guardNetwork(scope: RequestScope): Promise<Readonly<Record<string, string>>>;
   blockScope(): void;
-  native(scope: RequestScope): Promise<{ fork: NativeStorage<LocalRecord>; meta: NativeStorage<RxStorageReplicationMeta<LocalRecord, any>>; identifier: string; }>;
+  native(scope: RequestScope): Promise<{ fork: NativeStorage<LocalRecord>; meta: NativeStorage<RxStorageReplicationMeta<LocalRecord, any>>; identifier: string; ownerSignal: AbortSignal; }>;
   registerNative(resource: LocalResource): () => void;
   readManifest(): Promise<AliasManifest>;
   withMaintenance<T>(callback: (access: MaintenanceAccess) => Promise<T>): Promise<T>;
@@ -63,7 +64,7 @@ class QueuedReadBudget extends ReadBudget {
   private waiting: { bytes: number; admit(): void; }[] = [];
   override get usedBytes() { return this.reserved; }
   override get peakBytes() { return this.queuedPeak; }
-  get availableBytes() { return this.maxBytes - this.retained; }
+  override get availableBytes() { return this.maxBytes - this.retained; }
   retain(bytes: number): () => void {
     if (!Number.isSafeInteger(bytes) || bytes < 0 || bytes > this.maxBytes - this.reserved) throw new LocalStorageError('LocalReadBudgetExceeded', 'Retained rows exceed materialization budget');
     this.reserved += bytes; this.retained += bytes; this.queuedPeak = Math.max(this.queuedPeak, this.reserved);
@@ -140,7 +141,7 @@ export const openAliasStorage = (options: OpenAliasStorageOptions): Promise<Alia
     const hash = await definitionHash(definition);
     const locks = createAliasLocks(identity.hash, options.lockManager);
     const budget = new QueuedReadBudget(64 * 1024 * 1024);
-    let controlBudget: QueuedReadBudget;
+    const controlBudget = new QueuedReadBudget(2 * validateStorageLimits(options.limits).maxManifestBytes);
     let nativeInstanceId = crypto.randomUUID();
     let lease: { alias: AliasLockOwner; view: ViewLockOwner; } | undefined;
     const physical = new Map<string, PhysicalStorage>();
@@ -198,6 +199,7 @@ export const openAliasStorage = (options: OpenAliasStorageOptions): Promise<Alia
     };
     backend = await openAliasBackend({
       name: `syntrix-${identity.hash}`, limits: options.limits, storage: options.storage,
+      writeMaterialization: { data: budget, control: controlBudget },
       beforeWrite: async (kind, name, rows) => {
         assertActive();
         if (!lease) fail('LocalWriteFence', 'Storage writes require an active view owner');
@@ -219,7 +221,6 @@ export const openAliasStorage = (options: OpenAliasStorageOptions): Promise<Alia
     });
     assertActive();
     const db = backend;
-    controlBudget = new QueuedReadBudget(2 * db.limits.maxManifestBytes);
     registerAccount('manifest', db.manifestStorage, db.limits.maxManifestBytes);
     const assertManifest = async (row: AliasManifest) => {
       await validateManifestIdentity(row);
@@ -427,7 +428,7 @@ export const openAliasStorage = (options: OpenAliasStorageOptions): Promise<Alia
               }
             });
             const access: MaintenanceAccess = {
-              backend: ownedBackend, manifest, limits: db.limits, budget, assertActive: assertOwned,
+              backend: ownedBackend, manifest, limits: db.limits, budget, ownerSignal: session.signal, assertActive: assertOwned,
               readManifest: async () => { assertOwned(); return replaceManifest(await readManifest()); },
               writeManifest: async next => { assertOwned(); return replaceManifest(await writeManifest(next, manifest)); }
             };
@@ -486,7 +487,7 @@ export const openAliasStorage = (options: OpenAliasStorageOptions): Promise<Alia
             const value = Reflect.get(target, property, target); return typeof value === 'function' ? value.bind(target) : value;
           },
         });
-        return { fork: wrap(opened.fork, db.limits.maxRecordBytes), meta: wrap(opened.meta, db.limits.maxMetadataBytes), identifier: opened.identifier };
+        return { fork: wrap(opened.fork, db.limits.maxRecordBytes), meta: wrap(opened.meta, db.limits.maxMetadataBytes), identifier: opened.identifier, ownerSignal: session.signal };
       }, scope),
       stats: () => access('exclusive', async (manifest, opened) => {
         await refreshAccounts(true);
