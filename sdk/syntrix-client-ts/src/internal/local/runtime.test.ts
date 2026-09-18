@@ -36,7 +36,7 @@ const fixture = async () => {
   });
   const options = { databaseName: crypto.randomUUID(), databaseInstanceToken: 'runtime', options: {}, devMode: false, multiInstance: false };
   const fork = await storage.createStorageInstance({ ...options, collectionName: 'fork', schema });
-  const meta = await storage.createStorageInstance({ ...options, collectionName: 'meta', schema: getRxReplicationMetaInstanceSchema<Row, Cursor>(schema, false) });
+  const meta = await storage.createStorageInstance({ ...options, collectionName: 'meta', schema: getRxReplicationMetaInstanceSchema<Row, { source: object }>(schema, false) });
   const errors: unknown[] = [];
   const committed: number[] = [];
   const pushed: string[] = [];
@@ -85,7 +85,7 @@ describe('private local replication runtime', () => {
     };
     f.config.onCheckpoint = async (checkpoint, status) => {
       const stored = await f.meta.findDocumentsById(['down|1'], true);
-      expect(stored[0].checkpointData).toEqual(checkpoint);
+      expect(stored[0].checkpointData).toEqual({ source: checkpoint });
       f.committed.push(checkpoint.sequence);
       if (status.complete) { terminalHook = true; await hookGate.promise; }
     };
@@ -132,6 +132,66 @@ describe('private local replication runtime', () => {
       expect(f.errors).toEqual([]);
     } finally { await f.close(); }
   });
+
+  for (const pullBatchSize of [1, 2]) {
+    test(`source checkpoints replace removed fields across ${pullBatchSize === 1 ? 'full' : 'short'} pages and restart`, async () => {
+      const f = await fixture();
+      type SourceCursor = Record<string, string>;
+      const checkpoints: SourceCursor[] = [
+        { phase: 'scan', after: 'alice' },
+        { phase: 'live', token: 'resume-2' },
+        {},
+      ];
+      const received: (SourceCursor | undefined)[] = [];
+      const committed: SourceCursor[] = [];
+      const runtimes: LocalReplicationRuntime[] = [];
+      const config: LocalReplicationOptions<Row, SourceCursor> = {
+        ...f.config,
+        pullBatchSize,
+        createProgressDocument: undefined,
+        readSource: async checkpoint => {
+          const index = received.length;
+          received.push(checkpoint);
+          expect(checkpoint).toEqual(index === 0 ? undefined : checkpoints[index - 1]);
+          return {
+            documents: [{ id: `replacement-${index}`, value: index, _deleted: false }],
+            checkpoint: checkpoints[index], complete: index === checkpoints.length - 1,
+          };
+        },
+        onCheckpoint: async checkpoint => {
+          const stored = await f.meta.findDocumentsById(['down|1'], true);
+          expect(stored[0].checkpointData).toEqual({ source: checkpoint });
+          committed.push(checkpoint);
+        },
+      };
+      try {
+        const first = createLocalReplicationRuntime(config);
+        runtimes.push(first);
+        await until(() => first.ready || first.stopped);
+        await first.waitForIdle();
+        expect(received).toEqual([undefined, checkpoints[0], checkpoints[1]]);
+        expect(committed).toEqual(checkpoints);
+        await first.close();
+
+        config.readSource = async checkpoint => {
+          received.push(checkpoint);
+          expect(checkpoint).toEqual({});
+          return { documents: [], checkpoint: checkpoint!, complete: true };
+        };
+        const restarted = createLocalReplicationRuntime(config);
+        runtimes.push(restarted);
+        await until(() => restarted.ready || restarted.stopped);
+        await restarted.waitForIdle();
+        expect(restarted.ready).toBe(true);
+        expect(received).toEqual([undefined, checkpoints[0], checkpoints[1], {}]);
+        expect(committed).toEqual([...checkpoints, {}]);
+        expect(f.errors).toEqual([]);
+      } finally {
+        await Promise.allSettled(runtimes.map(runtime => runtime.close()));
+        await f.close();
+      }
+    });
+  }
 
   test('notification bursts retain a dirty hint, preserve the real feed and serialize remote writes', async () => {
     const f = await fixture();

@@ -19,6 +19,10 @@ fork 和 metadata 存储由调用方提供并负责最终关闭；协议本身�
 冲突处理职责。公共本地数据库接口仍由
 [离线复制提案](../../proposed/feature/2026-09-07-sdk-offline-replication.md)拥有。
 
+源 checkpoint 以 `{ source: checkpoint }` 保存到原生下游 metadata。RxDB 会浅合并
+checkpoint；稳定的外层键让整个源值替换前值，阶段变化时移除的字段也随之消失。
+适配器读取及完成 hook 均接收解包后的源值，连续分页与新实例恢复保持相同语义。
+
 ### 原生可靠性补丁
 
 | 位置 | 必须完成的动作 |

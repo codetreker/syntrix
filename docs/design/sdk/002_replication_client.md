@@ -65,6 +65,7 @@ or conflicts. The runtime does not yet connect these adapters to Syntrix HTTP.
 |---|---|
 | Downstream persistence | Finish the current page before reading the next; slow storage cannot accumulate uncommitted pages |
 | Metadata and checkpoints | Returned storage errors and rejected promises stop replication; a failed write cannot acknowledge progress |
+| Opaque source checkpoint | Store the complete value under one stable `source` key so native shallow merging replaces it wholesale; adapter reads and completion hooks receive the unwrapped value, including after restart |
 | Durable completion hook | Run after native page persistence and checkpoint completion; the owning source layer can finish activation before readiness |
 | Initial upload barrier | Every new instance waits for a fresh completed source round and its durable hook, including when saved metadata exists |
 | Empty source page | Advancing progress requires an identifiable control record; a terminal page may be empty when its checkpoint matches the already persisted position |

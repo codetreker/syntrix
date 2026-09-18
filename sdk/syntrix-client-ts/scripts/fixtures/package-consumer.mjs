@@ -37,6 +37,12 @@ for (const fault of ['document', 'metadata', 'checkpoint']) {
   let fetched = 0;
   const diagnostics = [];
   const committed = [];
+  const checkpoints = [
+    { sequence: 1, phase: 'scan', after: 'alice' },
+    { sequence: 2, phase: 'live', token: 'resume-2' },
+    { sequence: 3 },
+  ];
+  const received = [];
   const reject = (rows) => ({ error: [{ status: 500, documentId: rows[0].document.id, writeRow: rows[0] }] });
   wrappedFork.bulkWrite = async (rows, context) => {
     if (failure && fetched === 2 && fault === 'document') return reject(rows);
@@ -53,13 +59,19 @@ for (const fault of ['document', 'metadata', 'checkpoint']) {
     conflictHandler: local.defaultConflictHandler, hashFunction: local.defaultHashSha256,
     pullBatchSize: 1, pushBatchSize: 1,
     readSource: async (checkpoint) => {
+      received.push(checkpoint);
+      assert.deepEqual(checkpoint, checkpoint === undefined ? undefined : checkpoints[checkpoint.sequence - 1]);
       fetched = (checkpoint?.sequence ?? 0) + 1;
       if (fetched > 3) return { documents: [], checkpoint, complete: true };
       return { documents: [{ id: `remote-${fetched}`, value: fetched, _deleted: false }],
-        checkpoint: { sequence: fetched }, complete: fetched === 3 };
+        checkpoint: checkpoints[fetched - 1], complete: fetched === 3 };
     },
     writeRemote: async () => [],
-    onCheckpoint: async (checkpoint) => { committed.push(checkpoint.sequence); },
+    onCheckpoint: async (checkpoint) => {
+      const stored = await meta.findDocumentsById(['down|1'], true);
+      assert.deepEqual(stored[0].checkpointData, { source: checkpoint });
+      committed.push(checkpoint.sequence);
+    },
     onError: (error) => { diagnostics.push({ error, stopped: runtime.stopped }); },
   });
   let runtime = start();
@@ -77,7 +89,15 @@ for (const fault of ['document', 'metadata', 'checkpoint']) {
     const docs = await fork.findDocumentsById(['remote-1', 'remote-2', 'remote-3'], false);
     assert.equal(docs.length, 3);
     assert.equal(committed.at(-1), 3);
-    console.log(`Packed Dexie ${fault} failure: durable prefix and fresh-instance replay passed`);
+    await runtime.close();
+    runtime = start();
+    await until(() => runtime.ready || runtime.stopped);
+    await runtime.waitForIdle();
+    assert.equal(runtime.ready, true);
+    assert.deepEqual(received, [undefined, checkpoints[0], checkpoints[0], checkpoints[1], checkpoints[2]]);
+    assert.deepEqual(committed, [1, 2, 3, 3]);
+    assert.equal(diagnostics.length, 1);
+    console.log(`Packed Dexie ${fault} failure: durable prefix, checkpoint replacement and fresh-instance replay passed`);
   } finally {
     await runtime.close().catch((error) => {
       if (error !== runtime.error) throw error;

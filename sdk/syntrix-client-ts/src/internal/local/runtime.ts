@@ -23,6 +23,10 @@ export interface SourcePage<T, C extends object> {
   complete: boolean;
 }
 
+// RxDB shallow-merges checkpoints. One stable key makes each opaque source
+// value replace its predecessor, including fields removed by phase changes.
+type NativeSourceCheckpoint<C extends object> = { source: C };
+
 export interface LocalReplicationOptions<T, C extends object> {
   identifier: string;
   forkInstance: RxStorageInstance<T, any, any>;
@@ -210,10 +214,11 @@ export const createLocalReplicationRuntime = <T, C extends object>(
     skipStoringPullMeta: false,
     replicationHandler: {
       masterChangeStream$: invalidations,
-      masterChangesSince: (checkpoint: C | undefined, limit) => track(async () => {
+      masterChangesSince: (nativeCheckpoint: NativeSourceCheckpoint<C> | undefined, limit) => track(async () => {
         await commitPage();
-        if (sourceIdle) return { documents: [], checkpoint };
+        if (sourceIdle) return { documents: [], checkpoint: nativeCheckpoint };
         continuation = false;
+        const checkpoint = nativeCheckpoint === undefined ? undefined : nativeCheckpoint.source;
         const page = await options.readSource(checkpoint, limit, abort.signal);
         assertOpen();
         if (typeof page.complete !== 'boolean' || !page.checkpoint || typeof page.checkpoint !== 'object') throw new TypeError('Source page requires an object checkpoint and completion flag');
@@ -230,7 +235,7 @@ export const createLocalReplicationRuntime = <T, C extends object>(
         if (documents.length > limit) throw new RangeError('Source page exceeded its requested limit');
         if (new TextEncoder().encode(JSON.stringify(documents)).byteLength > limits.maxDocumentBytes) throw new RangeError('Source page exceeds its encoded byte limit');
         pageToCommit = page;
-        return { documents, checkpoint: page.checkpoint };
+        return { documents, checkpoint: { source: page.checkpoint } };
       }),
       masterWrite: rows => {
         const previous = wire;
