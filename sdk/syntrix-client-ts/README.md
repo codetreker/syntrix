@@ -6,6 +6,22 @@
 bun add @syntrix/client
 ```
 
+## Building from source
+
+Use pnpm 10.34.5 to apply the pinned dependency patch, and Bun to build and test:
+
+```bash
+pnpm install --frozen-lockfile --ignore-scripts
+bun run build
+bun test --coverage
+bun run test:package
+```
+
+The build checks the patch and installed vendor files, then bundles the private
+runtime with third-party licenses. The package test installs a tarball in an
+isolated consumer and checks failure recovery without vendor dependencies.
+Applications installing the published SDK can use their usual package manager.
+
 ## Usage
 
 ### SyntrixClient
@@ -172,5 +188,12 @@ apply operation. See the [replication reference](../../docs/reference/replicatio
 
 ## Offline Replication (WIP)
 
-Durable local storage, the automatic coordinator, and the outbox remain in
-development. Manual Pull supplies pages for an application-owned consumer.
+A private replication runtime is included as a lazy bundle containing patched
+RxDB, Dexie, and RxJS. Applications do not need to install or patch those
+dependencies. Importing the remote client does not load this bundle.
+
+Public local database creation, automatic HTTP synchronization, and local
+query/watch remain in development. Manual Pull continues to supply pages for an
+application-owned consumer. Direct writes use the existing document REST methods;
+the SDK has no public manual Push API. See the
+[replication design](../../docs/design/sdk/002_replication_client.md).

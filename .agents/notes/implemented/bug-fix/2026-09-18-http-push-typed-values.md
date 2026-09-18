@@ -58,8 +58,9 @@ presence and authoritative read routing. There is no legacy ordinary-JSON fallba
 
 ### Scope and remaining integration
 
-The server accepts lossless typed HTTP Push values. SDK internal Pusher,
-RxDB integration, durable Outbox, and lossless local persistence remain under the
+The server accepts lossless typed HTTP Push values. The SDK now includes a
+[private native runtime](../architecture/2026-09-18-sdk-native-replication-runtime.md);
+its HTTP Push adapter and lossless application-facing local persistence remain under the
 [offline replication proposal](../../proposed/feature/2026-09-07-sdk-offline-replication.md).
 Adding those capabilities requires an SDK encoder and lifecycle/storage work;
 it must retain numeric types rather than convert bigint to Number. This transport

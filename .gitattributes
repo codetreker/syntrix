@@ -6,3 +6,5 @@
 *.so filter=lfs diff=lfs merge=lfs -text
 *.gif filter=lfs diff=lfs merge=lfs -text
 docs/_img/** filter=lfs diff=lfs merge=lfs -text
+# Unified diff context markers include a space on otherwise empty lines.
+sdk/syntrix-client-ts/patches/*.patch -whitespace
