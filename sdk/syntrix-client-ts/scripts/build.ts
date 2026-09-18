@@ -60,7 +60,7 @@ for (const input of Object.keys(replica.metafile.inputs)) {
     directory = dirname(directory);
   }
 }
-const notices = ['Bundled replication runtime dependencies.\nRxDB replication-protocol files are modified by the accompanying SDK source patch.\n'];
+const notices = ['Bundled replication runtime dependencies.\nRxDB replication-protocol and storage-wrapper files are modified by the accompanying SDK source patch.\n'];
 for (const [name, directory] of [...packages].sort(([a], [b]) => a.localeCompare(b))) {
   const files = (await readdir(directory)).filter((file) => /^(licen[sc]e|copying|notice)(\.|$)/i.test(file));
   notices.push(`\n===== ${name} =====\n`);

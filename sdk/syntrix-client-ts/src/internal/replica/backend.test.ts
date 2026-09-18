@@ -2,9 +2,10 @@ import { describe, expect, test } from 'bun:test';
 import { indexedDB, IDBKeyRange } from 'fake-indexeddb';
 import { getRxStorageDexie } from 'rxdb/plugins/storage-dexie';
 import { getRxStorageMemory } from 'rxdb/plugins/storage-memory';
-import { addRxPlugin, type RxDatabase, type RxStorage } from 'rxdb';
+import { addRxPlugin, defaultHashSha256, type RxDatabase, type RxStorage } from 'rxdb';
+import { createReplicationRuntime } from './runtime.js';
 import { BackendCleanupError, countRows, encodedRowBytes, openAliasBackend, ReadBudget, validateStorageLimits, withMetadataScanPage, withRows, withScanPage, type NativeRow } from './backend.js';
-import { decodeBusinessPayload, definitionHash, encodeBusinessPayload, freezeSourceDefinition, recordKey } from './records.js';
+import { businessEqual, decodeBusinessPayload, definitionHash, encodeBusinessPayload, freezeSourceDefinition, recordKey } from './records.js';
 import type { AliasManifest, DataRecord, ReplicaRecord } from './storage-types.js';
 
 const data = async (id = 'alice'): Promise<DataRecord> => ({
@@ -26,6 +27,88 @@ const nativeMeta = (row: ReplicaRecord) => ({ id: `${row.key}|0`, itemId: row.ke
   docData: { ...row, _deleted: false }, _deleted: false, _attachments: {}, _meta: { lwt: Date.now() }, _rev: '1-test' });
 
 describe('alias physical storage', () => {
+  for (const fault of ['assumed', 'fork-chunk'] as const) {
+    for (const editBeforeRestart of [false, true]) {
+      test(`wrapped Dexie ${fault} replay preserves provenance${editBeforeRestart ? ' without hiding an intervening edit' : ''}`, async () => {
+        const underlying = dexie();
+        const injected = new Error(`injected ${fault} failure`);
+        let failure = true;
+        let forkChunks = 0;
+        const storage: RxStorage<any, any> = { ...underlying, async createStorageInstance(params) {
+          const raw = await underlying.createStorageInstance(params);
+          return new Proxy(raw, { get(target, property) {
+            if (property === 'bulkWrite') return async (rows: any[], context: string) => {
+              if (params.collectionName.startsWith('records_') && failure && ++forkChunks === 2 && fault === 'fork-chunk') throw injected;
+              if (params.collectionName.startsWith('meta_') && failure && fault === 'assumed' && context === 'replication-down-write-meta') throw injected;
+              return target.bulkWrite(rows, context);
+            };
+            const value = Reflect.get(target, property, target);
+            return typeof value === 'function' ? value.bind(target) : value;
+          } });
+        } };
+        const options = { name: name(), storage };
+        let backend = await openAliasBackend(options);
+        let physical = await backend.openPhysical('p1');
+        const docs = await Promise.all(Array.from({ length: 6 }, (_, index) => data(`remote-${index}`)));
+        const pushed: any[] = [];
+        const diagnostics: unknown[] = [];
+        const start = () => createReplicationRuntime<ReplicaRecord, { sequence: number }>({
+          identifier: physical.identifier, forkInstance: physical.fork, metaInstance: physical.meta,
+          hashFunction: defaultHashSha256, conflictHandler: { isEqual: businessEqual, resolve: async conflict => conflict.realMasterState },
+          pullBatchSize: 6, pushBatchSize: 4,
+          readSource: async () => ({ documents: docs.map(doc => ({ ...doc, _deleted: false })), checkpoint: { sequence: 1 }, complete: true }),
+          writeRemote: async rows => { pushed.push(...rows); return []; },
+          onError: error => { diagnostics.push(error); },
+        });
+        let runtime = start();
+        try {
+          const deadline = Date.now() + 5000;
+          while (!runtime.stopped) {
+            if (Date.now() > deadline) throw new Error('Expected injected storage failure');
+            await new Promise(resolve => setTimeout(resolve, 1));
+          }
+          await expect(runtime.close()).rejects.toBe(injected);
+          expect(diagnostics).toEqual([injected]);
+          expect(pushed).toEqual([]);
+          const persisted = await physical.fork.findDocumentsById(docs.map(doc => doc.key), false);
+          expect(persisted.length).toBe(fault === 'fork-chunk' ? 4 : 6);
+          const id = (persisted[0] as DataRecord).logicalId;
+          const key = (persisted[0] as DataRecord).key;
+          const previous = persisted[0] as NativeRow<DataRecord>;
+          expect(previous._meta.o).toEqual({ _rev: 1, hash: await defaultHashSha256(physical.identifier) });
+          failure = false;
+          if (editBeforeRestart) await backend.writeRecord(physical, { ...previous,
+            payload: encodeBusinessPayload({ edited: true }), editToken: 'edit', pin: { token: 'edit', stage: 'await-settlement' },
+          }, previous, 'business-edit');
+          await backend.close();
+          backend = await openAliasBackend(options); physical = await backend.openPhysical('p1');
+          runtime = start();
+          await runtime.waitForIdle();
+          expect(runtime.ready).toBe(true);
+          expect(diagnostics).toEqual([injected]);
+          expect(pushed).toHaveLength(editBeforeRestart ? 1 : 0);
+          if (!editBeforeRestart) {
+            const fresh = (await physical.fork.findDocumentsById([key], false))[0] as NativeRow<DataRecord>;
+            await backend.writeRecord(physical, { ...fresh, payload: encodeBusinessPayload({ edited: true }),
+              editToken: 'edit', pin: { token: 'edit', stage: 'await-settlement' },
+            }, fresh, 'business-edit');
+            await runtime.waitForIdle();
+          }
+          expect(pushed).toHaveLength(1);
+          expect(pushed[0].newDocumentState.logicalId).toBe(id);
+          expect(decodeBusinessPayload(pushed[0].newDocumentState.payload)).toEqual({ edited: true });
+          const current = (await physical.fork.findDocumentsById([key], false))[0]!;
+          expect(current._rev.startsWith('2-')).toBe(true);
+          if (editBeforeRestart) expect(pushed[0].assumedMasterState).toBeUndefined();
+          else expect(pushed[0].assumedMasterState.payload).toBe(encodeBusinessPayload({ count: 9007199254740993n }));
+        } finally {
+          await runtime.close().catch(error => { if (error !== injected) throw error; });
+          await backend.removePhysical('p1'); await backend.close();
+        }
+      }, 15_000);
+    }
+  }
+
   const observedDexie = (pool: ReadBudget, observations: { kind: string; count: number; reserved: number; }[]): RxStorage<any, any> => {
     const delegate = dexie();
     return { ...delegate, async createStorageInstance(params) {

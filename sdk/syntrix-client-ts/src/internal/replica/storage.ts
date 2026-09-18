@@ -86,7 +86,8 @@ class QueuedReadBudget extends ReadBudget {
 
 export const openAliasStorage = (options: OpenAliasStorageOptions): Promise<AliasStorage> => {
   const session = options.session;
-  let stopped = false;
+  const lifetime = new AbortController();
+  let nativeLifetime = new AbortController();
   let blocked = false;
   let maintaining = false;
   let backend: AliasBackend | undefined;
@@ -98,7 +99,7 @@ export const openAliasStorage = (options: OpenAliasStorageOptions): Promise<Alia
   const natives = new Set<ReplicaResource>();
   const subscriptions: Subscription[] = [];
   const changes = new Subject<AliasInvalidation>();
-  const assertActive = () => { session.assertCurrent(); if (stopped) fail('ReplicaStorageClosed', 'Alias storage is closed'); };
+  const assertActive = () => { lifetime.signal.throwIfAborted(); session.assertCurrent(); };
   const stopNative = async () => {
     const resources = [...natives];
     resources.forEach(resource => resource.invalidate());
@@ -106,7 +107,11 @@ export const openAliasStorage = (options: OpenAliasStorageOptions): Promise<Alia
     natives.clear();
     for (const result of results) if (result.status === 'rejected') throw result.reason;
   };
-  const invalidate = () => { stopped = true; for (const resource of natives) resource.invalidate(); };
+  const invalidate = () => {
+    lifetime.abort(session.signal.aborted ? session.signal.reason : new ReplicaStorageError('ReplicaStorageClosed', 'Alias storage is closed'));
+    nativeLifetime.abort(lifetime.signal.reason);
+    for (const resource of natives) resource.invalidate();
+  };
   const cleanupStorage = (): Promise<void> => {
     if (cleanup) return cleanup;
     cleanup = (async () => {
@@ -129,8 +134,20 @@ export const openAliasStorage = (options: OpenAliasStorageOptions): Promise<Alia
     return closing;
   };
   const unregister = session.register({ invalidate, close });
-  const run = async <T>(operation: () => Promise<T>): Promise<T> => {
-    const promise = session.track(async () => { assertActive(); return operation(); });
+  const run = async <T>(operation: () => Promise<T>, signal = lifetime.signal): Promise<T> => {
+    signal.throwIfAborted();
+    const promise = session.track(async () => {
+      signal.throwIfAborted(); assertActive();
+      const result = await operation();
+      signal.throwIfAborted();
+      return result;
+    }).catch(error => {
+      // The session can stop after a native instance was already retired.
+      // Keep the child's first cancellation identity stable through its drain.
+      if (signal.aborted && ((session.signal.aborted && error === session.signal.reason) ||
+        (lifetime.signal.aborted && error === lifetime.signal.reason))) throw signal.reason;
+      throw error;
+    });
     inflight.add(promise);
     void promise.then(() => inflight.delete(promise), () => inflight.delete(promise));
     return promise;
@@ -143,6 +160,7 @@ export const openAliasStorage = (options: OpenAliasStorageOptions): Promise<Alia
     const budget = new QueuedReadBudget(64 * 1024 * 1024);
     const controlBudget = new QueuedReadBudget(2 * validateStorageLimits(options.limits).maxManifestBytes);
     let nativeInstanceId = crypto.randomUUID();
+    const renewNativeLifetime = () => { nativeInstanceId = crypto.randomUUID(); nativeLifetime = new AbortController(); };
     let lease: { alias: AliasLockOwner; view: ViewLockOwner; } | undefined;
     const physical = new Map<string, PhysicalStorage>();
     type Account = { storage: NativeStorage<any>; maximum: number; checkpoint: any; rows: Map<string, { bytes: number; identityHash?: string; }>; };
@@ -258,20 +276,27 @@ export const openAliasStorage = (options: OpenAliasStorageOptions): Promise<Alia
       try { assertActive(); return await callback(); } finally { if (mode === 'exclusive') lease = undefined; }
     });
     let accessQueue: Promise<unknown> = Promise.resolve();
-    const access = <T>(mode: 'shared' | 'exclusive', callback: (manifest: ManifestView, physical: PhysicalStorage) => Promise<T>, scope?: RequestScope, logicalId?: string): Promise<T> => {
+    const access = <T>(mode: 'shared' | 'exclusive', callback: (manifest: ManifestView, physical: PhysicalStorage) => Promise<T>, scope?: RequestScope, logicalId?: string, owner = lifetime): Promise<T> => {
       const previous = accessQueue;
       const operation = run(async () => {
-        await previous; assertActive();
+        await previous; owner.signal.throwIfAborted(); assertActive();
         return locks.withAlias('shared', alias => owned(alias, mode, async () => {
           const manifest = await readViewManifest(logicalId);
           const releaseView = controlBudget.retain(encodedRowBytes(manifest));
           try {
             for (const name of accounts.keys()) if (name !== 'manifest' && !manifest.physicalEpochs.some(epoch => name === `records_${epoch}` || name === `meta_${epoch}`)) accounts.delete(name);
-            if (scope) checkScope(scope, manifest);
+            if (scope) {
+              if (owner !== lifetime && scope.physicalEpoch !== manifest.activePhysicalEpoch) {
+                owner.abort(new ReplicaStorageError('ReplicaScopeChanged', 'Physical epoch was retired'));
+                if (owner === nativeLifetime) renewNativeLifetime();
+                owner.signal.throwIfAborted();
+              }
+              checkScope(scope, manifest);
+            }
             return await callback(manifest, await openPhysical(manifest.activePhysicalEpoch));
           } finally { releaseView(); }
-        }), session.signal);
-      });
+        }), owner.signal);
+      }, owner.signal);
       accessQueue = operation.catch(() => undefined);
       return operation;
     };
@@ -306,7 +331,7 @@ export const openAliasStorage = (options: OpenAliasStorageOptions): Promise<Alia
         }
         if (manifest.physicalEpochs.length > 1 || manifest.maintenance) await writeManifest({ ...manifest, physicalEpochs: [manifest.activePhysicalEpoch], maintenance: null }, manifest);
       } finally { releaseInitialManifest(); }
-    }), session.signal);
+    }), lifetime.signal);
     subscriptions.push(db.manifestStorage.changeStream().subscribe(event => {
       for (const item of event.events) if (item.documentData) changes.next({ type: 'view', physicalEpoch: item.documentData.activePhysicalEpoch, activeSourceGeneration: item.documentData.activeSourceGeneration });
     }));
@@ -397,7 +422,7 @@ export const openAliasStorage = (options: OpenAliasStorageOptions): Promise<Alia
       withMaintenance: callback => run(async () => {
         if (maintaining) fail('ReplicaMaintenance', 'Alias maintenance already in progress');
         maintaining = true;
-        nativeInstanceId = crypto.randomUUID();
+        nativeLifetime.abort(new ReplicaStorageError('ReplicaScopeChanged', 'Native instance was retired for maintenance'));
         try {
           await stopNative();
           return await locks.withAlias('exclusive', alias => owned(alias, 'exclusive', async () => {
@@ -428,19 +453,24 @@ export const openAliasStorage = (options: OpenAliasStorageOptions): Promise<Alia
               }
             });
             const access: MaintenanceAccess = {
-              backend: ownedBackend, manifest, limits: db.limits, budget, ownerSignal: session.signal, assertActive: assertOwned,
+              backend: ownedBackend, manifest, limits: db.limits, budget, ownerSignal: lifetime.signal, assertActive: assertOwned,
               readManifest: async () => { assertOwned(); return replaceManifest(await readManifest()); },
               writeManifest: async next => { assertOwned(); return replaceManifest(await writeManifest(next, manifest)); }
             };
             try { return await callback(access); } finally { active = false; releaseManifest(); }
-          }), session.signal);
-        } finally { maintaining = false; }
+          }), lifetime.signal);
+        } finally {
+          if (!lifetime.signal.aborted) renewNativeLifetime();
+          maintaining = false;
+        }
       }),
       native: scope => access('shared', async (_manifest, opened) => {
+        if (maintaining) fail('ReplicaMaintenance', 'Alias is under maintenance');
+        const owner = nativeLifetime;
         const wrap = <T>(native: NativeStorage<T>, maximum: number): NativeStorage<T> => new Proxy(native, {
           get(target, property) {
             if (property === 'underlyingPersistentStorage') return undefined;
-            if (property === 'bulkWrite') return (rows: any[], context: string) => access('exclusive', async () => target.bulkWrite(rows, context), scope);
+            if (property === 'bulkWrite') return (rows: any[], context: string) => access('exclusive', async () => target.bulkWrite(rows, context), scope, undefined, owner);
             const boundedRead = async (requested: number, read: (limit: number, offset: number) => Promise<NativeRow<T>[]>) => {
               if (!Number.isSafeInteger(requested) || requested < 0) throw new TypeError('Invalid native read limit');
               const result: NativeRow<T>[] = [];
@@ -463,7 +493,7 @@ export const openAliasStorage = (options: OpenAliasStorageOptions): Promise<Alia
             };
             if (property === 'findDocumentsById') return (ids: string[], deleted: boolean) => access('shared', async () => {
               return boundedRead(ids.length, (limit, offset) => target.findDocumentsById(ids.slice(offset, offset + limit), deleted));
-            }, scope);
+            }, scope, undefined, owner);
             if (property === 'query') return (query: any) => access('shared', async () => {
               const limit = query.query.limit;
               if (query.query.skip !== 0 || !Number.isSafeInteger(limit) || limit < 1 || limit > 4 ||
@@ -471,7 +501,7 @@ export const openAliasStorage = (options: OpenAliasStorageOptions): Promise<Alia
                 fail('ReplicaReadBudgetExceeded', 'Native queries require a bounded index-satisfied seek');
               }
               return budget.withReservation(limit * maximum, () => target.query(query));
-            }, scope);
+            }, scope, undefined, owner);
             if (property === 'getChangedDocumentsSince') return (limit: number, checkpoint: any) => access('shared', async () => {
               let next = checkpoint; let exhausted = false;
               const documents = await boundedRead(limit, async count => {
@@ -482,12 +512,12 @@ export const openAliasStorage = (options: OpenAliasStorageOptions): Promise<Alia
                 return result.documents;
               });
               return { documents, checkpoint: next };
-            }, scope);
+            }, scope, undefined, owner);
             if (property === 'close' || property === 'remove' || property === 'cleanup') return async () => fail('ReplicaWriteFence', 'Physical lifecycle is owned by alias storage');
             const value = Reflect.get(target, property, target); return typeof value === 'function' ? value.bind(target) : value;
           },
         });
-        return { fork: wrap(opened.fork, db.limits.maxRecordBytes), meta: wrap(opened.meta, db.limits.maxMetadataBytes), identifier: opened.identifier, ownerSignal: session.signal };
+        return { fork: wrap(opened.fork, db.limits.maxRecordBytes), meta: wrap(opened.meta, db.limits.maxMetadataBytes), identifier: opened.identifier, ownerSignal: owner.signal };
       }, scope),
       stats: () => access('exclusive', async (manifest, opened) => {
         await refreshAccounts(true);
@@ -526,7 +556,7 @@ export const openAliasStorage = (options: OpenAliasStorageOptions): Promise<Alia
     assertActive(); return storage;
   });
   opening = construction.catch(async error => {
-    stopped = true;
+    invalidate();
     if (error instanceof BackendCleanupError) cleanupFailure = error;
     await cleanupStorage();
     throw error;

@@ -109,6 +109,75 @@ for (const fault of ['document', 'metadata', 'checkpoint']) {
 }
 
 const token = (subject) => `eyJhbGciOiJub25lIn0.${Buffer.from(JSON.stringify({ sub: subject, oid: subject, exp: 1 })).toString('base64url')}.signature`;
+for (const fault of ['assumed', 'fork-chunk']) {
+  const owner = new remote.SyntrixClient('https://packed.invalid/base', { database: 'app', auth: { token: token('owner') } });
+  const session = await replica.createReplicaSession(owner.tokenProvider);
+  const underlying = replica.getRxStorageDexie();
+  const injected = new Error(`packed wrapped ${fault} failure`);
+  let failure = true;
+  let chunks = 0;
+  const storage = { ...underlying, async createStorageInstance(params) {
+    const raw = await underlying.createStorageInstance(params);
+    return new Proxy(raw, { get(target, property) {
+      if (property === 'bulkWrite') return async (rows, context) => {
+        if (params.collectionName.startsWith('records_') && failure && ++chunks === 2 && fault === 'fork-chunk') throw injected;
+        if (params.collectionName.startsWith('meta_') && failure && fault === 'assumed' && context === 'replication-down-write-meta') throw injected;
+        return target.bulkWrite(rows, context);
+      };
+      const value = Reflect.get(target, property, target);
+      return typeof value === 'function' ? value.bind(target) : value;
+    } });
+  } };
+  const options = { endpoint: 'https://packed.invalid/base/', database: 'app', name: crypto.randomUUID(),
+    alias: 'users', source: { collection: 'users', filters: [] }, lockManager: createTestLockManager(), storage, session };
+  let alias = await replica.openAliasStorage(options);
+  let native = await alias.native(await alias.captureScope());
+  const documents = await Promise.all(Array.from({ length: 6 }, async (_, index) => {
+    const logicalId = `remote-${index}`;
+    return { key: `d:${await replica.defaultHashSha256(logicalId)}`, kind: 'd', logicalId, existence: 'live',
+      payload: JSON.stringify({ type: 'object', value: { value: { type: 'string', value: 'remote' } } }),
+      editToken: null, pin: null, wire: {}, _deleted: false };
+  }));
+  const pushed = [];
+  const errors = [];
+  const start = () => replica.createReplicationRuntime({
+    ...native, forkInstance: native.fork, metaInstance: native.meta,
+    hashFunction: replica.defaultHashSha256, conflictHandler: replica.defaultConflictHandler,
+    pullBatchSize: 6, pushBatchSize: 4,
+    readSource: async () => ({ documents, checkpoint: { sequence: 1 }, complete: true }),
+    writeRemote: async rows => { pushed.push(...rows); return []; }, onError: error => errors.push(error),
+  });
+  let runtime = start();
+  try {
+    await until(() => runtime.stopped);
+    await assert.rejects(runtime.close(), error => error === injected);
+    assert.deepEqual(errors, [injected]);
+    const stored = await native.fork.findDocumentsById(documents.slice(0, 4).map(doc => doc.key), false);
+    assert.equal(stored.length, 4);
+    assert.deepEqual(stored[0]._meta.o, { _rev: 1, hash: await replica.defaultHashSha256(native.identifier) });
+    failure = false;
+    await alias.close();
+    alias = await replica.openAliasStorage(options);
+    native = await alias.native(await alias.captureScope());
+    runtime = start();
+    await runtime.waitForIdle();
+    assert.equal(runtime.ready, true);
+    assert.deepEqual(pushed, []);
+    await alias.set('remote-0', { value: 'edited' });
+    await runtime.waitForIdle();
+    assert.equal(pushed.length, 1);
+    assert.equal(pushed[0].newDocumentState.logicalId, 'remote-0');
+    assert.equal(JSON.parse(pushed[0].newDocumentState.payload).value.value.value, 'edited');
+    assert.equal(JSON.parse(pushed[0].assumedMasterState.payload).value.value.value, 'remote');
+    assert.deepEqual(errors, [injected]);
+    console.log(`Packed wrapped Dexie ${fault}: durable provenance prevents replay echo and preserves genuine edits`);
+  } finally {
+    await runtime.close().catch(error => { if (error !== injected) throw error; });
+    await alias.close();
+    await session.close();
+  }
+}
+
 const client = new remote.SyntrixClient('https://packed.invalid/base', {
   database: 'app', auth: { token: token('alice') },
 });

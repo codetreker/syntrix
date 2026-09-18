@@ -31,15 +31,21 @@ checkpoint；稳定的外层键让整个源值替换前值，阶段变化时移�
 | 下游页 | 等待当前页文档、metadata、checkpoint 持久化，再读取下一页 |
 | 双向 metadata | 检查批量写入返回的错误，包括冲突 metadata；失败立即停止 |
 | checkpoint | 等待所有写入路径，包括空页、无变化、上行早返回 |
+| fork 插入 | wrapper 保留输入 metadata 的下载来源；刷新 lwt 并保留 revision 生成和 hooks，文档先于 assumed 落盘时仍可安全恢复 |
 | fatal | 先取消实例，再发布一次错误诊断；启动读取和异步队列的 rejection 也进入此路径 |
 | 恢复 | 用已有可靠 metadata 创建新实例；失败实例的 promise 队列不复用 |
 
 固定版本的源码、ESM 和 CJS 产物同步修补，避免入口选择改变失败行为。
 上游基线为 npm gitHead `d88180e334512bf0097373ad62e9fbe6811010aa`；
 [下游循环](https://github.com/pubkey/rxdb/blob/d88180e334512bf0097373ad62e9fbe6811010aa/src/replication-protocol/downstream.ts)、
-[上游循环](https://github.com/pubkey/rxdb/blob/d88180e334512bf0097373ad62e9fbe6811010aa/src/replication-protocol/upstream.ts)
-及 [checkpoint 写入](https://github.com/pubkey/rxdb/blob/d88180e334512bf0097373ad62e9fbe6811010aa/src/replication-protocol/checkpoint.ts)
+[上游循环](https://github.com/pubkey/rxdb/blob/d88180e334512bf0097373ad62e9fbe6811010aa/src/replication-protocol/upstream.ts)、
+[checkpoint 写入](https://github.com/pubkey/rxdb/blob/d88180e334512bf0097373ad62e9fbe6811010aa/src/replication-protocol/checkpoint.ts)
+及 [storage wrapper](https://github.com/pubkey/rxdb/blob/d88180e334512bf0097373ad62e9fbe6811010aa/src/rx-storage-helper.ts)
 是补丁复核的固定源码依据。
+
+下载来源的标识和 revision 高度必须同时匹配当前 fork 行。部分 fork 插入或 assumed
+写入失败后，新实例重放下载数据，不产生业务上传；真实本地编辑会推进 revision，
+不能被旧来源标记吞掉。回归使用实际 collection wrapper 和持久化后重开的存储。
 
 ### 输入边界与初始化
 
@@ -86,9 +92,10 @@ checkpoint；稳定的外层键让整个源值替换前值，阶段变化时移�
 停止先关闭新任务准入、取消 handler 信号及订阅，再等待已拥有的 storage 调用、
 handler、完成 hook、调度器和原生队列。回调必须响应取消或最终结束，才能完成
 drain；已经开始的底层存储操作不能通过取消信号回滚。
-会话拥有的实例绑定 owner signal，只将该已取消 signal 的同一原因或以其为 cause 的
-Axios 取消识别为正常取消，
-防止成功读取结束后的会话失效阻断账号切换。正常关闭完成 drain 后成功返回；真实存储、
+实例绑定覆盖 session、alias 和本代 native 生命周期的 owner signal，只将该已取消
+signal 的同一原因或以其为 cause 的 Axios 取消识别为正常取消。alias 关闭与维护换代
+先取消旧实例，再撤销其 scope；维护 seed 的所有权关联 alias 生命周期。正常关闭完成 drain
+后成功返回；真实存储、
 handler 或清理失败在 drain 后继续抛出，不能按异常类名统一忽略。
 
 ### 发布

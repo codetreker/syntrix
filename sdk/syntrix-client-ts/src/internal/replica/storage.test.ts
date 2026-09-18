@@ -136,6 +136,57 @@ describe('private alias storage', () => {
     } finally { sub.unsubscribe(); await second.close(); await env.storage.close(); }
   });
 
+  test('foreign epoch retirement cancels captured native ownership and admits a fresh scope', async () => {
+    const env = await setup();
+    const second = await openAliasStorage(env.options);
+    const firstScope = await env.storage.captureScope();
+    const native = await env.storage.native(firstScope);
+    try {
+      const nextEpoch = crypto.randomUUID();
+      await second.withMaintenance(async access => {
+        await access.writeManifest({ ...access.manifest, physicalEpochs: [access.manifest.activePhysicalEpoch, nextEpoch] });
+        await access.backend.openPhysical(nextEpoch);
+        await access.writeManifest({ ...access.manifest, activePhysicalEpoch: nextEpoch });
+      });
+      await expect(native.meta.findDocumentsById(['down|1'], false)).rejects.toMatchObject({ code: 'ReplicaScopeChanged' });
+      expect(native.ownerSignal.aborted).toBe(true);
+      await expect(native.fork.findDocumentsById([], false)).rejects.toBe(native.ownerSignal.reason);
+      const nextScope = await env.storage.captureScope();
+      expect(nextScope.nativeInstanceId).not.toBe(firstScope.nativeInstanceId);
+      expect(nextScope.physicalEpoch).toBe(nextEpoch);
+      const next = await env.storage.native(nextScope);
+      expect(next.ownerSignal.aborted).toBe(false);
+      await env.storage.set('after-retirement', { value: 1 });
+      expect(await next.fork.findDocumentsById([await recordKey('d', 'after-retirement')], false)).toHaveLength(1);
+    } finally { await second.close(); await env.storage.close(); }
+  });
+
+  test('maintenance seed lifetime survives native retirement and is canceled by alias close', async () => {
+    const { storage, provider } = await setup();
+    const native = await storage.native(await storage.captureScope());
+    const entered = deferred();
+    const gate = deferred();
+    let ownerSignal!: AbortSignal;
+    const maintenance = storage.withMaintenance(async access => {
+      ownerSignal = access.ownerSignal;
+      expect(native.ownerSignal.aborted).toBe(true);
+      expect(ownerSignal.aborted).toBe(false);
+      entered.resolve(); await gate.promise;
+      access.assertActive();
+    }).then(() => undefined, error => error);
+    try {
+      await entered.promise;
+      const closing = storage.close();
+      expect(ownerSignal.aborted).toBe(true);
+      expect(ownerSignal.reason).not.toBe(native.ownerSignal.reason);
+      gate.resolve();
+      expect(await maintenance).toBe(ownerSignal.reason);
+      await closing;
+      provider.setToken(jwt('bob'));
+      expect(await provider.getToken()).toBe(jwt('bob'));
+    } finally { gate.resolve(); await storage.close(); }
+  });
+
   test('authentication replacement closes and fences every old alias operation', async () => {
     const { storage, provider } = await setup();
     await storage.set('alice', { x: 1 }); provider.setToken(jwt('bob'));

@@ -6,7 +6,7 @@ settings:
 
 patchedDependencies:
   rxdb@17.5.0:
-    hash: 3e89b50ee2fe5aeb161644f114394dbf280dbaef66fbd9f9c1d9dd41164254f3
+    hash: 9d8b21e921517b4e024495a3bae4c1b7b7b96214698d5b6fe97fbcef0edc8914
     path: patches/rxdb@17.5.0.patch
 
 importers:
@@ -28,7 +28,7 @@ importers:
         version: 6.2.5
       rxdb:
         specifier: 17.5.0
-        version: 17.5.0(patch_hash=3e89b50ee2fe5aeb161644f114394dbf280dbaef66fbd9f9c1d9dd41164254f3)(rxjs@7.8.2)
+        version: 17.5.0(patch_hash=9d8b21e921517b4e024495a3bae4c1b7b7b96214698d5b6fe97fbcef0edc8914)(rxjs@7.8.2)
       rxjs:
         specifier: 7.8.2
         version: 7.8.2
@@ -721,7 +721,7 @@ snapshots:
 
   ret@0.5.0: {}
 
-  rxdb@17.5.0(patch_hash=3e89b50ee2fe5aeb161644f114394dbf280dbaef66fbd9f9c1d9dd41164254f3)(rxjs@7.8.2):
+  rxdb@17.5.0(patch_hash=9d8b21e921517b4e024495a3bae4c1b7b7b96214698d5b6fe97fbcef0edc8914)(rxjs@7.8.2):
     dependencies:
       '@babel/runtime': 7.29.7
       '@types/simple-peer': 9.11.9

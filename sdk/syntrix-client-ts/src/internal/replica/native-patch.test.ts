@@ -6,6 +6,8 @@ import {
   defaultHashSha256,
   fillWithDefaultSettings,
   getRxReplicationMetaInstanceSchema,
+  getWrappedStorageInstance,
+  registerMutableWriteContext,
   replicateRxStorageInstance,
   type RxStorageInstanceReplicationState,
 } from 'rxdb';
@@ -114,6 +116,42 @@ const returnedFailure = (rows: any[], status = 500) => ({
 }) as any;
 
 describe('patched native replication protocol', () => {
+  for (const entry of ['esm', 'cjs'] as const) {
+    for (const mutable of [false, true]) {
+      test(`${entry} wrapped inserts preserve isolated metadata in ${mutable ? 'mutable' : 'ordinary'} contexts`, async () => {
+        const api = entry === 'cjs' ? createRequire(import.meta.url)('rxdb') as typeof import('rxdb')
+          : { getWrappedStorageInstance, registerMutableWriteContext };
+        const f = await fixture();
+        const database = { token: 'wrapper-test', storageInstances: new Set(), lockedRun: (operation: () => unknown) => operation() };
+        const wrapped = api.getWrappedStorageInstance(database as any, f.fork, f.fork.schema);
+        const context = `metadata-preservation-${entry}-${mutable}`;
+        if (mutable) api.registerMutableWriteContext(context);
+        const sharedMeta = { lwt: 1, o: { _rev: 1, hash: 'origin' }, extra: 'kept' };
+        const rows = ['first', 'second'].map(id => ({ document: {
+          id, value: 1, _deleted: false, _attachments: {}, _rev: '1-input', _meta: sharedMeta,
+        } }));
+        try {
+          expect((await wrapped.bulkWrite(rows, context)).error).toEqual([]);
+          const stored = await f.fork.findDocumentsById(['first', 'second'], false);
+          expect(stored).toHaveLength(2);
+          for (const doc of stored) {
+            expect(doc._meta).toMatchObject({ o: { _rev: 1, hash: 'origin' }, extra: 'kept' });
+            expect(doc._meta.lwt).toBeGreaterThan(1);
+            expect(doc._rev).toBe('1-wrapper-test');
+            expect(doc._meta).not.toBe(sharedMeta);
+          }
+          expect(stored[0]!._meta).not.toBe(stored[1]!._meta);
+          expect(sharedMeta).toEqual({ lwt: 1, o: { _rev: 1, hash: 'origin' }, extra: 'kept' });
+          if (!mutable) expect(rows[0]!.document._meta).toBe(sharedMeta);
+          const previous = stored[0]!;
+          await wrapped.bulkWrite([{ previous, document: { ...previous, value: 2 } }], 'ordinary-update');
+          expect((await f.fork.findDocumentsById(['first'], false))[0]!._rev).toBe('2-wrapper-test');
+          expect(previous._meta.o).toEqual({ _rev: 1, hash: 'origin' });
+        } finally { await f.close(); }
+      });
+    }
+  }
+
   test('the CommonJS entry also cancels before reporting returned metadata failures', async () => {
     const cjs = createRequire(import.meta.url)('rxdb') as typeof import('rxdb');
     const f = await fixture(cjs.replicateRxStorageInstance, cjs.cancelRxStorageReplication);

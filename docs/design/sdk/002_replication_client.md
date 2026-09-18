@@ -70,6 +70,7 @@ or conflicts. The runtime does not yet connect these adapters to Syntrix HTTP.
 | Initial upload barrier | Every new instance waits for a fresh completed source round and its durable hook, including when saved metadata exists |
 | Empty source page | Advancing progress requires an identifiable control record; a terminal page may be empty when its checkpoint matches the already persisted position |
 | Failure | Cancel admission before the first diagnostic; recovery uses a new instance and retained durable metadata |
+| Partial fork persistence | Preserve the native download-origin metadata through inserts; replay recognizes downloaded rows by origin and revision even when assumed metadata was not committed, while later local edits invalidate that marker |
 | Shutdown | Abort handlers, unsubscribe scheduling, and drain owned storage calls, hooks, and native queues; the caller closes the stores |
 
 The completion flag is the adapter's claim about its source. The runtime does not
@@ -150,7 +151,8 @@ owns the persistence choices and their costs.
 | Offline identity | Require a nonempty JWT `sub`, with matching `oid` if present; an expired token can open offline storage, while missing/malformed identity cannot select a fallback account |
 | Source binding | Freeze the source definition; initially unbound storage can accept local edits; CAS binds the first database ID/source hash and rejects later reassignment |
 | Session refresh | Same-subject refresh keeps ownership; a subject change invalidates admission before draining owned resources, including an opening alias |
-| Session cancellation | A stable owner cancellation reason fences obsolete results and is recognized during native drain, directly or as the exact cause of an Axios cancellation; successful I/O finishing after invalidation does not become a storage failure |
+| Owned cancellation | Alias lifetime follows its session; each native generation also has its own cancellation signal. Cancel that generation before alias close or maintenance revokes its scope, so queued operations use the exact reason recognized during native drain |
+| Maintenance ownership | Retire the previous native generation and give future instances fresh ownership; seed work follows the alias lifetime rather than the retired normal runtime |
 | Drain failure | Keep the failed owner's drain obligation observable; another account cannot proceed as if cleanup succeeded |
 | Bundle boundary | Ownership belongs to the token provider through a shared versioned capability, so the remote entry and lazy bundle use the same owners |
 

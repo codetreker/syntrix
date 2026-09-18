@@ -26,7 +26,8 @@ local edit 等术语继续表示修改发生的位置。公开数据库入口命
 | 物理 namespace | 规范 endpoint、JWT sub、精确配置 database、本地库名、alias 的 SHA-256；manifest 保存原 tuple 校验 |
 | 离线身份 | sub 非空，oid 存在时必须相同；允许过期 token 离线打开，拒绝缺失/畸形 token，不引入默认账号 |
 | 凭据变化 | 同 subject refresh 保留库；subject 改变先失效再 drain，覆盖尚未完成的 open；失败的 drain 不解除所有权义务 |
-| 正常取消 | session 使用稳定的取消原因；原生运行时仅识别所属已取消 signal 的同一原因或以其为 cause 的 Axios 取消，旧读取成功后的失效不会变成关闭故障；真实存储错误仍传播 |
+| 正常取消 | alias 生命周期关联 session；每代 native 实例另有取消所有权，覆盖 alias 关闭和维护轮换。先取消再撤销旧 scope，排队操作使用同一原因；运行时仅接受所属 signal 的原因或以其为 cause 的 Axios 取消，真实存储错误仍传播 |
+| 维护生命周期 | 维护终止旧 native 所有权，新实例使用新的所有权；维护 seed 绑定 alias 生命周期，不随正常 native 轮换取消 |
 | HTTP 等待 | 请求构造时同步固定会话；凭据等待前和等待期间响应取消，避免旧请求等待正在 drain 自己的新凭据 |
 | bundle | 生命周期能力附在同一个 token provider 的版本化 Symbol hub 上，remote entry 与独立 lazy bundle 共享所有者 |
 | 数据库绑定 | 初始可 unbound 离线编辑；首次 CAS 绑定 databaseIdentity/sourceHash，之后不自动改绑 |
@@ -49,6 +50,10 @@ JWT 解析只用于本地命名空间，不是鉴权或抵抗同源恶意脚本�
 physical key 旁并在读取时验证。业务删除与 absence 都不使用原生 _deleted；非 live 清空
 payload，同 ID 可以立即重建。读出的业务内容来自 d，version/time 来自 m 的最新观察，
 并不代表本地编辑 revision。成员与待处理本地工作保持可见，absence 始终不可见。
+
+fork 插入保留原生下载来源 metadata，同时沿用 wrapper 的 revision、lwt、hooks 和
+实际写入准入。文档成功落盘而 assumed 写入失败时，重放用来源与 revision 的对应关系
+识别下载状态；后来的本地修改推进 revision，使旧来源标记失效，仍需正常上传。
 
 ```text
 alias shared -> 当前 epoch -> view exclusive -> d/m + 冻结条件

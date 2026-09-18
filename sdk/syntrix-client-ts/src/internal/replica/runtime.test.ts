@@ -82,86 +82,212 @@ const fixture = async () => {
 };
 
 describe('private replication runtime', () => {
-  for (const outcome of ['success', 'storage-error', 'unrelated-session-error', 'cleanup-error'] as const) {
-    test(`session cancellation drains a native alias read while preserving ${outcome}`, async () => {
+  for (const stopPoint of ['session', 'alias-close', 'maintenance', 'maintenance-then-close'] as const) {
+    for (const outcome of ['success', 'storage-error', 'unrelated-session-error', 'cleanup-error'] as const) {
+      if (stopPoint.startsWith('maintenance') && outcome === 'cleanup-error') continue;
+      test(`${stopPoint} cancellation drains active and queued native reads while preserving ${outcome}`, async () => {
+        const jwt = (sub: string) => `${btoa('{}')}.${btoa(JSON.stringify({ sub }))}.sig`.replace(/=/g, '');
+        const provider = new DefaultTokenProvider({ token: jwt('A') });
+        const session = await createReplicaSession(provider);
+        const gate = deferred();
+        let entered = false;
+        let armed = false;
+        const fault = outcome === 'unrelated-session-error' ? new AuthSessionChangedError() : new Error(outcome);
+        const raw: { close(): Promise<unknown> }[] = [];
+        const dexie = getRxStorageDexie({ indexedDB, IDBKeyRange });
+        const storage: RxStorage<any, any> = { ...dexie, createStorageInstance: async params => {
+          const instance = await dexie.createStorageInstance(params);
+          raw.push(instance);
+          return new Proxy(instance, { get(target, property) {
+            if (property === 'findDocumentsById' && params.collectionName.startsWith('meta_')) {
+              return async (ids: string[], deleted: boolean) => {
+                const result = await target.findDocumentsById(ids, deleted);
+                if (armed) {
+                  entered = true;
+                  await gate.promise;
+                  if (outcome === 'storage-error' || outcome === 'unrelated-session-error') throw fault;
+                }
+                return result;
+              };
+            }
+            if (property === 'close' && params.collectionName.startsWith('meta_') && outcome === 'cleanup-error') {
+              return async () => { await target.close(); throw fault; };
+            }
+            const value = Reflect.get(target, property, target);
+            return typeof value === 'function' ? value.bind(target) : value;
+          } });
+        } };
+        const alias = await openAliasStorage({ session, endpoint: 'https://example.test', database: 'app',
+          name: crypto.randomUUID(), alias: 'people', source: { collection: 'users', filters: [] },
+          lockManager: createTestLockManager(), storage });
+        const native = await alias.native(await alias.captureScope());
+        const errors: unknown[] = [];
+        let sourceCalls = 0;
+        armed = true;
+        const runtime = createReplicationRuntime<ReplicaRecord, Cursor>({
+          identifier: native.identifier, forkInstance: native.fork, metaInstance: native.meta, ownerSignal: native.ownerSignal,
+          hashFunction: defaultHashSha256, conflictHandler: defaultConflictHandler,
+          readSource: async () => { sourceCalls++; throw new Error('Canceled startup must not reach source'); },
+          writeRemote: async () => { throw new Error('Canceled startup must not push'); },
+          onError: error => { errors.push(error); },
+        });
+        alias.registerNative({ invalidate() {}, close: () => runtime.close() });
+        try {
+          await until(() => entered);
+          let maintenanceEntered = false;
+          let stopped = false;
+          const operation = stopPoint.startsWith('maintenance') ? alias.withMaintenance(async access => {
+            maintenanceEntered = true;
+            expect(access.ownerSignal.aborted).toBe(false);
+            access.assertActive();
+          }) : stopPoint === 'alias-close' ? alias.close() : Promise.resolve().then(() => provider.setToken(jwt('B'))).then(() => provider.getToken());
+          const stopResult = operation.then(value => { stopped = true; return { value }; }, error => { stopped = true; return { error }; });
+          await until(() => runtime.stopped);
+          expect(native.ownerSignal.aborted).toBe(true);
+          const aliasCloseResult = stopPoint === 'maintenance-then-close' ? alias.close().then(() => ({}), error => ({ error })) : undefined;
+          await tick();
+          expect(stopped).toBe(false);
+          gate.resolve();
+          if (outcome === 'success') {
+            if (stopPoint === 'maintenance-then-close') {
+              expect(await stopResult).toMatchObject({ error: { code: 'ReplicaStorageClosed' } });
+              expect(await aliasCloseResult).toEqual({});
+            } else expect(await stopResult).toEqual({ value: stopPoint === 'session' ? jwt('B') : undefined });
+            await runtime.close();
+            expect(runtime.error).toBeUndefined();
+            expect(errors).toEqual([]);
+            if (stopPoint === 'maintenance') {
+              expect(maintenanceEntered).toBe(true);
+              const current = await alias.native(await alias.captureScope());
+              expect(current.ownerSignal).not.toBe(native.ownerSignal);
+              expect(current.ownerSignal.aborted).toBe(false);
+              expect(await current.meta.findDocumentsById(['down|1'], false)).toEqual([]);
+              await expect(native.meta.findDocumentsById(['down|1'], false)).rejects.toBe(native.ownerSignal.reason);
+              await alias.set('alice', { afterMaintenance: true });
+              expect(await alias.get('alice')).toMatchObject({ afterMaintenance: true });
+            }
+            await alias.close();
+            if (stopPoint !== 'session') provider.setToken(jwt('B'));
+            expect(await provider.getToken()).toBe(jwt('B'));
+            await expect(alias.get('alice')).rejects.toMatchObject({ code: stopPoint === 'session' ? 'AUTH_SESSION_CHANGED' : 'ReplicaStorageClosed' });
+          } else {
+            if (outcome !== 'cleanup-error') await expect(runtime.close()).rejects.toBe(fault);
+            const result = await stopResult;
+            const closeError = 'error' in result ? result.error : undefined;
+            if (outcome === 'cleanup-error') expect(closeError).toMatchObject({ code: 'ReplicaStorageCleanupFailed', cause: fault, cleanupErrors: [fault] });
+            else expect(closeError).toBe(fault);
+            if (aliasCloseResult) expect(await aliasCloseResult).toEqual({ error: fault });
+            expect(maintenanceEntered).toBe(false);
+            if (stopPoint === 'session') expect(provider.isAuthenticated()).toBe(false);
+          }
+          expect(sourceCalls).toBe(0);
+        } finally {
+          gate.resolve();
+          await Promise.allSettled([runtime.close(), alias.close(), session.close()]);
+          await Promise.allSettled(raw.map(instance => instance.close()));
+        }
+      }, 5000);
+    }
+  }
+
+  for (const stopPoint of ['alias-close', 'maintenance'] as const) {
+    test(`${stopPoint} fences a queued native write and a replacement runtime can resume`, async () => {
+      const jwt = `${btoa('{}')}.${btoa(JSON.stringify({ sub: 'A' }))}.sig`.replace(/=/g, '');
+      const session = await createReplicaSession(new DefaultTokenProvider({ token: jwt }));
+      const options = { session, endpoint: 'https://example.test', database: 'app', name: crypto.randomUUID(), alias: 'people',
+        source: { collection: 'users', filters: [] }, lockManager: createTestLockManager(), storage: getRxStorageDexie({ indexedDB, IDBKeyRange }) };
+      let alias = await openAliasStorage(options);
+      const native = await alias.native(await alias.captureScope());
+      const queued = deferred(), gate = deferred();
+      const fork = new Proxy(native.fork, { get(target, property) {
+        if (property === 'bulkWrite') return async (rows: any[], context: string) => {
+          queued.resolve(); await gate.promise;
+          return target.bulkWrite(rows, context);
+        };
+        const value = Reflect.get(target, property, target);
+        return typeof value === 'function' ? value.bind(target) : value;
+      } });
+      const source: Pick<ReplicationOptions<ReplicaRecord, Cursor>, 'readSource' | 'writeRemote' | 'isControlDocument'> = {
+        readSource: async () => ({ checkpoint: { sequence: 1 }, complete: true, documents: [{
+          key: 'c:progress', kind: 'c', checkpoint: { sequence: 1 }, generation: 'g1', phase: 'live',
+          bootstrapComplete: true, partialDelivery: false, _deleted: false, _attachments: {},
+        }] }),
+        writeRemote: async () => { throw new Error('Control documents must not upload'); },
+        isControlDocument: document => document.kind !== 'd',
+      };
+      const runtime = createReplicationRuntime({ ...native, ...source, forkInstance: fork, metaInstance: native.meta,
+        hashFunction: defaultHashSha256, conflictHandler: defaultConflictHandler });
+      alias.registerNative({ invalidate() {}, close: () => runtime.close() });
+      let restarted: ReplicationRuntime | undefined;
+      try {
+        await queued.promise;
+        const stopping = stopPoint === 'alias-close' ? alias.close() : alias.withMaintenance(async () => {});
+        await until(() => runtime.stopped);
+        gate.resolve(); await stopping;
+        expect(runtime.error).toBeUndefined();
+        if (stopPoint === 'alias-close') alias = await openAliasStorage(options);
+        const next = await alias.native(await alias.captureScope());
+        expect(await next.fork.findDocumentsById(['c:progress'], false)).toEqual([]);
+        restarted = createReplicationRuntime({ ...next, ...source, forkInstance: next.fork, metaInstance: next.meta,
+          hashFunction: defaultHashSha256, conflictHandler: defaultConflictHandler });
+        await restarted.waitForIdle();
+        expect(restarted.ready).toBe(true);
+        expect(await next.fork.findDocumentsById(['c:progress'], false)).toHaveLength(1);
+      } finally {
+        gate.resolve(); await runtime.close(); await restarted?.close(); await alias.close(); await session.close();
+      }
+    }, 10000);
+
+    test(`${stopPoint} aborts native work waiting for another owner's Web Lock`, async () => {
       const jwt = (sub: string) => `${btoa('{}')}.${btoa(JSON.stringify({ sub }))}.sig`.replace(/=/g, '');
       const provider = new DefaultTokenProvider({ token: jwt('A') });
       const session = await createReplicaSession(provider);
-      const gate = deferred();
-      let entered = false;
-      let armed = false;
-      const fault = outcome === 'unrelated-session-error' ? new AuthSessionChangedError() : new Error(outcome);
-      const raw: { close(): Promise<unknown> }[] = [];
-      const dexie = getRxStorageDexie({ indexedDB, IDBKeyRange });
-      const storage: RxStorage<any, any> = { ...dexie, createStorageInstance: async params => {
-        const instance = await dexie.createStorageInstance(params);
-        raw.push(instance);
-        return new Proxy(instance, { get(target, property) {
-          if (property === 'findDocumentsById' && params.collectionName.startsWith('meta_')) {
-            return async (ids: string[], deleted: boolean) => {
-              const result = await target.findDocumentsById(ids, deleted);
-              if (armed) {
-                entered = true;
-                await gate.promise;
-                if (outcome === 'storage-error' || outcome === 'unrelated-session-error') throw fault;
-              }
-              return result;
-            };
-          }
-          if (property === 'close' && params.collectionName.startsWith('meta_') && outcome === 'cleanup-error') {
-            return async () => { await target.close(); throw fault; };
-          }
-          const value = Reflect.get(target, property, target);
-          return typeof value === 'function' ? value.bind(target) : value;
-        } });
-      } };
+      const manager = createTestLockManager();
+      const queued = deferred();
+      let observing = false;
+      const locks = new Proxy(manager, { get(target, property) {
+        if (property === 'request') return (...args: any[]) => {
+          if (observing && args[0].endsWith(':alias') && args[1].mode === 'shared') queued.resolve();
+          return (target.request as any)(...args);
+        };
+        return Reflect.get(target, property, target);
+      } });
       const alias = await openAliasStorage({ session, endpoint: 'https://example.test', database: 'app',
         name: crypto.randomUUID(), alias: 'people', source: { collection: 'users', filters: [] },
-        lockManager: createTestLockManager(), storage });
+        lockManager: locks, storage: getRxStorageDexie({ indexedDB, IDBKeyRange }) });
       const native = await alias.native(await alias.captureScope());
-      const errors: unknown[] = [];
-      let sourceCalls = 0;
-      armed = true;
-      const runtime = createReplicationRuntime<ReplicaRecord, Cursor>({
-        identifier: native.identifier, forkInstance: native.fork, metaInstance: native.meta, ownerSignal: native.ownerSignal,
+      const gate = deferred();
+      const acquired = deferred();
+      const held = manager.request(`syntrix:${alias.namespace}:alias`, { mode: 'exclusive' }, async () => {
+        acquired.resolve(); await gate.promise;
+      });
+      await acquired.promise;
+      observing = true;
+      const runtime = createReplicationRuntime<ReplicaRecord, Cursor>({ ...native, forkInstance: native.fork, metaInstance: native.meta,
         hashFunction: defaultHashSha256, conflictHandler: defaultConflictHandler,
-        readSource: async () => { sourceCalls++; throw new Error('Canceled startup must not reach source'); },
+        readSource: async () => { throw new Error('Canceled startup must not reach source'); },
         writeRemote: async () => { throw new Error('Canceled startup must not push'); },
-        onError: error => { errors.push(error); },
       });
       alias.registerNative({ invalidate() {}, close: () => runtime.close() });
+      let callbackEntered = false;
       try {
-        await until(() => entered);
-        provider.setToken(jwt('B'));
-        expect(runtime.stopped).toBe(true);
-        let tokenSettled = false;
-        const token = provider.getToken().then(value => { tokenSettled = true; return value; }, error => { tokenSettled = true; throw error; });
-        const tokenResult = token.then(value => ({ value }), error => ({ error }));
-        await tick();
-        expect(tokenSettled).toBe(false);
-        gate.resolve();
-        if (outcome === 'success') {
-          await runtime.close();
-          await alias.close();
-          expect(await tokenResult).toEqual({ value: jwt('B') });
-          expect(runtime.error).toBeUndefined();
-          expect(errors).toEqual([]);
-          await expect(alias.get('alice')).rejects.toBe(session.signal.reason);
-        } else {
-          if (outcome !== 'cleanup-error') await expect(runtime.close()).rejects.toBe(fault);
-          const closeError = await alias.close().catch(error => error);
-          if (outcome === 'cleanup-error') expect(closeError).toMatchObject({ code: 'ReplicaStorageCleanupFailed', cause: fault, cleanupErrors: [fault] });
-          else expect(closeError).toBe(fault);
-          expect(await tokenResult).toEqual({ error: closeError });
-          expect(provider.isAuthenticated()).toBe(false);
-        }
-        expect(sourceCalls).toBe(0);
+        await queued.promise;
+        const stopping = stopPoint === 'alias-close' ? alias.close() : alias.withMaintenance(async access => {
+          callbackEntered = true;
+          expect(access.ownerSignal.aborted).toBe(false);
+        });
+        await until(() => runtime.stopped);
+        await runtime.close();
+        expect(runtime.error).toBeUndefined();
+        expect(callbackEntered).toBe(false);
+        if (stopPoint === 'alias-close') await stopping;
+        gate.resolve(); await held; await stopping;
+        expect(callbackEntered).toBe(stopPoint === 'maintenance');
       } finally {
-        gate.resolve();
-        await Promise.allSettled([runtime.close(), alias.close(), session.close()]);
-        await Promise.allSettled(raw.map(instance => instance.close()));
+        gate.resolve(); await held;
+        await alias.close(); await session.close();
       }
-    }, 5000);
+    }, 10000);
   }
 
   test('an already canceled owner cannot create a native runtime', async () => {
