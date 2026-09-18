@@ -1,7 +1,7 @@
 import { afterEach, expect, test } from 'bun:test';
 import axios from 'axios';
 import { DefaultTokenProvider } from '../auth/provider.js';
-import { createLocalSession } from './session.js';
+import { createReplicaSession } from './session.js';
 import { AuthSessionChangedError } from '../../api/errors.js';
 const jwt = (sub: string) => `${btoa('{}')}.${btoa(JSON.stringify({ sub, exp: 0 }))}.sig`.replace(/=/g, '');
 const deferred = () => { let resolve!: () => void; const promise = new Promise<void>(r => { resolve = r; }); return { promise, resolve }; };
@@ -11,7 +11,7 @@ afterEach(() => { axios.post = originalPost; });
 for (const action of ['token', 'refresh-token', 'login', 'logout'] as const) {
   test(`${action} invalidates immediately and drains before admitting credentials`, async () => {
     const provider = new DefaultTokenProvider({ token: jwt('A'), refreshToken: 'refresh' });
-    const session = await createLocalSession(provider);
+    const session = await createReplicaSession(provider);
     const closing = deferred();
     let invalid = false;
     session.register({ invalidate: () => { invalid = true; }, close: () => closing.promise });
@@ -34,7 +34,7 @@ for (const action of ['token', 'refresh-token', 'login', 'logout'] as const) {
 
 test('same-subject refresh preserves ownership; different subject drains and fences old requests', async () => {
   const provider = new DefaultTokenProvider({ token: jwt('A'), refreshToken: 'refresh' });
-  const session = await createLocalSession(provider);
+  const session = await createReplicaSession(provider);
   axios.post = (async () => ({ data: { access_token: jwt('A') } })) as typeof axios.post;
   expect(await provider.refreshToken()).toBe(jwt('A'));
   session.assertCurrent();
@@ -52,15 +52,15 @@ test('same-subject refresh preserves ownership; different subject drains and fen
 
 test('pending opens register ownership before token await and cannot resurrect a replaced session', async () => {
   const provider = new DefaultTokenProvider({ token: jwt('A') });
-  const pending = createLocalSession(provider).catch(error => error);
+  const pending = createReplicaSession(provider).catch(error => error);
   provider.setToken(jwt('B'));
   expect(await pending).toBeInstanceOf(AuthSessionChangedError);
-  expect((await createLocalSession(provider)).subject).toBe('B');
+  expect((await createReplicaSession(provider)).subject).toBe('B');
 });
 
 test('tracked work is drained and resource errors remain observable through void setters', async () => {
   const provider = new DefaultTokenProvider({ token: jwt('A') });
-  const session = await createLocalSession(provider);
+  const session = await createReplicaSession(provider);
   const running = deferred(), entered = deferred();
   const work = session.track(async () => { entered.resolve(); await running.promise; }).catch(error => error);
   await entered.promise;
@@ -76,16 +76,16 @@ test('tracked work is drained and resource errors remain observable through void
   await expect(provider.refreshToken()).rejects.toBe(failure);
 });
 
-test('opaque REST tokens remain supported, while unsupported local providers fail explicitly', async () => {
+test('opaque REST tokens remain supported, while unsupported replica providers fail explicitly', async () => {
   const provider = new DefaultTokenProvider({ token: 'opaque' });
   expect(await provider.getToken()).toBe('opaque');
-  await expect(createLocalSession(provider)).rejects.toThrow('Malformed');
-  await expect(createLocalSession({ getSessionVersion: () => 1 } as never)).rejects.toThrow('lifecycle');
+  await expect(createReplicaSession(provider)).rejects.toThrow('Malformed');
+  await expect(createReplicaSession({ getSessionVersion: () => 1 } as never)).rejects.toThrow('lifecycle');
 });
 
 test('back-to-back setters retain intended access token while previous owners drain', async () => {
   const provider = new DefaultTokenProvider({ token: jwt('A') });
-  const session = await createLocalSession(provider);
+  const session = await createReplicaSession(provider);
   const closing = deferred();
   session.register({ invalidate() {}, close: () => closing.promise });
   provider.setToken(jwt('B')); provider.setRefreshToken('B-refresh');
@@ -98,7 +98,7 @@ test('back-to-back setters retain intended access token while previous owners dr
 
 test('account-changing refresh inside tracked HTTP work cannot wait for its own drain', async () => {
   const provider = new DefaultTokenProvider({ token: jwt('A'), refreshToken: 'refresh' });
-  const session = await createLocalSession(provider);
+  const session = await createReplicaSession(provider);
   axios.post = (async () => ({ data: { access_token: jwt('B') } })) as typeof axios.post;
   await expect(session.track(() => provider.refreshToken())).rejects.toBeInstanceOf(AuthSessionChangedError);
   expect(await provider.getToken()).toBe(jwt('B'));
@@ -108,7 +108,7 @@ test('account-changing refresh inside tracked HTTP work cannot wait for its own 
 
 test('a manually closing session remains an auth drain owner until resources close', async () => {
   const provider = new DefaultTokenProvider({ token: jwt('A') });
-  const session = await createLocalSession(provider);
+  const session = await createReplicaSession(provider);
   const gate = deferred();
   session.register({ invalidate() {}, close: () => gate.promise });
   const closing = session.close();
@@ -132,7 +132,7 @@ for (const nextSubject of ['A', 'B']) {
     const refreshed = provider.refreshToken().catch(error => error);
     await started.promise;
     finish({ data: { access_token: jwt(nextSubject) } });
-    const opening = createLocalSession(provider).catch(error => error);
+    const opening = createReplicaSession(provider).catch(error => error);
     const opened = await opening;
     const refreshResult = await refreshed;
     if (nextSubject === 'A') {

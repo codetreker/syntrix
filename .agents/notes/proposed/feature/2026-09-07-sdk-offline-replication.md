@@ -13,20 +13,20 @@ API with lossless values, crash recovery, and dynamic local query results.
 The [private native runtime](../../implemented/architecture/2026-09-18-sdk-native-replication-runtime.md)
 provides bounded replication inputs, durable completion hooks, failure isolation,
 and a bundled patched dependency. It is not yet connected to Syntrix source/Push
-HTTP adapters or a public local database API. This proposal owns that remaining
+HTTP adapters or a public replica database API. This proposal owns that remaining
 integration; the runtime note owns the delivered mechanism. The
 [query-source contract](../../implemented/feature/2026-09-18-query-replication-source.md)
 now supplies matching-set events, complete result windows, generation identity,
 and authoritative bound database checks. Its SDK adapters and local membership
 application remain outstanding. The
-[private alias storage](../../implemented/architecture/2026-09-18-sdk-local-storage.md)
+[private alias storage](../../implemented/architecture/2026-09-18-sdk-replica-storage.md)
 now owns local identity, typed records, CAS CRUD, bounded storage access, and clean
 physical compaction; this proposal retains public API and synchronization integration.
 
 ## Proposal
 
 Provide two explicit application paths: existing REST references for direct
-remote reads/writes, and an SDK-owned local database for durable replication and
+remote reads/writes, and an SDK-owned replica database for durable replication and
 local queries. RxDB remains an internal implementation detail. Push is internal
 to replication; no public manual Push method is required.
 
@@ -34,7 +34,7 @@ to replication; no public manual Push method is required.
 |---|---|
 | Remote sources | Connect delivered matching-set and result-window HTTP sources to named local collection aliases; refresh windows using realtime hints plus polling |
 | Membership | Apply delivered source upsert/leave/delete events or complete window replacements and activate durable generations without treating every membership exit as a document deletion |
-| Local operations | Expose the delivered private CRUD through the public local API and implement dynamic local query/watch results |
+| Local operations | Expose the delivered private CRUD through the public replica API and implement dynamic local query/watch results |
 | Identity | Connect source and Push adapters to delivered namespace/session/binding guards; obsolete work cannot apply or send across reassignment |
 | Initialization | Activate a complete source generation durably before uploading, while preserving pending local edits |
 | Upstream | Use native durable changed-document scanning and acknowledgement metadata; keep newer local edits when an earlier write is acknowledged |
@@ -46,7 +46,7 @@ Tombstones communicate deletion and must permit recreation with the same ID.
 Versions may reset on recreation; they cannot serve as a global replication order
 or a permanent document-lifecycle identity.
 
-### Lossless Local Storage and Write Transport
+### Lossless Replica Storage and Write Transport
 
 Manual Pull and Query decode int64 values as bigint. Ordinary SDK document
 `set`/`update` still use JSON serialization, which rejects bigint. Converting to
@@ -81,7 +81,7 @@ checks and clear failure behavior for quota exhaustion or unavailable storage.
 
 **Application-owned synchronization:** keeps the SDK smaller but requires each
 application to solve checkpoint ordering, durable acknowledgement, and account
-isolation. The SDK-owned local database supplies these recurring obligations.
+isolation. The SDK-owned replica database supplies these recurring obligations.
 
 **Realtime events as the local source of truth:** lowers pull traffic but cannot
 recover omitted events using authoritative source progress. Realtime schedules
@@ -110,14 +110,14 @@ persistence, wire encoding, and conflict application.
   outside Number's safe-integer range.
 - Persistent reads, replication work, local query caches, and retained metadata
   enforce their own budgets and expose failures without truncating data.
-- The public package exposes local database and query/watch capabilities without
+- The public package exposes replica database and query/watch capabilities without
   requiring application-managed RxDB or a public manual Push API.
 
 ## Dependencies
 
 - [Private runtime](../../implemented/architecture/2026-09-18-sdk-native-replication-runtime.md)
   owns native protocol reliability and its publishable dependency bundle.
-- [Private alias storage](../../implemented/architecture/2026-09-18-sdk-local-storage.md)
+- [Private alias storage](../../implemented/architecture/2026-09-18-sdk-replica-storage.md)
   owns namespace/session isolation, typed records, raw CAS, bounded persistence,
   and clean physical compaction.
 - [Push version checks](../../implemented/bug-fix/2026-09-07-replication-push-version-checks.md),

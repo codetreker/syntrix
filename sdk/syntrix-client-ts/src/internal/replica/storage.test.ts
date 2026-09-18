@@ -3,7 +3,7 @@ import { indexedDB, IDBKeyRange } from 'fake-indexeddb';
 import { fillObjectDataBeforeInsert, getChangedDocumentsSince, normalizeMangoQuery, prepareQuery, type RxStorage } from 'rxdb';
 import { getRxStorageDexie } from 'rxdb/plugins/storage-dexie';
 import { DefaultTokenProvider } from '../auth/provider.js';
-import { createLocalSession } from './session.js';
+import { createReplicaSession } from './session.js';
 import { createTestLockManager } from './lock-manager.test-fixture.js';
 import { openAliasStorage, type AliasStorage, type OpenAliasStorageOptions } from './storage.js';
 import { decodeBusinessPayload, encodeBusinessPayload, recordKey } from './records.js';
@@ -11,7 +11,7 @@ import type { DataRecord, MemberRecord } from './storage-types.js';
 const jwt = (subject: string) => `${btoa('{}')}.${btoa(JSON.stringify({ sub: subject, exp: 0 }))}.sig`.replace(/=/g, '');
 const setup = async (extra: Partial<OpenAliasStorageOptions> = {}) => {
   const provider = new DefaultTokenProvider({ token: jwt('alice') });
-  const session = await createLocalSession(provider);
+  const session = await createReplicaSession(provider);
   const options: OpenAliasStorageOptions = {
     session, endpoint: 'https://example.test', database: 'app', name: crypto.randomUUID(), alias: 'people',
     source: { collection: 'users', filters: [] }, lockManager: createTestLockManager(), storage: getRxStorageDexie({ indexedDB, IDBKeyRange }), ...extra
@@ -50,7 +50,7 @@ describe('private alias storage', () => {
       expect(await storage.get('alice', { showDeleted: true })).toEqual({ id: 'alice', collection: 'users', deleted: true });
       await storage.set('alice', { recreated: true }); expect((await storage.get('alice') as any)?.recreated).toBe(true);
       await storage.delete('missing'); expect(await storage.get('missing', { showDeleted: true })).toBeNull();
-      await expect(storage.update('missing', {})).rejects.toMatchObject({ code: 'LocalDocumentNotFound' });
+      await expect(storage.update('missing', {})).rejects.toMatchObject({ code: 'ReplicaDocumentNotFound' });
       expect(await storage.add({ generated: true })).toBeTruthy();
       expect(storage.generateId()).not.toBe(storage.generateId());
     } finally { await storage.close(); }
@@ -63,7 +63,7 @@ describe('private alias storage', () => {
       expect((await storage.get('alice'))?.version).toBe(9n);
       await storage.update('alice', { value: 2 }, { ifMatch: [{ field: 'version', op: '==', value: 9n }] });
       await seedMember(storage, 'alice', '10');
-      await expect(storage.update('alice', { value: 3 }, { ifMatch: [{ field: 'version', op: '==', value: 9n }] })).rejects.toMatchObject({ code: 'LocalConditionFailed' });
+      await expect(storage.update('alice', { value: 3 }, { ifMatch: [{ field: 'version', op: '==', value: 9n }] })).rejects.toMatchObject({ code: 'ReplicaConditionFailed' });
       expect((await storage.get('alice') as any)?.value).toBe(2);
       expect(() => storage.set('alice', { version: 10n })).toThrow('read-only');
       expect(() => storage.set('x/y', {})).toThrow('path segment');
@@ -78,7 +78,7 @@ describe('private alias storage', () => {
       expect((await second.get('alice') as any)?.one).toBe(true);
       expect((await second.readManifest()).activePhysicalEpoch).toBe((await env.storage.readManifest()).activePhysicalEpoch);
       await expect(openAliasStorage({ ...env.options, source: { collection: 'other', filters: [] } })).rejects.toMatchObject({ code: 'ReplicaScopeChanged' });
-      const otherSession = await createLocalSession(new DefaultTokenProvider({ token: jwt('bob') }));
+      const otherSession = await createReplicaSession(new DefaultTokenProvider({ token: jwt('bob') }));
       const other = await openAliasStorage({ ...env.options, session: otherSession });
       try { expect(await other.get('alice')).toBeNull(); expect(other.namespace).not.toBe(env.storage.namespace); } finally { await other.close(); }
     } finally { await second.close(); await env.storage.close(); }
@@ -88,7 +88,7 @@ describe('private alias storage', () => {
     const { storage } = await setup();
     try {
       let scope = await storage.captureScope('r1');
-      await expect(storage.guardNetwork(scope)).rejects.toMatchObject({ code: 'LocalSourceNotReady' });
+      await expect(storage.guardNetwork(scope)).rejects.toMatchObject({ code: 'ReplicaSourceNotReady' });
       await storage.bind(scope, 'D1', 'source1'); await storage.bind(scope, 'D1', 'source1');
       await storage.withMaintenance(async access => { await access.writeManifest({ ...access.manifest, sourceReady: true }); });
       scope = await storage.captureScope('r1');
@@ -115,11 +115,11 @@ describe('private alias storage', () => {
     try {
       await storage.set('alice', { x: 1 }); await seedMember(storage, 'alice', '1');
       expect((await storage.stats()).knownIds).toBe(1);
-      await expect(storage.set('bob', {})).rejects.toMatchObject({ code: 'LocalStorageLimit' });
+      await expect(storage.set('bob', {})).rejects.toMatchObject({ code: 'ReplicaStorageLimit' });
       expect(await storage.get('bob')).toBeNull();
       const scope = await storage.captureScope(); const native = await storage.native(scope);
       expect(await native.fork.findDocumentsById(['a', 'b', 'c', 'd', 'e'], false)).toEqual([]);
-      await expect(native.fork.remove()).rejects.toMatchObject({ code: 'LocalWriteFence' });
+      await expect(native.fork.remove()).rejects.toMatchObject({ code: 'ReplicaWriteFence' });
       await storage.update('alice', { y: 2 }); expect((await storage.stats()).knownIds).toBe(1);
     } finally { await storage.close(); }
   });
@@ -132,7 +132,7 @@ describe('private alias storage', () => {
       await env.storage.withMaintenance(async access => { held = access; await access.writeManifest({ ...access.manifest, activeSourceGeneration: 'g2' }); });
       await new Promise(resolve => setTimeout(resolve, 30));
       expect(events).toContain('g2'); expect((await second.readManifest()).activeSourceGeneration).toBe('g2');
-      await expect(held.writeManifest(held.manifest)).rejects.toMatchObject({ code: 'LocalWriteFence' });
+      await expect(held.writeManifest(held.manifest)).rejects.toMatchObject({ code: 'ReplicaWriteFence' });
     } finally { sub.unsubscribe(); await second.close(); await env.storage.close(); }
   });
 
@@ -195,7 +195,7 @@ test('CAS retries reevaluate conditions and preserve original non-conflict stora
   const env = await setup({ storage });
   try {
     await env.storage.set('alice', { count: 1 }); compete = true;
-    await expect(env.storage.update('alice', { own: true }, { ifMatch: [{ field: 'count', op: '==', value: 1 }] })).rejects.toMatchObject({ code: 'LocalConditionFailed' });
+    await expect(env.storage.update('alice', { own: true }, { ifMatch: [{ field: 'count', op: '==', value: 1 }] })).rejects.toMatchObject({ code: 'ReplicaConditionFailed' });
     expect(await env.storage.get('alice')).toMatchObject({ count: 2 });
     reject = true; await expect(env.storage.update('alice', { count: 3 })).rejects.toBe(failure);
     reject = false; await env.storage.update('alice', { count: 4 });
@@ -234,7 +234,7 @@ test('account change during backend creation drains the provisional owner before
     }
   };
   const provider = new DefaultTokenProvider({ token: jwt('opening') });
-  const session = await createLocalSession(provider);
+  const session = await createReplicaSession(provider);
   const opening = openAliasStorage({
     session, endpoint: 'https://example.test', database: 'app', name: crypto.randomUUID(), alias: 'users',
     source: { collection: 'users', filters: [] }, lockManager: createTestLockManager(), storage
@@ -258,7 +258,7 @@ test('equal-LWT lower-key foreign inserts cannot bypass known-ID admission', asy
     const original = (await raw.findDocumentsById([ids[2].key], false))[0];
     const inserted = { ...original, key: ids[0].key, logicalId: ids[0].id, _rev: '1-other-tab' };
     expect((await raw.bulkWrite([{ document: inserted }], 'foreign')).error).toEqual([]);
-    await expect(env.storage.set(ids[1].id, {})).rejects.toMatchObject({ code: 'LocalStorageLimit' });
+    await expect(env.storage.set(ids[1].id, {})).rejects.toMatchObject({ code: 'ReplicaStorageLimit' });
     expect((await env.storage.stats()).knownIds).toBe(2);
   } finally { await env.storage.close(); }
 });
@@ -271,7 +271,7 @@ test('finite byte admission reconciles foreign same-count rewrites behind its ch
     await env.storage.set('alice', { small: true }); await env.storage.update('alice', { establishAccounting: true });
     const previous = (await raw.findDocumentsById([await recordKey('d', 'alice')], false))[0];
     expect((await raw.bulkWrite([{ previous, document: { ...previous, payload: encodeBusinessPayload({ large: 'x'.repeat(13000) }), _rev: '3-other-tab' } }], 'foreign')).error).toEqual([]);
-    await expect(env.storage.set('bob', {})).rejects.toMatchObject({ code: 'LocalStorageLimit' });
+    await expect(env.storage.set('bob', {})).rejects.toMatchObject({ code: 'ReplicaStorageLimit' });
     expect((await env.storage.stats()).bytes).toBeGreaterThan(13000);
   } finally { await env.storage.close(); }
 });
@@ -287,8 +287,8 @@ test('durable recovery intent blocks only its logical target while preserving or
       const desired: DataRecord = { ...current, payload: encodeBusinessPayload({ value: 'recovered' }), editToken: 'recovery-result', pin: { token: 'recovery-result', stage: 'await-settlement' } };
       await access.writeManifest({ ...access.manifest, recoveryIntent: { id: 'intent-id', action: 'merge', logicalId: 'alice', protectedToken: current.editToken, resultToken: 'recovery-result', current, desired } });
     });
-    await expect(storage.set('alice', { value: 'race' })).rejects.toMatchObject({ code: 'LocalRecoveryPending' });
-    await expect(storage.delete('alice')).rejects.toMatchObject({ code: 'LocalRecoveryPending' });
+    await expect(storage.set('alice', { value: 'race' })).rejects.toMatchObject({ code: 'ReplicaRecoveryPending' });
+    await expect(storage.delete('alice')).rejects.toMatchObject({ code: 'ReplicaRecoveryPending' });
     await storage.set('intent-id', { independent: true });
     expect(await storage.get('alice')).toMatchObject({ value: 'current' });
     expect(await storage.get('intent-id')).toMatchObject({ independent: true });
@@ -356,7 +356,7 @@ test('native changed-document batches seek without offsets and reject unbounded 
     expect(calls).toHaveLength(4);
     const query = prepareQuery(native.fork.schema, normalizeMangoQuery(native.fork.schema, { selector: { _deleted: false }, sort: [{ key: 'asc' }], skip: 4, limit: 4 } as any));
     calls.length = 0;
-    await expect(native.fork.query(query)).rejects.toMatchObject({ code: 'LocalReadBudgetExceeded' });
+    await expect(native.fork.query(query)).rejects.toMatchObject({ code: 'ReplicaReadBudgetExceeded' });
     expect(calls).toHaveLength(0);
     const keys = await Promise.all(Array.from({ length: 13 }, (_, i) => recordKey('d', String(i))));
     expect(await native.fork.findDocumentsById(keys, true)).toHaveLength(13);
@@ -379,10 +379,10 @@ test('failed open retains cleanup failure in authentication ownership', async ()
   };
   const env = await setup({ storage }); await env.storage.close(); failClose = true;
   try {
-    await expect(openAliasStorage({ ...env.options, source: { collection: 'different', filters: [] } })).rejects.toMatchObject({ code: 'LocalStorageCleanupFailed' });
+    await expect(openAliasStorage({ ...env.options, source: { collection: 'different', filters: [] } })).rejects.toMatchObject({ code: 'ReplicaStorageCleanupFailed' });
     env.provider.setToken(jwt('replacement'));
-    await expect(env.provider.getToken()).rejects.toMatchObject({ code: 'LocalStorageCleanupFailed' });
-    await expect(env.session.close()).rejects.toMatchObject({ code: 'LocalStorageCleanupFailed' });
+    await expect(env.provider.getToken()).rejects.toMatchObject({ code: 'ReplicaStorageCleanupFailed' });
+    await expect(env.session.close()).rejects.toMatchObject({ code: 'ReplicaStorageCleanupFailed' });
   } finally { failClose = false; await Promise.allSettled(rawHandles.map(handle => handle.close())); }
 });
 
@@ -401,13 +401,13 @@ test('constructor cleanup failure remains owned before an alias backend exists',
     } });
   } };
   const provider = new DefaultTokenProvider({ token: jwt('opening') });
-  const session = await createLocalSession(provider);
+  const session = await createReplicaSession(provider);
   try {
     await expect(openAliasStorage({ session, storage, lockManager: createTestLockManager(), endpoint: 'https://example.test', database: 'app',
-      name: crypto.randomUUID(), alias: 'users', source: { collection: 'users', filters: [] } })).rejects.toMatchObject({ code: 'LocalStorageCleanupFailed', cause: openingError });
+      name: crypto.randomUUID(), alias: 'users', source: { collection: 'users', filters: [] } })).rejects.toMatchObject({ code: 'ReplicaStorageCleanupFailed', cause: openingError });
     provider.setToken(jwt('replacement'));
-    await expect(provider.getToken()).rejects.toMatchObject({ code: 'LocalStorageCleanupFailed' });
-    await expect(session.close()).rejects.toMatchObject({ code: 'LocalStorageCleanupFailed' });
+    await expect(provider.getToken()).rejects.toMatchObject({ code: 'ReplicaStorageCleanupFailed' });
+    await expect(session.close()).rejects.toMatchObject({ code: 'ReplicaStorageCleanupFailed' });
   } finally { failClose = false; await Promise.allSettled(rawHandles.map(handle => handle.close())); }
 });
 

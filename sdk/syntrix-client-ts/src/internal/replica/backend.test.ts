@@ -5,7 +5,7 @@ import { getRxStorageMemory } from 'rxdb/plugins/storage-memory';
 import { addRxPlugin, type RxDatabase, type RxStorage } from 'rxdb';
 import { BackendCleanupError, countRows, encodedRowBytes, openAliasBackend, ReadBudget, validateStorageLimits, withMetadataScanPage, withRows, withScanPage, type NativeRow } from './backend.js';
 import { decodeBusinessPayload, definitionHash, encodeBusinessPayload, freezeSourceDefinition, recordKey } from './records.js';
-import type { AliasManifest, DataRecord, LocalRecord } from './storage-types.js';
+import type { AliasManifest, DataRecord, ReplicaRecord } from './storage-types.js';
 
 const data = async (id = 'alice'): Promise<DataRecord> => ({
   key: await recordKey('d', id), kind: 'd', logicalId: id, existence: 'live',
@@ -22,7 +22,7 @@ const manifestRow = async (): Promise<AliasManifest> => {
 };
 const dexie = () => getRxStorageDexie({ indexedDB, IDBKeyRange });
 const name = () => `backend-${crypto.randomUUID()}`;
-const nativeMeta = (row: LocalRecord) => ({ id: `${row.key}|0`, itemId: row.key, isCheckpoint: '0',
+const nativeMeta = (row: ReplicaRecord) => ({ id: `${row.key}|0`, itemId: row.key, isCheckpoint: '0',
   docData: { ...row, _deleted: false }, _deleted: false, _attachments: {}, _meta: { lwt: Date.now() }, _rev: '1-test' });
 
 describe('alias physical storage', () => {
@@ -99,7 +99,7 @@ describe('alias physical storage', () => {
     try {
       opened = await backend.openPhysical('p1');
       observations.length = 0;
-      await expect(opened.fork.bulkWrite(writes, 'budget')).rejects.toMatchObject({ code: 'LocalReadBudgetExceeded' });
+      await expect(opened.fork.bulkWrite(writes, 'budget')).rejects.toMatchObject({ code: 'ReplicaReadBudgetExceeded' });
       expect(observations[0].count).toBe(4);
       expect(observations.every(read => read.count <= 4 && read.reserved === read.count * 1024)).toBe(true);
       const processed = observations.reduce((sum, read) => sum + read.count, 0);
@@ -151,7 +151,7 @@ describe('alias physical storage', () => {
       await expect(backend.writeRecord(opened, await data('failure'), undefined, 'fail')).rejects.toBe(failure);
       expect(pool.usedBytes).toBe(0);
       const reads = observations.length;
-      await expect(pool.withReservation(4096, async () => backend.writeRecord(opened, await data('blocked'), undefined, 'blocked'))).rejects.toMatchObject({ code: 'LocalReadBudgetExceeded' });
+      await expect(pool.withReservation(4096, async () => backend.writeRecord(opened, await data('blocked'), undefined, 'blocked'))).rejects.toMatchObject({ code: 'ReplicaReadBudgetExceeded' });
       expect(observations.length).toBe(reads);
       expect(pool.usedBytes).toBe(0);
     } finally { await backend.close(); }
@@ -170,7 +170,7 @@ describe('alias physical storage', () => {
       const enlarged = { ...previous, payload: encodeBusinessPayload({ text: 'x'.repeat(300) }) };
       const rows = [{ previous: enlarged, document: { ...enlarged, _rev: '2-input' } },
         { previous: enlarged, document: { ...enlarged, _rev: '2-other' } }];
-      await expect(opened.fork.bulkWrite(rows, 'input')).rejects.toMatchObject({ code: 'LocalReadBudgetExceeded' });
+      await expect(opened.fork.bulkWrite(rows, 'input')).rejects.toMatchObject({ code: 'ReplicaReadBudgetExceeded' });
       expect(observations).toEqual([]);
       expect(pool.usedBytes).toBe(0);
     } finally { await backend.close(); }
@@ -368,7 +368,7 @@ describe('alias physical storage', () => {
     try {
       const failure = await openAliasBackend({ name: name(), storage }).catch(error => error);
       expect(failure).toBeInstanceOf(BackendCleanupError);
-      expect(failure.code).toBe('LocalStorageCleanupFailed');
+      expect(failure.code).toBe('ReplicaStorageCleanupFailed');
       expect(failure.cause).toBe(openingFailure);
       expect(failure.cleanupErrors).toEqual([cleanupFailure]);
     } finally { for (const resource of resources) await resource.close(); }

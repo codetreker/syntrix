@@ -1,4 +1,4 @@
-# Agent Note: SDK 本地 alias 存储
+# Agent Note: SDK 副本 alias 存储
 
 Status: implemented
 
@@ -12,9 +12,11 @@ pending。逐 ID 清除原生历史又可能使旧状态重新上传。直接批
 ## Decision
 
 私有 lazy bundle 提供 Dexie alias 存储，采用固定记录、raw revision CAS 和干净整代回收。
-[复制设计](../../../../docs/design/sdk/002_replication_client.md#private-local-alias-storage)
-维护内部契约；[SDK reference](../../../../docs/reference/typescript_sdk.md#local-replication-availability)
-维护公共可用性。公共 openLocal、查询/watch、自动 HTTP 下行/上行继续由
+数据库、存储及其文档类型统一使用 replica 命名；replication 表示同步协议与运行时，
+local edit 等术语继续表示修改发生的位置。公开数据库入口命名为 openReplica。
+[复制设计](../../../../docs/design/sdk/002_replication_client.md#private-replica-alias-storage)
+维护内部契约；[SDK reference](../../../../docs/reference/typescript_sdk.md#replica-availability)
+维护公共可用性。公共 openReplica、查询/watch、自动 HTTP 下行/上行继续由
 [离线复制 proposal](../../proposed/feature/2026-09-07-sdk-offline-replication.md)负责。
 
 ### 身份与所有权

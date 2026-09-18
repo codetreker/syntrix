@@ -4,7 +4,7 @@ import { AuthSessionChangedError, SyntrixError } from '../../api/errors';
 import { setupAuthInterceptor } from './interceptor';
 import { DefaultTokenProvider } from './provider';
 import { TokenProvider } from './types';
-import { createLocalSession } from '../local/session';
+import { createReplicaSession } from '../replica/session';
 
 const deferred = <T>() => {
   let resolve!: (value: T) => void;
@@ -35,7 +35,7 @@ describe('AuthInterceptor session ownership', () => {
     it(`drains an owned request when credentials change before the interceptor runs, signal=${withSignal}`, async () => {
       const jwt = (sub: string) => `${btoa('{}')}.${btoa(JSON.stringify({ sub }))}.sig`.replace(/=/g, '');
       const provider = new DefaultTokenProvider({ token: jwt('A') });
-      const session = await createLocalSession(provider);
+      const session = await createReplicaSession(provider);
       const adapter = mock(async (config: InternalAxiosRequestConfig) => response(config));
       const instance = axios.create({ adapter });
       setupAuthInterceptor(instance, provider);
@@ -149,7 +149,7 @@ describe('AuthInterceptor session ownership', () => {
   it('does not release a failed cleanup barrier when a waiting request is canceled', async () => {
     const jwt = (sub: string) => `${btoa('{}')}.${btoa(JSON.stringify({ sub }))}.sig`.replace(/=/g, '');
     const provider = new DefaultTokenProvider({ token: jwt('A') });
-    const session = await createLocalSession(provider);
+    const session = await createReplicaSession(provider);
     const cleanup = deferred<void>();
     session.register({ invalidate: () => {}, close: () => cleanup.promise });
     provider.setToken(jwt('B'));

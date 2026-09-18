@@ -16,7 +16,7 @@ import { readBoundedChanges, validateBoundedReadOptions, type BoundedReadOptions
 
 export { getRxStorageDexie } from 'rxdb/plugins/storage-dexie';
 export { defaultConflictHandler, defaultHashSha256, fillWithDefaultSettings, getRxReplicationMetaInstanceSchema } from 'rxdb';
-export { createLocalSession } from './session.js';
+export { createReplicaSession } from './session.js';
 export { openAliasStorage } from './storage.js';
 export { compactAlias } from './compaction.js';
 
@@ -30,7 +30,7 @@ export interface SourcePage<T, C extends object> {
 // value replace its predecessor, including fields removed by phase changes.
 type NativeSourceCheckpoint<C extends object> = { source: C };
 
-export interface LocalReplicationOptions<T, C extends object> {
+export interface ReplicationOptions<T, C extends object> {
   identifier: string;
   forkInstance: RxStorageInstance<T, any, any>;
   metaInstance: RxStorageInstance<RxStorageReplicationMeta<T, any>, any, any>;
@@ -48,7 +48,7 @@ export interface LocalReplicationOptions<T, C extends object> {
   onError?(error: unknown): void;
 }
 
-export interface LocalReplicationRuntime {
+export interface ReplicationRuntime {
   readonly ready: boolean;
   readonly stopped: boolean;
   readonly error: unknown;
@@ -58,9 +58,9 @@ export interface LocalReplicationRuntime {
   close(): Promise<void>;
 }
 
-export const createLocalReplicationRuntime = <T, C extends object>(
-  options: LocalReplicationOptions<T, C>,
-): LocalReplicationRuntime => {
+export const createReplicationRuntime = <T, C extends object>(
+  options: ReplicationOptions<T, C>,
+): ReplicationRuntime => {
   options.ownerSignal?.throwIfAborted();
   const limits = validateBoundedReadOptions(options.readBounds);
   const pullBatchSize = options.pullBatchSize ?? 201;
@@ -71,7 +71,7 @@ export const createLocalReplicationRuntime = <T, C extends object>(
   if (pushBatchSize > limits.maxDocuments) throw new RangeError('Push batch size exceeds the bounded scan limit');
 
   const abort = new AbortController();
-  const closedError = new Error('Local replication is closed');
+  const closedError = new Error('Replication is closed');
   const invalidations = new Subject<'RESYNC'>();
   const pending = new Set<Promise<unknown>>();
   const subscriptions: Subscription[] = [];
@@ -116,7 +116,7 @@ export const createLocalReplicationRuntime = <T, C extends object>(
     try {
       options.onError?.(error);
     } catch (observerError) {
-      failure = Object.assign(new Error('Local replication error observer failed'), { cause: error, observerError });
+      failure = Object.assign(new Error('Replication error observer failed'), { cause: error, observerError });
     }
   };
   const assertOpen = () => {

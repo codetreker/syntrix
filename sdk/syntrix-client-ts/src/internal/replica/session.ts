@@ -1,27 +1,27 @@
 import { AuthSessionChangedError } from '../../api/errors.js';
 import type { TokenProvider } from '../auth/types.js';
 import { registerAuthOwner, supportsAuthOwnership } from '../auth/lifecycle.js';
-import { parseLocalSubject } from './identity.js';
+import { parseReplicaSubject } from './identity.js';
 
-export interface LocalResource { invalidate(): void; close(): Promise<void> }
-export interface LocalSession {
+export interface ReplicaResource { invalidate(): void; close(): Promise<void> }
+export interface ReplicaSession {
   readonly subject: string;
   readonly version: number;
   readonly signal: AbortSignal;
   assertCurrent(): void;
   track<T>(operation: () => Promise<T>): Promise<T>;
-  register(resource: LocalResource): () => void;
+  register(resource: ReplicaResource): () => void;
   close(): Promise<void>;
   drain(): Promise<void>;
 }
 
-export const createLocalSession = async (provider: TokenProvider): Promise<LocalSession> => {
-  if (!supportsAuthOwnership(provider)) throw new Error('Local sessions require authentication lifecycle support');
+export const createReplicaSession = async (provider: TokenProvider): Promise<ReplicaSession> => {
+  if (!supportsAuthOwnership(provider)) throw new Error('Replica sessions require authentication lifecycle support');
   const version = provider.getSessionVersion();
   const controller = new AbortController();
   const cancellation = new AuthSessionChangedError();
   let subject: string | undefined;
-  const resources = new Set<LocalResource>();
+  const resources = new Set<ReplicaResource>();
   const pending = new Set<Promise<unknown>>();
   let closing: Promise<void> | undefined;
   let unregister = () => {};
@@ -58,21 +58,21 @@ export const createLocalSession = async (provider: TokenProvider): Promise<Local
       if (expectedSubject === undefined) {
         // A refresh can complete between the token snapshot and its awaiting
         // continuation. Compare the pre-install identity while that open is pending.
-        try { expectedSubject = parseLocalSubject(previousToken); } catch { return false; }
+        try { expectedSubject = parseReplicaSubject(previousToken); } catch { return false; }
       }
-      return parseLocalSubject(candidate) === expectedSubject;
+      return parseReplicaSubject(candidate) === expectedSubject;
     },
     invalidate, close,
   });
   try {
     const token = await provider.getToken();
     assertCurrent();
-    subject = parseLocalSubject(token);
+    subject = parseReplicaSubject(token);
   } catch (error) {
     await close();
     throw error;
   }
-  const session: LocalSession = {
+  const session: ReplicaSession = {
     subject, version, signal: controller.signal, assertCurrent, close, drain,
     track: <T>(operation: () => Promise<T>): Promise<T> => {
       assertCurrent();

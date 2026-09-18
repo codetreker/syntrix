@@ -16,7 +16,7 @@ Status: implemented
 
 使用固定 RxDB `17.5.0` 的低层原生复制协议，SDK 拥有输入调度、适配器及生命周期。
 fork 和 metadata 存储由调用方提供并负责最终关闭；协议本身保留持久化进度和
-冲突处理职责。[本地 alias 存储](2026-09-18-sdk-local-storage.md)提供这些存储的
+冲突处理职责。[副本 alias 存储](2026-09-18-sdk-replica-storage.md)提供这些存储的
 身份、记录、准入与整代回收；本 note 继续拥有原生协议可靠性。公共本地数据库接口仍由
 [离线复制提案](../../proposed/feature/2026-09-07-sdk-offline-replication.md)拥有。
 
@@ -123,7 +123,7 @@ pnpm 补丁配置。将修补结果打入 SDK 后，消费者不必使用相同�
 - 初始源完成前延迟首次上传，本地编辑仍可由上层持久化。源成员、generation 激活
   及 HTTP checkpoint 的含义由后续适配器实现，当前运行时不推断这些业务状态。
 - 协议、memory 或 fake IndexedDB 验证不能替代完整浏览器端到端、跨 tab 所有权
-  或断电持久性验证。当前没有公开 `openLocal`，也没有接通自动 HTTP Push。
+  或断电持久性验证。当前没有公开 `openReplica`，也没有接通自动 HTTP Push。
 - [SDK 复制设计](../../../../docs/design/sdk/002_replication_client.md)拥有运行时职责；
-  [SDK reference](../../../../docs/reference/typescript_sdk.md#local-replication-availability)
+  [SDK reference](../../../../docs/reference/typescript_sdk.md#replica-availability)
   标明当前公共能力。

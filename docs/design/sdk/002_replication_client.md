@@ -1,6 +1,6 @@
 # Replication Client Design (RxDB + Syntrix replication/realtime)
 
-**Status:** Manual Pull, WebSocket lifecycle, a private native replication runtime, and private local alias storage are implemented. The server also supports matching-set query sources, complete result windows, and bound database identity checks. Their SDK adapters, the public local database API, and automatic HTTP synchronization remain planned.
+**Status:** Manual Pull, WebSocket lifecycle, a private native replication runtime, and private replica alias storage are implemented. The server also supports matching-set query sources, complete result windows, and bound database identity checks. Their SDK adapters, the public replica database API, and automatic HTTP synchronization remain planned.
 
 ## Context & Why
 - We need offline-first replication for web clients using RxDB as local store.
@@ -28,7 +28,7 @@
 
 ## Data Model (flattened)
 - Decoded fields: `id`, `collection`, optional deletion flag and server metadata, plus business fields. HTTP uses recursive typed values; int64 values decode to bigint.
-- The private runtime accepts storage records and source adapters. Private alias storage supplies a lossless typed-value schema, local CRUD, identity fences, and clean compaction. Public local types and query indexes remain part of the local API integration.
+- The private runtime accepts storage records and source adapters. Private alias storage supplies a lossless typed-value schema, local CRUD, identity fences, and clean compaction. Public replica types and query indexes remain part of the replica API integration.
 - Tombstones clear former business fields. Minimal logical deletions contain only identity and `deleted: true`; timestamps and version can be absent. Physical cleanup is not another business deletion. See [deletion semantics](../server/core/storage/03.stores.md#document-deletion-and-physical-cleanup).
 
 ## Implemented Manual Pull
@@ -134,11 +134,11 @@ records the patch obligations, alternatives, and lifecycle costs. Passing native
 or fake-IndexedDB tests does not establish complete browser synchronization or
 power-loss guarantees.
 
-## Private Local Alias Storage
+## Private Replica Alias Storage
 
 The lazy bundle owns Dexie-backed alias storage with raw revision CAS. These are
-internal building blocks; they do not expose `openLocal` or perform HTTP
-synchronization. The [local-storage decision](../../../.agents/notes/implemented/architecture/2026-09-18-sdk-local-storage.md)
+internal building blocks; they do not expose `openReplica` or perform HTTP
+synchronization. The [replica-storage decision](../../../.agents/notes/implemented/architecture/2026-09-18-sdk-replica-storage.md)
 owns the persistence choices and their costs.
 
 ### Identity and lifetime
@@ -272,13 +272,14 @@ manifest write, reread the active epoch before removing either copy; startup rem
 confirmed inactive orphans and their explicitly paired native metadata. An unreadable
 manifest retains both copies. Only one shadow exists at a time.
 
-## Remaining Local Database Integration
+## Remaining Replica Database Integration
 
 The [offline replication proposal](../../../.agents/notes/proposed/feature/2026-09-07-sdk-offline-replication.md)
 owns these unimplemented capabilities:
 
-- Public local database creation over the implemented private alias storage;
-  public types do not expose RxDB objects.
+- Public `openReplica()` creation over the implemented private alias storage,
+  returning a `ReplicaDatabase` with `ReplicaCollection` handles; public types do
+  not expose RxDB objects.
 - HTTP adapters for the server's matching-set and result-window sources and bound
   database identity header; map sources to independent local aliases, schedule
   window refreshes using realtime hints plus polling, and durably activate
@@ -291,10 +292,10 @@ owns these unimplemented capabilities:
   browser-to-server end-to-end tests.
 
 Direct reads and writes retain the REST API. Push is an internal replication
-operation; a public manual Push method is not part of the local API. Native
+operation; a public manual Push method is not part of the replica API. Native
 replication metadata owns delivery progress; a separate SDK outbox is not required.
 Legacy coordinator helpers are not connected to the new runtime or exported as a
-supported local API.
+supported replica API.
 
 Realtime notifications and registration `onReady` schedule authoritative source
 reads. Their events do not become checkpoints or replace source reconciliation.
@@ -380,5 +381,5 @@ interface RealtimeClientOptions {
   metadata conditions, admission budgets, and clean compaction recovery. Real
   browser multi-tab checks cover storage and locks; they do not establish power-loss
   durability or complete browser-to-server synchronization.
-- Public local API, query-source membership application, local query/watch, and
+- Public replica API, query-source membership application, local query/watch, and
   real HTTP Push integration require their own implementation and validation.

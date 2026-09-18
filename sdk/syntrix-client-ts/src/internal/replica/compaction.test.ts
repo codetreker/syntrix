@@ -7,16 +7,16 @@ import { countRows } from './backend.js';
 import { compactAlias, createCompactionDeadline } from './compaction.js';
 import { createTestLockManager } from './lock-manager.test-fixture.js';
 import { businessEqual, encodeBusinessPayload, recordKey } from './records.js';
-import { createLocalReplicationRuntime } from './runtime.js';
-import { createLocalSession } from './session.js';
+import { createReplicationRuntime } from './runtime.js';
+import { createReplicaSession } from './session.js';
 import { openAliasStorage, type AliasStorage, type MaintenanceAccess } from './storage.js';
-import type { ControlRecord, DataRecord, LocalRecord, MemberRecord, StorageLimits } from './storage-types.js';
+import type { ControlRecord, DataRecord, ReplicaRecord, MemberRecord, StorageLimits } from './storage-types.js';
 
 const checkpoint = { phase: 'live', token: 'remote-original' };
 const control: ControlRecord = { key: 'c:progress', kind: 'c', checkpoint, generation: 'g1', phase: 'live', bootstrapComplete: true, partialDelivery: false };
 const row = async (id: string): Promise<DataRecord> => ({ key: await recordKey('d', id), kind: 'd', logicalId: id,
   existence: 'live', payload: encodeBusinessPayload({ value: id }), editToken: null, pin: null, wire: { version: '1' } });
-const meta = (record: LocalRecord) => ({ id: `${record.key}|0`, itemId: record.key, isCheckpoint: '0', docData: { ...record, _deleted: false },
+const meta = (record: ReplicaRecord) => ({ id: `${record.key}|0`, itemId: record.key, isCheckpoint: '0', docData: { ...record, _deleted: false },
   _deleted: false, _attachments: {}, _meta: { lwt: Date.now() }, _rev: '1-fixture' });
 type Fault = (name: string, rows: any[], commit: () => Promise<any>) => Promise<any>;
 const setup = async (fault?: Fault, limits?: Partial<StorageLimits>) => {
@@ -29,14 +29,14 @@ const setup = async (fault?: Fault, limits?: Partial<StorageLimits>) => {
     } });
   } } : original;
   const token = `${btoa('{}')}.${btoa(JSON.stringify({ sub: 'alice', exp: 0 }))}.sig`.replace(/=/g, '');
-  const session = await createLocalSession(new DefaultTokenProvider({ token }));
+  const session = await createReplicaSession(new DefaultTokenProvider({ token }));
   const options = { session, endpoint: 'https://example.test', database: 'app', name: crypto.randomUUID(), alias: 'people',
     source: { collection: 'users', filters: [] }, lockManager: createTestLockManager(), storage, limits };
   return { options, alias: await openAliasStorage(options) };
 };
 const prepare = async (alias: AliasStorage, count = 10, members = 3) => alias.withMaintenance(async access => {
   const physical = await access.backend.openPhysical(access.manifest.activePhysicalEpoch);
-  const write = async (record: LocalRecord) => {
+  const write = async (record: ReplicaRecord) => {
     await access.backend.writeRecord(physical, record, undefined, 'fixture');
     expect((await physical.meta.bulkWrite([{ document: meta(record) as any }], 'fixture')).error).toEqual([]);
   };
@@ -80,7 +80,7 @@ describe('clean physical epoch compaction', () => {
     for (let i = 0; i < 100; i++) { advance(29_000); deadline.progress(); }
     await Promise.resolve(); expect(failure).toBeUndefined(); expect(timers.size).toBe(1);
     advance(30_000); await settled;
-    expect(failure).toMatchObject({ code: 'LocalMaintenanceTimeout' });
+    expect(failure).toMatchObject({ code: 'ReplicaMaintenanceTimeout' });
     deadline.progress(); expect(timers.size).toBe(0);
     const stopped = createCompactionDeadline(clock);
     stopped.dispose(); stopped.progress(); advance(60_000);
@@ -117,7 +117,7 @@ describe('clean physical epoch compaction', () => {
       expect((await alias.stats()).knownIds).toBe(10);
       const native = await alias.native(await alias.captureScope());
       const pushed: any[] = [];
-      const runtime = createLocalReplicationRuntime<LocalRecord, typeof checkpoint>({ ...native, forkInstance: native.fork, metaInstance: native.meta,
+      const runtime = createReplicationRuntime<ReplicaRecord, typeof checkpoint>({ ...native, forkInstance: native.fork, metaInstance: native.meta,
         hashFunction: defaultHashSha256, conflictHandler: { isEqual: businessEqual, resolve: async value => value.realMasterState },
         pullBatchSize: 3, pushBatchSize: 3, readBounds: { maxDocuments: 3, readBlockDocuments: 3 }, isControlDocument: value => value.kind !== 'd',
         readSource: async cursor => { expect(cursor).toEqual(checkpoint); return { documents: [], checkpoint, complete: true }; },

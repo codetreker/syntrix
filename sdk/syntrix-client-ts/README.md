@@ -199,7 +199,7 @@ dependencies. Importing the remote client does not load this bundle.
 
 Private alias storage provides account-scoped Dexie persistence, typed values,
 local CAS operations, view invalidations, and clean physical compaction. These
-internal capabilities are not exported as application APIs. Public local database
+internal capabilities are not exported as application APIs. Public replica database
 creation, automatic HTTP synchronization, and local query/watch remain in development. Manual Pull continues to supply pages for an
 application-owned consumer. Direct writes use the existing document REST methods;
 the SDK has no public manual Push API. See the

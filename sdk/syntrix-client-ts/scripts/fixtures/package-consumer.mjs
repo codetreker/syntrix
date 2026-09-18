@@ -4,11 +4,11 @@ import { createTestLockManager } from './test-locks.mjs';
 // Resolve every SDK import from this isolated installation, never from the workspace.
 const remote = await import('@syntrix/client');
 assert.equal(typeof remote.SyntrixClient, 'function');
-assert.equal('createLocalReplicationRuntime' in remote, false);
+assert.equal('createReplicationRuntime' in remote, false);
 await import('fake-indexeddb/auto');
 const sdkEntry = import.meta.resolve('@syntrix/client');
-const { loadLocalRuntime } = await import(new URL('./internal/local/loader.js', sdkEntry));
-const local = await loadLocalRuntime();
+const { loadReplicaRuntime } = await import(new URL('./internal/replica/loader.js', sdkEntry));
+const replica = await loadReplicaRuntime();
 const until = async (condition) => {
   const deadline = Date.now() + 5000;
   while (!condition()) {
@@ -18,19 +18,19 @@ const until = async (condition) => {
 };
 
 for (const fault of ['document', 'metadata', 'checkpoint']) {
-  const schema = local.fillWithDefaultSettings({
+  const schema = replica.fillWithDefaultSettings({
     version: 0, primaryKey: 'id', type: 'object',
     properties: { id: { type: 'string', maxLength: 100 }, value: { type: 'number' } },
     required: ['id', 'value'],
   });
-  const storage = local.getRxStorageDexie();
+  const storage = replica.getRxStorageDexie();
   const params = {
     databaseName: `packed-${fault}-${crypto.randomUUID()}`, databaseInstanceToken: 'packed-test',
     multiInstance: false, devMode: false, options: {},
   };
   const fork = await storage.createStorageInstance({ ...params, collectionName: 'fork', schema });
   const meta = await storage.createStorageInstance({
-    ...params, collectionName: 'meta', schema: local.getRxReplicationMetaInstanceSchema(schema, false),
+    ...params, collectionName: 'meta', schema: replica.getRxReplicationMetaInstanceSchema(schema, false),
   });
   const wrappedFork = Object.create(fork);
   const wrappedMeta = Object.create(meta);
@@ -55,9 +55,9 @@ for (const fault of ['document', 'metadata', 'checkpoint']) {
     if (failure && fetched === 2 && matching) return reject(rows);
     return meta.bulkWrite(rows, context);
   };
-  const start = () => local.createLocalReplicationRuntime({
+  const start = () => replica.createReplicationRuntime({
     identifier: 'packed', forkInstance: wrappedFork, metaInstance: wrappedMeta,
-    conflictHandler: local.defaultConflictHandler, hashFunction: local.defaultHashSha256,
+    conflictHandler: replica.defaultConflictHandler, hashFunction: replica.defaultHashSha256,
     pullBatchSize: 1, pushBatchSize: 1,
     readSource: async (checkpoint) => {
       received.push(checkpoint);
@@ -112,22 +112,22 @@ const token = (subject) => `eyJhbGciOiJub25lIn0.${Buffer.from(JSON.stringify({ s
 const client = new remote.SyntrixClient('https://packed.invalid/base', {
   database: 'app', auth: { token: token('alice') },
 });
-// The installed REST provider and the bundled local session load distinct
+// The installed REST provider and the bundled replica session load distinct
 // module graphs. Their ownership fence must still be shared on this provider.
 const provider = client.tokenProvider;
-let session = await local.createLocalSession(provider);
+let session = await replica.createReplicaSession(provider);
 const lockManager = createTestLockManager();
 const options = {
   endpoint: 'https://packed.invalid/base/', database: 'app', name: crypto.randomUUID(), alias: 'activeUsers',
   source: { collection: 'users', filters: [] }, lockManager,
 };
-let alias = await local.openAliasStorage({ ...options, session });
+let alias = await replica.openAliasStorage({ ...options, session });
 await alias.set('specified-id', { counter: 9007199254740993n, type: 'business', _deleted: 'business' });
 assert.equal((await alias.get('specified-id')).counter, 9007199254740993n);
 await alias.close();
 await session.close();
-session = await local.createLocalSession(provider);
-alias = await local.openAliasStorage({ ...options, session });
+session = await replica.createReplicaSession(provider);
+alias = await replica.openAliasStorage({ ...options, session });
 assert.equal((await alias.get('specified-id')).counter, 9007199254740993n);
 await alias.delete('specified-id');
 assert.equal(await alias.get('specified-id'), null);
@@ -136,9 +136,9 @@ assert.equal((await alias.get('specified-id')).counter, 9007199254740994n);
 provider.setToken(token('bob'));
 await provider.getToken();
 await assert.rejects(alias.get('specified-id'));
-const bob = await local.createLocalSession(provider);
-const isolated = await local.openAliasStorage({ ...options, session: bob });
+const bob = await replica.createReplicaSession(provider);
+const isolated = await replica.openAliasStorage({ ...options, session: bob });
 assert.equal(await isolated.get('specified-id'), null);
 await isolated.close();
 await bob.close();
-console.log('Packed local storage: exact values, offline reopen, same-ID recreation and cross-bundle account isolation passed');
+console.log('Packed replica storage: exact values, offline reopen, same-ID recreation and cross-bundle account isolation passed');

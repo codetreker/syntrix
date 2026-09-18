@@ -4,7 +4,7 @@ import {
   freezeSourceDefinition, frozenConditions, matchesConditions, projectDocument, recordKey,
   validateManifest, validateManifestIdentity, validateRecord, validateRecordIdentity,
 } from './records.js';
-import type { AliasManifest, DataRecord, LocalDocument, LocalSourceDefinition, MemberRecord } from './storage-types.js';
+import type { AliasManifest, DataRecord, ReplicaDocument, ReplicaSourceDefinition, MemberRecord } from './storage-types.js';
 
 const data = async (id = 'alice'): Promise<DataRecord> => ({
   key: await recordKey('d', id), kind: 'd', logicalId: id, existence: 'live',
@@ -26,7 +26,7 @@ const manifest = async (): Promise<AliasManifest> => {
     dirtyUpstream: null, issues: [], recoveryIntent: null,
   };
 };
-const document = (fields: Record<string, unknown>): LocalDocument => ({ id: 'alice', collection: 'users', ...fields }) as LocalDocument;
+const document = (fields: Record<string, unknown>): ReplicaDocument => ({ id: 'alice', collection: 'users', ...fields }) as ReplicaDocument;
 
 describe('canonical business records', () => {
   test('round trips typed nested fields with reserved envelope-like names and precision', () => {
@@ -159,7 +159,7 @@ describe('conditions and source definitions', () => {
   });
 
   test('freezes a canonical typed definition with deterministic hash and effective order', async () => {
-    const source: LocalSourceDefinition = { collection: 'teams/a/users', filters: [{ field: 'count', op: '>=', value: 9007199254740993n }], orderBy: [{ field: 'count', direction: 'desc' }], limit: 10 };
+    const source: ReplicaSourceDefinition = { collection: 'teams/a/users', filters: [{ field: 'count', op: '>=', value: 9007199254740993n }], orderBy: [{ field: 'count', direction: 'desc' }], limit: 10 };
     const frozen = freezeSourceDefinition(source);
     expect(frozen.orderBy).toEqual([{ field: 'count', direction: 'desc' }, { field: 'id', direction: 'asc' }]);
     expect(frozen.filters[0].value).toEqual({ type: 'int64', value: '9007199254740993' });

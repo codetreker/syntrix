@@ -1,7 +1,7 @@
 # TypeScript Client SDK Architecture
 
 **Date:** December 27, 2025
-**Status:** Remote clients, a private replication runtime, and private local alias storage are implemented; the public local database API remains planned.
+**Status:** Remote clients, a private replication runtime, and private replica alias storage are implemented; the public replica database API remains planned.
 
 **Related:** [003_authentication.md](003_authentication.md) defines the shared auth surface used by HTTP clients, replication, and realtime. Client specifics: [004_syntrix_client.md](004_syntrix_client.md), [005_trigger_client.md](005_trigger_client.md).
 
@@ -100,10 +100,10 @@ pkg/syntrix-client-ts/src/
 replication HTTP route and shared session handling. It decodes typed values and
 leaves local state/checkpoint transactions to the application.
 
-The private local runtime uses a pinned, patched RxDB protocol with bounded
+The private replication runtime uses a pinned, patched RxDB protocol with bounded
 durable scans, checkpoint completion hooks, and cancellation that drains owned
 work. Its bundled dependencies load lazily and are absent from the remote API's
-initial dependency graph. This foundation does not expose a local database API
+initial dependency graph. This foundation does not expose a replica database API
 or connect automatic synchronization to the HTTP routes. Private alias storage
 provides account-scoped Dexie persistence, lossless typed values, raw CAS CRUD,
 source/physical generation records, and clean compaction. Its invalidation feed

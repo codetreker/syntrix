@@ -20,17 +20,17 @@ const loadIndependentCopy = async (): Promise<typeof lifecycle> => {
 };
 
 test('independent bundled registry copies share provider ownership and drain before credential installation', async () => {
-  const localCopy = await loadIndependentCopy();
+  const replicaCopy = await loadIndependentCopy();
   const otherCopy = await loadIndependentCopy();
   const provider = new DefaultTokenProvider({ token: 'A' });
   const otherProvider = new DefaultTokenProvider({ token: 'other' });
-  expect(localCopy.registerAuthOwner).not.toBe(lifecycle.registerAuthOwner);
-  expect(otherCopy.registerAuthOwner).not.toBe(localCopy.registerAuthOwner);
-  expect(localCopy.supportsAuthOwnership(provider)).toBe(true);
+  expect(replicaCopy.registerAuthOwner).not.toBe(lifecycle.registerAuthOwner);
+  expect(otherCopy.registerAuthOwner).not.toBe(replicaCopy.registerAuthOwner);
+  expect(replicaCopy.supportsAuthOwnership(provider)).toBe(true);
   let invalidated = false;
   let release!: () => void;
   const closing = new Promise<void>(resolve => { release = resolve; });
-  localCopy.registerAuthOwner(provider, {
+  replicaCopy.registerAuthOwner(provider, {
     acceptsToken: (token, previousToken) => { expect(previousToken).toBe('A'); return token === previousToken; },
     invalidate: () => { invalidated = true; },
     close: () => closing,

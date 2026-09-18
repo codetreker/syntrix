@@ -4,10 +4,10 @@ import type { QueryValue, TypedValue } from '../../api/value.js';
 export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
 export type JsonObject = { [key: string]: JsonValue };
 export type Existence = 'live' | 'deleted' | 'absent';
-export type LocalCondition = { field: string; op: FilterOp; value: QueryValue };
-export type LocalSourceDefinition = {
+export type ReplicaCondition = { field: string; op: FilterOp; value: QueryValue };
+export type ReplicaSourceDefinition = {
   collection: string;
-  filters: LocalCondition[];
+  filters: ReplicaCondition[];
   orderBy?: QueryOrder[];
   limit?: number;
 };
@@ -47,7 +47,7 @@ export type ControlRecord = {
   bootstrapComplete: boolean;
   partialDelivery: boolean;
 };
-export type LocalRecord = DataRecord | MemberRecord | ControlRecord;
+export type ReplicaRecord = DataRecord | MemberRecord | ControlRecord;
 export type StorageIssue = { id: string; logicalId: string | null; code: string };
 export type UpstreamMarker = {
   id: string;
@@ -86,16 +86,16 @@ export type AliasManifest = {
   issues: StorageIssue[];
   recoveryIntent: RecoveryIntent | null;
 };
-export type LocalMetadata = {
+export type ReplicaMetadata = {
   readonly id: string;
   readonly collection: string;
   readonly version?: bigint;
   readonly createdAt?: bigint;
   readonly updatedAt?: bigint;
 };
-export type LocalDocument<T = Record<string, QueryValue>> =
-  | (Omit<T, keyof LocalMetadata | 'deleted'> & LocalMetadata & { readonly deleted?: false })
-  | (LocalMetadata & { readonly deleted: true });
+export type ReplicaDocument<T = Record<string, QueryValue>> =
+  | (Omit<T, keyof ReplicaMetadata | 'deleted'> & ReplicaMetadata & { readonly deleted?: false })
+  | (ReplicaMetadata & { readonly deleted: true });
 export type StorageLimits = {
   maxRecordBytes: number;
   maxManifestBytes: number;
@@ -112,10 +112,10 @@ export const defaultStorageLimits: StorageLimits = {
   maxStoredBytes: Number.MAX_SAFE_INTEGER,
 };
 
-export class LocalStorageError extends Error {
+export class ReplicaStorageError extends Error {
   constructor(readonly code: string, message: string, options?: { cause: unknown }) {
     super(message);
-    this.name = 'LocalStorageError';
+    this.name = 'ReplicaStorageError';
     if (options) Object.assign(this, { cause: options.cause });
   }
 }

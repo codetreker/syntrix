@@ -6,22 +6,22 @@ import {
 } from 'rxdb';
 import { getRxStorageDexie } from 'rxdb/plugins/storage-dexie';
 import { canonicalJson, validateManifest, validateManifestIdentity, validateRecord, validateRecordIdentity } from './records.js';
-import { defaultStorageLimits, LocalStorageError, type AliasManifest, type LocalRecord, type StorageLimits } from './storage-types.js';
+import { defaultStorageLimits, ReplicaStorageError, type AliasManifest, type ReplicaRecord, type StorageLimits } from './storage-types.js';
 
 export type NativeRow<T> = RxDocumentData<T>;
 export type NativeStorage<T> = RxStorageInstance<T, any, any>;
 export type WriteKind = 'record' | 'manifest' | 'metadata';
 export type BeforeWrite = (kind: WriteKind, physicalName: string, rows: BulkWriteRow<any>[], context: string) => Promise<void>;
-export class BackendCleanupError extends LocalStorageError {
+export class BackendCleanupError extends ReplicaStorageError {
   constructor(cause: unknown, readonly cleanupErrors: readonly unknown[]) {
-    super('LocalStorageCleanupFailed', 'Local storage cleanup did not complete', { cause });
+    super('ReplicaStorageCleanupFailed', 'Replica storage cleanup did not complete', { cause });
   }
 }
 export type PhysicalStorage = {
   epoch: string;
-  records: RxCollection<LocalRecord>;
-  fork: NativeStorage<LocalRecord>;
-  meta: NativeStorage<RxStorageReplicationMeta<LocalRecord, any>>;
+  records: RxCollection<ReplicaRecord>;
+  fork: NativeStorage<ReplicaRecord>;
+  meta: NativeStorage<RxStorageReplicationMeta<ReplicaRecord, any>>;
   identifier: string;
 };
 
@@ -45,7 +45,7 @@ export class ReadBudget {
   get availableBytes() { return this.maxBytes - this.used; }
   async withReservation<T>(bytes: number, operation: () => Promise<T>): Promise<T> {
     positive(bytes, 'Read reservation');
-    if (bytes > this.maxBytes - this.used) throw new LocalStorageError('LocalReadBudgetExceeded', 'Read would exceed the materialization budget');
+    if (bytes > this.maxBytes - this.used) throw new ReplicaStorageError('ReplicaReadBudgetExceeded', 'Read would exceed the materialization budget');
     this.used += bytes;
     this.peak = Math.max(this.peak, this.used);
     try { return await operation(); } finally { this.used -= bytes; }
@@ -57,7 +57,7 @@ const readCount = (count: number) => {
 };
 export const encodedRowBytes = (row: unknown): number => new TextEncoder().encode(canonicalJson(row)).byteLength;
 const checkBytes = (row: unknown, maximum: number) => {
-  if (encodedRowBytes(row) > maximum) throw new LocalStorageError('LocalRecordTooLarge', 'Encoded storage row exceeds its admission budget');
+  if (encodedRowBytes(row) > maximum) throw new ReplicaStorageError('ReplicaRecordTooLarge', 'Encoded storage row exceeds its admission budget');
 };
 
 export const withRows = async <T, R>(storage: NativeStorage<T>, ids: string[], maxRowBytes: number, budget: ReadBudget,
@@ -66,7 +66,7 @@ export const withRows = async <T, R>(storage: NativeStorage<T>, ids: string[], m
   positive(maxRowBytes, 'Maximum row bytes');
   return budget.withReservation(ids.length * maxRowBytes, async () => {
     const rows = await storage.findDocumentsById(ids, false);
-    if (rows.length > ids.length) throw new LocalStorageError('LocalStorageCorruption', 'Storage returned more rows than requested');
+    if (rows.length > ids.length) throw new ReplicaStorageError('ReplicaStorageCorruption', 'Storage returned more rows than requested');
     rows.forEach(row => checkBytes(row, maxRowBytes));
     return callback(rows);
   });
@@ -79,7 +79,7 @@ const seekQuery = <T>(storage: NativeStorage<T>, after: string | undefined, limi
     sort: [{ [primary]: 'asc' }] as any, index: ['_deleted', primary], skip: 0, ...(limit === undefined ? {} : { limit }),
   }));
   if (!query.queryPlan.selectorSatisfiedByIndex || !query.queryPlan.sortSatisfiedByIndex || query.query.skip !== 0) {
-    throw new LocalStorageError('LocalStorageCorruption', 'Physical scan requires an index-satisfied seek plan');
+    throw new ReplicaStorageError('ReplicaStorageCorruption', 'Physical scan requires an index-satisfied seek plan');
   }
   return { primary, query };
 };
@@ -87,7 +87,7 @@ const seekQuery = <T>(storage: NativeStorage<T>, after: string | undefined, limi
 export const countRows = async <T>(storage: NativeStorage<T>): Promise<number> => {
   const result = await storage.count(seekQuery(storage, undefined).query);
   if (result.mode !== 'fast' || !Number.isSafeInteger(result.count) || result.count < 0) {
-    throw new LocalStorageError('LocalStorageCorruption', 'Physical row count requires an index-only count');
+    throw new ReplicaStorageError('ReplicaStorageCorruption', 'Physical row count requires an index-only count');
   }
   return result.count;
 };
@@ -99,12 +99,12 @@ const withPrimaryScanPage = async <T, R>(storage: NativeStorage<T>, after: strin
   const { primary, query } = seekQuery(storage, after, limit);
   return budget.withReservation(limit * maxRowBytes, async () => {
     const { documents } = await storage.query(query);
-    if (documents.length > limit) throw new LocalStorageError('LocalStorageCorruption', 'Storage exceeded the scan bound');
+    if (documents.length > limit) throw new ReplicaStorageError('ReplicaStorageCorruption', 'Storage exceeded the scan bound');
     let previous = after;
     for (const row of documents) {
       checkBytes(row, maxRowBytes);
       const key = (row as Record<string, unknown>)[primary];
-      if (typeof key !== 'string' || (previous !== undefined && key <= previous)) throw new LocalStorageError('LocalStorageCorruption', 'Storage scan is not in primary-key order');
+      if (typeof key !== 'string' || (previous !== undefined && key <= previous)) throw new ReplicaStorageError('ReplicaStorageCorruption', 'Storage scan is not in primary-key order');
       previous = key;
     }
     return callback(documents);
@@ -126,7 +126,7 @@ const schema = <T>(title: string): RxJsonSchema<T> => ({
   properties: { key: { type: 'string', maxLength: 66 } },
   required: ['key'], indexes: ['key'], additionalProperties: true,
 } as unknown as RxJsonSchema<T>);
-export const recordSchema = schema<LocalRecord>('SyntrixLocalRecords');
+export const recordSchema = schema<ReplicaRecord>('SyntrixLocalRecords');
 export const manifestSchema = schema<AliasManifest>('SyntrixAliasManifest');
 
 const prepareRawCollection = <T>(collection: RxCollection<T>) => {
@@ -142,18 +142,18 @@ const prepareRawCollection = <T>(collection: RxCollection<T>) => {
   collection._subs.push(collection.eventBulks$.subscribe(() => collection._docCache.processTasks()));
 };
 
-const validateMetadata = async (row: RxDocumentData<RxStorageReplicationMeta<LocalRecord, any>>) => {
+const validateMetadata = async (row: RxDocumentData<RxStorageReplicationMeta<ReplicaRecord, any>>) => {
   if (row._deleted !== false || !row._meta || !Number.isFinite(row._meta.lwt) || typeof row._rev !== 'string' || !row._rev ||
       !row._attachments || Object.keys(row._attachments).length ||
       !['0', '1'].includes(row.isCheckpoint) || row.id !== `${row.itemId}|${row.isCheckpoint}`) {
-    throw new LocalStorageError('LocalStorageCorruption', 'Invalid native replication metadata');
+    throw new ReplicaStorageError('ReplicaStorageCorruption', 'Invalid native replication metadata');
   }
   if (row.isCheckpoint === '0') {
     validateRecord(row.docData);
     await validateRecordIdentity(row.docData);
-    if (row.itemId !== row.docData.key) throw new LocalStorageError('LocalStorageCorruption', 'Assumed metadata identity differs from its document');
+    if (row.itemId !== row.docData.key) throw new ReplicaStorageError('ReplicaStorageCorruption', 'Assumed metadata identity differs from its document');
   } else if (!['up', 'down'].includes(row.itemId) || !row.checkpointData || typeof row.checkpointData !== 'object' || Array.isArray(row.checkpointData)) {
-    throw new LocalStorageError('LocalStorageCorruption', 'Invalid native checkpoint');
+    throw new ReplicaStorageError('ReplicaStorageCorruption', 'Invalid native checkpoint');
   }
 };
 
@@ -169,7 +169,7 @@ export type AliasBackend = {
   openPhysical(epoch: string): Promise<PhysicalStorage>;
   closePhysical(epoch: string): Promise<void>;
   removePhysical(epoch: string): Promise<void>;
-  writeRecord(physical: PhysicalStorage, row: LocalRecord, previous: RxDocumentData<LocalRecord> | undefined, context: string): Promise<RxDocumentData<LocalRecord>>;
+  writeRecord(physical: PhysicalStorage, row: ReplicaRecord, previous: RxDocumentData<ReplicaRecord> | undefined, context: string): Promise<RxDocumentData<ReplicaRecord>>;
   writeManifest(row: AliasManifest, previous: RxDocumentData<AliasManifest> | undefined, context: string): Promise<RxDocumentData<AliasManifest>>;
   close(): Promise<void>;
 };
@@ -213,10 +213,10 @@ export const openAliasBackend = async (options: AliasBackendOptions): Promise<Al
             const account = (document: object | undefined) => {
               if (!document || seen.has(document)) return;
               const bytes = encodedRowBytes(document);
-              if (bytes > maximum) throw new LocalStorageError('LocalRecordTooLarge', 'Encoded storage row exceeds its admission budget');
+              if (bytes > maximum) throw new ReplicaStorageError('ReplicaRecordTooLarge', 'Encoded storage row exceeds its admission budget');
               retained += bytes;
               seen.add(document);
-              if (retained > maxWriteRetained) throw new LocalStorageError('LocalReadBudgetExceeded', 'Write result exceeds materialization budget');
+              if (retained > maxWriteRetained) throw new ReplicaStorageError('ReplicaReadBudgetExceeded', 'Write result exceeds materialization budget');
             };
             for (const { document } of rows) {
               if (kind === 'record') { validateRecord(document); await validateRecordIdentity(document); }
@@ -236,14 +236,14 @@ export const openAliasBackend = async (options: AliasBackendOptions): Promise<Al
             for (const row of rows) {
               retained += encodedRowBytes({ document: null, ...(row.previous ? { previous: null } : {}) }) + 1;
               account(row.document); account(row.previous);
-              if (retained > maxWriteRetained) throw new LocalStorageError('LocalReadBudgetExceeded', 'Write result exceeds materialization budget');
+              if (retained > maxWriteRetained) throw new ReplicaStorageError('ReplicaReadBudgetExceeded', 'Write result exceeds materialization budget');
             }
             await options.beforeWrite?.(kind, params.collectionName, rows, context);
             const error: Awaited<ReturnType<typeof target.bulkWrite>>['error'] = [];
             const primary = getPrimaryFieldOfPrimaryKey(target.schema.primaryKey);
             for (let offset = 0; offset < rows.length;) {
               const limit = Math.min(4, Math.floor(pool.availableBytes / maximum), rows.length - offset);
-              if (limit < 1) throw new LocalStorageError('LocalReadBudgetExceeded', 'Write read exceeds materialization budget');
+              if (limit < 1) throw new ReplicaStorageError('ReplicaReadBudgetExceeded', 'Write read exceeds materialization budget');
               // Attachment-free Dexie writes return only CAS errors. Reserve
               // their current documents and full error envelopes before its
               // internal bulkGet can allocate them, including concurrent growth.
@@ -254,14 +254,14 @@ export const openAliasBackend = async (options: AliasBackendOptions): Promise<Al
                 if (retained + (count + 1) * maximum + envelopes + envelope > maxWriteRetained) break;
                 envelopes += envelope; count++;
               }
-              if (!count) throw new LocalStorageError('LocalReadBudgetExceeded', 'Write result exceeds materialization budget');
+              if (!count) throw new ReplicaStorageError('ReplicaReadBudgetExceeded', 'Write result exceeds materialization budget');
               const chunk = rows.slice(offset, offset + count);
               const result = await pool.withReservation(count * maximum, () => target.bulkWrite(chunk, context));
               for (const failure of result.error) {
                 account(failure.writeRow.document); account(failure.writeRow.previous);
                 if ('documentInDb' in failure) account(failure.documentInDb);
                 retained += encodedRowBytes({ ...failure, writeRow: null, documentInDb: null }) + 1;
-                if (retained > maxWriteRetained) throw new LocalStorageError('LocalReadBudgetExceeded', 'Write result exceeds materialization budget');
+                if (retained > maxWriteRetained) throw new ReplicaStorageError('ReplicaReadBudgetExceeded', 'Write result exceeds materialization budget');
                 error.push(failure);
               }
               offset += count;
@@ -299,7 +299,7 @@ export const openAliasBackend = async (options: AliasBackendOptions): Promise<Al
     let opening = physical.get(epoch);
     if (!opening) {
       opening = (async () => {
-        const records = (await database.addCollections({ [namesForEpoch.records]: { schema: recordSchema } }))[namesForEpoch.records] as RxCollection<LocalRecord>;
+        const records = (await database.addCollections({ [namesForEpoch.records]: { schema: recordSchema } }))[namesForEpoch.records] as RxCollection<ReplicaRecord>;
         try {
           prepareRawCollection(records);
           const metaSchema = getRxReplicationMetaInstanceSchema(records.schema.jsonSchema, false);

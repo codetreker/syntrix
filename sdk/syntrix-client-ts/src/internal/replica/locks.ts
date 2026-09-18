@@ -10,7 +10,7 @@ export interface AliasLocks {
 
 export const createAliasLocks = (namespaceHash: string, lockManager?: LockManager): AliasLocks => {
   const manager = lockManager ?? globalThis.navigator?.locks;
-  if (!manager || (!lockManager && !globalThis.indexedDB)) throw new Error('Local storage requires IndexedDB and Web Locks');
+  if (!manager || (!lockManager && !globalThis.indexedDB)) throw new Error('Replica storage requires IndexedDB and Web Locks');
   if (!/^[a-f0-9]{64}$/.test(namespaceHash)) throw new Error('Invalid namespace hash');
   const aliases = new Map<AliasLockOwner, { signal?: AbortSignal; activeView: boolean }>();
   const views = new Set<ViewLockOwner>();

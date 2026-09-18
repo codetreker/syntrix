@@ -1,14 +1,14 @@
 import { defaultHashSha256, type WithDeletedAndAttachments } from 'rxdb';
 import { countRows, encodedRowBytes, withRows, withScanPage, type PhysicalStorage } from './backend.js';
 import { businessEqual, canonicalJson, recordKey, validateRecordIdentity } from './records.js';
-import { createLocalReplicationRuntime, type LocalReplicationRuntime } from './runtime.js';
+import { createReplicationRuntime, type ReplicationRuntime } from './runtime.js';
 import type { AliasStorage, MaintenanceAccess } from './storage.js';
-import { LocalStorageError, type ControlRecord, type JsonObject, type LocalRecord, type MemberRecord } from './storage-types.js';
+import { ReplicaStorageError, type ControlRecord, type JsonObject, type ReplicaRecord, type MemberRecord } from './storage-types.js';
 
 export type CompactionResult = { status: 'compacted'; previousEpoch: string; activeEpoch: string } | { status: 'not-clean' };
-const fail = (message: string): never => { throw new LocalStorageError('LocalStorageCorruption', message); };
-const plain = <T extends LocalRecord>(row: T): T => Object.fromEntries(Object.entries(row).filter(([key]) => !key.startsWith('_'))) as T;
-const sourceDocument = (row: LocalRecord): WithDeletedAndAttachments<LocalRecord> => ({ ...plain(row), _deleted: false, _attachments: {} });
+const fail = (message: string): never => { throw new ReplicaStorageError('ReplicaStorageCorruption', message); };
+const plain = <T extends ReplicaRecord>(row: T): T => Object.fromEntries(Object.entries(row).filter(([key]) => !key.startsWith('_'))) as T;
+const sourceDocument = (row: ReplicaRecord): WithDeletedAndAttachments<ReplicaRecord> => ({ ...plain(row), _deleted: false, _attachments: {} });
 
 type DeadlineTimer = ReturnType<typeof setTimeout>;
 type DeadlineClock = { set(callback: () => void, milliseconds: number): DeadlineTimer; clear(timer: DeadlineTimer): void };
@@ -22,7 +22,7 @@ export const createCompactionDeadline = (clock: DeadlineClock = { set: setTimeou
     if (timer !== undefined) clock.clear(timer);
     timer = clock.set(() => {
       stopped = true;
-      reject(new LocalStorageError('LocalMaintenanceTimeout', 'Compaction seed made no durable or scan progress'));
+      reject(new ReplicaStorageError('ReplicaMaintenanceTimeout', 'Compaction seed made no durable or scan progress'));
     }, 30_000);
     if (typeof timer === 'object') timer.unref?.();
   };
@@ -88,12 +88,12 @@ const seed = async (access: MaintenanceAccess, previous: PhysicalStorage, next: 
   source: { control: ControlRecord; checkpoint: JsonObject }) => {
   const deadline = createCompactionDeadline();
   const iterator = retained(access, previous, deadline.progress);
-  let pending: IteratorResult<LocalRecord> | undefined;
+  let pending: IteratorResult<ReplicaRecord> | undefined;
   let finished = false;
   let page = 0;
-  let runtime: LocalReplicationRuntime | undefined;
+  let runtime: ReplicationRuntime | undefined;
   try {
-    runtime = createLocalReplicationRuntime<LocalRecord, JsonObject>({
+    runtime = createReplicationRuntime<ReplicaRecord, JsonObject>({
       identifier: next.identifier, forkInstance: next.fork, metaInstance: next.meta,
       ownerSignal: access.ownerSignal,
       hashFunction: defaultHashSha256,
@@ -103,11 +103,11 @@ const seed = async (access: MaintenanceAccess, previous: PhysicalStorage, next: 
         targetBytes: Math.min(8 * 1024 * 1024, access.limits.maxRecordBytes) },
       isControlDocument: row => row.kind !== 'd',
       onCheckpoint: async () => { deadline.progress(); },
-      writeRemote: async () => { throw new LocalStorageError('LocalCompactionEcho', 'Clean compaction attempted a business Push'); },
+      writeRemote: async () => { throw new ReplicaStorageError('ReplicaCompactionEcho', 'Clean compaction attempted a business Push'); },
       readSource: async (_checkpoint, limit) => {
         access.assertActive();
         if (finished) return { documents: [], checkpoint: source.checkpoint, complete: true };
-        const documents: WithDeletedAndAttachments<LocalRecord>[] = [];
+        const documents: WithDeletedAndAttachments<ReplicaRecord>[] = [];
         while (documents.length < limit) {
           pending ??= await iterator.next();
           if (pending.done) {
@@ -121,7 +121,7 @@ const seed = async (access: MaintenanceAccess, previous: PhysicalStorage, next: 
           const bytes = encodedRowBytes([...documents, document]);
           if (bytes > access.limits.maxRecordBytes) {
             if (documents.length) break;
-            throw new LocalStorageError('LocalRecordTooLarge', 'Seed document exceeds the source page budget');
+            throw new ReplicaStorageError('ReplicaRecordTooLarge', 'Seed document exceeds the source page budget');
           }
           if (documents.length && bytes > Math.min(8 * 1024 * 1024, access.limits.maxRecordBytes)) break;
           documents.push(document);
@@ -142,7 +142,7 @@ const seed = async (access: MaintenanceAccess, previous: PhysicalStorage, next: 
 const verify = async (access: MaintenanceAccess, previous: PhysicalStorage, next: PhysicalStorage,
   source: { control: ControlRecord; checkpoint: JsonObject }) => {
   let expected = 0;
-  const verifyRecord = async (row: LocalRecord) => {
+  const verifyRecord = async (row: ReplicaRecord) => {
     const saved = await readRecord(access, next, row.key);
     const assumed = await readMeta(access, next, `${row.key}|0`);
     if (!saved || canonicalJson(plain(saved)) !== canonicalJson(plain(row)) || !assumed || !businessEqual(saved, assumed.docData)) {

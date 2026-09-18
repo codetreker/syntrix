@@ -1,8 +1,8 @@
 import { decodeQueryValue, encodeQueryValue, type QueryValue } from '../../api/value.js';
 import type { FilterOp } from '../../api/types.js';
 import {
-  LocalStorageError, type AliasManifest, type DataRecord, type FrozenSourceDefinition,
-  type LocalCondition, type LocalDocument, type LocalRecord, type LocalSourceDefinition,
+  ReplicaStorageError, type AliasManifest, type DataRecord, type FrozenSourceDefinition,
+  type ReplicaCondition, type ReplicaDocument, type ReplicaRecord, type ReplicaSourceDefinition,
   type MemberRecord, type WireMetadata,
 } from './storage-types.js';
 
@@ -12,7 +12,7 @@ const operators = new Set<FilterOp>(['==', '!=', '>', '>=', '<', '<=', 'in', 'co
 const encoder = new TextEncoder();
 const int64Min = -(1n << 63n);
 const int64Max = (1n << 63n) - 1n;
-const corruption: (message: string) => never = (message) => { throw new LocalStorageError('LocalStorageCorruption', message); };
+const corruption: (message: string) => never = (message) => { throw new ReplicaStorageError('ReplicaStorageCorruption', message); };
 const object = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === 'object' && !Array.isArray(value) &&
   (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null);
@@ -84,8 +84,8 @@ export const decodeBusinessPayload = (payload: string): Record<string, QueryValu
     }
     return value as Record<string, QueryValue>;
   } catch (error) {
-    if (error instanceof LocalStorageError) throw error;
-    throw new LocalStorageError('LocalStorageCorruption', 'Invalid business payload', { cause: error });
+    if (error instanceof ReplicaStorageError) throw error;
+    throw new ReplicaStorageError('ReplicaStorageCorruption', 'Invalid business payload', { cause: error });
   }
 };
 
@@ -103,7 +103,7 @@ const equalValue = (a: QueryValue, b: QueryValue): boolean => {
   return a === b;
 };
 
-export const frozenConditions = (conditions: readonly LocalCondition[]): readonly LocalCondition[] => {
+export const frozenConditions = (conditions: readonly ReplicaCondition[]): readonly ReplicaCondition[] => {
   if (!Array.isArray(conditions)) throw new TypeError('Conditions must be an array');
   return deepFreeze(conditions.map(condition => {
     if (!object(condition) || Object.keys(condition).some(key => !['field', 'op', 'value'].includes(key))) {
@@ -135,7 +135,7 @@ const compareStrings = (a: string, b: string): number => {
   return Math.sign(left.length - right.length);
 };
 
-export const matchesConditions = (document: LocalDocument | null, conditions: readonly LocalCondition[]): boolean => {
+export const matchesConditions = (document: ReplicaDocument | null, conditions: readonly ReplicaCondition[]): boolean => {
   const frozen = frozenConditions(conditions);
   return frozen.every(({ field, op, value: operand }) => {
     if (!document || (field !== 'deleted' && !own(document, field))) return false;
@@ -158,7 +158,7 @@ export const matchesConditions = (document: LocalDocument | null, conditions: re
   });
 };
 
-export const freezeSourceDefinition = (definition: LocalSourceDefinition): FrozenSourceDefinition => {
+export const freezeSourceDefinition = (definition: ReplicaSourceDefinition): FrozenSourceDefinition => {
   if (!object(definition) || Object.keys(definition).some(key => !['collection', 'filters', 'orderBy', 'limit'].includes(key))) {
     throw new TypeError('Invalid source definition');
   }
@@ -195,7 +195,7 @@ const metadata: (value: unknown) => asserts value is WireMetadata = (value) => {
   }
 };
 
-export const projectDocument = (collection: string, data: DataRecord | null, member: MemberRecord | null): LocalDocument | null => {
+export const projectDocument = (collection: string, data: DataRecord | null, member: MemberRecord | null): ReplicaDocument | null => {
   if (!data) return null;
   validateRecord(data);
   if (member) {
@@ -207,26 +207,26 @@ export const projectDocument = (collection: string, data: DataRecord | null, mem
   const wire = Object.fromEntries(Object.entries(fields).map(([key, value]) => [key, BigInt(value)]));
   const identity = { id: data.logicalId, collection, ...wire };
   return (data.existence === 'deleted' ? { ...identity, deleted: true } :
-    { ...decodeBusinessPayload(data.payload), ...identity }) as LocalDocument;
+    { ...decodeBusinessPayload(data.payload), ...identity }) as ReplicaDocument;
 };
 
 const exactFields = (value: Record<string, unknown>, names: string[]) => {
   if (names.some(key => !own(value, key)) || Object.keys(value).some(key => !names.includes(key) && !systems.has(key))) {
     corruption('Record fields do not match its kind');
   }
-  if (own(value, '_deleted') && value._deleted !== false) corruption('Local records cannot use physical tombstones');
+  if (own(value, '_deleted') && value._deleted !== false) corruption('Replica records cannot use physical tombstones');
   if (own(value, '_rev') && !string(value._rev)) corruption('Invalid native revision');
   if (own(value, '_meta') && (!object(value._meta) || typeof value._meta.lwt !== 'number' || !Number.isFinite(value._meta.lwt))) corruption('Invalid native metadata');
-  if (own(value, '_attachments') && (!object(value._attachments) || Object.keys(value._attachments).length !== 0)) corruption('Local records do not support attachments');
+  if (own(value, '_attachments') && (!object(value._attachments) || Object.keys(value._attachments).length !== 0)) corruption('Replica records do not support attachments');
 };
 const existence = (value: unknown) => value === 'live' || value === 'deleted' || value === 'absent';
 const jsonObject = (value: unknown) => {
   if (!object(value)) corruption('Expected a JSON object');
-  try { canonicalJson(value); } catch (error) { throw new LocalStorageError('LocalStorageCorruption', 'Invalid JSON object', { cause: error }); }
+  try { canonicalJson(value); } catch (error) { throw new ReplicaStorageError('ReplicaStorageCorruption', 'Invalid JSON object', { cause: error }); }
 };
 
-export const validateRecord: (value: unknown) => asserts value is LocalRecord = (value) => {
-  if (!object(value)) corruption('Local record must be an object');
+export const validateRecord: (value: unknown) => asserts value is ReplicaRecord = (value) => {
+  if (!object(value)) corruption('Replica record must be an object');
   if (value.kind === 'c') {
     exactFields(value, ['key', 'kind', 'checkpoint', 'generation', 'phase', 'bootstrapComplete', 'partialDelivery']);
     if (value.key !== 'c:progress' || !nullableString(value.generation) || !string(value.phase) ||
@@ -234,8 +234,8 @@ export const validateRecord: (value: unknown) => asserts value is LocalRecord = 
     jsonObject(value.checkpoint);
     return;
   }
-  if (value.kind !== 'd' && value.kind !== 'm') corruption('Unknown local record kind');
-  try { validateLogicalId(value.logicalId); } catch (error) { throw new LocalStorageError('LocalStorageCorruption', 'Invalid record logical identity', { cause: error }); }
+  if (value.kind !== 'd' && value.kind !== 'm') corruption('Unknown replica record kind');
+  try { validateLogicalId(value.logicalId); } catch (error) { throw new ReplicaStorageError('ReplicaStorageCorruption', 'Invalid record logical identity', { cause: error }); }
   if (typeof value.key !== 'string' || !new RegExp(`^${value.kind}:[0-9a-f]{64}$`).test(value.key)) corruption('Invalid record key');
   if (value.kind === 'd') {
     exactFields(value, ['key', 'kind', 'logicalId', 'existence', 'payload', 'editToken', 'pin', 'wire']);
@@ -262,18 +262,18 @@ export const validateRecord: (value: unknown) => asserts value is LocalRecord = 
   }
 };
 
-export const validateRecordIdentity = async (record: LocalRecord): Promise<void> => {
+export const validateRecordIdentity = async (record: ReplicaRecord): Promise<void> => {
   validateRecord(record);
   if (record.kind !== 'c' && record.key !== await recordKey(record.kind, record.logicalId)) corruption('Stored record key does not match its logical identity');
 };
 
-export const businessEqual = (a: LocalRecord, b: LocalRecord): boolean => {
+export const businessEqual = (a: ReplicaRecord, b: ReplicaRecord): boolean => {
   validateRecord(a);
   validateRecord(b);
   if (a.kind !== b.kind || a.key !== b.key) return false;
   if (a.kind === 'd' && b.kind === 'd') return a.logicalId === b.logicalId && a.existence === b.existence &&
     (a.existence !== 'live' || a.payload === b.payload);
-  const content = (record: LocalRecord) => Object.fromEntries(Object.entries(record).filter(([key]) => !systems.has(key)));
+  const content = (record: ReplicaRecord) => Object.fromEntries(Object.entries(record).filter(([key]) => !systems.has(key)));
   return canonicalJson(content(a)) === canonicalJson(content(b));
 };
 
@@ -297,8 +297,8 @@ export const validateManifest: (value: unknown) => asserts value is AliasManifes
     });
     if (canonicalJson(normalized) !== canonicalJson(definition)) corruption('Noncanonical frozen source definition');
   } catch (error) {
-    if (error instanceof LocalStorageError) throw error;
-    throw new LocalStorageError('LocalStorageCorruption', 'Invalid frozen source definition', { cause: error });
+    if (error instanceof ReplicaStorageError) throw error;
+    throw new ReplicaStorageError('ReplicaStorageCorruption', 'Invalid frozen source definition', { cause: error });
   }
   if (typeof value.definitionHash !== 'string' || !/^[0-9a-f]{64}$/.test(value.definitionHash)) corruption('Invalid definition hash');
   if (!nullableString(value.boundDatabaseId) || !nullableString(value.sourceHash) ||

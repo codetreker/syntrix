@@ -4,12 +4,12 @@ import { openAliasBackend, BackendCleanupError, ReadBudget, validateStorageLimit
 import { createNamespace } from './identity.js';
 import { createAliasLocks, type AliasLockOwner, type ViewLockOwner } from './locks.js';
 import { businessEqual, canonicalJson, decodeBusinessPayload, definitionHash, encodeBusinessPayload, freezeSourceDefinition, frozenConditions, matchesConditions, projectDocument, recordKey, validateLogicalId, validateManifestIdentity, validateRecordIdentity } from './records.js';
-import type { LocalResource, LocalSession } from './session.js';
-import { LocalStorageError, type AliasManifest, type DataRecord, type LocalCondition, type LocalDocument, type LocalRecord, type LocalSourceDefinition, type MemberRecord, type StorageLimits } from './storage-types.js';
+import type { ReplicaResource, ReplicaSession } from './session.js';
+import { ReplicaStorageError, type AliasManifest, type DataRecord, type ReplicaCondition, type ReplicaDocument, type ReplicaRecord, type ReplicaSourceDefinition, type MemberRecord, type StorageLimits } from './storage-types.js';
 
 export type RequestScope = Readonly<{ subject: string; sessionVersion: number; definitionHash: string; physicalEpoch: string; requestId: string; nativeInstanceId: string; }>;
 export type AliasInvalidation = { type: 'row'; physicalEpoch: string; keys: string[]; } | { type: 'view'; physicalEpoch: string; activeSourceGeneration: string | null; };
-export type MutationOptions = { ifMatch?: readonly LocalCondition[]; };
+export type MutationOptions = { ifMatch?: readonly ReplicaCondition[]; };
 export type AliasStats = { knownIds: number; rows: number; bytes: number; retired: number; quota?: number; usage?: number; shouldCompact: boolean; };
 export type MaintenanceAccess = {
   ownerSignal: AbortSignal;
@@ -22,15 +22,15 @@ export type MaintenanceAccess = {
   writeManifest(next: AliasManifest): Promise<NativeRow<AliasManifest>>;
 };
 export type OpenAliasStorageOptions = {
-  session: LocalSession; endpoint: string; database: string; name: string; alias: string;
-  source: LocalSourceDefinition; limits?: Partial<StorageLimits>; lockManager?: LockManager; storage?: RxStorage<any, any>;
+  session: ReplicaSession; endpoint: string; database: string; name: string; alias: string;
+  source: ReplicaSourceDefinition; limits?: Partial<StorageLimits>; lockManager?: LockManager; storage?: RxStorage<any, any>;
 };
 export type AliasStorage = {
   readonly changes: Observable<AliasInvalidation>;
   readonly namespace: string;
   readonly limits: StorageLimits;
-  get(id: string, options?: { showDeleted?: boolean; }): Promise<LocalDocument | null>;
-  read(id: string, options?: { showDeleted?: boolean; }): Promise<LocalDocument | null>;
+  get(id: string, options?: { showDeleted?: boolean; }): Promise<ReplicaDocument | null>;
+  read(id: string, options?: { showDeleted?: boolean; }): Promise<ReplicaDocument | null>;
   set(id: string, data: Record<string, unknown>, options?: MutationOptions): Promise<void>;
   update(id: string, patch: Record<string, unknown>, options?: MutationOptions): Promise<void>;
   delete(id: string, options?: MutationOptions): Promise<void>;
@@ -40,15 +40,15 @@ export type AliasStorage = {
   bind(scope: RequestScope, databaseIdentity: string, sourceHash: string): Promise<void>;
   guardNetwork(scope: RequestScope): Promise<Readonly<Record<string, string>>>;
   blockScope(): void;
-  native(scope: RequestScope): Promise<{ fork: NativeStorage<LocalRecord>; meta: NativeStorage<RxStorageReplicationMeta<LocalRecord, any>>; identifier: string; ownerSignal: AbortSignal; }>;
-  registerNative(resource: LocalResource): () => void;
+  native(scope: RequestScope): Promise<{ fork: NativeStorage<ReplicaRecord>; meta: NativeStorage<RxStorageReplicationMeta<ReplicaRecord, any>>; identifier: string; ownerSignal: AbortSignal; }>;
+  registerNative(resource: ReplicaResource): () => void;
   readManifest(): Promise<AliasManifest>;
   withMaintenance<T>(callback: (access: MaintenanceAccess) => Promise<T>): Promise<T>;
   stats(): Promise<AliasStats>;
   close(): Promise<void>;
 };
 
-const fail = (code: string, message: string): never => { throw new LocalStorageError(code, message); };
+const fail = (code: string, message: string): never => { throw new ReplicaStorageError(code, message); };
 const isConflict = (error: unknown) => typeof error === 'object' && error !== null && 'status' in error && error.status === 409;
 const checkpointRows = 3;
 
@@ -66,13 +66,13 @@ class QueuedReadBudget extends ReadBudget {
   override get peakBytes() { return this.queuedPeak; }
   override get availableBytes() { return this.maxBytes - this.retained; }
   retain(bytes: number): () => void {
-    if (!Number.isSafeInteger(bytes) || bytes < 0 || bytes > this.maxBytes - this.reserved) throw new LocalStorageError('LocalReadBudgetExceeded', 'Retained rows exceed materialization budget');
+    if (!Number.isSafeInteger(bytes) || bytes < 0 || bytes > this.maxBytes - this.reserved) throw new ReplicaStorageError('ReplicaReadBudgetExceeded', 'Retained rows exceed materialization budget');
     this.reserved += bytes; this.retained += bytes; this.queuedPeak = Math.max(this.queuedPeak, this.reserved);
     let active = true;
     return () => { if (active) { active = false; this.reserved -= bytes; this.retained -= bytes; this.pump(); } };
   }
   override async withReservation<T>(bytes: number, operation: () => Promise<T>): Promise<T> {
-    if (!Number.isSafeInteger(bytes) || bytes <= 0 || bytes > this.availableBytes) throw new LocalStorageError('LocalReadBudgetExceeded', 'Read reservation exceeds materialization budget');
+    if (!Number.isSafeInteger(bytes) || bytes <= 0 || bytes > this.availableBytes) throw new ReplicaStorageError('ReplicaReadBudgetExceeded', 'Read reservation exceeds materialization budget');
     await new Promise<void>(resolve => { this.waiting.push({ bytes, admit: resolve }); this.pump(); });
     try { return await operation(); }
     finally { this.reserved -= bytes; this.pump(); }
@@ -95,10 +95,10 @@ export const openAliasStorage = (options: OpenAliasStorageOptions): Promise<Alia
   let cleanupFailure: unknown;
   let cleanup: Promise<void> | undefined;
   const inflight = new Set<Promise<unknown>>();
-  const natives = new Set<LocalResource>();
+  const natives = new Set<ReplicaResource>();
   const subscriptions: Subscription[] = [];
   const changes = new Subject<AliasInvalidation>();
-  const assertActive = () => { session.assertCurrent(); if (stopped) fail('LocalStorageClosed', 'Alias storage is closed'); };
+  const assertActive = () => { session.assertCurrent(); if (stopped) fail('ReplicaStorageClosed', 'Alias storage is closed'); };
   const stopNative = async () => {
     const resources = [...natives];
     resources.forEach(resource => resource.invalidate());
@@ -202,7 +202,7 @@ export const openAliasStorage = (options: OpenAliasStorageOptions): Promise<Alia
       writeMaterialization: { data: budget, control: controlBudget },
       beforeWrite: async (kind, name, rows) => {
         assertActive();
-        if (!lease) fail('LocalWriteFence', 'Storage writes require an active view owner');
+        if (!lease) fail('ReplicaWriteFence', 'Storage writes require an active view owner');
         locks.assertAliasOwner(lease!.alias); locks.assertViewOwner(lease!.view, 'exclusive');
         if (kind === 'manifest') {
           const previous = rows[0].previous;
@@ -215,7 +215,7 @@ export const openAliasStorage = (options: OpenAliasStorageOptions): Promise<Alia
           current.bytes += encodedRowBytes(document) - (accounts.get(name)?.rows.get(key)?.bytes ?? 0);
           if (document.kind === 'd' || document.kind === 'm') current.ids.add(document.key.slice(2));
         }
-        if (current.ids.size > backend!.limits.maxKnownIds || current.bytes > backend!.limits.maxStoredBytes) fail('LocalStorageLimit', 'Alias storage capacity exceeded');
+        if (current.ids.size > backend!.limits.maxKnownIds || current.bytes > backend!.limits.maxStoredBytes) fail('ReplicaStorageLimit', 'Alias storage capacity exceeded');
         assertActive();
       },
     });
@@ -229,11 +229,11 @@ export const openAliasStorage = (options: OpenAliasStorageOptions): Promise<Alia
       }
     };
     const readManifest = () => withRows(db.manifestStorage, ['manifest'], db.limits.maxManifestBytes, controlBudget, async rows => {
-      if (!rows.length) return fail('LocalStorageCorruption', 'Alias manifest is missing');
+      if (!rows.length) return fail('ReplicaStorageCorruption', 'Alias manifest is missing');
       await assertManifest(rows[0]); return rows[0];
     });
     const readViewManifest = (logicalId?: string): Promise<ManifestView> => withRows(db.manifestStorage, ['manifest'], db.limits.maxManifestBytes, controlBudget, async rows => {
-      if (!rows.length) return fail('LocalStorageCorruption', 'Alias manifest is missing');
+      if (!rows.length) return fail('ReplicaStorageCorruption', 'Alias manifest is missing');
       const row = rows[0]; await assertManifest(row);
       return {
         activePhysicalEpoch: row.activePhysicalEpoch, physicalEpochs: row.physicalEpochs,
@@ -313,7 +313,7 @@ export const openAliasStorage = (options: OpenAliasStorageOptions): Promise<Alia
     const rowsFor = async (opened: PhysicalStorage, id: string) => {
       const dk = await recordKey('d', id), mk = await recordKey('m', id);
       const pair = await withRows(opened.fork, [dk, mk], db.limits.maxRecordBytes, budget, async rows => {
-        for (const row of rows) { await validateRecordIdentity(row); if (row.kind === 'c' || row.logicalId !== id) fail('LocalStorageCorruption', 'Logical ID mismatch'); }
+        for (const row of rows) { await validateRecordIdentity(row); if (row.kind === 'c' || row.logicalId !== id) fail('ReplicaStorageCorruption', 'Logical ID mismatch'); }
         return { data: rows.find(row => row.kind === 'd') as NativeRow<DataRecord> | undefined, member: rows.find(row => row.kind === 'm') as NativeRow<MemberRecord> | undefined };
       });
       return { ...pair, release: budget.retain((pair.data ? encodedRowBytes(pair.data) : 0) + (pair.member ? encodedRowBytes(pair.member) : 0)) };
@@ -339,15 +339,15 @@ export const openAliasStorage = (options: OpenAliasStorageOptions): Promise<Alia
       const conditions = frozenConditions(mutation.ifMatch ?? []);
       const payload = value === undefined ? undefined : encodeBusinessPayload(value);
       return access('exclusive', async (manifest, opened) => {
-        if (manifest.recovering) fail('LocalRecoveryPending', 'Document is being recovered');
+        if (manifest.recovering) fail('ReplicaRecoveryPending', 'Document is being recovered');
         for (let attempt = 0; attempt < 8; attempt++) {
           assertActive();
           const { data, member, release } = await rowsFor(opened, id);
           try {
             const shown = await visible(manifest, opened, data, member);
             const document = shown ? projectDocument(definition.collection, data ?? null, member ?? null) : null;
-            if (!matchesConditions(document, conditions)) fail('LocalConditionFailed', 'Local write condition failed');
-            if (type === 'update' && (!document || document.deleted)) fail('LocalDocumentNotFound', 'Update requires a live local document');
+            if (!matchesConditions(document, conditions)) fail('ReplicaConditionFailed', 'Replica write condition failed');
+            if (type === 'update' && (!document || document.deleted)) fail('ReplicaDocumentNotFound', 'Update requires a live replica document');
             if (type === 'delete' && (!document || document.deleted)) return;
             const token = crypto.randomUUID();
             const next: DataRecord = {
@@ -359,7 +359,7 @@ export const openAliasStorage = (options: OpenAliasStorageOptions): Promise<Alia
             catch (error) { if (!isConflict(error)) throw error; }
           } finally { release(); }
         }
-        fail('LocalWriteConflict', 'Local CAS retry limit exceeded');
+        fail('ReplicaWriteConflict', 'Replica CAS retry limit exceeded');
       }, undefined, id);
     };
     const storage: AliasStorage = {
@@ -383,19 +383,19 @@ export const openAliasStorage = (options: OpenAliasStorageOptions): Promise<Alia
             try { await writeManifest({ ...manifest, boundDatabaseId: databaseIdentity, sourceHash }, manifest); return; }
             catch (error) { if (!isConflict(error)) throw error; const next = await readManifest(); release(); manifest = next; release = controlBudget.retain(encodedRowBytes(manifest)); }
           }
-          fail('LocalWriteConflict', 'Binding CAS retry limit exceeded');
+          fail('ReplicaWriteConflict', 'Binding CAS retry limit exceeded');
         } finally { release(); }
       }, scope),
       guardNetwork: scope => access('shared', async manifest => {
         if (blocked) fail('ReplicaScopeChanged', 'Alias network admission is blocked');
-        if (!manifest.boundDatabaseId || !manifest.sourceReady || manifest.state !== 'ready' || maintaining) fail('LocalSourceNotReady', 'Alias source is not ready for network writes');
+        if (!manifest.boundDatabaseId || !manifest.sourceReady || manifest.state !== 'ready' || maintaining) fail('ReplicaSourceNotReady', 'Alias source is not ready for network writes');
         return Object.freeze({ 'X-Syntrix-Expected-Database-Identity': manifest.boundDatabaseId! });
       }, scope),
       blockScope: () => { blocked = true; },
-      registerNative: resource => { assertActive(); if (maintaining) fail('LocalMaintenance', 'Alias is under maintenance'); natives.add(resource); return () => { natives.delete(resource); }; },
+      registerNative: resource => { assertActive(); if (maintaining) fail('ReplicaMaintenance', 'Alias is under maintenance'); natives.add(resource); return () => { natives.delete(resource); }; },
       readManifest: () => access('shared', async () => readManifest()),
       withMaintenance: callback => run(async () => {
-        if (maintaining) fail('LocalMaintenance', 'Alias maintenance already in progress');
+        if (maintaining) fail('ReplicaMaintenance', 'Alias maintenance already in progress');
         maintaining = true;
         nativeInstanceId = crypto.randomUUID();
         try {
@@ -405,7 +405,7 @@ export const openAliasStorage = (options: OpenAliasStorageOptions): Promise<Alia
             let releaseManifest = controlBudget.retain(encodedRowBytes(manifest));
             const replaceManifest = (next: NativeRow<AliasManifest>) => { releaseManifest(); manifest = next; releaseManifest = controlBudget.retain(encodedRowBytes(manifest)); access.manifest = manifest; return manifest; };
             let active = true;
-            const assertOwned = () => { assertActive(); if (!active) fail('LocalWriteFence', 'Maintenance access has expired'); locks.assertAliasOwner(alias, 'exclusive'); };
+            const assertOwned = () => { assertActive(); if (!active) fail('ReplicaWriteFence', 'Maintenance access has expired'); locks.assertAliasOwner(alias, 'exclusive'); };
             const ownedStorage = <T>(native: NativeStorage<T>): NativeStorage<T> => new Proxy(native, {
               get(target, property) {
                 if (property === 'underlyingPersistentStorage') return undefined;
@@ -418,7 +418,7 @@ export const openAliasStorage = (options: OpenAliasStorageOptions): Promise<Alia
                 const value = Reflect.get(target, property, target);
                 if (property === 'openPhysical') return async (epoch: string) => {
                   assertOwned();
-                  if (!manifest.physicalEpochs.includes(epoch)) fail('LocalWriteFence', 'Physical epoch is not owned by the maintenance manifest');
+                  if (!manifest.physicalEpochs.includes(epoch)) fail('ReplicaWriteFence', 'Physical epoch is not owned by the maintenance manifest');
                   const opened = await openPhysical(epoch); assertOwned();
                   return { ...opened, fork: ownedStorage(opened.fork), meta: ownedStorage(opened.meta) };
                 };
@@ -449,12 +449,12 @@ export const openAliasStorage = (options: OpenAliasStorageOptions): Promise<Alia
               let retained = 0;
               for (let offset = 0; offset < requested;) {
                 const count = Math.min(block, requested - offset);
-                if (retained + count * maximum > maxRetained) fail('LocalReadBudgetExceeded', 'Native result exceeds materialization budget');
+                if (retained + count * maximum > maxRetained) fail('ReplicaReadBudgetExceeded', 'Native result exceeds materialization budget');
                 const rows = await budget.withReservation(count * maximum, () => read(count, offset));
-                if (rows.length > count) fail('LocalStorageCorruption', 'Native read exceeded requested row count');
+                if (rows.length > count) fail('ReplicaStorageCorruption', 'Native read exceeded requested row count');
                 for (const row of rows) {
                   const bytes = encodedRowBytes(row);
-                  if (bytes > maximum) fail('LocalRecordTooLarge', 'Native read contains an oversized row');
+                  if (bytes > maximum) fail('ReplicaRecordTooLarge', 'Native read contains an oversized row');
                   retained += bytes;
                 }
                 result.push(...rows); offset += count;
@@ -468,7 +468,7 @@ export const openAliasStorage = (options: OpenAliasStorageOptions): Promise<Alia
               const limit = query.query.limit;
               if (query.query.skip !== 0 || !Number.isSafeInteger(limit) || limit < 1 || limit > 4 ||
                 !query.queryPlan.selectorSatisfiedByIndex || !query.queryPlan.sortSatisfiedByIndex) {
-                fail('LocalReadBudgetExceeded', 'Native queries require a bounded index-satisfied seek');
+                fail('ReplicaReadBudgetExceeded', 'Native queries require a bounded index-satisfied seek');
               }
               return budget.withReservation(limit * maximum, () => target.query(query));
             }, scope);
@@ -483,7 +483,7 @@ export const openAliasStorage = (options: OpenAliasStorageOptions): Promise<Alia
               });
               return { documents, checkpoint: next };
             }, scope);
-            if (property === 'close' || property === 'remove' || property === 'cleanup') return async () => fail('LocalWriteFence', 'Physical lifecycle is owned by alias storage');
+            if (property === 'close' || property === 'remove' || property === 'cleanup') return async () => fail('ReplicaWriteFence', 'Physical lifecycle is owned by alias storage');
             const value = Reflect.get(target, property, target); return typeof value === 'function' ? value.bind(target) : value;
           },
         });
@@ -508,7 +508,7 @@ export const openAliasStorage = (options: OpenAliasStorageOptions): Promise<Alia
               const hasData = await withRows(opened.fork, [await recordKey('d', row.logicalId)], db.limits.maxRecordBytes, budget, async rows => {
                 if (rows[0]) {
                   await validateRecordIdentity(rows[0]);
-                  if (rows[0].kind !== 'd' || rows[0].logicalId !== row.logicalId) fail('LocalStorageCorruption', 'Logical ID mismatch');
+                  if (rows[0].kind !== 'd' || rows[0].logicalId !== row.logicalId) fail('ReplicaStorageCorruption', 'Logical ID mismatch');
                 }
                 return rows.length > 0;
               });

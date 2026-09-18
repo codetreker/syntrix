@@ -7,18 +7,18 @@ import { getUnderlyingPersistentStorage, now, type RxStorage } from 'rxdb';
 import { AuthSessionChangedError } from '../../api/errors.js';
 import { DefaultTokenProvider } from '../auth/provider.js';
 import { setupAuthInterceptor } from '../auth/interceptor.js';
-import { createLocalSession } from './session.js';
+import { createReplicaSession } from './session.js';
 import { createTestLockManager } from './lock-manager.test-fixture.js';
 import { openAliasStorage } from './storage.js';
-import type { LocalRecord } from './storage-types.js';
+import type { ReplicaRecord } from './storage-types.js';
 import {
-  createLocalReplicationRuntime,
+  createReplicationRuntime,
   defaultConflictHandler,
   defaultHashSha256,
   fillWithDefaultSettings,
   getRxReplicationMetaInstanceSchema,
-  type LocalReplicationOptions,
-  type LocalReplicationRuntime,
+  type ReplicationOptions,
+  type ReplicationRuntime,
 } from './runtime.js';
 
 type Row = { id: string; value: number };
@@ -50,8 +50,8 @@ const fixture = async () => {
   const errors: unknown[] = [];
   const committed: number[] = [];
   const pushed: string[] = [];
-  const runtimes: LocalReplicationRuntime[] = [];
-  const config: LocalReplicationOptions<Row, Cursor> = {
+  const runtimes: ReplicationRuntime[] = [];
+  const config: ReplicationOptions<Row, Cursor> = {
     identifier: 'runtime', forkInstance: fork, metaInstance: meta,
     conflictHandler: defaultConflictHandler, hashFunction: defaultHashSha256,
     pullBatchSize: 10,
@@ -69,7 +69,7 @@ const fixture = async () => {
     expect(result.error).toHaveLength(0);
   };
   const start = () => {
-    const runtime = createLocalReplicationRuntime(config);
+    const runtime = createReplicationRuntime(config);
     runtimes.push(runtime);
     return runtime;
   };
@@ -81,12 +81,12 @@ const fixture = async () => {
   return { fork, meta, config, errors, committed, pushed, seed, start, close };
 };
 
-describe('private local replication runtime', () => {
+describe('private replication runtime', () => {
   for (const outcome of ['success', 'storage-error', 'unrelated-session-error', 'cleanup-error'] as const) {
     test(`session cancellation drains a native alias read while preserving ${outcome}`, async () => {
       const jwt = (sub: string) => `${btoa('{}')}.${btoa(JSON.stringify({ sub }))}.sig`.replace(/=/g, '');
       const provider = new DefaultTokenProvider({ token: jwt('A') });
-      const session = await createLocalSession(provider);
+      const session = await createReplicaSession(provider);
       const gate = deferred();
       let entered = false;
       let armed = false;
@@ -122,7 +122,7 @@ describe('private local replication runtime', () => {
       const errors: unknown[] = [];
       let sourceCalls = 0;
       armed = true;
-      const runtime = createLocalReplicationRuntime<LocalRecord, Cursor>({
+      const runtime = createReplicationRuntime<ReplicaRecord, Cursor>({
         identifier: native.identifier, forkInstance: native.fork, metaInstance: native.meta, ownerSignal: native.ownerSignal,
         hashFunction: defaultHashSha256, conflictHandler: defaultConflictHandler,
         readSource: async () => { sourceCalls++; throw new Error('Canceled startup must not reach source'); },
@@ -150,7 +150,7 @@ describe('private local replication runtime', () => {
         } else {
           if (outcome !== 'cleanup-error') await expect(runtime.close()).rejects.toBe(fault);
           const closeError = await alias.close().catch(error => error);
-          if (outcome === 'cleanup-error') expect(closeError).toMatchObject({ code: 'LocalStorageCleanupFailed', cause: fault, cleanupErrors: [fault] });
+          if (outcome === 'cleanup-error') expect(closeError).toMatchObject({ code: 'ReplicaStorageCleanupFailed', cause: fault, cleanupErrors: [fault] });
           else expect(closeError).toBe(fault);
           expect(await tokenResult).toEqual({ error: closeError });
           expect(provider.isAuthenticated()).toBe(false);
@@ -170,7 +170,7 @@ describe('private local replication runtime', () => {
     const reason = new AuthSessionChangedError();
     owner.abort(reason);
     try {
-      expect(() => createLocalReplicationRuntime({ ...f.config, ownerSignal: owner.signal })).toThrow(reason);
+      expect(() => createReplicationRuntime({ ...f.config, ownerSignal: owner.signal })).toThrow(reason);
       expect(await f.meta.findDocumentsById(['down|1', 'up|1'], true)).toEqual([]);
     } finally { await f.close(); }
   });
@@ -178,7 +178,7 @@ describe('private local replication runtime', () => {
   test('a canceled owner drains its checkpoint queue without admitting a later checkpoint hook', async () => {
     const jwt = (sub: string) => `${btoa('{}')}.${btoa(JSON.stringify({ sub }))}.sig`.replace(/=/g, '');
     const provider = new DefaultTokenProvider({ token: jwt('A') });
-    const session = await createLocalSession(provider);
+    const session = await createReplicaSession(provider);
     const f = await fixture();
     const gate = deferred();
     let entered = false;
@@ -206,7 +206,7 @@ describe('private local replication runtime', () => {
     test(`account replacement drains native HTTP work canceled ${point}`, async () => {
       const jwt = (sub: string) => `${btoa('{}')}.${btoa(JSON.stringify({ sub }))}.sig`.replace(/=/g, '');
       const provider = new DefaultTokenProvider({ token: jwt('A') });
-      const session = await createLocalSession(provider);
+      const session = await createReplicaSession(provider);
       const f = await fixture();
       const tokenGate = deferred();
       const getToken = provider.getToken.bind(provider);
@@ -324,8 +324,8 @@ describe('private local replication runtime', () => {
       ];
       const received: (SourceCursor | undefined)[] = [];
       const committed: SourceCursor[] = [];
-      const runtimes: LocalReplicationRuntime[] = [];
-      const config: LocalReplicationOptions<Row, SourceCursor> = {
+      const runtimes: ReplicationRuntime[] = [];
+      const config: ReplicationOptions<Row, SourceCursor> = {
         ...f.config,
         pullBatchSize,
         createProgressDocument: undefined,
@@ -345,7 +345,7 @@ describe('private local replication runtime', () => {
         },
       };
       try {
-        const first = createLocalReplicationRuntime(config);
+        const first = createReplicationRuntime(config);
         runtimes.push(first);
         await until(() => first.ready || first.stopped);
         await first.waitForIdle();
@@ -358,7 +358,7 @@ describe('private local replication runtime', () => {
           expect(checkpoint).toEqual({});
           return { documents: [], checkpoint: checkpoint!, complete: true };
         };
-        const restarted = createLocalReplicationRuntime(config);
+        const restarted = createReplicationRuntime(config);
         runtimes.push(restarted);
         await until(() => restarted.ready || restarted.stopped);
         await restarted.waitForIdle();
@@ -436,7 +436,7 @@ describe('private local replication runtime', () => {
     test(`${point} failure cancels once, never exposes readiness, and drains`, async () => {
       const f = await fixture();
       const error = new Error(point);
-      let runtime: LocalReplicationRuntime;
+      let runtime: ReplicationRuntime;
       f.config.onError = value => {
         expect(runtime.stopped).toBe(true);
         expect(runtime.ready).toBe(false);

@@ -1,4 +1,4 @@
-/** Opt-in ownership hooks; the remote client does not load local storage code. */
+/** Opt-in ownership hooks; the remote client does not load replica storage code. */
 export interface AuthOwner {
   acceptsToken(token: string, previousToken: string | null): boolean;
   invalidate(): void;
@@ -12,7 +12,7 @@ interface AuthOwnership {
   invalidate(): Promise<void> | null;
 }
 
-// The lazy local bundle and remote entry have separate module instances. The
+// The lazy replica bundle and remote entry have separate module instances. The
 // capability belongs to the provider, so both copies operate on the same owners.
 const ownershipKey = Symbol.for('@syntrix/client/auth-ownership/v1');
 const getOwnership = (provider: object): AuthOwnership | undefined =>
@@ -52,7 +52,7 @@ export const enableAuthOwnership = (provider: object): void => {
 export const supportsAuthOwnership = (provider: object): boolean => getOwnership(provider)?.version === 1;
 export const registerAuthOwner = (provider: object, owner: AuthOwner): (() => void) => {
   const ownership = getOwnership(provider);
-  if (!ownership || ownership.version !== 1) throw new Error('Local sessions require authentication lifecycle support');
+  if (!ownership || ownership.version !== 1) throw new Error('Replica sessions require authentication lifecycle support');
   return ownership.register(owner);
 };
 export const authOwnersAcceptToken = (provider: object, token: string, previousToken: string | null): boolean =>

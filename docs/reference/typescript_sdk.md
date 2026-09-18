@@ -80,23 +80,23 @@ The implemented access profile requires the database owner or matching `db_admin
 grant; that full-scope policy remains provisional pending approval. See the
 [replication reference](replication.md) for transport encoding, limits and recovery.
 
-### Local replication availability
+### Replica availability
 
 The package contains a private, lazily loaded replication runtime. Its patched
 RxDB, Dexie, and RxJS dependencies are bundled with the SDK; applications do not
 install or patch these dependencies themselves. Importing the remote client does
-not load the local runtime.
+not load the replica runtime.
 
 The private storage layer now provides account-scoped Dexie persistence, lossless
 typed values, local CRUD with revision CAS, identity guards, view invalidations,
 and clean physical compaction. These internal APIs are not exported for application
 use. They do not yet implement local query/watch or automatic HTTP synchronization.
 
-There is no public `openLocal` API yet. The private runtime and storage do not
+There is no public `openReplica` API yet. The private runtime and storage do not
 make `pull()` persist data or add a public Push method.
 Use document REST methods for direct writes. The
 [replication design](../design/sdk/002_replication_client.md) distinguishes the
-delivered runtime and storage from the remaining local database integration.
+delivered runtime and storage from the remaining replica database integration.
 
 ### Authentication sessions
 
@@ -143,14 +143,14 @@ from retrying under the newly installed account. Obsolete refresh results neithe
 write credentials nor emit `onTokenRefresh`/`onAuthError`. If a hook synchronously
 changes sessions, refresh waiters reject rather than receiving a stale token.
 
-When private local storage is attached, refresh also checks JWT subject before
+When private replica storage is attached, refresh also checks JWT subject before
 installing credentials. Same-subject rotation retains its offline namespace;
 subject replacement invalidates old storage admission and drains owned work.
 This includes storage still opening when refresh completes. Expected cancellation
 of old native work does not prevent account replacement after that work drains;
 real storage and cleanup failures remain observable and prevent credential
 installation. The provider carries this ownership across the separately loaded
-local bundle.
+replica bundle.
 
 #### Requests and errors
 

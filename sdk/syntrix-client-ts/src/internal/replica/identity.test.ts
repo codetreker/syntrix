@@ -1,10 +1,10 @@
 import { expect, test } from 'bun:test';
-import { createNamespace, parseLocalSubject } from './identity.js';
+import { createNamespace, parseReplicaSubject } from './identity.js';
 const jwt = (claims: object) => `${btoa('{}')}.${btoa(JSON.stringify(claims))}.sig`.replace(/=/g, '');
 test('offline subject parsing validates identity without requiring an unexpired credential', () => {
-  expect(parseLocalSubject(jwt({ sub: 'Alice', oid: 'Alice', exp: 0 }))).toBe('Alice');
+  expect(parseReplicaSubject(jwt({ sub: 'Alice', oid: 'Alice', exp: 0 }))).toBe('Alice');
   for (const token of [null, 'opaque', 'a.b.c', jwt({ sub: '' }), jwt({ sub: 'a', oid: 'b' }), jwt({ sub: 'a', oid: null })]) {
-    expect(() => parseLocalSubject(token)).toThrow();
+    expect(() => parseReplicaSubject(token)).toThrow();
   }
 });
 test('namespace preserves scope and normalizes endpoint suffix only', async () => {

@@ -91,7 +91,7 @@ client checks.
   dispatched request may still finish with its old token; it cannot automatically
   retry under a new session. Successful old responses are not generally filtered
   and remote effects are not rolled back. The
-  [local-storage decision](../architecture/2026-09-18-sdk-local-storage.md) owns
+  [replica-storage decision](../architecture/2026-09-18-sdk-replica-storage.md) owns
   credential-drain and native cancellation behavior for attached offline storage.
 - No global provider-to-transport registry is introduced. Owners of independently
   constructed transports must close them explicitly; session checks guard their
