@@ -1,8 +1,9 @@
 # Replication API Reference
 
 Replication endpoints use an explicit database URL namespace. Pull returns
-typed document states or query-membership events with an opaque continuation; Push
-accepts typed document objects and returns conflicts with typed current state.
+typed document states or query-membership events with an opaque continuation,
+or a complete query window. Push accepts typed document objects and returns
+conflicts with typed current state.
 
 ## Bound Database Identity
 
@@ -163,8 +164,9 @@ processing ends. Other routes retain the configured server write timeout.
 
 ## Query-Source Pull
 
-The same Pull endpoint accepts a `source` to synchronize an entire matching set.
-Omitting `source` preserves the collection Pull request and response above. The
+The same Pull endpoint accepts a `source` to synchronize an entire matching set
+or a bounded result window. Omitting `source` preserves the collection Pull
+request and response above. The
 SDK's existing public manual Pull method still exposes only collection Pull.
 
 ```json
@@ -185,16 +187,17 @@ SDK's existing public manual Pull method still exposes only collection Pull.
 |---|---|
 | `source.version` | Required integer `1` |
 | `source.filters` | Required array, possibly empty; AND conjunction with the existing [filter semantics](filters.md#fields-and-operators); operands require recursive typed nodes |
-| `source.orderBy` | Optional array of `{field, direction}` with `asc` or `desc`; normalized into source identity, but does not reorder source events |
-| Top-level `limit` | Transfer event limit, default 100, range 0–1000; zero selects the default |
-| `checkpoint` | Omit, null, or empty string to initialize; otherwise reuse the returned opaque string |
-| `source.limit` | Reserved result-window size, integer 1–1000; window execution is unsupported |
-| `requestId` | Forbidden for matching sets; required for a reserved window request, which also forbids top-level `limit` and `checkpoint` |
+| `source.orderBy` | Optional array of `{field, direction}` with `asc` or `desc`; orders a result window and participates in source identity; matching-set events retain source order |
+| Top-level `limit` | Matching-set transfer event limit, default 100, range 0–1000; zero selects the default; forbidden for windows |
+| `checkpoint` | For matching sets, omit, null, or empty string to initialize; otherwise reuse the returned opaque string; forbidden for windows |
+| `source.limit` | Result-window size, integer 1–1000; omission selects the entire matching set |
+| `requestId` | Required nonempty string for a window and echoed exactly; forbidden for matching sets |
 
 Unknown or duplicate structural fields, null `source`, unsupported versions,
 invalid Unicode, malformed typed nodes, and invalid field combinations return
-HTTP 400 `INVALID_REPLICATION_SOURCE`. A structurally valid window request returns
-HTTP 501 `REPLICATION_UNSUPPORTED`; it never returns a successful partial window.
+HTTP 400 `INVALID_REPLICATION_SOURCE`. Window requests reject the presence of
+top-level `limit` or `checkpoint`, including zero, null, and empty values where
+otherwise valid for matching sets. HTTP and gRPC preserve this presence rule.
 
 ### Events and Source Identity
 
@@ -262,12 +265,82 @@ state enrichment may yield a recreated document, then a historical deletion, the
 the recreated document again. Apply source order and permit temporary regression;
 maximum document version cannot establish delete/recreate order.
 
-All existing Pull budgets apply to query mode, including every scanned candidate,
+All existing Pull budgets apply to matching-set mode, including every scanned candidate,
 filtered-out work, source bytes, Watch frames, and encoded envelope. The transfer
 limit counts events; rejected scan candidates still consume the bounded source
 page. An empty events page may therefore advance without completing bootstrap.
 A cursor never advances beyond an event that did not fit the response. These
 adapter-visible budgets do not promise a bound on all internal database work.
+
+### Complete Result Windows
+
+```json
+{
+  "collection": "users",
+  "source": {
+    "version": 1,
+    "filters": [],
+    "orderBy": [{"field": "score", "direction": "desc"}],
+    "limit": 2
+  },
+  "requestId": "refresh-7"
+}
+```
+
+A window runs one ordinary Query with the normalized filters, effective ordering,
+and result limit. It starts without a Query continuation. Absent ordering means
+explicit logical ID ascending; explicit ordering appends ID ascending unless ID
+is already ordered. Execution uses that same ordering as `sourceHash`. The normal
+index requirements apply, including to default ID ordering.
+
+```json
+{
+  "protocolVersion": 1,
+  "mode": "replace",
+  "databaseIdentity": "0123456789abcdef",
+  "sourceHash": "server-computed-source-hash",
+  "requestId": "refresh-7",
+  "generationId": "new-window-generation",
+  "complete": true,
+  "effectiveOrder": [
+    {"field": "score", "direction": "desc"},
+    {"field": "id", "direction": "asc"}
+  ],
+  "documents": []
+}
+```
+
+All nine fields are required. Documents use the existing recursive typed object
+format; an empty array is a complete empty result. Every successful request gets
+a new generation. The response has no events, checkpoint, phase, caughtUp, or
+bootstrapComplete fields. The client uses request/session identity to reject old
+responses; generation IDs are not sortable source positions.
+
+| Single Query result for requested N | Replication result |
+|---|---|
+| Exactly N documents, with or without continuation | Complete replacement |
+| Fewer than N documents and no continuation | Complete exhausted replacement |
+| Fewer than N documents with continuation | HTTP 503 `REPLICATION_WINDOW_INCOMPLETE`; no replacement |
+| Query, encoding, or budget failure | Error; no partial replacement |
+
+Independent Query pages are never concatenated into a purported snapshot. A
+window must fit both the full 16 MiB JSON envelope and 20 MiB protobuf envelope,
+including request ID, generation, ordering, and typed document overhead. Query
+work limits still apply. Envelope limits fail explicitly rather than truncating
+members; retain the prior active window on any failure.
+
+Windows use ordinary Query consistency. Index lag can temporarily omit an existing
+member that still matches, followed by reentry after indexing catches up; it does
+not merely delay new members. A complete response certifies the single Query's
+bounded result, not a strict source snapshot or index freshness fence. A later
+complete refresh handles rank displacement and replacement members. Membership
+exit is not a stored-document deletion.
+
+The authoritative database identity and owner/`db_admin` gate run before window
+Query execution, including first binding. Identity failure must not be interpreted
+as an empty replacement. The SDK's automatic window adapter, member replacement,
+and refresh scheduling remain unimplemented. Their contract treats realtime as a
+refresh hint and requires polling so missed notifications do not freeze a window.
 
 The [query-source decision](../../.agents/notes/implemented/feature/2026-09-18-query-replication-source.md)
 records source projection, identity checking, and their guarantees.
@@ -444,13 +517,17 @@ for exact version extraction.
 |---|---|
 | 400 `BAD_REQUEST` | Invalid request, cursor, scope, or database identity header; correct the request |
 | 400 `INVALID_REPLICATION_SOURCE` | Invalid source structure, version, or field combination |
+| 400 `NO_MATCHING_INDEX` | No eligible complete index plan for the window Query |
 | 401 / 403 | Authentication or full-scope access denied |
 | 409 `DATABASE_IDENTITY_MISMATCH` | Bound database identity no longer matches; stop this binding and preserve pending or uncertain writes |
 | 409 `RESYNC_REQUIRED` | Old timestamp cursor, source replacement, expired history, or unavailable required payload; rebuild from null |
 | 413 `REQUEST_TOO_LARGE` | Request body or checkpoint exceeds its size limit |
-| 422 `REPLICATION_BUDGET_EXCEEDED` | A response cannot satisfy work/size limits |
+| 422 `REPLICATION_BUDGET_EXCEEDED` | Collection/matching-set Pull or Push cannot satisfy replication work/size limits |
+| 422 `QUERY_WORK_LIMIT` | Window Query or its complete replace envelope exceeded work/size limits; no replacement |
 | 499 | Request canceled; keep the last saved checkpoint |
-| 501 `REPLICATION_UNSUPPORTED` | Selected source lacks required capabilities or requests unsupported result-window execution |
+| 501 `REPLICATION_UNSUPPORTED` | Selected source lacks required capabilities |
+| 503 `INDEX_UNAVAILABLE` | Window index is not ready or is rebuilding |
+| 503 `REPLICATION_WINDOW_INCOMPLETE` | Window Query returned fewer than N documents with continuation; retain the active window and retry the complete request |
 | 503 `REPLICATION_UNAVAILABLE` | Transient source failure or work budget exhausted without checkpoint progress; retry the saved checkpoint |
 | 504 `DEADLINE_EXCEEDED` | Request timeout; retry the saved checkpoint |
 | 500 `INTERNAL_ERROR` | Invalid source output or other server failure; no progress returned |

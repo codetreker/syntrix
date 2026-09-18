@@ -159,7 +159,7 @@ func (s *Server) Pull(ctx context.Context, req *pb.PullRequest) (*pb.PullRespons
 	if err != nil {
 		return nil, wire.ReplicationErrorToStatus(err)
 	}
-	if err := wire.ValidatePullResponseScope(pullReq, resp); err != nil {
+	if err := core.ValidatePullResponseScope(pullReq, resp); err != nil {
 		return nil, wire.ReplicationErrorToStatus(err)
 	}
 	encoded, err := wire.EncodePullPage(resp)

@@ -7,6 +7,7 @@ import (
 )
 
 var ErrInvalidReplicationSource = errors.New("invalid replication source")
+var ErrReplicationWindowIncomplete = errors.New("replication window is incomplete")
 
 // ReplicationSource defines a remote result set, independently of transport pages.
 type ReplicationSource struct {

@@ -162,7 +162,7 @@ func (c *Client) Pull(ctx context.Context, database string, req storage.Replicat
 	if err != nil {
 		return nil, err
 	}
-	if err := wire.ValidatePullResponseScope(req, page); err != nil {
+	if err := core.ValidatePullResponseScope(req, page); err != nil {
 		return nil, err
 	}
 	return page, nil

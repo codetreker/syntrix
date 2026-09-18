@@ -182,7 +182,14 @@ func DecodeJSONPullSource(data []byte) (*types.ReplicationSource, error) {
 }
 
 func EncodePullRequest(database string, req types.ReplicationPullRequest) (*pb.PullRequest, error) {
-	out := &pb.PullRequest{Database: database, DatabaseIdentity: req.DatabaseIdentity, Collection: req.Collection, Checkpoint: req.Checkpoint, Limit: int32(req.Limit), WireVersion: Version, RequestId: req.RequestID}
+	out := &pb.PullRequest{Database: database, DatabaseIdentity: req.DatabaseIdentity, Collection: req.Collection, WireVersion: Version, RequestId: req.RequestID}
+	if req.CheckpointPresent || req.Checkpoint != "" {
+		out.Checkpoint = &req.Checkpoint
+	}
+	if req.LimitPresent || req.Limit != 0 {
+		n := int32(req.Limit)
+		out.Limit = &n
+	}
 	if req.Limit < 0 || req.Limit > MaxPullLimit {
 		return nil, invalidSource("invalid page limit")
 	}
@@ -211,7 +218,7 @@ func DecodePullRequest(in *pb.PullRequest) (types.ReplicationPullRequest, error)
 	if in == nil || in.WireVersion != Version {
 		return types.ReplicationPullRequest{}, pullFailure(types.WatchInvalidCheckpoint, "unsupported pull request version")
 	}
-	out := types.ReplicationPullRequest{DatabaseIdentity: in.DatabaseIdentity, Collection: in.Collection, Checkpoint: in.Checkpoint, Limit: int(in.Limit), RequestID: in.RequestId}
+	out := types.ReplicationPullRequest{DatabaseIdentity: in.DatabaseIdentity, Collection: in.Collection, Checkpoint: in.GetCheckpoint(), Limit: int(in.GetLimit()), RequestID: in.RequestId}
 	if in.Source != nil {
 		s := in.Source
 		if s.Version != 1 {
@@ -237,6 +244,8 @@ func DecodePullRequest(in *pb.PullRequest) (types.ReplicationPullRequest, error)
 				return out, invalidSource("invalid result limit")
 			}
 			out.Source.Limit = &n
+			out.CheckpointPresent = in.Checkpoint != nil
+			out.LimitPresent = in.Limit != nil
 		}
 	}
 	return out, nil
@@ -264,7 +273,7 @@ func sourceProtoEnvelope(page *types.ReplicationPullResponse) *pb.PullResponse {
 }
 
 func validateSourceEnvelope(page *types.ReplicationPullResponse) error {
-	if page.ProtocolVersion != 1 || page.Mode != "events" || len(page.Documents) != 0 {
+	if page.ProtocolVersion != 1 || page.Mode != "events" || len(page.Documents) != 0 || page.RequestID != nil || page.Complete != nil || len(page.EffectiveOrder) != 0 {
 		return pullFailure(types.WatchInvalidEvent, "invalid query replication mode")
 	}
 	for _, s := range []string{page.DatabaseIdentity, page.SourceHash, page.GenerationID} {
@@ -366,7 +375,7 @@ func encodeSourcePullPage(page *types.ReplicationPullResponse) (*pb.PullResponse
 }
 
 func decodeSourcePullPage(in *pb.PullResponse) (*types.ReplicationPullResponse, error) {
-	if in.BootstrapComplete == nil || len(in.Documents) != 0 {
+	if in.BootstrapComplete == nil || len(in.Documents) != 0 || in.RequestId != nil || in.Complete != nil || len(in.EffectiveOrder) != 0 {
 		return nil, pullFailure(types.WatchInvalidEvent, "incomplete query replication envelope")
 	}
 	out := &types.ReplicationPullResponse{ProtocolVersion: int(in.ProtocolVersion), Mode: in.Mode, DatabaseIdentity: in.DatabaseIdentity, SourceHash: in.SourceHash, GenerationID: in.GenerationId, Phase: in.Phase, Checkpoint: in.Checkpoint, CaughtUp: in.CaughtUp, BootstrapComplete: *in.BootstrapComplete, Events: make([]types.ReplicationEvent, 0, len(in.Events))}
@@ -418,8 +427,25 @@ func ValidatePullResponseScope(req types.ReplicationPullRequest, page *types.Rep
 		}
 		return nil
 	}
-	if page.ProtocolVersion != 1 || page.Mode != "events" || page.DatabaseIdentity != req.DatabaseIdentity {
+	mode := "events"
+	if req.Source.Limit != nil {
+		mode = "replace"
+	}
+	if page.ProtocolVersion != 1 || page.Mode != mode || page.DatabaseIdentity != req.DatabaseIdentity {
 		return pullFailure(types.WatchInvalidEvent, "pull response scope mismatch")
+	}
+	if mode == "replace" {
+		if err := validateWindowEnvelope(page); err != nil {
+			return err
+		}
+		if req.RequestID == nil || page.RequestID == nil || *req.RequestID != *page.RequestID || len(page.Documents) > *req.Source.Limit {
+			return pullFailure(types.WatchInvalidEvent, "pull window scope mismatch")
+		}
+		for _, doc := range page.Documents {
+			if doc.GetCollection() != req.Collection {
+				return pullFailure(types.WatchInvalidEvent, "pull window collection mismatch")
+			}
+		}
 	}
 	for _, event := range page.Events {
 		if event.Type == types.ReplicationUpsert && event.Document.GetCollection() != req.Collection {

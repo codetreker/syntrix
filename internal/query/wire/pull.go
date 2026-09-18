@@ -10,6 +10,7 @@ import (
 
 	pb "github.com/syntrixbase/syntrix/api/gen/query/v1"
 	"github.com/syntrixbase/syntrix/internal/core/storage/types"
+	"github.com/syntrixbase/syntrix/internal/indexer"
 	"github.com/syntrixbase/syntrix/pkg/model"
 	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc/codes"
@@ -31,6 +32,9 @@ func pullFailure(code types.WatchErrorCode, message string) error {
 }
 
 func validatePullEnvelope(page *types.ReplicationPullResponse) error {
+	if page != nil && page.Mode == "replace" {
+		return validateWindowEnvelope(page)
+	}
 	if page == nil || page.Checkpoint == "" || !utf8.ValidString(page.Checkpoint) {
 		return pullFailure(types.WatchInvalidEvent, "missing or invalid pull response checkpoint")
 	}
@@ -40,7 +44,7 @@ func validatePullEnvelope(page *types.ReplicationPullResponse) error {
 	if page.ProtocolVersion != 0 {
 		return validateSourceEnvelope(page)
 	}
-	if page.Mode != "" || page.DatabaseIdentity != "" || page.SourceHash != "" || page.GenerationID != "" || page.Phase != "" || page.BootstrapComplete || len(page.Events) != 0 {
+	if page.Mode != "" || page.DatabaseIdentity != "" || page.SourceHash != "" || page.GenerationID != "" || page.Phase != "" || page.BootstrapComplete || len(page.Events) != 0 || page.RequestID != nil || page.Complete != nil || len(page.EffectiveOrder) != 0 {
 		return pullFailure(types.WatchInvalidEvent, "unexpected query replication envelope")
 	}
 	return nil
@@ -58,8 +62,8 @@ func validatePullDocument(doc model.Document) error {
 	return nil
 }
 
-// CheckPullPageSize accounts for documents in legacy mode and events in query
-// mode. Byte totals include each complete JSON entry and each repeated protobuf
+// CheckPullPageSize accounts for documents in collection and window modes, and
+// events in unbounded query mode. Totals include each JSON entry and protobuf
 // field tag and length; the envelope and cursor are added here.
 func CheckPullPageSize(page *types.ReplicationPullResponse, documentBytes, protobufDocumentBytes int) error {
 	if err := validatePullEnvelope(page); err != nil {
@@ -72,7 +76,10 @@ func CheckPullPageSize(page *types.ReplicationPullResponse, documentBytes, proto
 	var err error
 	count := len(page.Documents)
 	protoOverhead := proto.Size(&pb.PullResponse{Checkpoint: page.Checkpoint, CaughtUp: page.CaughtUp, WireVersion: Version})
-	if page.ProtocolVersion != 0 {
+	if page.Mode == "replace" {
+		envelope, err = json.Marshal(windowEnvelope(page))
+		protoOverhead = proto.Size(windowProtoEnvelope(page))
+	} else if page.ProtocolVersion != 0 {
 		envelope, err = json.Marshal(sourceEnvelope(page))
 		count = len(page.Events)
 		protoOverhead = proto.Size(sourceProtoEnvelope(page))
@@ -120,6 +127,13 @@ func encodePullDocuments(page *types.ReplicationPullResponse) (*pb.PullResponse,
 }
 
 func EncodeJSONPullPage(page *types.ReplicationPullResponse) ([]byte, error) {
+	if page != nil && page.Mode == "replace" {
+		_, envelope, err := encodeWindowPullPage(page)
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(envelope)
+	}
 	if page != nil && page.ProtocolVersion != 0 {
 		_, envelope, err := encodeSourcePullPage(page)
 		if err != nil {
@@ -139,6 +153,10 @@ func EncodeJSONPullPage(page *types.ReplicationPullResponse) ([]byte, error) {
 }
 
 func EncodePullPage(page *types.ReplicationPullResponse) (*pb.PullResponse, error) {
+	if page != nil && page.Mode == "replace" {
+		out, _, err := encodeWindowPullPage(page)
+		return out, err
+	}
 	if page != nil && page.ProtocolVersion != 0 {
 		out, _, err := encodeSourcePullPage(page)
 		return out, err
@@ -154,10 +172,13 @@ func DecodePullPage(in *pb.PullResponse) (*types.ReplicationPullResponse, error)
 	if proto.Size(in) > MaxGRPCBytes {
 		return nil, model.ErrQueryWorkLimit
 	}
+	if in.Mode == "replace" {
+		return decodeWindowPullPage(in)
+	}
 	if in.ProtocolVersion != 0 {
 		return decodeSourcePullPage(in)
 	}
-	if in.Mode != "" || in.DatabaseIdentity != "" || in.SourceHash != "" || in.GenerationId != "" || in.Phase != "" || in.BootstrapComplete != nil || len(in.Events) != 0 {
+	if in.Mode != "" || in.DatabaseIdentity != "" || in.SourceHash != "" || in.GenerationId != "" || in.Phase != "" || in.BootstrapComplete != nil || len(in.Events) != 0 || in.RequestId != nil || in.Complete != nil || len(in.EffectiveOrder) != 0 {
 		return nil, pullFailure(types.WatchInvalidEvent, "unexpected query replication envelope")
 	}
 	out := &types.ReplicationPullResponse{Checkpoint: in.Checkpoint, CaughtUp: in.CaughtUp, Documents: make([]model.Document, 0, len(in.Documents))}
@@ -214,6 +235,17 @@ func replicationStatusCode(code types.WatchErrorCode) (codes.Code, bool) {
 	}
 }
 
+var replicationDomainErrors = []struct {
+	err    error
+	code   codes.Code
+	reason string
+}{
+	{types.ErrReplicationWindowIncomplete, codes.Unavailable, "REPLICATION_WINDOW_INCOMPLETE"},
+	{indexer.ErrNoMatchingIndex, codes.FailedPrecondition, "NO_MATCHING_INDEX"},
+	{indexer.ErrIndexNotReady, codes.Unavailable, "INDEX_NOT_READY"},
+	{indexer.ErrIndexRebuilding, codes.Unavailable, "INDEX_REBUILDING"},
+}
+
 // ReplicationErrorToStatus exports recovery categories without exposing source
 // causes, document values, or opaque checkpoints in the transport status.
 func ReplicationErrorToStatus(err error) error {
@@ -233,6 +265,12 @@ func ReplicationErrorToStatus(err error) error {
 	if errors.Is(err, model.ErrQueryWorkLimit) {
 		st, _ := status.New(codes.ResourceExhausted, "pull page exceeds budget").WithDetails(&errdetails.ErrorInfo{Domain: "syntrix.replication", Reason: "PAGE_BUDGET"})
 		return st.Err()
+	}
+	for _, item := range replicationDomainErrors {
+		if errors.Is(err, item.err) {
+			st, _ := status.New(item.code, item.err.Error()).WithDetails(&errdetails.ErrorInfo{Domain: "syntrix.replication", Reason: item.reason})
+			return st.Err()
+		}
 	}
 	var failure *types.WatchError
 	if errors.As(err, &failure) {
@@ -268,6 +306,11 @@ func ReplicationStatusToError(err error) error {
 			}
 			if info.Reason == "PAGE_BUDGET" && st.Code() == codes.ResourceExhausted {
 				return model.ErrQueryWorkLimit
+			}
+			for _, item := range replicationDomainErrors {
+				if info.Reason == item.reason && st.Code() == item.code {
+					return item.err
+				}
 			}
 			code := types.WatchErrorCode(info.Reason)
 			if expected, known := replicationStatusCode(code); known && st.Code() == expected {

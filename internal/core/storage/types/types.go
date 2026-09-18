@@ -301,6 +301,10 @@ type ReplicationPullRequest struct {
 	Limit            int                `json:"limit"`
 	Source           *ReplicationSource `json:"source,omitempty"`
 	RequestID        *string            `json:"requestId,omitempty"`
+	// Presence is retained by decoders for window requests, where even an empty
+	// checkpoint or zero page limit is forbidden.
+	CheckpointPresent bool `json:"-"`
+	LimitPresent      bool `json:"-"`
 }
 
 // ReplicationPullResponse represents the response for a pull request
@@ -316,6 +320,9 @@ type ReplicationPullResponse struct {
 	GenerationID      string             `json:"generationId,omitempty"`
 	Phase             string             `json:"phase,omitempty"`
 	BootstrapComplete bool               `json:"bootstrapComplete,omitempty"`
+	RequestID         *string            `json:"requestId,omitempty"`
+	Complete          *bool              `json:"complete,omitempty"`
+	EffectiveOrder    []model.Order      `json:"effectiveOrder,omitempty"`
 }
 
 type PushAction string
