@@ -7,6 +7,23 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+func TestResolveCreateOptions(t *testing.T) {
+	zero, positive, negative := int64(0), int64(7), int64(-1)
+	for _, opts := range [][]CreateOptions{nil, {{}}, {{Condition: CreateIfAbsent}}, {{Condition: CreateIfTombstone, ExpectedVersion: &zero}}, {{Condition: CreateIfTombstone, ExpectedVersion: &positive}}} {
+		resolved, err := ResolveCreateOptions(opts)
+		assert.NoError(t, err)
+		if len(opts) == 0 {
+			assert.Equal(t, CreateOptions{}, resolved)
+		} else {
+			assert.Equal(t, opts[0], resolved)
+		}
+	}
+	for _, opts := range [][]CreateOptions{{{}, {}}, {{Condition: "unknown"}}, {{ExpectedVersion: &zero}}, {{Condition: CreateIfAbsent, ExpectedVersion: &zero}}, {{Condition: CreateIfTombstone}}, {{Condition: CreateIfTombstone, ExpectedVersion: &negative}}} {
+		_, err := ResolveCreateOptions(opts)
+		assert.Error(t, err)
+	}
+}
+
 func TestCalculateDatabase(t *testing.T) {
 	id1 := CalculateDatabase("database1", "/path/to/doc1")
 	id2 := CalculateDatabase("database1", "/path/to/doc1")

@@ -58,7 +58,7 @@ func (m *mockDocumentStore) Get(ctx context.Context, database, path string, _ ..
 	}
 	return args.Get(0).(*types.StoredDoc), args.Error(1)
 }
-func (m *mockDocumentStore) Create(ctx context.Context, database string, doc types.StoredDoc) error {
+func (m *mockDocumentStore) Create(ctx context.Context, database string, doc types.StoredDoc, opts ...types.CreateOptions) error {
 	return m.Called(ctx, database, doc).Error(0)
 }
 func (m *mockDocumentStore) Update(ctx context.Context, database, path string, data map[string]interface{}, pred model.Filters) error {

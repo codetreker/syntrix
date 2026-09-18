@@ -94,8 +94,9 @@ request and supports validation without changing ordinary read routing.
 also have addressed absent and tombstoned targets, but required Query/storage
 predicates and coordinated conflict/protocol changes outside that repair.
 The [later conditional-write decision](2026-09-07-replication-push-version-checks.md)
-delivers the missing-target safety; strict insert-only create remains separately
-[proposed](../../proposed/feature/2026-09-07-replication-push-insert-only.md).
+delivers the missing-target safety. The subsequent
+[create-condition decision](../feature/2026-09-07-replication-push-insert-only.md)
+adds explicit absent/tombstone predicates while preserving default version rules.
 
 ## Consequences
 
@@ -109,5 +110,6 @@ The original extraction repair did not close the not-found/Create branch or
 represent absent conflict targets. The later conditional-write decision closes
 those gaps while preserving exact precondition presence and the authoritative
 read option. The later typed transport extends precision to business values.
-Strict insert-only create remains a separate semantic decision. Retries after a
-lost response remain ambiguous; version checks do not establish exactly-once effects.
+Explicit create conditions have their own decision and atomic predicates.
+Retries after a lost response remain ambiguous; version checks do not establish
+exactly-once effects.

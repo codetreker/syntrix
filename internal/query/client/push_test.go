@@ -75,3 +75,21 @@ func TestPushTransportErrorsAndValidation(t *testing.T) {
 	require.Equal(t, codes.Internal, status.Code(err))
 	require.Equal(t, 1, calls)
 }
+
+func TestPushCreateConditionsOverTransport(t *testing.T) {
+	for _, condition := range []storage.CreateCondition{"", storage.CreateIfAbsent, storage.CreateIfTombstone} {
+		req := storage.ReplicationPushRequest{Collection: "users", Changes: []storage.ReplicationPushChange{{Action: storage.PushCreate, CreateCondition: condition, Doc: &storage.StoredDoc{Fullpath: "users/alice"}}}}
+		if condition == storage.CreateIfTombstone {
+			req.Changes[0].BaseVersion = proto.Int64(math.MaxInt64)
+		}
+		client := newPullTransport(t, pushService{push: func(_ context.Context, database string, got storage.ReplicationPushRequest) (*storage.ReplicationPushResponse, error) {
+			require.Equal(t, "db", database)
+			require.Equal(t, req, got)
+			return &storage.ReplicationPushResponse{}, nil
+		}})
+		ctx, cancel := context.WithTimeout(context.Background(), 5e9)
+		_, err := client.Push(ctx, "db", req)
+		cancel()
+		require.NoError(t, err)
+	}
+}

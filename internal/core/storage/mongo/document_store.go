@@ -340,7 +340,11 @@ func (m *documentStore) EnumerateCollections(ctx context.Context, database, afte
 	return result, nil
 }
 
-func (m *documentStore) Create(ctx context.Context, database string, doc types.StoredDoc) error {
+func (m *documentStore) Create(ctx context.Context, database string, doc types.StoredDoc, opts ...types.CreateOptions) error {
+	createOpts, err := types.ResolveCreateOptions(opts)
+	if err != nil {
+		return err
+	}
 	collection := m.getCollection(doc.Collection)
 
 	// Ensure derived fields are populated
@@ -352,8 +356,26 @@ func (m *documentStore) Create(ctx context.Context, database string, doc types.S
 	// Ensure soft-delete fields are reset
 	doc.Deleted = false
 
-	_, err := collection.InsertOne(ctx, doc)
+	if createOpts.Condition == types.CreateIfTombstone {
+		filter := bson.M{
+			"_id": types.CalculateDatabase(database, doc.Fullpath), "database": database,
+			"deleted": true, "version": *createOpts.ExpectedVersion,
+		}
+		result, err := collection.ReplaceOne(ctx, filter, doc)
+		if err != nil {
+			return err
+		}
+		if result.MatchedCount == 0 {
+			return model.ErrPreconditionFailed
+		}
+		return nil
+	}
+
+	_, err = collection.InsertOne(ctx, doc)
 	if mongo.IsDuplicateKeyError(err) {
+		if createOpts.Condition == types.CreateIfAbsent {
+			return model.ErrExists
+		}
 		id := types.CalculateDatabase(database, doc.Fullpath)
 		var existingDoc types.StoredDoc
 		if findErr := collection.FindOne(ctx, bson.M{"_id": id, "database": database}).Decode(&existingDoc); findErr != nil {

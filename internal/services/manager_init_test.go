@@ -328,7 +328,7 @@ type fakeDocumentStore struct {
 func (f *fakeDocumentStore) Get(ctx context.Context, database, path string, _ ...storage.ReadOptions) (*storage.StoredDoc, error) {
 	return nil, nil
 }
-func (f *fakeDocumentStore) Create(ctx context.Context, database string, doc storage.StoredDoc) error {
+func (f *fakeDocumentStore) Create(ctx context.Context, database string, doc storage.StoredDoc, opts ...storage.CreateOptions) error {
 	return nil
 }
 func (f *fakeDocumentStore) Update(ctx context.Context, database, path string, data map[string]interface{}, pred model.Filters) error {

@@ -10,6 +10,8 @@ type RevokedToken = types.RevokedToken
 type DocumentStore = types.DocumentStore
 type ReadOptions = types.ReadOptions
 type ReadConsistency = types.ReadConsistency
+type CreateCondition = types.CreateCondition
+type CreateOptions = types.CreateOptions
 type UserStore = types.UserStore
 type TokenRevocationStore = types.TokenRevocationStore
 type DocumentProvider = types.DocumentProvider
@@ -39,6 +41,11 @@ type RevocationRouter = types.RevocationRouter
 const (
 	ReadDefault       = types.ReadDefault
 	ReadAuthoritative = types.ReadAuthoritative
+)
+
+const (
+	CreateIfAbsent    = types.CreateIfAbsent
+	CreateIfTombstone = types.CreateIfTombstone
 )
 
 const (

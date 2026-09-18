@@ -26,6 +26,11 @@ is implemented: request documents and non-null current conflict documents use th
 same recursive value representation as Pull. This completes the server transport
 step, while the SDK outbound encoder, internal Pusher, and durable coordinator
 remain unimplemented. The complete Pull response is not a Push request.
+Server-side [create conditions](../../implemented/feature/2026-09-07-replication-push-insert-only.md)
+also support explicit absent insertion and versioned tombstone recreation. The
+internal Pusher must retain that intent in queued changes and retries; omission
+continues to select default create semantics. This server capability does not
+complete the SDK worker or its durable storage.
 
 The coordinator still needs a lossless persisted representation and an SDK encoder
 for int64 metadata and nested business values. Preserve numeric type and value

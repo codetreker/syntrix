@@ -94,6 +94,21 @@ type ReadOptions struct {
 
 var ErrReadBudget = errors.New("source read byte budget exceeded")
 
+type CreateCondition string
+
+const (
+	CreateIfAbsent    CreateCondition = "absent"
+	CreateIfTombstone CreateCondition = "tombstone"
+)
+
+// CreateOptions constrains creation atomically. The zero value preserves the
+// existing insert-or-replace-tombstone behavior. ExpectedVersion is required
+// only for CreateIfTombstone; that mode never inserts a missing document.
+type CreateOptions struct {
+	Condition       CreateCondition
+	ExpectedVersion *int64
+}
+
 // DocumentStore defines the interface for document storage operations
 type DocumentStore interface {
 	// Get retrieves a document by path, excluding tombstones unless ShowDeleted is set.
@@ -108,8 +123,9 @@ type DocumentStore interface {
 	// Read options have the same routing and tombstone semantics as Get.
 	GetMany(ctx context.Context, database string, paths []string, opts ...ReadOptions) ([]*StoredDoc, error)
 
-	// Create inserts a new document. Fails if it already exists.
-	Create(ctx context.Context, database string, doc StoredDoc) error
+	// Create inserts a document or replaces a tombstone under the requested
+	// atomic condition. At most one options value is accepted.
+	Create(ctx context.Context, database string, doc StoredDoc, opts ...CreateOptions) error
 
 	// Update updates an existing document.
 	// If pred is provided, it performs a CAS (Compare-And-Swap) operation.
@@ -317,9 +333,10 @@ const (
 
 // ReplicationPushChange preserves the requested operation and version presence.
 type ReplicationPushChange struct {
-	Action      PushAction `json:"action"`
-	Doc         *StoredDoc `json:"doc"`
-	BaseVersion *int64     `json:"baseVersion"` // Version known to the client
+	Action          PushAction      `json:"action"`
+	Doc             *StoredDoc      `json:"doc"`
+	BaseVersion     *int64          `json:"baseVersion"` // Version known to the client
+	CreateCondition CreateCondition `json:"createCondition,omitempty"`
 }
 
 // ReplicationPushRequest represents a request to push changes

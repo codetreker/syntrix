@@ -257,9 +257,10 @@ func (h *Handler) handlePush(w http.ResponseWriter, r *http.Request) {
 		}
 
 		changes = append(changes, storage.ReplicationPushChange{
-			Action:      storage.PushAction(change.Action),
-			Doc:         &doc,
-			BaseVersion: change.BaseVersion,
+			Action:          storage.PushAction(change.Action),
+			Doc:             &doc,
+			BaseVersion:     change.BaseVersion,
+			CreateCondition: change.CreateCondition,
 		})
 	}
 

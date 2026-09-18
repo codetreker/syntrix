@@ -277,6 +277,12 @@ enum PushAction {
   PUSH_ACTION_DELETE = 3;
 }
 
+enum PushCreateCondition {
+  PUSH_CREATE_CONDITION_UNSPECIFIED = 0;
+  PUSH_CREATE_CONDITION_ABSENT = 1;
+  PUSH_CREATE_CONDITION_TOMBSTONE = 2;
+}
+
 message PushChange {
   // Document to push. Data is a typed-value object or typed null.
   Document document = 1;
@@ -286,6 +292,9 @@ message PushChange {
   optional int64 base_version = 2;
 
   PushAction action = 3;
+
+  // Omission preserves the existing create behavior. Explicit unspecified is invalid.
+  optional PushCreateCondition create_condition = 4;
 }
 
 message PushRequest {

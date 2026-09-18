@@ -14,6 +14,31 @@ import (
 	"github.com/syntrixbase/syntrix/pkg/model"
 )
 
+func TestRoutedCreateConditions(t *testing.T) {
+	ctx := context.Background()
+	doc := types.NewStoredDoc("app", "users", "alice", nil)
+	version := int64(4)
+	for _, opts := range []types.CreateOptions{{Condition: types.CreateIfAbsent}, {Condition: types.CreateIfTombstone, ExpectedVersion: &version}} {
+		router := new(mockDocRouter)
+		store := new(mockDocumentStore)
+		router.On("Select", "app", types.OpWrite).Return(store, nil).Once()
+		store.On("Create", ctx, "app", doc, []types.CreateOptions{opts}).Return(model.ErrPreconditionFailed).Once()
+		err := NewRoutedDocumentStore(router).Create(ctx, "app", doc, opts)
+		require.ErrorIs(t, err, model.ErrPreconditionFailed)
+		router.AssertExpectations(t)
+		store.AssertExpectations(t)
+	}
+	router := new(mockDocRouter)
+	err := NewRoutedDocumentStore(router).Create(ctx, "app", doc, types.CreateOptions{Condition: "unknown"})
+	require.Error(t, err)
+	router.AssertNotCalled(t, "Select", mock.Anything, mock.Anything)
+	failure := errors.New("primary unavailable")
+	router.On("Select", "app", types.OpWrite).Return(nil, failure).Once()
+	err = NewRoutedDocumentStore(router).Create(ctx, "app", doc, types.CreateOptions{Condition: types.CreateIfAbsent})
+	require.ErrorIs(t, err, failure)
+	router.AssertExpectations(t)
+}
+
 // Mock Router
 type mockDocRouter struct {
 	mock.Mock
@@ -40,8 +65,8 @@ func (m *mockDocumentStore) Get(ctx context.Context, database string, path strin
 	return args.Get(0).(*types.StoredDoc), args.Error(1)
 }
 
-func (m *mockDocumentStore) Create(ctx context.Context, database string, doc types.StoredDoc) error {
-	args := m.Called(ctx, database, doc)
+func (m *mockDocumentStore) Create(ctx context.Context, database string, doc types.StoredDoc, opts ...types.CreateOptions) error {
+	args := m.Called(ctx, database, doc, opts)
 	return args.Error(0)
 }
 
@@ -135,7 +160,7 @@ func TestRoutedDocumentStore(t *testing.T) {
 		store := new(mockDocumentStore)
 
 		router.On("Select", database, types.OpWrite).Return(store, nil)
-		store.On("Create", ctx, database, mock.Anything).Return(nil)
+		store.On("Create", ctx, database, mock.Anything, mock.Anything).Return(nil)
 
 		rs := NewRoutedDocumentStore(router)
 		err := rs.Create(ctx, database, types.StoredDoc{})

@@ -16,7 +16,7 @@ type MockDocumentStore struct {
 	mock.Mock
 }
 
-func (m *MockDocumentStore) Create(ctx context.Context, database string, doc storage.StoredDoc) error {
+func (m *MockDocumentStore) Create(ctx context.Context, database string, doc storage.StoredDoc, opts ...storage.CreateOptions) error {
 	args := m.Called(ctx, database, doc)
 	return args.Error(0)
 }

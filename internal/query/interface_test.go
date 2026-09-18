@@ -48,7 +48,10 @@ func (m *MockDocumentStore) Get(ctx context.Context, database, path string, _ ..
 	return args.Get(0).(*storage.StoredDoc), args.Error(1)
 }
 
-func (m *MockDocumentStore) Create(ctx context.Context, database string, doc storage.StoredDoc) error {
+func (m *MockDocumentStore) Create(ctx context.Context, database string, doc storage.StoredDoc, opts ...storage.CreateOptions) error {
+	if len(opts) > 0 {
+		return m.Called(ctx, database, doc, opts).Error(0)
+	}
 	args := m.Called(ctx, database, doc)
 	return args.Error(0)
 }

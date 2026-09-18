@@ -87,12 +87,15 @@ func (s *RoutedDocumentStore) EnumerateCollections(ctx context.Context, database
 	return enumerator.EnumerateCollections(ctx, database, afterCollection, limit, opts...)
 }
 
-func (s *RoutedDocumentStore) Create(ctx context.Context, database string, doc types.StoredDoc) error {
+func (s *RoutedDocumentStore) Create(ctx context.Context, database string, doc types.StoredDoc, opts ...types.CreateOptions) error {
+	if _, err := types.ResolveCreateOptions(opts); err != nil {
+		return err
+	}
 	store, err := s.router.Select(database, types.OpWrite)
 	if err != nil {
 		return err
 	}
-	return store.Create(ctx, database, doc)
+	return store.Create(ctx, database, doc, opts...)
 }
 
 func (s *RoutedDocumentStore) Update(ctx context.Context, database string, path string, data map[string]interface{}, pred model.Filters) error {

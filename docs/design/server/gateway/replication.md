@@ -157,6 +157,7 @@ payloads, and document data are excluded.
 | Action | Explicit `create`, `update`, or `delete`; missing/unknown values fail |
 | Document | Typed object decoding to flattened data with required logical `id`; protected metadata is stripped |
 | Version | Optional nonnegative typed int64 `document.version`, extracted before stripping |
+| Create condition | Optional `absent` or `tombstone` on create; forwarded through Query to the atomic storage write |
 | Validation | HTTP and Query validate the complete request before any storage operation |
 | Batch | Sequential, nontransactional; conflicts do not stop later changes |
 
@@ -170,8 +171,8 @@ payloads, and document data are excluded.
 | Unversioned update | Missing or tombstoned | Existing create/recreate behavior |
 | Unversioned delete | Live | Delete |
 | Unversioned delete | Missing or tombstoned | Idempotent success |
-| Create | Live | Existing update behavior; supplied version is an equality condition |
-| Create | Missing or tombstoned | Existing create/recreate behavior; supplied valid version is ignored |
+| Create without a condition | Live | Existing update behavior; supplied version is an equality condition |
+| Create without a condition | Missing or tombstoned | Existing create/recreate behavior; supplied valid version is ignored |
 
 The shared recursive typed-value codec preserves nested int64 and finite float64
 values across HTTP and gRPC. HTTP request documents must be typed objects, with
@@ -204,8 +205,37 @@ Validate complete batch
 Tombstone replacement during creation atomically requires a still-deleted target.
 If another writer has recreated it, the write reports a conflict; the newly live
 document cannot be overwritten by the stale replacement attempt. Explicit zero
-and create/version 1 retain their accepted meanings. New insert-only rules remain
-[proposed](../../../../.agents/notes/proposed/feature/2026-09-07-replication-push-insert-only.md).
+and create/version 1 retain their accepted meanings when no create condition is
+supplied.
+
+### Explicit Create Conditions
+
+An optional `createCondition` field expresses creation intent independently of
+version zero. Keeping it separate preserves existing request meanings:
+
+| Condition | Valid version input | Write predicate |
+|---|---|---|
+| Omitted | Existing optional-version rules | Existing behavior |
+| `absent` | Omitted | Pure insert into an unoccupied identity; tombstones count as occupied |
+| `tombstone` | Nonnegative typed int64 required | Existing retained tombstone with the exact version; no insertion fallback |
+
+The field is valid only for create. Null, empty, unknown, or non-string values and
+invalid version combinations reject the complete request before writes. Local
+Query validation and gRPC optional enum presence preserve the same distinctions;
+explicitly unspecified and unknown enum values are invalid.
+
+Query reads authoritative state including tombstones, then carries the condition
+to Store.Create. A failed write is followed by an authoritative observation for
+its conflict: absent state is `missing`, a tombstone is `tombstoned` even for a
+wrong version, and live state is `already_exists`. The response retains real typed
+current state or raw null. Other write/read failures propagate.
+
+Deploy condition-aware services before clients send this field. Physical purge
+can make an identity absent again; reused versions across document lifetimes
+can satisfy a later tombstone condition. These predicates provide neither a
+generation identifier nor exactly-once retry semantics. The
+[create-condition decision](../../../../.agents/notes/implemented/feature/2026-09-07-replication-push-insert-only.md)
+records the alternatives and costs.
 
 ### Encoded Message Budgets
 

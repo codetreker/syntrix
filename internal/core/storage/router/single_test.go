@@ -15,7 +15,7 @@ type fakeDocumentStore struct{}
 func (f *fakeDocumentStore) Get(ctx context.Context, database string, path string, opts ...types.ReadOptions) (*types.StoredDoc, error) {
 	return nil, nil
 }
-func (f *fakeDocumentStore) Create(ctx context.Context, database string, doc types.StoredDoc) error {
+func (f *fakeDocumentStore) Create(ctx context.Context, database string, doc types.StoredDoc, opts ...types.CreateOptions) error {
 	return nil
 }
 func (f *fakeDocumentStore) Update(ctx context.Context, database string, path string, data map[string]interface{}, pred model.Filters) error {

@@ -70,6 +70,121 @@ func TestReplicationPushPreconditions(t *testing.T) {
 		require.Contains(t, conflict, "current")
 	}
 	zero, one := int64(0), int64(1)
+	conditionalCreate := func(id, condition string, version *int64) map[string]any {
+		item := change("create", id, version)
+		item["createCondition"] = condition
+		return item
+	}
+
+	t.Run("absent create retry cannot overwrite or resurrect", func(t *testing.T) {
+		request := conditionalCreate("absent-create", "absent", nil)
+		require.Empty(t, push(request))
+		created, err := read("absent-create")
+		require.NoError(t, err)
+		require.False(t, created.Deleted)
+		require.Equal(t, int64(1), created.Version)
+		conflicts := push(request)
+		require.Len(t, conflicts, 1)
+		assertConflict(conflicts[0], 0, "absent-create", "already_exists")
+		current := decodePushCurrent(t, conflicts[0]["current"])
+		require.Equal(t, created.Version, current["version"])
+		afterRetry, err := read("absent-create")
+		require.NoError(t, err)
+		require.Equal(t, created, afterRetry)
+
+		require.Empty(t, push(change("delete", "absent-create", &one)))
+		deleted, err := read("absent-create")
+		require.NoError(t, err)
+		require.True(t, deleted.Deleted)
+		conflicts = push(request)
+		require.Len(t, conflicts, 1)
+		assertConflict(conflicts[0], 0, "absent-create", "tombstoned")
+		current = decodePushCurrent(t, conflicts[0]["current"])
+		require.Equal(t, true, current["deleted"])
+		require.Equal(t, deleted.Version, current["version"])
+		afterRetry, err = read("absent-create")
+		require.NoError(t, err)
+		require.Equal(t, deleted, afterRetry)
+	})
+
+	t.Run("tombstone create requires retained matching deleted version", func(t *testing.T) {
+		require.Empty(t, push(change("create", "conditional-live", nil), change("create", "conditional-deleted", nil)))
+		require.Empty(t, push(change("delete", "conditional-deleted", &one)))
+		live, err := read("conditional-live")
+		require.NoError(t, err)
+		deleted, err := read("conditional-deleted")
+		require.NoError(t, err)
+		conflicts := push(
+			conditionalCreate("conditional-missing", "tombstone", &one),
+			conditionalCreate("conditional-live", "tombstone", &one),
+			conditionalCreate("conditional-deleted", "tombstone", &zero),
+		)
+		require.Len(t, conflicts, 3)
+		assertConflict(conflicts[0], 0, "conditional-missing", "missing")
+		require.JSONEq(t, "null", string(conflicts[0]["current"]))
+		assertConflict(conflicts[1], 1, "conditional-live", "already_exists")
+		require.Equal(t, live.Version, decodePushCurrent(t, conflicts[1]["current"])["version"])
+		assertConflict(conflicts[2], 2, "conditional-deleted", "tombstoned")
+		require.Equal(t, deleted.Version, decodePushCurrent(t, conflicts[2]["current"])["version"])
+		_, err = read("conditional-missing")
+		require.ErrorIs(t, err, mongo.ErrNoDocuments)
+		unchanged, err := read("conditional-live")
+		require.NoError(t, err)
+		require.Equal(t, live, unchanged)
+		unchanged, err = read("conditional-deleted")
+		require.NoError(t, err)
+		require.Equal(t, deleted, unchanged)
+
+		request := conditionalCreate("conditional-deleted", "tombstone", &deleted.Version)
+		require.Empty(t, push(request))
+		recreated, err := read("conditional-deleted")
+		require.NoError(t, err)
+		require.False(t, recreated.Deleted)
+		require.Equal(t, int64(1), recreated.Version)
+		require.Equal(t, "create", recreated.Data["value"])
+		conflicts = push(request)
+		require.Len(t, conflicts, 1)
+		assertConflict(conflicts[0], 0, "conditional-deleted", "already_exists")
+		unchanged, err = read("conditional-deleted")
+		require.NoError(t, err)
+		require.Equal(t, recreated, unchanged)
+	})
+
+	t.Run("invalid later create condition prevents all writes", func(t *testing.T) {
+		negative := int64(-1)
+		for _, item := range []struct {
+			name      string
+			action    string
+			condition any
+			version   *int64
+		}{
+			{"null", "create", nil, nil},
+			{"empty", "create", "", nil},
+			{"unknown", "create", "unknown", nil},
+			{"update", "update", "absent", nil},
+			{"delete", "delete", "tombstone", &one},
+			{"absent-zero", "create", "absent", &zero},
+			{"tombstone-omitted", "create", "tombstone", nil},
+			{"tombstone-negative", "create", "tombstone", &negative},
+		} {
+			t.Run(item.name, func(t *testing.T) {
+				id := "condition-first-" + item.name
+				invalidID := "condition-invalid-" + item.name
+				invalid := change(item.action, invalidID, item.version)
+				invalid["createCondition"] = item.condition
+				resp := env.MakeRequest(t, http.MethodPost, "/replication/v1/databases/default/push", map[string]any{
+					"collection": collection,
+					"changes":    []map[string]any{conditionalCreate(id, "absent", nil), invalid},
+				}, token)
+				defer resp.Body.Close()
+				require.Equal(t, http.StatusBadRequest, resp.StatusCode)
+				_, err := read(id)
+				require.ErrorIs(t, err, mongo.ErrNoDocuments)
+				_, err = read(invalidID)
+				require.ErrorIs(t, err, mongo.ErrNoDocuments)
+			})
+		}
+	})
 
 	t.Run("create preserves omitted zero and one versions", func(t *testing.T) {
 		for _, item := range []struct {

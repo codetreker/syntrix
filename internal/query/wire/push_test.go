@@ -157,6 +157,8 @@ func TestPushRejectsLegacyDocumentConflicts(t *testing.T) {
 
 func TestPushEncodedByteBoundaries(t *testing.T) {
 	req := pushFixture()
+	req.Changes[0].Action = types.PushCreate
+	req.Changes[0].CreateCondition = types.CreateIfAbsent
 	req.Changes[0].Doc.Data = map[string]interface{}{"padding": strings.Repeat("x", MaxGRPCBytes-1024)}
 	encoded, err := EncodePushRequest("db", req)
 	require.NoError(t, err)
@@ -208,4 +210,81 @@ func TestPushResponseBudgetIncludesAllConflicts(t *testing.T) {
 	encoded, err := EncodePushResponse("db", req, response)
 	require.Nil(t, encoded)
 	require.ErrorIs(t, err, model.ErrQueryWorkLimit)
+}
+
+func TestPushCreateConditionPresence(t *testing.T) {
+	for _, condition := range []types.CreateCondition{"", types.CreateIfAbsent, types.CreateIfTombstone} {
+		req := pushFixture()
+		req.Changes[0].Action = types.PushCreate
+		req.Changes[0].CreateCondition = condition
+		if condition == types.CreateIfTombstone {
+			req.Changes[0].BaseVersion = proto.Int64(0)
+		}
+		encoded, err := EncodePushRequest("db", req)
+		require.NoError(t, err)
+		require.Equal(t, condition == "", encoded.Changes[0].CreateCondition == nil)
+		payload, err := proto.Marshal(encoded)
+		require.NoError(t, err)
+		var remote pb.PushRequest
+		require.NoError(t, proto.Unmarshal(payload, &remote))
+		decoded, err := DecodePushRequest(&remote)
+		require.NoError(t, err)
+		require.Equal(t, req, decoded)
+	}
+	for _, condition := range []pb.PushCreateCondition{pb.PushCreateCondition_PUSH_CREATE_CONDITION_UNSPECIFIED, pb.PushCreateCondition(99)} {
+		encoded, err := EncodePushRequest("db", pushFixture())
+		require.NoError(t, err)
+		encoded.Changes[0].CreateCondition = condition.Enum()
+		_, err = DecodePushRequest(encoded)
+		require.ErrorIs(t, err, model.ErrInvalidQuery)
+	}
+	req := pushFixture()
+	req.Changes[0].CreateCondition = "unknown"
+	_, err := EncodePushRequest("db", req)
+	require.ErrorIs(t, err, model.ErrInvalidQuery)
+}
+
+func TestConditionalCreateConflictStates(t *testing.T) {
+	for _, condition := range []types.CreateCondition{types.CreateIfAbsent, types.CreateIfTombstone} {
+		req := pushFixture()
+		req.Changes[0].Action = types.PushCreate
+		req.Changes[0].CreateCondition = condition
+		if condition == types.CreateIfTombstone {
+			req.Changes[0].BaseVersion = proto.Int64(4)
+		}
+		for _, reason := range []types.PushConflictReason{types.PushAlreadyExists, types.PushTombstoned, types.PushMissing} {
+			current := *req.Changes[0].Doc
+			current.Version = 9
+			conflict := types.ReplicationPushConflict{ID: "alice", Reason: reason, Current: &current}
+			if reason == types.PushTombstoned {
+				current.Deleted = true
+			}
+			if reason == types.PushMissing {
+				conflict.Current = nil
+			}
+			response := &types.ReplicationPushResponse{Conflicts: []types.ReplicationPushConflict{conflict}}
+			encoded, err := EncodePushResponse("db", req, response)
+			require.NoError(t, err)
+			decoded, err := DecodePushResponse("db", req, encoded)
+			require.NoError(t, err)
+			require.Equal(t, response, decoded)
+		}
+	}
+}
+
+func TestConditionalCreateRejectsLegacyConflictReasons(t *testing.T) {
+	req := pushFixture()
+	req.Changes[0].Action = types.PushCreate
+	req.Changes[0].CreateCondition = types.CreateIfTombstone
+	req.Changes[0].BaseVersion = proto.Int64(4)
+	current := *req.Changes[0].Doc
+	for _, reason := range []types.PushConflictReason{types.PushVersionMismatch, types.PushPreconditionFailed} {
+		current.Version = 3
+		if reason == types.PushPreconditionFailed {
+			current.Version = 4
+		}
+		response := &types.ReplicationPushResponse{Conflicts: []types.ReplicationPushConflict{{ID: "alice", Reason: reason, Current: &current}}}
+		_, err := EncodePushResponse("db", req, response)
+		require.Error(t, err)
+	}
 }

@@ -27,7 +27,17 @@ func EncodePushRequest(database string, req types.ReplicationPushRequest) (*pb.P
 		if err != nil {
 			return nil, fmt.Errorf("%w: change %d: %v", model.ErrInvalidQuery, i, err)
 		}
-		out.Changes = append(out.Changes, &pb.PushChange{Action: action, Document: doc, BaseVersion: c.BaseVersion})
+		var condition *pb.PushCreateCondition
+		switch c.CreateCondition {
+		case "":
+		case types.CreateIfAbsent:
+			condition = pb.PushCreateCondition_PUSH_CREATE_CONDITION_ABSENT.Enum()
+		case types.CreateIfTombstone:
+			condition = pb.PushCreateCondition_PUSH_CREATE_CONDITION_TOMBSTONE.Enum()
+		default:
+			return nil, fmt.Errorf("%w: change %d has invalid create condition", model.ErrInvalidQuery, i)
+		}
+		out.Changes = append(out.Changes, &pb.PushChange{Action: action, Document: doc, BaseVersion: c.BaseVersion, CreateCondition: condition})
 	}
 	if proto.Size(out) > MaxGRPCBytes {
 		return nil, fmt.Errorf("%w: encoded push request exceeds %d bytes", model.ErrInvalidQuery, MaxGRPCBytes)
@@ -60,7 +70,18 @@ func DecodePushRequest(req *pb.PushRequest) (types.ReplicationPushRequest, error
 		if err != nil {
 			return out, fmt.Errorf("%w: change %d: %v", model.ErrInvalidQuery, i, err)
 		}
-		out.Changes = append(out.Changes, types.ReplicationPushChange{Action: action, Doc: doc, BaseVersion: c.BaseVersion})
+		var condition types.CreateCondition
+		if c.CreateCondition != nil {
+			switch *c.CreateCondition {
+			case pb.PushCreateCondition_PUSH_CREATE_CONDITION_ABSENT:
+				condition = types.CreateIfAbsent
+			case pb.PushCreateCondition_PUSH_CREATE_CONDITION_TOMBSTONE:
+				condition = types.CreateIfTombstone
+			default:
+				return out, fmt.Errorf("%w: change %d has invalid create condition", model.ErrInvalidQuery, i)
+			}
+		}
+		out.Changes = append(out.Changes, types.ReplicationPushChange{Action: action, Doc: doc, BaseVersion: c.BaseVersion, CreateCondition: condition})
 	}
 	return out, nil
 }
@@ -177,11 +198,11 @@ func ValidatePushResponse(database string, req types.ReplicationPushRequest, res
 		case types.PushTombstoned:
 			valid = c.Current != nil && c.Current.Deleted
 		case types.PushVersionMismatch:
-			valid = c.Current != nil && !c.Current.Deleted && change.BaseVersion != nil && c.Current.Version != *change.BaseVersion
+			valid = change.CreateCondition == "" && c.Current != nil && !c.Current.Deleted && change.BaseVersion != nil && c.Current.Version != *change.BaseVersion
 		case types.PushAlreadyExists:
 			valid = c.Current != nil && !c.Current.Deleted && (change.Action == types.PushCreate || (change.Action == types.PushUpdate && change.BaseVersion == nil))
 		case types.PushPreconditionFailed:
-			valid = c.Current != nil && !c.Current.Deleted && (change.BaseVersion == nil || c.Current.Version == *change.BaseVersion)
+			valid = change.CreateCondition == "" && c.Current != nil && !c.Current.Deleted && (change.BaseVersion == nil || c.Current.Version == *change.BaseVersion)
 		}
 		if !valid || strings.ContainsAny(c.ID, "/\x00") {
 			return fmt.Errorf("inconsistent push conflict state")

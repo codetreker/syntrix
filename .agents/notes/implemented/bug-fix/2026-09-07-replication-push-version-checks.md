@@ -44,12 +44,13 @@ flattened; SDK outbound bigint encoding remains separate work.
 | Unversioned update | Missing or tombstoned | Existing create/recreate behavior |
 | Unversioned delete | Live | Delete |
 | Unversioned delete | Missing or tombstoned | Idempotent success |
-| Explicit create | Missing or tombstoned | Existing create/recreate behavior; supplied valid version is ignored |
-| Explicit create | Live | Existing update behavior, conditional when a version is supplied |
+| Create without a condition | Missing or tombstoned | Existing create/recreate behavior; supplied valid version is ignored |
+| Create without a condition | Live | Existing update behavior, conditional when a version is supplied |
 
 Storage assigns resulting versions. Explicit zero remains an equality condition
-on live targets. Strict insert-only create and new invalid action/version
-combinations are separately [proposed](../../proposed/feature/2026-09-07-replication-push-insert-only.md).
+on live targets. The later [create-condition decision](../feature/2026-09-07-replication-push-insert-only.md)
+adds explicit absent/tombstone predicates while preserving these default rules.
+It does not adopt the original proposal to reinterpret version zero.
 
 ### Encoded message limits
 
@@ -73,7 +74,7 @@ version predicates. Reads do not lock the document or establish linearizability.
 A failed predicate or missing write target triggers another authoritative read;
 non-conflict storage errors and failed conflict reads propagate.
 
-Create retains tombstone replacement, but replacement must atomically match
+Default Create retains tombstone replacement, but replacement must atomically match
 `deleted=true` and verify that a record matched. A competing live recreation
 returns `ErrExists`; Push reads actual current state before reporting its conflict.
 It never fabricates a tombstone or document after a failed write.
@@ -114,9 +115,10 @@ client-contract decision.
 conflict-array shape, but invents authoritative version and deletion metadata.
 Structured conflict outcomes preserve absence and retained deletion separately.
 
-**Introduce strict insert-only create together with the repair.** This changes
-accepted create/version combinations and tombstone recreation policy. The
-separate proposal retains that decision and its future atomic-write requirements.
+**Introduce strict insert-only create together with the repair.** The original
+proposal would have changed accepted create/version combinations and tombstone
+recreation policy. The later explicit-condition decision provides the creation
+guarantees separately, preserving existing meanings when its option is omitted.
 
 ## Consequences
 

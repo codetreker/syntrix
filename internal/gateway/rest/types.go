@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/syntrixbase/syntrix/internal/core/identity/types"
+	"github.com/syntrixbase/syntrix/internal/core/storage"
 	"github.com/syntrixbase/syntrix/pkg/model"
 )
 
@@ -15,7 +16,8 @@ type ReplicaChange struct {
 	// Doc is an application object encoded as a typed value on the wire.
 	Doc model.Document `json:"document"`
 
-	BaseVersion *int64 `json:"-"`
+	BaseVersion     *int64                  `json:"-"`
+	CreateCondition storage.CreateCondition `json:"createCondition,omitempty"`
 }
 
 func (c ReplicaChange) MarshalJSON() ([]byte, error) {
@@ -24,9 +26,10 @@ func (c ReplicaChange) MarshalJSON() ([]byte, error) {
 		return nil, err
 	}
 	return json.Marshal(struct {
-		Action string          `json:"action"`
-		Doc    json.RawMessage `json:"document"`
-	}{Action: c.Action, Doc: doc})
+		Action          string                  `json:"action"`
+		Doc             json.RawMessage         `json:"document"`
+		CreateCondition storage.CreateCondition `json:"createCondition,omitempty"`
+	}{Action: c.Action, Doc: doc, CreateCondition: c.CreateCondition})
 }
 
 func (c *ReplicaChange) UnmarshalJSON(data []byte) error {
@@ -34,13 +37,23 @@ func (c *ReplicaChange) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	var raw struct {
-		Action string          `json:"action"`
-		Doc    json.RawMessage `json:"document"`
+		Action          string          `json:"action"`
+		Doc             json.RawMessage `json:"document"`
+		CreateCondition json.RawMessage `json:"createCondition"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
 	}
 
+	var condition storage.CreateCondition
+	if len(raw.CreateCondition) > 0 {
+		if err := json.Unmarshal(raw.CreateCondition, &condition); err != nil {
+			return fmt.Errorf("invalid createCondition: %w", err)
+		}
+		if condition != storage.CreateIfAbsent && condition != storage.CreateIfTombstone {
+			return errors.New("createCondition must be absent or tombstone")
+		}
+	}
 	value, err := model.DecodeTypedValue(raw.Doc)
 	if err != nil {
 		return fmt.Errorf("invalid document: %w", err)
@@ -49,7 +62,7 @@ func (c *ReplicaChange) UnmarshalJSON(data []byte) error {
 	if !ok {
 		return errors.New("document must be a typed object")
 	}
-	decoded := ReplicaChange{Action: raw.Action, Doc: model.Document(fields)}
+	decoded := ReplicaChange{Action: raw.Action, Doc: model.Document(fields), CreateCondition: condition}
 	if value, exists := fields["version"]; exists {
 		version, ok := value.(int64)
 		if !ok || version < 0 {

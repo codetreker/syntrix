@@ -10,6 +10,7 @@ import (
 	"github.com/syntrixbase/syntrix/pkg/model"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 	"strings"
 	"testing"
 )
@@ -53,4 +54,22 @@ func TestPushOversizedConflictReturnsWorkLimit(t *testing.T) {
 	_, err := NewServer(service).Push(context.Background(), &pb.PushRequest{Database: "db", Collection: "users", Changes: []*pb.PushChange{{Action: pb.PushAction_PUSH_ACTION_CREATE, Document: &pb.Document{Fullpath: "users/alice", Data: []byte(`{"type":"null"}`)}}}})
 	require.Equal(t, codes.ResourceExhausted, status.Code(err))
 	service.AssertExpectations(t)
+}
+
+func TestPushCreateConditionInvalidLaterChangeRejectsBeforeService(t *testing.T) {
+	for _, bad := range []*pb.PushChange{
+		{Action: pb.PushAction_PUSH_ACTION_CREATE, CreateCondition: pb.PushCreateCondition_PUSH_CREATE_CONDITION_UNSPECIFIED.Enum()},
+		{Action: pb.PushAction_PUSH_ACTION_CREATE, CreateCondition: pb.PushCreateCondition(99).Enum()},
+		{Action: pb.PushAction_PUSH_ACTION_UPDATE, CreateCondition: pb.PushCreateCondition_PUSH_CREATE_CONDITION_ABSENT.Enum()},
+		{Action: pb.PushAction_PUSH_ACTION_DELETE, CreateCondition: pb.PushCreateCondition_PUSH_CREATE_CONDITION_TOMBSTONE.Enum(), BaseVersion: proto.Int64(1)},
+		{Action: pb.PushAction_PUSH_ACTION_CREATE, CreateCondition: pb.PushCreateCondition_PUSH_CREATE_CONDITION_ABSENT.Enum(), BaseVersion: proto.Int64(0)},
+		{Action: pb.PushAction_PUSH_ACTION_CREATE, CreateCondition: pb.PushCreateCondition_PUSH_CREATE_CONDITION_TOMBSTONE.Enum()},
+	} {
+		bad.Document = &pb.Document{Fullpath: "users/bad", Data: []byte(`{"type":"null"}`)}
+		service := new(MockService)
+		request := &pb.PushRequest{Database: "db", Collection: "users", Changes: []*pb.PushChange{{Action: pb.PushAction_PUSH_ACTION_CREATE, Document: &pb.Document{Fullpath: "users/first", Data: []byte(`{"type":"null"}`)}}, bad}}
+		_, err := NewServer(service).Push(context.Background(), request)
+		require.Equal(t, codes.InvalidArgument, status.Code(err))
+		service.AssertNotCalled(t, "Push", mock.Anything, mock.Anything, mock.Anything)
+	}
 }

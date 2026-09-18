@@ -231,13 +231,71 @@ Nested business values retain their declared numeric type.
 | Unversioned update | Missing or tombstoned | Create/recreate |
 | Unversioned delete | Live | Delete |
 | Unversioned delete | Missing or tombstoned | Idempotent success |
-| Create | Missing or tombstoned | Create/recreate; supplied valid version is ignored |
-| Create | Live | Update; enforce equality if a version is supplied |
+| Create without `createCondition` | Missing or tombstoned | Create/recreate; supplied valid version is ignored |
+| Create without `createCondition` | Live | Update; enforce equality if a version is supplied |
 
-Explicit zero remains an equality precondition on live targets. `create` with
-version 1 remains accepted. Strict insert-only creation and restrictions on
-otherwise valid action/version combinations remain
-[proposed](../../.agents/notes/proposed/feature/2026-09-07-replication-push-insert-only.md).
+Explicit zero remains an equality precondition on live targets. Without a
+`createCondition`, create with version 0 or 1 and update/delete with version 0
+retain their existing behavior.
+
+### Create Conditions
+
+A change may include `createCondition` alongside `action` and `document`. It is
+valid only with `action: "create"`:
+
+| `createCondition` | Version requirement | Result |
+|---|---|---|
+| Omitted | Existing optional-version rules | Default create behavior |
+| `absent` | Version must be omitted | Atomic insert only when no live record or retained tombstone exists |
+| `tombstone` | Version required as a nonnegative typed int64 | Atomic replacement only of a retained tombstone at that version |
+
+Example changes, placed inside the request's `changes` array:
+
+```json
+[
+  {
+    "action": "create",
+    "createCondition": "absent",
+    "document": {
+      "type": "object",
+      "value": { "id": { "type": "string", "value": "new-message" } }
+    }
+  },
+  {
+    "action": "create",
+    "createCondition": "tombstone",
+    "document": {
+      "type": "object",
+      "value": {
+        "id": { "type": "string", "value": "removed-message" },
+        "version": { "type": "int64", "value": "7" },
+        "text": { "type": "string", "value": "Recreated message" }
+      }
+    }
+  }
+]
+```
+
+Null, empty, unknown, or non-string conditions return HTTP 400. So do conditions
+on update/delete, any supplied version with `absent`, or a missing/invalid version
+with `tombstone`. The entire request is validated before any storage operation.
+Explicit typed-int64 zero is valid for the tombstone version and matches only
+that version; it is not an insert-only sentinel.
+
+A rejected conditional create returns the existing conflict shape: `missing`
+with null for absence, `tombstoned` with the real tombstone even when its version
+mismatches, or `already_exists` with the live document. The actual storage write
+must enforce the condition after any initial read. A tombstone condition never
+falls back to inserting a missing target; an absent condition never replaces a
+tombstone. Storage assigns the recreated document's resulting metadata.
+
+Conditions describe current stored state, not a permanent document generation.
+Physical cleanup makes an identity eligible for absent creation again. Reused
+versions after delete/recreate cycles can satisfy a later tombstone condition
+(ABA); there is no generation or exactly-once guarantee. Deploy condition-aware
+Gateway and Query services before sending the new field. The
+[create-condition decision](../../.agents/notes/implemented/feature/2026-09-07-replication-push-insert-only.md)
+records these guarantees and limits.
 
 ### Push Size Limits
 
@@ -259,9 +317,9 @@ without truncation; earlier changes in the batch may already have committed.
 | Reason | Meaning |
 |---|---|
 | `missing` | Target is absent; `current` is null |
-| `tombstoned` | Target is a retained tombstone |
+| `tombstoned` | Target is a retained tombstone, including a conditional recreation with the wrong version |
 | `version_mismatch` | Live target has a different version |
-| `already_exists` | A create/recreate attempt lost to an existing live target |
+| `already_exists` | A create condition rejects a live target, or a create/recreate attempt lost to one |
 | `precondition_failed` | The write failed its condition, but the later read cannot identify a more specific cause |
 
 Push uses the database's write source for initial and conflict reads and includes

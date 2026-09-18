@@ -11,6 +11,29 @@ import (
 	"go.mongodb.org/mongo-driver/bson"
 )
 
+func ResolveCreateOptions(opts []CreateOptions) (CreateOptions, error) {
+	if len(opts) > 1 {
+		return CreateOptions{}, fmt.Errorf("create accepts at most one CreateOptions value")
+	}
+	var resolved CreateOptions
+	if len(opts) == 1 {
+		resolved = opts[0]
+	}
+	switch resolved.Condition {
+	case "", CreateIfAbsent:
+		if resolved.ExpectedVersion != nil {
+			return CreateOptions{}, fmt.Errorf("expected version requires tombstone create condition")
+		}
+	case CreateIfTombstone:
+		if resolved.ExpectedVersion == nil || *resolved.ExpectedVersion < 0 {
+			return CreateOptions{}, fmt.Errorf("tombstone create requires a nonnegative expected version")
+		}
+	default:
+		return CreateOptions{}, fmt.Errorf("unsupported create condition: %q", resolved.Condition)
+	}
+	return resolved, nil
+}
+
 // ResolveReadOptions preserves default routing only when no other consistency is requested.
 func ResolveReadOptions(opts []ReadOptions) (ReadOptions, error) {
 	if len(opts) > 1 {

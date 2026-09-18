@@ -29,6 +29,14 @@ func ValidatePushRequest(database string, req storage.ReplicationPushRequest) er
 		if change.BaseVersion != nil && *change.BaseVersion < 0 {
 			return fmt.Errorf("%w: change %d has negative version", model.ErrInvalidQuery, i)
 		}
+		if change.CreateCondition != "" {
+			if change.Action != storage.PushCreate ||
+				(change.CreateCondition == storage.CreateIfAbsent && change.BaseVersion != nil) ||
+				(change.CreateCondition == storage.CreateIfTombstone && change.BaseVersion == nil) ||
+				(change.CreateCondition != storage.CreateIfAbsent && change.CreateCondition != storage.CreateIfTombstone) {
+				return fmt.Errorf("%w: change %d has invalid create condition", model.ErrInvalidQuery, i)
+			}
+		}
 		doc := change.Doc
 		if doc == nil || (doc.Database != "" && doc.Database != database) || (doc.Collection != "" && doc.Collection != req.Collection) || (doc.Deleted && change.Action != storage.PushDelete) {
 			return fmt.Errorf("%w: change %d has invalid document scope or action", model.ErrInvalidQuery, i)
@@ -69,6 +77,11 @@ func (e *Engine) Push(ctx context.Context, database string, req storage.Replicat
 		current, err := e.pushCurrent(ctx, database, path)
 		if err != nil {
 			return nil, err
+		}
+		if (change.CreateCondition == storage.CreateIfAbsent && current != nil) ||
+			(change.CreateCondition == storage.CreateIfTombstone && (current == nil || !current.Deleted || current.Version != *change.BaseVersion)) {
+			conflicts = append(conflicts, pushConflict(index, path, change, current, true))
+			continue
 		}
 		missing := current == nil || current.Deleted
 		if change.Action != storage.PushCreate && change.BaseVersion != nil && missing {
@@ -120,6 +133,9 @@ func (e *Engine) writePushChange(ctx context.Context, database, collection, path
 	data := normalized.(map[string]interface{})
 	if creating {
 		doc := storage.NewStoredDoc(database, collection, strings.TrimPrefix(path, collection+"/"), data)
+		if change.CreateCondition != "" {
+			return e.storage.Create(ctx, database, doc, storage.CreateOptions{Condition: change.CreateCondition, ExpectedVersion: change.BaseVersion})
+		}
 		return e.storage.Create(ctx, database, doc)
 	}
 	filters := model.Filters{}
