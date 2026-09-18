@@ -1,6 +1,6 @@
 # Replication Client Design (RxDB + Syntrix replication/realtime)
 
-**Status:** Manual Pull and WebSocket lifecycle are implemented; the durable replication coordinator remains planned.
+**Status:** Manual Pull, WebSocket lifecycle, and a private native replication runtime are implemented. The public local database API and automatic HTTP synchronization remain planned.
 
 ## Context & Why
 - We need offline-first replication for web clients using RxDB as local store.
@@ -13,7 +13,7 @@
 - Reliable pull/push replication using RxDB, with typed wire values and flattened decoded documents that exclude storage internals.
 - Realtime events only trigger pulls; checkpoint managed solely by pull responses.
 - Conflict-safe push with server-returned conflicts written back or surfaced.
-- Offline tolerance: queued pushes (outbox), resumable pulls with checkpoint persistence.
+- Offline tolerance: durable local changes, resumable pulls, and native replication metadata.
 
 ## Non-Goals
 - Owning server checkpoint or transport design, defined in the [replication reference](../../reference/replication.md).
@@ -24,11 +24,11 @@
 - `/realtime/ws` (or `/realtime/sse`) can subscribe per collection and delivers at least `{ collection, id, action, updatedAt, deleted? }` plus some monotonic seq/lsn (used only for diagnostics; not trusted as checkpoint).
 - HTTP replication follows the [replication reference](../../reference/replication.md).
 - Token-based auth reusable for realtime channel; reconnect allowed.
-- RxDB available (Dexie storage) in client environment.
+- The SDK owns its pinned RxDB/Dexie runtime and loads it lazily; applications do not supply an RxDB instance.
 
 ## Data Model (flattened)
 - Decoded fields: `id`, `collection`, optional deletion flag and server metadata, plus business fields. HTTP uses recursive typed values; int64 values decode to bigint.
-- RxDB primary key: `id`. Indexes: `updatedAt`, `collection`, optionally business fields.
+- The private runtime accepts storage records and source adapters. The application-facing local schema, typed-value persistence codec, and query indexes remain part of the local database implementation.
 - Tombstones clear former business fields. Minimal logical deletions contain only identity and `deleted: true`; timestamps and version can be absent. Physical cleanup is not another business deletion. See [deletion semantics](../server/core/storage/03.stores.md#document-deletion-and-physical-cleanup).
 
 ## Implemented Manual Pull
@@ -51,124 +51,113 @@ Document version is not source order and must not suppress delete/recreate chang
 Full-scope access currently requires the database owner or matching `db_admin`;
 this authorization profile remains provisional pending approval.
 
-The manual API does not schedule future pulls, persist checkpoints, or maintain
-an outbox. The remaining components and flows below describe the planned
-coordinator owned by the [offline replication proposal](../../../.agents/notes/proposed/feature/2026-09-07-sdk-offline-replication.md).
+The manual API does not schedule future pulls or persist checkpoints. It remains
+independent of the private runtime below.
 
-## Planned Coordinator Components
-- **ReplicationCoordinator**: high-level orchestrator per collection; owns pull/push workers, realtime trigger wiring, state, callbacks.
-- **PullWorker**: executes `/replication/v1/databases/{database}/pull` with `{collection, checkpoint, limit}`; writes results into RxDB; updates CheckpointStore.
-- **PushWorker**: drains Outbox to `/replication/v1/databases/{database}/push`; handles conflicts by writing server docs or invoking conflict hook.
-- **RealtimeTrigger**: listens `/realtime/ws` (or `/realtime/sse`); enqueues pull requests (no checkpoint from event).
-- **CheckpointStore**: persists opaque per-account/database/collection checkpoints in the same local transaction as page application.
-- **Outbox**: local queue of pending writes (create/update/replace/delete), durable across reloads.
+## Private Native Runtime
 
-## SDK Architecture (public surface)
-- The package exports existing clients and manual Pull types; coordinator types remain planned.
-- Public clients remain:
-	- `SyntrixClient` for CRUD/query and manual Pull over HTTP.
-	- `TriggerClient` for trigger writes.
-	- `TriggerHandler` wrapper for trigger payload execution.
-- New replication surface (planned):
-	- `createReplicationCoordinator(options): ReplicationCoordinator` factory.
-	- Interfaces: `ReplicationOptions`, `PushOptions`, `RealtimeOptions`, `CheckpointStore`, `OutboxAdapter`, hooks types.
-- Suggested layout under `src/replication/`:
-	- `coordinator.ts` (orchestrator, public entry)
-	- `pull.ts` (PullWorker)
-	- `push.ts` (PushWorker)
-	- `realtime.ts` (trigger wiring abstraction)
-	- `checkpoint.ts`, `outbox.ts` (pluggable adapters)
-	- `types.ts` (options, hooks, DTOs)
+The SDK owns a pinned RxDB 17.5.0 replication protocol with caller-owned fork and
+metadata stores. A source adapter supplies normalized records, an opaque
+checkpoint, and a completion flag; a write adapter supplies remote acknowledgements
+or conflicts. The runtime does not yet connect these adapters to Syntrix HTTP.
 
-### High-level call graph (SDK)
-```
-App
- |- SyntrixClient (HTTP CRUD/query)
- |- createReplicationCoordinator({...})
-			|- PullWorker -> /replication/v1/databases/{database}/pull -> RxDB collections
-			|- PushWorker -> /replication/v1/databases/{database}/push -> Outbox mgmt
-			|- RealtimeTrigger -> schedules PullWorker
-			|- CheckpointStore / OutboxAdapter -> persistence
-```
+| Responsibility | Contract and rationale |
+|---|---|
+| Downstream persistence | Finish the current page before reading the next; slow storage cannot accumulate uncommitted pages |
+| Metadata and checkpoints | Returned storage errors and rejected promises stop replication; a failed write cannot acknowledge progress |
+| Durable completion hook | Run after native page persistence and checkpoint completion; the owning source layer can finish activation before readiness |
+| Initial upload barrier | Every new instance waits for a fresh completed source round and its durable hook, including when saved metadata exists |
+| Empty source page | Advancing progress requires an identifiable control record; a terminal page may be empty when its checkpoint matches the already persisted position |
+| Failure | Cancel admission before the first diagnostic; recovery uses a new instance and retained durable metadata |
+| Shutdown | Abort handlers, unsubscribe scheduling, and drain owned storage calls, hooks, and native queues; the caller closes the stores |
 
-### Initialization flow
-1) App constructs `SyntrixClient` (baseURL, token) and RxDB database with collections.
-2) App calls `createReplicationCoordinator({ collection, client, rxdbCollection, checkpointStore, outboxAdapter, realtime, hooks, backoff, limits })`.
-3) Coordinator wires realtime subscription (if enabled), starts a safety pull timer, and optionally runs an initial pull.
-4) App writes go through RxDB and enqueue to Outbox (via helper we provide or explicit call). PushWorker drains automatically.
+The completion flag is the adapter's claim about its source. The runtime does not
+infer completion from page length or convert a document version into source
+order. Source membership, generation activation, and HTTP checkpoint interpretation
+remain the source adapter's responsibility.
 
-### Public usage patterns
-- **Online-first read**: keep using `SyntrixClient.query` for server truth.
-- **Offline-first read**: read from RxDB directly; coordinator keeps it synced.
-- **Write**: write to RxDB + Outbox helper; PushWorker syncs; conflicts surfaced via hook.
-- **Control**: expose `start()`, `pause()`, `resume()`, `shutdown()` on coordinator for lifecycle (e.g., tab visibility, logout).
-- **Metrics/diagnostics**: hooks emit pull/push timings, counts, last checkpoint for observability.
+### Bounded upstream scheduling
 
-## Control Flow
-```
-[realtime event] -> [trigger queue] --(throttle 200-500ms)--> [PullWorker]
-[interval timer]  ------------------------------------------^
-[app writes] -> [Outbox] -> [PushWorker]
+```text
+real storage changes --> one dirty flag
+                              |
+                   native up/down idle
+                              |
+                           RESYNC
+                              |
+                    durable changed-doc scan
+                              |
+                    serialized remote writes
 ```
 
-### Pull sequence (happy path)
-1) Load the scope's opaque checkpoint; null starts initialization.
-2) Call the manual Pull API with `{collection, checkpoint, limit}`.
-3) Apply document states and deletions and save the checkpoint in one transaction.
-4) Continue while `caughtUp` is false, including empty pages; retries keep saved progress.
-5) Emit success callbacks only after local commit. On resynchronization, rebuild the server mirror while preserving pending local edits.
+The protocol-facing fork has an empty live change feed. The real feed remains
+available to local consumers and schedules work through the dirty flag, including
+native conflict-resolution writes. The decorator cannot be unwrapped to bypass
+its admission checks. Before source readiness, scans return no records and the
+unchanged checkpoint; remote writes do not wait inside a native handler. This
+avoids a cycle in which downstream waits for active upstream work while upstream
+waits for source completion.
 
-### Push sequence
-1) Read batch from Outbox (bounded size).
-2) Encode every change's document as a recursive typed object and send
-   `/replication/v1/databases/{database}/push` with `{collection, changes}`.
-   Preserve bigint as canonical int64 strings and number as float64. The server
-   accepts this transport; the SDK Pusher and encoder remain planned.
-3) On success, remove sent entries from Outbox.
-4) Correlate structured conflicts to sent entries by `changeIndex`. Decode a
-   non-null typed `current` object into the document or tombstone; treat raw JSON
-   null as authoritative absence under the
-   selected resolution policy. Emit `onConflict(conflicts, locals?)` with the reason
-   and original request item. Do not upsert the conflict wrapper as a document.
-5) Errors: retry with backoff, keep Outbox intact.
+The dirty flag is a scheduling hint. Durable local records and native checkpoints
+own pending work, so restarting does not depend on retaining in-memory events.
 
-### Realtime trigger policy
-- Event arrival only schedules a pull; event seq/lsn is not persisted as checkpoint.
-- Multiple events coalesced via throttle/debounce to a single pull.
-- On each subscription's `onReady`, schedule a pull with the last checkpoint to
-  reconcile changes missed before registration or during disconnection.
-- Periodic safety pull (e.g., every N minutes) to cover missed events.
+| Changed-document scan default | Bound |
+|---|---:|
+| Output records | 50 |
+| Target encoded JSON payload | 8 MiB |
+| Maximum encoded record | 16 MiB |
+| Records per underlying read | 4 |
+| Concurrent remote write adapter calls | 1 |
 
-## Error Handling & Resilience
-- Pull errors: exponential backoff with jitter; checkpoint unchanged until success.
-- Push errors: retain Outbox, retry with backoff; optionally surface fatal 4xx to app.
-- Network loss: pause realtime, keep Outbox; on regain, run pull then resume push.
-- Idempotency: RxDB upserts keyed by `id`; `updatedAt/version` prevent regression (drop stale writes if local version < incoming version when applicable).
+A legal record larger than the target travels alone. If only a prefix fits, the
+scanner rereads a smaller batch from the same starting checkpoint and recalculates
+sizes; it never truncates records while keeping the full batch's checkpoint.
+Oversized records fail the read without returning partial progress. These limits
+bound replication scan payloads, not total JavaScript heap or local query caches.
+Write-time record admission and local query/cache budgets belong to their owning
+layers. The existing HTTP Push request budget remains independently applicable.
+Returned source document arrays also have a 16 MiB encoded JSON limit by default;
+the source adapter must bound reads before allocating its response. Validation
+after the adapter returns cannot limit that earlier allocation.
 
-## Observability Hooks
-- `onPullScheduled(reason)`, `onPullSuccess(stats)`, `onPullError(err)`
-- `onPushSuccess(batchInfo)`, `onPushError(err)`
-- `onConflict(conflicts, locals?)`
+### Dependency delivery
 
-## Configuration Surface (draft)
-- `collection`: string (required)
-- `pullLimit`: number (default 200–500)
-- `pullThrottleMs`: number (e.g., 200–500)
-- `safetyPullIntervalMs`: optional periodic pull
-- `backoff`: { baseMs, maxMs, factor, jitter }
-- `checkpointStore`: pluggable (default RxDB key-value)
-- `outboxAdapter`: pluggable (default RxDB collection)
-- `realtime`: { enable: boolean, subscribe: fn, unsubscribe: fn }
-- `hooks`: callbacks listed above
+The private lazy bundle includes patched RxDB, Dexie, and RxJS plus third-party
+license notices. The remote client entry does not import it. Build validation
+checks pinned dependency versions, patch identity/application, and absence of
+external vendor imports. An isolated packed-package consumer exercises failure
+handling without workspace dependency resolution or consumer-installed patches.
 
-## Conflict Handling Options
-- Default: server-wins (apply each conflict's nullable `current` state and resolve
-  the matching Outbox entry by request position; duplicate IDs can represent
-  different operations).
-- Custom: app-provided merge in `onConflict`, then enqueue merged doc back to Outbox for retry.
+The [runtime decision](../../../.agents/notes/implemented/architecture/2026-09-18-sdk-native-replication-runtime.md)
+records the patch obligations, alternatives, and lifecycle costs. Passing native
+or fake-IndexedDB tests does not establish complete browser synchronization or
+power-loss guarantees.
 
-## Cleanup
-- Tombstone GC (optional): app can provide policy (e.g., delete tombstones older than N days after last checkpoint synced) to keep local store small.
+## Remaining Local Database Integration
+
+The [offline replication proposal](../../../.agents/notes/proposed/feature/2026-09-07-sdk-offline-replication.md)
+owns these unimplemented capabilities:
+
+- Public local database creation and SDK-owned persistence with account/database
+  identity isolation; public types do not expose RxDB objects.
+- Query-based remote sources mapped to independent local collection aliases,
+  membership exits, bounded windows, and durable generation activation.
+- Local CRUD, lossless typed-value storage, local query results, and dynamic watch.
+- Automatic typed HTTP Push, durable acknowledgement/conflict reconciliation,
+  cancellation, and recovery across restarts and reconnects.
+- Browser lifecycle, multi-tab ownership, storage cleanup, and end-to-end tests.
+
+Direct reads and writes retain the REST API. Push is an internal replication
+operation; a public manual Push method is not part of the local API. Native
+replication metadata owns delivery progress; a separate SDK outbox is not required.
+Legacy coordinator helpers are not connected to the new runtime or exported as a
+supported local API.
+
+Realtime notifications and registration `onReady` schedule authoritative source
+reads. Their events do not become checkpoints or replace source reconciliation.
+Tombstones convey deletion, and the same logical path ID may be recreated. Since
+its version may reset, comparing document versions alone cannot order replication
+history.
 
 ## Connection Health & Keepalive
 
@@ -238,21 +227,11 @@ interface RealtimeClientOptions {
 - Reuse bearer token for HTTP and realtime; refresh hooks must be supported before retry.
 - Validate collection names client-side before requests (defensive against misuse).
 
-## Open Questions / Decisions
-- Exact realtime payload shape and subscribe API (event source vs websocket vs SSE). We only require it can signal per-collection changes.
-- Should push include client `updatedAt/version` always, or only when available? (current protocol allows optional version).
-- Outbox persistence format: per-collection vs global queue; proposed per-collection for simpler retries.
+## Validation Boundaries
 
-## Testing Plan (to implement with the code)
-- Pull: checkpoint advance, tombstone handling, throttle coalescing, backoff on failures.
-- Push: outbox drain, retry/backoff, conflict upsert, idempotent duplicate suppression.
-- Realtime trigger: event-driven pull scheduling, debounce, reconciliation after
-  registration ACK, safety interval coverage.
-- Concurrency: simultaneous pull/push without corrupting checkpoint or outbox.
-- Persistence: checkpoint/outbox survive reload, resume correctly.
-- Error paths: auth failure, 4xx on push, transient network failures on pull.
-
-## Next Steps
-- Define TypeScript interfaces for the components above.
-- Add ASCII sequence diagrams to code comments when implementing orchestrator.
-- Implement and unit-test orchestrator, pull/push handlers, outbox/checkpoint adapters.
+- Runtime regressions cover page backpressure, document/metadata/checkpoint
+  failures, cancellation, fresh-source readiness, bounded scans, and recovery with
+  retained metadata.
+- Packed-package checks exercise the bundled runtime with no workspace fallback.
+- Public local API, query-source membership, real HTTP Push integration, and
+  browser end-to-end behavior require their own implementation and validation.

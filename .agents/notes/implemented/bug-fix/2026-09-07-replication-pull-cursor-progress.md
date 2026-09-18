@@ -47,7 +47,8 @@ The manual SDK exposes `SyntrixClient.pull`, validates one page, decodes int64 t
 bigint, supports cancellation, and preserves authentication-session ownership
 through request and retry. It leaves state application and checkpoint persistence
 to the caller. A local transaction must commit both together; account changes must
-invalidate pending application. The SDK's automatic coordinator and outbox remain
+invalidate pending application. The SDK's private native runtime does not change
+this manual API; public local persistence and automatic HTTP synchronization remain
 owned by the [offline replication proposal](../../proposed/feature/2026-09-07-sdk-offline-replication.md).
 
 | Limit | Bound |

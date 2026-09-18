@@ -59,8 +59,8 @@ false, even on an empty page.
 
 The application must atomically apply a whole page and persist its checkpoint.
 Failures leave saved progress unchanged. `RESYNC_REQUIRED` means rebuilding the
-server mirror from null while preserving pending local edits. The SDK does not
-automatically fetch more pages, save progress, or maintain an outbox.
+server mirror from null while preserving pending local edits. This method does not
+automatically fetch more pages or save progress.
 
 Plain JSON serialization rejects bigint, including values in decoded Pull and
 Query documents. Existing SDK document `set`/`update` therefore cannot blindly
@@ -79,6 +79,19 @@ Keep mirrors and checkpoints separated by account, database URL scope, and colle
 The implemented access profile requires the database owner or matching `db_admin`
 grant; that full-scope policy remains provisional pending approval. See the
 [replication reference](replication.md) for transport encoding, limits and recovery.
+
+### Local replication availability
+
+The package contains a private, lazily loaded replication runtime. Its patched
+RxDB, Dexie, and RxJS dependencies are bundled with the SDK; applications do not
+install or patch these dependencies themselves. Importing the remote client does
+not load the local runtime.
+
+There is no public `openLocal` API or automatic local synchronization yet. The
+private runtime does not make `pull()` persist data or add a public Push method.
+Use document REST methods for direct writes. The
+[replication design](../design/sdk/002_replication_client.md) distinguishes the
+delivered runtime from the remaining local database work.
 
 ### Authentication sessions
 

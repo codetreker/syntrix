@@ -1,7 +1,7 @@
 # TypeScript Client SDK Architecture
 
 **Date:** December 27, 2025
-**Status:** Architecture finalized; realtime auth (WS/SSE) and database-aware login updated
+**Status:** Remote clients and a private replication runtime are implemented; the public local database API remains planned.
 
 **Related:** [003_authentication.md](003_authentication.md) defines the shared auth surface used by HTTP clients, replication, and realtime. Client specifics: [004_syntrix_client.md](004_syntrix_client.md), [005_trigger_client.md](005_trigger_client.md).
 
@@ -98,9 +98,15 @@ pkg/syntrix-client-ts/src/
 
 `SyntrixClient.pull` provides one authenticated manual page through the dedicated
 replication HTTP route and shared session handling. It decodes typed values and
-leaves local state/checkpoint transactions to the application. The automatic
-coordinator, realtime-triggered scheduling, and durable outbox remain planned;
-details are in [002_replication_client.md](002_replication_client.md).
+leaves local state/checkpoint transactions to the application.
+
+The private local runtime uses a pinned, patched RxDB protocol with bounded
+durable scans, checkpoint completion hooks, and cancellation that drains owned
+work. Its bundled dependencies load lazily and are absent from the remote API's
+initial dependency graph. This foundation does not expose a local database API
+or connect automatic synchronization to the HTTP routes. Local persistence,
+query-source membership, local query/watch, and automatic Push remain planned;
+see [002_replication_client.md](002_replication_client.md).
 
 ## 6. Primary Test Coverage (Planned/Implemented)
 
@@ -108,6 +114,7 @@ details are in [002_replication_client.md](002_replication_client.md).
 - TriggerClient: reject create without id; batch forwards writes; get returns null on empty; missing token fails fast.
 - Auth layer: serialized refresh under concurrent 401s; hooks fire correctly; realtime auth failure retries once then surfaces.
 - Realtime: WS auth ack gates resubscribe; SSE delivers events/snapshots with header auth; inactivity triggers reconnect.
-- Manual Pull: typed page validation, request routing, cancellation, and session replacement. Planned coordinator coverage includes realtime-trigger coalescing and local state/checkpoint atomicity.
+- Manual Pull: typed page validation, request routing, cancellation, and session replacement.
+- Private runtime: bounded scans, durable page/checkpoint ordering, cancellation, and failure isolation. Public local replication and browser end-to-end coverage remain planned.
 
 More error corners and perf cases will be added as features land.
