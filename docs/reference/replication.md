@@ -232,12 +232,16 @@ Nested business values retain their declared numeric type.
 | Unversioned delete | Live | Delete |
 | Unversioned delete | Missing or tombstoned | Idempotent success |
 | Create | Missing or tombstoned | Create/recreate; supplied valid version is ignored |
-| Create | Live | Update; enforce equality if a version is supplied |
+| Create | Live | `already_exists`; leave the document unchanged regardless of supplied version |
 
-Explicit zero remains an equality precondition on live targets. `create` with
-version 1 remains accepted. Strict insert-only creation and restrictions on
-otherwise valid action/version combinations remain
-[proposed](../../.agents/notes/proposed/feature/2026-09-07-replication-push-insert-only.md).
+Explicit zero remains an equality precondition for update/delete. Create accepts
+any otherwise valid version but does not use it as a precondition; the live-target
+check takes precedence over version comparison. Even equal content and version
+return `already_exists`. A retained tombstone communicates deletion and does not
+reserve the logical ID: creation can immediately reuse that ID in the same
+database and collection, without observing its deletion version or awaiting
+physical cleanup. See the
+[create-conflict decision](../../.agents/notes/implemented/bug-fix/2026-09-18-replication-push-create-conflict.md).
 
 ### Push Size Limits
 
@@ -261,14 +265,17 @@ without truncation; earlier changes in the batch may already have committed.
 | `missing` | Target is absent; `current` is null |
 | `tombstoned` | Target is a retained tombstone |
 | `version_mismatch` | Live target has a different version |
-| `already_exists` | A create/recreate attempt lost to an existing live target |
+| `already_exists` | Create observed a live target, or a create/recreate attempt lost to one |
 | `precondition_failed` | The write failed its condition, but the later read cannot identify a more specific cause |
 
 Push uses the database's write source for initial and conflict reads and includes
 retained tombstones. A conflict's `current` is the state observed when read; after
 a failed write it may already differ from the state that caused the failure.
-It is not a guarantee that retrying will succeed. Failed conflict reads return
-an error, without a fabricated document or an incomplete success response.
+A failed create may therefore report `missing` or `tombstoned`; this records the
+later observation and does not prohibit creation in that state. Push does not
+automatically retry the failed creation. It is not a guarantee that retrying will
+succeed. Failed conflict reads return an error, without a fabricated document or
+an incomplete success response.
 
 Query validates the entire request before the first storage operation. Valid
 changes execute in order, continuing after individual conflicts. The batch is

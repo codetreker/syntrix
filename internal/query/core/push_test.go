@@ -23,8 +23,16 @@ func pushRequest(action storage.PushAction, version *int64) storage.ReplicationP
 func TestPushMissingAndTombstoneMatrix(t *testing.T) {
 	for _, tombstone := range []bool{false, true} {
 		for _, action := range []storage.PushAction{storage.PushCreate, storage.PushUpdate, storage.PushDelete} {
-			for _, version := range []*int64{nil, ptr(0), ptr(1)} {
-				t.Run(fmt.Sprintf("deleted=%v/action=%s/version=%v", tombstone, action, version), func(t *testing.T) {
+			versions := []*int64{nil, ptr(0), ptr(1)}
+			if action == storage.PushCreate {
+				versions = append(versions, ptr(9), ptr(math.MaxInt64))
+			}
+			for _, version := range versions {
+				versionName := "omitted"
+				if version != nil {
+					versionName = fmt.Sprint(*version)
+				}
+				t.Run(fmt.Sprintf("deleted=%v/action=%s/version=%s", tombstone, action, versionName), func(t *testing.T) {
 					store := new(routedReadStorage)
 					var current *storage.StoredDoc
 					readErr := model.ErrNotFound
@@ -60,8 +68,35 @@ func TestPushMissingAndTombstoneMatrix(t *testing.T) {
 	}
 }
 
+func TestPushCreateNeverOverwritesLiveDocument(t *testing.T) {
+	versions := map[string]*int64{"omitted": nil, "zero": ptr(0), "matching": ptr(9), "different": ptr(1), "max": ptr(math.MaxInt64)}
+	for name, version := range versions {
+		for _, identical := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/identical=%v", name, identical), func(t *testing.T) {
+				store := new(routedReadStorage)
+				current := &storage.StoredDoc{Database: "db", Collection: "items", Fullpath: "items/alice", Id: "stored-hash", Version: 9, CreatedAt: 123, UpdatedAt: 456, Data: map[string]interface{}{"id": "alice", "value": "original"}}
+				before := *current
+				req := pushRequest(storage.PushCreate, version)
+				if identical {
+					req.Changes[0].Doc.Data = map[string]interface{}{"id": "alice", "value": "original"}
+				}
+				input := *req.Changes[0].Doc
+				store.On("Get", mock.Anything, "db", "items/alice", []storage.ReadOptions{{Consistency: storage.ReadAuthoritative, ShowDeleted: true}}).Return(current, nil).Once()
+				resp, err := New(store, nil).Push(context.Background(), "db", req)
+				require.NoError(t, err)
+				require.Equal(t, []storage.ReplicationPushConflict{{ID: "alice", Reason: storage.PushAlreadyExists, Current: current}}, resp.Conflicts)
+				require.Equal(t, before, *current)
+				require.Equal(t, map[string]interface{}{"id": "alice", "value": "original"}, current.Data)
+				require.Equal(t, input, *req.Changes[0].Doc)
+				store.AssertExpectations(t)
+				require.Len(t, store.Calls, 1)
+			})
+		}
+	}
+}
+
 func TestPushCASFailureObservations(t *testing.T) {
-	for _, action := range []storage.PushAction{storage.PushCreate, storage.PushUpdate, storage.PushDelete} {
+	for _, action := range []storage.PushAction{storage.PushUpdate, storage.PushDelete} {
 		for _, writeErr := range []error{model.ErrNotFound, model.ErrPreconditionFailed} {
 			for _, state := range []string{"missing", "deleted", "new_version", "same_version"} {
 				t.Run(fmt.Sprintf("%s/%s/%s", action, writeErr, state), func(t *testing.T) {
@@ -157,29 +192,50 @@ func TestPushValidatesEntireBatch(t *testing.T) {
 }
 
 func TestPushCreateRaceAndErrors(t *testing.T) {
-	for _, failure := range []error{model.ErrExists, model.ErrPreconditionFailed, errors.New("disk failure")} {
-		for _, readFailure := range []error{nil, errors.New("read failure")} {
-			t.Run(fmt.Sprintf("%v/%v", failure, readFailure), func(t *testing.T) {
-				store := new(MockStorageBackend)
-				store.On("Get", mock.Anything, "db", "items/alice").Return(nil, model.ErrNotFound).Once()
-				store.On("Create", mock.Anything, "db", mock.Anything).Return(failure).Once()
-				conflict := errors.Is(failure, model.ErrExists) || errors.Is(failure, model.ErrPreconditionFailed)
-				latest := &storage.StoredDoc{Database: "db", Collection: "items", Fullpath: "items/alice", Version: 1, Data: map[string]interface{}{"value": "other"}}
-				if conflict {
-					store.On("Get", mock.Anything, "db", "items/alice").Return(latest, readFailure).Once()
-				}
-				resp, err := New(store, nil).Push(context.Background(), "db", pushRequest(storage.PushCreate, ptr(1)))
-				if !conflict {
-					require.ErrorIs(t, err, failure)
-				} else if readFailure != nil {
-					require.ErrorIs(t, err, readFailure)
-				} else {
-					require.NoError(t, err)
-					require.Equal(t, []storage.ReplicationPushConflict{{ID: "alice", Reason: storage.PushAlreadyExists, Current: latest}}, resp.Conflicts)
-				}
-				store.AssertExpectations(t)
-			})
-		}
+	live := &storage.StoredDoc{Database: "db", Collection: "items", Fullpath: "items/alice", Version: 1, Data: map[string]interface{}{"value": "other"}}
+	tombstone := &storage.StoredDoc{Database: "db", Collection: "items", Fullpath: "items/alice", Version: 2, Deleted: true}
+	diskFailure, readFailure := errors.New("disk failure"), errors.New("read failure")
+	for _, tc := range []struct {
+		name     string
+		initial  *storage.StoredDoc
+		writeErr error
+		latest   *storage.StoredDoc
+		readErr  error
+		reason   storage.PushConflictReason
+		wantErr  error
+	}{
+		{name: "concurrent insert", writeErr: model.ErrExists, latest: live, reason: storage.PushAlreadyExists},
+		{name: "concurrent recreation", initial: tombstone, writeErr: model.ErrPreconditionFailed, latest: live, reason: storage.PushAlreadyExists},
+		{name: "deleted before reread", writeErr: model.ErrExists, latest: tombstone, reason: storage.PushTombstoned},
+		{name: "purged before reread", writeErr: model.ErrPreconditionFailed, readErr: model.ErrNotFound, reason: storage.PushMissing},
+		{name: "insert conflict read failure", writeErr: model.ErrExists, readErr: readFailure, wantErr: readFailure},
+		{name: "recreation conflict read failure", initial: tombstone, writeErr: model.ErrPreconditionFailed, readErr: readFailure, wantErr: readFailure},
+		{name: "storage failure", writeErr: diskFailure, wantErr: diskFailure},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := new(routedReadStorage)
+			options := []storage.ReadOptions{{Consistency: storage.ReadAuthoritative, ShowDeleted: true}}
+			var initialErr error
+			if tc.initial == nil {
+				initialErr = model.ErrNotFound
+			}
+			store.On("Get", mock.Anything, "db", "items/alice", options).Return(tc.initial, initialErr).Once()
+			store.On("Create", mock.Anything, "db", mock.Anything).Return(fmt.Errorf("wrapped: %w", tc.writeErr)).Once()
+			if tc.writeErr != diskFailure {
+				store.On("Get", mock.Anything, "db", "items/alice", options).Return(tc.latest, tc.readErr).Once()
+			}
+			resp, err := New(store, nil).Push(context.Background(), "db", pushRequest(storage.PushCreate, ptr(1)))
+			if tc.wantErr != nil {
+				require.ErrorIs(t, err, tc.wantErr)
+				require.Nil(t, resp)
+			} else {
+				require.NoError(t, err)
+				require.Equal(t, []storage.ReplicationPushConflict{{ID: "alice", Reason: tc.reason, Current: tc.latest}}, resp.Conflicts)
+			}
+			store.AssertExpectations(t)
+			store.AssertNotCalled(t, "Update", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+			store.AssertNotCalled(t, "Delete", mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+		})
 	}
 }
 
@@ -210,7 +266,7 @@ func TestPushPreservesInputAndDuplicateOrder(t *testing.T) {
 }
 
 func TestPushLiveConditionalWritesPreservePayload(t *testing.T) {
-	for _, action := range []storage.PushAction{storage.PushCreate, storage.PushUpdate, storage.PushDelete} {
+	for _, action := range []storage.PushAction{storage.PushUpdate, storage.PushDelete} {
 		for _, version := range []int64{0, 1} {
 			t.Run(fmt.Sprintf("%s/%d", action, version), func(t *testing.T) {
 				store := new(MockStorageBackend)

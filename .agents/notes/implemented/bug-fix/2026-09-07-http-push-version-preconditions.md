@@ -49,7 +49,9 @@ predicates without changing the action or conflict-response contract. It used
 now owns explicit actions, protobuf optional version presence, tombstone-aware
 reads, and structured conflicts. Version semantics remain unchanged by typed
 encoding: `create` with version 1 is accepted, and zero is an equality precondition
-on live targets.
+for update/delete. The later
+[create-conflict decision](2026-09-18-replication-push-create-conflict.md) rejects
+create against live targets regardless of version, retaining tombstone recreation.
 
 Push's initial and conflict lookups explicitly request
 `ReadOptions{Consistency: ReadAuthoritative, ShowDeleted: true}`. The routed store selects that
@@ -94,8 +96,9 @@ request and supports validation without changing ordinary read routing.
 also have addressed absent and tombstoned targets, but required Query/storage
 predicates and coordinated conflict/protocol changes outside that repair.
 The [later conditional-write decision](2026-09-07-replication-push-version-checks.md)
-delivers the missing-target safety; strict insert-only create remains separately
-[proposed](../../proposed/feature/2026-09-07-replication-push-insert-only.md).
+delivers the missing-target safety. The separate
+[strict insert-only proposal](../../rejected/feature/2026-09-07-replication-push-insert-only.md)
+was later rejected because tombstones must allow same-ID recreation.
 
 ## Consequences
 
@@ -109,5 +112,6 @@ The original extraction repair did not close the not-found/Create branch or
 represent absent conflict targets. The later conditional-write decision closes
 those gaps while preserving exact precondition presence and the authoritative
 read option. The later typed transport extends precision to business values.
-Strict insert-only create remains a separate semantic decision. Retries after a
+The later create-conflict decision prevents live-target overwrites without
+introducing tombstone occupancy or new version combinations. Retries after a
 lost response remain ambiguous; version checks do not establish exactly-once effects.

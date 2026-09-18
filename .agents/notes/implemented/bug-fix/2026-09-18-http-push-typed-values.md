@@ -64,8 +64,9 @@ RxDB integration, durable Outbox, and lossless local persistence remain under th
 Adding those capabilities requires an SDK encoder and lifecycle/storage work;
 it must retain numeric types rather than convert bigint to Number. This transport
 provides their server representation, not a completed synchronization loop.
-Ordinary document CRUD and Trigger write formats remain unchanged. Further
-create-condition semantics are separate from this transport decision.
+Ordinary document CRUD and Trigger write formats remain unchanged. The later
+[create-conflict decision](2026-09-18-replication-push-create-conflict.md) changes
+live-target create handling while preserving the typed transport.
 
 ## Alternatives
 

@@ -91,6 +91,36 @@ func TestReplicationPushPreconditions(t *testing.T) {
 		require.Equal(t, int64(2), doc.Version)
 	})
 
+	t.Run("create never changes an existing live document", func(t *testing.T) {
+		require.Empty(t, push(map[string]any{"action": "create", "document": encodePushDocument(t, map[string]any{
+			"id": "live-create", "value": "original",
+		})}))
+		before, err := read("live-create")
+		require.NoError(t, err)
+		different, maximum := before.Version+1, int64(math.MaxInt64)
+		for _, item := range []struct {
+			name    string
+			version *int64
+		}{
+			{"omitted", nil}, {"zero", &zero}, {"equal", &before.Version},
+			{"different", &different}, {"maximum", &maximum},
+		} {
+			t.Run(item.name, func(t *testing.T) {
+				conflicts := push(change("create", "live-create", item.version))
+				require.Len(t, conflicts, 1)
+				assertConflict(conflicts[0], 0, "live-create", "already_exists")
+				current := decodePushCurrent(t, conflicts[0]["current"])
+				require.Equal(t, "original", current["value"])
+				require.Equal(t, before.Version, current["version"])
+				require.Equal(t, before.CreatedAt, current["createdAt"])
+				require.Equal(t, before.UpdatedAt, current["updatedAt"])
+				after, err := read("live-create")
+				require.NoError(t, err)
+				require.Equal(t, before, after)
+			})
+		}
+	})
+
 	t.Run("conditional missing changes never create", func(t *testing.T) {
 		conflicts := push(change("update", "missing", &one), change("delete", "missing", &one))
 		require.Len(t, conflicts, 2)
@@ -126,6 +156,35 @@ func TestReplicationPushPreconditions(t *testing.T) {
 		after, err := read("deleted")
 		require.NoError(t, err)
 		require.Equal(t, before, after)
+		require.Empty(t, push(change("create", "deleted", &zero)))
+		recreated, err := read("deleted")
+		require.NoError(t, err)
+		require.False(t, recreated.Deleted)
+		require.Equal(t, int64(1), recreated.Version)
+		require.Equal(t, "create", recreated.Data["value"])
+	})
+
+	t.Run("repeated create conflicts at the second batch position", func(t *testing.T) {
+		conflicts := push(change("create", "two-creates", nil), change("create", "two-creates", &one))
+		require.Len(t, conflicts, 1)
+		assertConflict(conflicts[0], 1, "two-creates", "already_exists")
+		doc, err := read("two-creates")
+		require.NoError(t, err)
+		require.False(t, doc.Deleted)
+		require.Equal(t, int64(1), doc.Version)
+	})
+
+	t.Run("create delete create reuses the same ID in one batch", func(t *testing.T) {
+		require.Empty(t, push(
+			change("create", "recreated-in-batch", nil),
+			change("delete", "recreated-in-batch", &one),
+			change("create", "recreated-in-batch", &zero),
+		))
+		doc, err := read("recreated-in-batch")
+		require.NoError(t, err)
+		require.False(t, doc.Deleted)
+		require.Equal(t, int64(1), doc.Version)
+		require.Equal(t, "create", doc.Data["value"])
 	})
 
 	t.Run("repeated ID conflict identifies failed batch item", func(t *testing.T) {
@@ -152,9 +211,9 @@ func TestReplicationPushPreconditions(t *testing.T) {
 		before, err := read("precise")
 		require.NoError(t, err)
 		staleVersion := int64(math.MaxInt64 - 1)
-		conflicts := push(change("update", "precise", &staleVersion))
+		conflicts := push(change("create", "precise", &staleVersion))
 		require.Len(t, conflicts, 1)
-		assertConflict(conflicts[0], 0, "precise", "version_mismatch")
+		assertConflict(conflicts[0], 0, "precise", "already_exists")
 		current := decodePushCurrent(t, conflicts[0]["current"])
 		require.Equal(t, int64(math.MaxInt64), current["version"])
 		require.Equal(t, seed.Data["nested"], current["nested"])

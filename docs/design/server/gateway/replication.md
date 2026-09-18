@@ -170,7 +170,7 @@ payloads, and document data are excluded.
 | Unversioned update | Missing or tombstoned | Existing create/recreate behavior |
 | Unversioned delete | Live | Delete |
 | Unversioned delete | Missing or tombstoned | Idempotent success |
-| Create | Live | Existing update behavior; supplied version is an equality condition |
+| Create | Live | `already_exists`, regardless of supplied version; no write |
 | Create | Missing or tombstoned | Existing create/recreate behavior; supplied valid version is ignored |
 
 The shared recursive typed-value codec preserves nested int64 and finite float64
@@ -185,6 +185,11 @@ negative sentinel or unspecified-action fallback. Ordinary CRUD formats remain
 unchanged. SDK Pusher and its outbound encoder remain planned; the typed server
 contract alone does not implement them.
 
+Create checks for a live target before version comparison, so a create cannot
+become an update even when content and version match. A supplied valid create
+version is ignored. A retained tombstone conveys deletion rather than ownership
+of the logical ID; it allows immediate same-ID recreation.
+
 A versioned update/delete must not enter Create when its target disappears.
 Push reads from the authoritative write source with tombstones included, then
 applies the optional version condition in the atomic live-document mutation.
@@ -195,7 +200,8 @@ Validate complete batch
     -> Read target, including tombstones
     -> Apply action/version rule
          -> Conflict: retain request position and observed state
-         -> Write: enforce live/version predicate atomically
+         -> Create: atomically insert or replace a still-deleted target
+         -> Update/delete: enforce live/version predicate atomically
               -> Failed condition: reread authoritative state and report conflict
               -> Other storage error: fail request; earlier writes may remain
     -> Continue next change
@@ -203,9 +209,11 @@ Validate complete batch
 
 Tombstone replacement during creation atomically requires a still-deleted target.
 If another writer has recreated it, the write reports a conflict; the newly live
-document cannot be overwritten by the stale replacement attempt. Explicit zero
-and create/version 1 retain their accepted meanings. New insert-only rules remain
-[proposed](../../../../.agents/notes/proposed/feature/2026-09-07-replication-push-insert-only.md).
+document cannot be overwritten by the stale replacement attempt. A failed
+creation is reread once; `missing` or `tombstoned` describes that later state
+and is not a ban on recreation. There is no automatic creation retry. Explicit
+zero remains an equality condition for update/delete; create accepts valid
+versions without using them as a condition.
 
 ### Encoded Message Budgets
 
@@ -268,7 +276,9 @@ records native-source selection, alternatives, and accepted retention and client
 integration limits. Public Pull and source capabilities have separate owners.
 
 The [Push conditional-write decision](../../../../.agents/notes/implemented/bug-fix/2026-09-07-replication-push-version-checks.md)
-records action semantics, conflict observations, and deferred insert-only creation.
+records conditional mutation semantics and conflict observations. The
+[create-conflict decision](../../../../.agents/notes/implemented/bug-fix/2026-09-18-replication-push-create-conflict.md)
+owns live-target rejection and required same-ID recreation after deletion.
 The [HTTP decoder decision](../../../../.agents/notes/implemented/bug-fix/2026-09-07-http-push-version-preconditions.md)
 records the original version-extraction and authoritative-read rationale.
 The [HTTP typed-value decision](../../../../.agents/notes/implemented/bug-fix/2026-09-18-http-push-typed-values.md)
