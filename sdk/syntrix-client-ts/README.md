@@ -21,6 +21,9 @@ The build checks the patch and installed vendor files, then bundles the private
 runtime with third-party licenses. The package test installs a tarball in an
 isolated consumer and checks failure recovery without vendor dependencies.
 Applications installing the published SDK can use their usual package manager.
+Storage tests cover raw CAS, row budgets, identity lifetime, and native-seeded
+compaction. Browser multi-tab checks complement these tests; they do not establish
+power-loss durability or complete server synchronization.
 
 ## Usage
 
@@ -112,6 +115,8 @@ failure rejects while local credentials remain cleared. Low-level
 after authentication.
 
 Authentication work and automatic retries remain bound to their original session.
+HTTP requests capture that session before asynchronous interceptors run, and their
+abort signals interrupt token and refresh waits during account replacement.
 Obsolete operations reject with `AuthSessionChangedError` (`AUTH_SESSION_CHANGED`)
 and cannot restore old credentials or retry under a new account. Custom
 `TokenProvider` implementations must expose synchronous `getSessionVersion()` and
@@ -192,8 +197,10 @@ A private replication runtime is included as a lazy bundle containing patched
 RxDB, Dexie, and RxJS. Applications do not need to install or patch those
 dependencies. Importing the remote client does not load this bundle.
 
-Public local database creation, automatic HTTP synchronization, and local
-query/watch remain in development. Manual Pull continues to supply pages for an
+Private alias storage provides account-scoped Dexie persistence, typed values,
+local CAS operations, view invalidations, and clean physical compaction. These
+internal capabilities are not exported as application APIs. Public replica database
+creation, automatic HTTP synchronization, and local query/watch remain in development. Manual Pull continues to supply pages for an
 application-owned consumer. Direct writes use the existing document REST methods;
 the SDK has no public manual Push API. See the
 [replication design](../../docs/design/sdk/002_replication_client.md).

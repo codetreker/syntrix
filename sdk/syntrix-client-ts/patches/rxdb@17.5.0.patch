@@ -922,3 +922,139 @@ index 465183f..9e9723a 100644
              return false;
          });
  
+diff --git a/src/rx-storage-helper.ts b/src/rx-storage-helper.ts
+--- a/src/rx-storage-helper.ts
++++ b/src/rx-storage-helper.ts
+@@ -641,16 +641,6 @@
+              * inside the hot loop.
+              */
+             const firstRevision = '1-' + databaseToken;
+-            /**
+-             * Share a single _meta object for all insert rows in this batch.
+-             * All inserts in the same bulkWrite share the same timestamp,
+-             * so we avoid creating a new { lwt: time } object per row.
+-             * This shared reference is safe because:
+-             * - All documents in one batch receive identical metadata values.
+-             * - When a document is later updated, flatCloneDocWithMeta() creates
+-             *   a new _meta object, so the shared reference is never mutated.
+-             */
+-            const insertMeta = { lwt: time };
+ 
+             /**
+              * When the caller has already cloned the documents (registered
+@@ -669,7 +659,7 @@
+                  */
+                 for (let index = 0; index < rows.length; index++) {
+                     const document = rows[index].document;
+-                    document._meta = insertMeta;
++                    document._meta = { ...document._meta, lwt: time };
+                     document._rev = firstRevision;
+                 }
+                 toStorageWriteRows = rows;
+@@ -693,11 +683,11 @@
+                          * (e.g., during migration, query results from the old storage are
+                          * passed directly as insert rows to the new storage).
+                          *
+-                         * Use a shared insertMeta object instead of allocating { lwt: time }
+-                         * per row, since all inserts in the same batch share the same timestamp.
++                         * Preserve replication provenance and other metadata without sharing
++                         * mutable metadata between caller documents or batch rows.
+                          */
+                         document = flatClone(writeRow.document);
+-                        document._meta = insertMeta;
++                        document._meta = { ...document._meta, lwt: time };
+                         document._rev = firstRevision;
+                     }
+                     toStorageWriteRows[index] = {
+diff --git a/dist/esm/rx-storage-helper.js b/dist/esm/rx-storage-helper.js
+--- a/dist/esm/rx-storage-helper.js
++++ b/dist/esm/rx-storage-helper.js
+@@ -504,18 +504,6 @@
+        * inside the hot loop.
+        */
+       var firstRevision = '1-' + databaseToken;
+-      /**
+-       * Share a single _meta object for all insert rows in this batch.
+-       * All inserts in the same bulkWrite share the same timestamp,
+-       * so we avoid creating a new { lwt: time } object per row.
+-       * This shared reference is safe because:
+-       * - All documents in one batch receive identical metadata values.
+-       * - When a document is later updated, flatCloneDocWithMeta() creates
+-       *   a new _meta object, so the shared reference is never mutated.
+-       */
+-      var insertMeta = {
+-        lwt: time
+-      };
+ 
+       /**
+        * When the caller has already cloned the documents (registered
+@@ -533,7 +521,7 @@
+          */
+         for (var index = 0; index < rows.length; index++) {
+           var document = rows[index].document;
+-          document._meta = insertMeta;
++          document._meta = { ...document._meta, lwt: time };
+           document._rev = firstRevision;
+         }
+         toStorageWriteRows = rows;
+@@ -554,11 +542,11 @@
+              * (e.g., during migration, query results from the old storage are
+              * passed directly as insert rows to the new storage).
+              *
+-             * Use a shared insertMeta object instead of allocating { lwt: time }
+-             * per row, since all inserts in the same batch share the same timestamp.
++             * Preserve replication provenance and other metadata without sharing
++             * mutable metadata between caller documents or batch rows.
+              */
+             _document = flatClone(writeRow.document);
+-            _document._meta = insertMeta;
++            _document._meta = { ..._document._meta, lwt: time };
+             _document._rev = firstRevision;
+           }
+           toStorageWriteRows[_index] = {
+diff --git a/dist/cjs/rx-storage-helper.js b/dist/cjs/rx-storage-helper.js
+--- a/dist/cjs/rx-storage-helper.js
++++ b/dist/cjs/rx-storage-helper.js
+@@ -528,18 +528,6 @@
+        * inside the hot loop.
+        */
+       var firstRevision = '1-' + databaseToken;
+-      /**
+-       * Share a single _meta object for all insert rows in this batch.
+-       * All inserts in the same bulkWrite share the same timestamp,
+-       * so we avoid creating a new { lwt: time } object per row.
+-       * This shared reference is safe because:
+-       * - All documents in one batch receive identical metadata values.
+-       * - When a document is later updated, flatCloneDocWithMeta() creates
+-       *   a new _meta object, so the shared reference is never mutated.
+-       */
+-      var insertMeta = {
+-        lwt: time
+-      };
+ 
+       /**
+        * When the caller has already cloned the documents (registered
+@@ -557,7 +545,7 @@
+          */
+         for (var index = 0; index < rows.length; index++) {
+           var document = rows[index].document;
+-          document._meta = insertMeta;
++          document._meta = { ...document._meta, lwt: time };
+           document._rev = firstRevision;
+         }
+         toStorageWriteRows = rows;
+@@ -578,11 +566,11 @@
+              * (e.g., during migration, query results from the old storage are
+              * passed directly as insert rows to the new storage).
+              *
+-             * Use a shared insertMeta object instead of allocating { lwt: time }
+-             * per row, since all inserts in the same batch share the same timestamp.
++             * Preserve replication provenance and other metadata without sharing
++             * mutable metadata between caller documents or batch rows.
+              */
+             _document = (0, _index4.flatClone)(writeRow.document);
+-            _document._meta = insertMeta;
++            _document._meta = { ..._document._meta, lwt: time };
+             _document._rev = firstRevision;
+           }
+           toStorageWriteRows[_index] = {

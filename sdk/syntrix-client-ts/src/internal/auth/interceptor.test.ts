@@ -1,9 +1,10 @@
-import { describe, it, expect, mock } from 'bun:test';
+import { describe, it, expect, mock, spyOn } from 'bun:test';
 import axios, { AxiosError, AxiosHeaders, InternalAxiosRequestConfig } from 'axios';
 import { AuthSessionChangedError, SyntrixError } from '../../api/errors';
 import { setupAuthInterceptor } from './interceptor';
 import { DefaultTokenProvider } from './provider';
 import { TokenProvider } from './types';
+import { createReplicaSession } from '../replica/session';
 
 const deferred = <T>() => {
   let resolve!: (value: T) => void;
@@ -30,6 +31,147 @@ const fixture = () => {
 };
 
 describe('AuthInterceptor session ownership', () => {
+  for (const withSignal of [false, true]) {
+    it(`drains an owned request when credentials change before the interceptor runs, signal=${withSignal}`, async () => {
+      const jwt = (sub: string) => `${btoa('{}')}.${btoa(JSON.stringify({ sub }))}.sig`.replace(/=/g, '');
+      const provider = new DefaultTokenProvider({ token: jwt('A') });
+      const session = await createReplicaSession(provider);
+      const adapter = mock(async (config: InternalAxiosRequestConfig) => response(config));
+      const instance = axios.create({ adapter });
+      setupAuthInterceptor(instance, provider);
+      const result = session.track(() => {
+        const request = instance.get('/document', withSignal ? { signal: session.signal } : {});
+        provider.setToken(jwt('B'));
+        return request;
+      }).catch(error => error);
+      expect(await result).toBeInstanceOf(AuthSessionChangedError);
+      expect(await provider.getToken()).toBe(jwt('B'));
+      expect(adapter).not.toHaveBeenCalled();
+      await session.close();
+    }, 1_000);
+  }
+
+  it('captures ownership before other asynchronous request interceptors and keeps explicit scopes', async () => {
+    const { provider } = fixture();
+    const entered = deferred<void>();
+    const release = deferred<void>();
+    const adapter = mock(async (config: InternalAxiosRequestConfig) => response(config));
+    const instance = axios.create({ adapter });
+    setupAuthInterceptor(instance, provider);
+    instance.interceptors.request.use(async config => { entered.resolve(); await release.promise; return config; });
+    const request = instance.get('/document').catch(error => error);
+    await entered.promise;
+    provider.setToken('B');
+    release.resolve();
+    expect(await request).toBeInstanceOf(AuthSessionChangedError);
+    expect(await instance.get('/document', { _syntrixAuthSessionVersion: 0 } as any).catch(error => error))
+      .toBeInstanceOf(AuthSessionChangedError);
+    expect(provider.getToken).not.toHaveBeenCalled();
+    expect(adapter).not.toHaveBeenCalled();
+  });
+
+  for (const credential of ['token', 'refresh'] as const) {
+    it(`cancels a suspended ${credential} read without waiting for the provider`, async () => {
+      const { provider } = fixture();
+      const entered = deferred<void>();
+      const pending = deferred<string>();
+      const read = mock(async () => { entered.resolve(); return pending.promise; });
+      if (credential === 'token') provider.getToken = read;
+      else provider.refreshToken = read;
+      const controller = new AbortController();
+      const add = spyOn(controller.signal, 'addEventListener');
+      const remove = spyOn(controller.signal, 'removeEventListener');
+      const adapter = mock(async (config: InternalAxiosRequestConfig) => { throw authFailure(config); });
+      const instance = axios.create({ adapter });
+      setupAuthInterceptor(instance, provider);
+      const request = instance.get('/document', { signal: controller.signal }).catch(error => error);
+      await entered.promise;
+      controller.abort();
+      const error = await request;
+      expect(axios.isCancel(error)).toBe(true);
+      expect(error.cause).toBe(controller.signal.reason);
+      expect(adapter).toHaveBeenCalledTimes(credential === 'token' ? 0 : 1);
+      expect(remove.mock.calls).toEqual(add.mock.calls);
+      pending.reject(new Error('late credential failure'));
+      await Promise.resolve();
+    }, 1_000);
+  }
+
+  it('rejects an already canceled request before reading credentials', async () => {
+    const { provider } = fixture();
+    const controller = new AbortController();
+    controller.abort();
+    const instance = axios.create();
+    setupAuthInterceptor(instance, provider);
+    expect(axios.isCancel(await instance.get('/document', { signal: controller.signal }).catch(error => error))).toBe(true);
+    expect(provider.getToken).not.toHaveBeenCalled();
+  });
+
+  it('preserves cancellation provenance from a dispatched Axios adapter', async () => {
+    const { provider } = fixture();
+    const entered = deferred<void>();
+    const controller = new AbortController();
+    const adapter = mock((config: InternalAxiosRequestConfig) => new Promise<never>((_resolve, reject) => {
+      config.signal!.addEventListener!('abort', () => reject(new axios.CanceledError('adapter canceled', config)), { once: true });
+      entered.resolve();
+    }));
+    const instance = axios.create({ adapter });
+    setupAuthInterceptor(instance, provider);
+    const request = instance.get('/document', { signal: controller.signal }).catch(error => error);
+    await entered.promise;
+    const reason = new AuthSessionChangedError();
+    controller.abort(reason);
+    const error = await request;
+    expect(axios.isCancel(error)).toBe(true);
+    expect(error.message).toBe('adapter canceled');
+    expect(error.cause).toBe(reason);
+    expect(adapter).toHaveBeenCalledTimes(1);
+  }, 1_000);
+
+  it('supports CancelToken while credentials are pending and detaches its listener', async () => {
+    const { provider } = fixture();
+    const entered = deferred<void>();
+    const pending = deferred<string>();
+    provider.getToken = async () => { entered.resolve(); return pending.promise; };
+    const cancellation = axios.CancelToken.source();
+    const subscribe = spyOn(cancellation.token, 'subscribe');
+    const unsubscribe = spyOn(cancellation.token, 'unsubscribe');
+    const instance = axios.create();
+    setupAuthInterceptor(instance, provider);
+    const request = instance.get('/document', { cancelToken: cancellation.token }).catch(error => error);
+    await entered.promise;
+    cancellation.cancel('stop waiting');
+    expect(await request).toBe(cancellation.token.reason);
+    expect(unsubscribe.mock.calls).toEqual(subscribe.mock.calls);
+    pending.resolve('late');
+  }, 1_000);
+
+  it('does not release a failed cleanup barrier when a waiting request is canceled', async () => {
+    const jwt = (sub: string) => `${btoa('{}')}.${btoa(JSON.stringify({ sub }))}.sig`.replace(/=/g, '');
+    const provider = new DefaultTokenProvider({ token: jwt('A') });
+    const session = await createReplicaSession(provider);
+    const cleanup = deferred<void>();
+    session.register({ invalidate: () => {}, close: () => cleanup.promise });
+    provider.setToken(jwt('B'));
+    const entered = deferred<void>();
+    const getToken = provider.getToken.bind(provider);
+    provider.getToken = () => { entered.resolve(); return getToken(); };
+    const controller = new AbortController();
+    const adapter = mock(async (config: InternalAxiosRequestConfig) => response(config));
+    const instance = axios.create({ adapter });
+    setupAuthInterceptor(instance, provider);
+    const request = instance.get('/document', { signal: controller.signal }).catch(error => error);
+    await entered.promise;
+    controller.abort();
+    expect(axios.isCancel(await request)).toBe(true);
+    expect(adapter).not.toHaveBeenCalled();
+    const failure = new Error('storage cleanup failed');
+    cleanup.reject(failure);
+    await expect(getToken()).rejects.toBe(failure);
+    expect(provider.isAuthenticated()).toBe(false);
+    await expect(session.close()).rejects.toBe(failure);
+  }, 1_000);
+
   it('preserves the request session through a real Axios retry', async () => {
     const { provider } = fixture();
     const received: { token: unknown; version: unknown }[] = [];

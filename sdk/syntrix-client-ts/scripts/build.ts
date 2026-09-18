@@ -4,6 +4,7 @@ import { createRequire } from 'node:module';
 import { dirname, join, resolve } from 'node:path';
 import { brotliCompressSync, gzipSync } from 'node:zlib';
 import integrity from './runtime-integrity.json';
+import supplementalLicenses from './runtime-licenses.json';
 
 const root = resolve(import.meta.dir, '..');
 const require = createRequire(import.meta.url);
@@ -29,21 +30,21 @@ const compiler = Bun.spawn([process.execPath, require.resolve('typescript/bin/ts
   cwd: root, stdout: 'inherit', stderr: 'inherit',
 });
 check(await compiler.exited === 0, 'TypeScript declaration build failed');
-const local = await Bun.build({
-  entrypoints: [join(root, 'src/internal/local/runtime.ts')],
+const replica = await Bun.build({
+  entrypoints: [join(root, 'src/internal/replica/runtime.ts')],
   target: 'browser', format: 'esm', minify: true, metafile: true,
 });
-check(local.success, local.logs.map(String).join('\n'));
-check(local.metafile && local.outputs.length === 1, 'Local runtime must build as one self-contained chunk');
-for (const output of Object.values(local.metafile.outputs)) {
-  check(output.imports.length === 0, 'Local runtime must not import consumer-installed vendor dependencies');
+check(replica.success, replica.logs.map(String).join('\n'));
+check(replica.metafile && replica.outputs.length === 1, 'Replica runtime must build as one self-contained chunk');
+for (const output of Object.values(replica.metafile.outputs)) {
+  check(output.imports.length === 0, 'Replica runtime must not import consumer-installed vendor dependencies');
 }
-const localBytes = Buffer.from(await local.outputs[0].arrayBuffer());
-await writeFile(join(root, 'dist/internal/local/runtime.js'), localBytes);
+const replicaBytes = Buffer.from(await replica.outputs[0].arrayBuffer());
+await writeFile(join(root, 'dist/internal/replica/runtime.js'), replicaBytes);
 
 // License every bundled package, including transitive dependencies selected by tree shaking.
 const packages = new Map<string, string>();
-for (const input of Object.keys(local.metafile.inputs)) {
+for (const input of Object.keys(replica.metafile.inputs)) {
   if (!input.includes('node_modules/')) continue;
   let directory = dirname(await realpath(resolve(root, input)));
   while (directory !== dirname(directory)) {
@@ -59,11 +60,17 @@ for (const input of Object.keys(local.metafile.inputs)) {
     directory = dirname(directory);
   }
 }
-const notices = ['Bundled local replication runtime dependencies.\nRxDB replication-protocol files are modified by the accompanying SDK source patch.\n'];
+const notices = ['Bundled replication runtime dependencies.\nRxDB replication-protocol and storage-wrapper files are modified by the accompanying SDK source patch.\n'];
 for (const [name, directory] of [...packages].sort(([a], [b]) => a.localeCompare(b))) {
   const files = (await readdir(directory)).filter((file) => /^(licen[sc]e|copying|notice)(\.|$)/i.test(file));
-  check(files.length > 0, `Missing bundled dependency license: ${name}`);
   notices.push(`\n===== ${name} =====\n`);
+  if (files.length === 0) {
+    const license = (supplementalLicenses as Record<string, { file: string; sha256: string; source: string }>)[name];
+    check(license, `Missing bundled dependency license: ${name}`);
+    const bytes = await readFile(join(root, license.file));
+    check(hash(bytes) === license.sha256, `Bundled license checksum changed: ${name}`);
+    notices.push(`Source: ${license.source}\n`, bytes.toString('utf8'));
+  }
   for (const file of files.sort()) notices.push(await readFile(join(directory, file), 'utf8'));
 }
 await writeFile(join(root, 'dist/THIRD_PARTY_NOTICES.txt'), notices.join('\n'));
@@ -73,10 +80,10 @@ const remote = await Bun.build({
   minify: true, metafile: true, external: ['axios'],
 });
 check(remote.success && remote.metafile, 'Remote entry validation failed');
-check(!Object.keys(remote.metafile.inputs).some((input) => input.includes('/internal/local/')),
-  'Remote entry must not load the private local runtime');
+check(!Object.keys(remote.metafile.inputs).some((input) => input.includes('/internal/replica/')),
+  'Remote entry must not load the private replica runtime');
 const remoteBytes = Buffer.from(await remote.outputs[0].arrayBuffer());
-for (const [name, bytes] of [['local runtime', localBytes], ['REST/realtime entry (axios external)', remoteBytes]] as const) {
+for (const [name, bytes] of [['replica runtime', replicaBytes], ['REST/realtime entry (axios external)', remoteBytes]] as const) {
   console.log(`${name}: ${bytes.length} bytes, gzip ${gzipSync(bytes).length}, brotli ${brotliCompressSync(bytes).length}`);
 }
 console.log(`Bundled licenses: ${packages.size}; patched files verified: ${Object.keys(integrity.files).length}`);

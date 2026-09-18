@@ -16,7 +16,8 @@ Status: implemented
 
 使用固定 RxDB `17.5.0` 的低层原生复制协议，SDK 拥有输入调度、适配器及生命周期。
 fork 和 metadata 存储由调用方提供并负责最终关闭；协议本身保留持久化进度和
-冲突处理职责。公共本地数据库接口仍由
+冲突处理职责。[副本 alias 存储](2026-09-18-sdk-replica-storage.md)提供这些存储的
+身份、记录、准入与整代回收；本 note 继续拥有原生协议可靠性。公共本地数据库接口仍由
 [离线复制提案](../../proposed/feature/2026-09-07-sdk-offline-replication.md)拥有。
 
 源 checkpoint 以 `{ source: checkpoint }` 保存到原生下游 metadata。RxDB 会浅合并
@@ -30,15 +31,21 @@ checkpoint；稳定的外层键让整个源值替换前值，阶段变化时移�
 | 下游页 | 等待当前页文档、metadata、checkpoint 持久化，再读取下一页 |
 | 双向 metadata | 检查批量写入返回的错误，包括冲突 metadata；失败立即停止 |
 | checkpoint | 等待所有写入路径，包括空页、无变化、上行早返回 |
+| fork 插入 | wrapper 保留输入 metadata 的下载来源；刷新 lwt 并保留 revision 生成和 hooks，文档先于 assumed 落盘时仍可安全恢复 |
 | fatal | 先取消实例，再发布一次错误诊断；启动读取和异步队列的 rejection 也进入此路径 |
 | 恢复 | 用已有可靠 metadata 创建新实例；失败实例的 promise 队列不复用 |
 
 固定版本的源码、ESM 和 CJS 产物同步修补，避免入口选择改变失败行为。
 上游基线为 npm gitHead `d88180e334512bf0097373ad62e9fbe6811010aa`；
 [下游循环](https://github.com/pubkey/rxdb/blob/d88180e334512bf0097373ad62e9fbe6811010aa/src/replication-protocol/downstream.ts)、
-[上游循环](https://github.com/pubkey/rxdb/blob/d88180e334512bf0097373ad62e9fbe6811010aa/src/replication-protocol/upstream.ts)
-及 [checkpoint 写入](https://github.com/pubkey/rxdb/blob/d88180e334512bf0097373ad62e9fbe6811010aa/src/replication-protocol/checkpoint.ts)
+[上游循环](https://github.com/pubkey/rxdb/blob/d88180e334512bf0097373ad62e9fbe6811010aa/src/replication-protocol/upstream.ts)、
+[checkpoint 写入](https://github.com/pubkey/rxdb/blob/d88180e334512bf0097373ad62e9fbe6811010aa/src/replication-protocol/checkpoint.ts)
+及 [storage wrapper](https://github.com/pubkey/rxdb/blob/d88180e334512bf0097373ad62e9fbe6811010aa/src/rx-storage-helper.ts)
 是补丁复核的固定源码依据。
+
+下载来源的标识和 revision 高度必须同时匹配当前 fork 行。部分 fork 插入或 assumed
+写入失败后，新实例重放下载数据，不产生业务上传；真实本地编辑会推进 revision，
+不能被旧来源标记吞掉。回归使用实际 collection wrapper 和持久化后重开的存储。
 
 ### 输入边界与初始化
 
@@ -78,14 +85,18 @@ checkpoint；稳定的外层键让整个源值替换前值，阶段变化时移�
 合法大单行独立成页。块中只有部分记录能容纳时，从原块起点缩小 limit 重读并
 重新计算大小；禁止截断返回记录后保留整块 checkpoint。超限行使本次读取失败，
 不返回部分成功进度。这些是扫描 payload 界限，不是总 JS heap 或查询缓存承诺。
-所有持久化入口的大小校验及 HTTP 编码预算仍由上层落实。
+所有持久化入口的最终行大小校验由本地 alias 存储落实；HTTP 编码预算仍由网络适配器落实。
 源适配器返回的文档数组另受默认 16 MiB 编码 JSON 上限约束；返回前的读取与
 分配需要适配器自己设界，返回后的验证无法约束已经发生的分配。
 
 停止先关闭新任务准入、取消 handler 信号及订阅，再等待已拥有的 storage 调用、
 handler、完成 hook、调度器和原生队列。回调必须响应取消或最终结束，才能完成
 drain；已经开始的底层存储操作不能通过取消信号回滚。
-正常关闭完成 drain 后成功返回；因实例失败而关闭时，drain 后继续抛出原始错误。
+实例绑定覆盖 session、alias 和本代 native 生命周期的 owner signal，只将该已取消
+signal 的同一原因或以其为 cause 的 Axios 取消识别为正常取消。alias 关闭与维护换代
+先取消旧实例，再撤销其 scope；维护 seed 的所有权关联 alias 生命周期。正常关闭完成 drain
+后成功返回；真实存储、
+handler 或清理失败在 drain 后继续抛出，不能按异常类名统一忽略。
 
 ### 发布
 
@@ -119,7 +130,7 @@ pnpm 补丁配置。将修补结果打入 SDK 后，消费者不必使用相同�
 - 初始源完成前延迟首次上传，本地编辑仍可由上层持久化。源成员、generation 激活
   及 HTTP checkpoint 的含义由后续适配器实现，当前运行时不推断这些业务状态。
 - 协议、memory 或 fake IndexedDB 验证不能替代完整浏览器端到端、跨 tab 所有权
-  或断电持久性验证。当前没有公开 `openLocal`，也没有接通自动 HTTP Push。
+  或断电持久性验证。当前没有公开 `openReplica`，也没有接通自动 HTTP Push。
 - [SDK 复制设计](../../../../docs/design/sdk/002_replication_client.md)拥有运行时职责；
-  [SDK reference](../../../../docs/reference/typescript_sdk.md#local-replication-availability)
+  [SDK reference](../../../../docs/reference/typescript_sdk.md#replica-availability)
   标明当前公共能力。
