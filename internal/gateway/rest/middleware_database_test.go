@@ -43,6 +43,10 @@ func (m *mockDatabaseService) ResolveDatabase(ctx context.Context, identifier st
 	return nil, database.ErrDatabaseNotFound
 }
 
+func (m *mockDatabaseService) ResolveDatabaseAuthoritative(ctx context.Context, identifier string) (*database.Database, error) {
+	return m.ResolveDatabase(ctx, identifier)
+}
+
 func (m *mockDatabaseService) ValidateDatabase(ctx context.Context, identifier string) error {
 	_, err := m.ResolveDatabase(ctx, identifier)
 	return err

@@ -23,10 +23,25 @@ var validateReplicationPushFn = validateReplicationPush
 
 const pullResponseWriteTimeout = 10 * time.Second
 
-func decodePullRequest(body io.Reader) (storage.ReplicationPullRequest, error) {
+func decodePullRequest(body io.Reader) (request storage.ReplicationPullRequest, failure error) {
 	data, err := io.ReadAll(body)
 	if err != nil {
 		return storage.ReplicationPullRequest{}, err
+	}
+	var fields map[string]json.RawMessage
+	_ = json.Unmarshal(data, &fields)
+	_, queryMode := fields["source"]
+	if queryMode {
+		if err := wire.ValidatePullSourceJSON(data); err != nil {
+			return request, err
+		}
+		defer func() {
+			var watchError *storagetypes.WatchError
+			var tooLarge *http.MaxBytesError
+			if failure != nil && !errors.As(failure, &watchError) && !errors.As(failure, &tooLarge) {
+				failure = storagetypes.ErrInvalidReplicationSource
+			}
+		}()
 	}
 	if err := model.ValidateJSONUnicode(data); err != nil {
 		return storage.ReplicationPullRequest{}, err
@@ -54,6 +69,17 @@ func decodePullRequest(body io.Reader) (storage.ReplicationPullRequest, error) {
 			return req, err
 		}
 		switch key {
+		case "source":
+			req.Source, err = wire.DecodeJSONPullSource(raw)
+			if err != nil {
+				return req, err
+			}
+		case "requestId":
+			var id string
+			if bytes.Equal(raw, []byte("null")) || json.Unmarshal(raw, &id) != nil || id == "" || len(id) > querycore.MaxPullRequestBytes {
+				return req, storagetypes.ErrInvalidReplicationSource
+			}
+			req.RequestID = &id
 		case "collection":
 			if bytes.Equal(raw, []byte("null")) {
 				return req, errors.New("collection must be a string")
@@ -92,10 +118,28 @@ func decodePullRequest(body io.Reader) (storage.ReplicationPullRequest, error) {
 	if err := decoder.Decode(new(any)); err != io.EOF {
 		return req, errors.New("pull request must contain one object")
 	}
+	if req.Source != nil {
+		if req.Source.Limit != nil {
+			if req.RequestID == nil || seen["checkpoint"] || seen["limit"] {
+				return req, storagetypes.ErrInvalidReplicationSource
+			}
+		} else if req.RequestID != nil {
+			return req, storagetypes.ErrInvalidReplicationSource
+		}
+		if req.Limit < 0 || req.Limit > wire.MaxPullLimit {
+			return req, storagetypes.ErrInvalidReplicationSource
+		}
+	} else if req.RequestID != nil {
+		return req, storagetypes.ErrInvalidReplicationSource
+	}
 	return req, semanticErr
 }
 
 func writePullError(w http.ResponseWriter, err error) {
+	if errors.Is(err, storagetypes.ErrInvalidReplicationSource) {
+		writeError(w, http.StatusBadRequest, "INVALID_REPLICATION_SOURCE", "Invalid replication source")
+		return
+	}
 	if errors.Is(err, context.Canceled) {
 		w.WriteHeader(499)
 		return
@@ -149,13 +193,18 @@ func (h *Handler) handlePull(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		var tooLarge *http.MaxBytesError
 		var failure *storagetypes.WatchError
-		if errors.As(err, &tooLarge) || errors.As(err, &failure) {
+		if errors.As(err, &tooLarge) || errors.As(err, &failure) || errors.Is(err, storagetypes.ErrInvalidReplicationSource) {
 			writePullError(w, err)
 		} else {
 			writeError(w, http.StatusBadRequest, ErrCodeBadRequest, "Invalid pull request body")
 		}
 		return
 	}
+	r, ok := h.resolveReplicationDatabase(w, r.WithContext(ctx), req.Source != nil)
+	if !ok {
+		return
+	}
+	ctx = r.Context()
 	database, ok := h.databaseOrError(w, r)
 	if !ok {
 		return
@@ -181,6 +230,10 @@ func (h *Handler) handlePull(w http.ResponseWriter, r *http.Request) {
 	}
 	resp, err := h.engine.Pull(ctx, database, req)
 	if err != nil {
+		writePullError(w, err)
+		return
+	}
+	if err := wire.ValidatePullResponseScope(req, resp); err != nil {
 		writePullError(w, err)
 		return
 	}

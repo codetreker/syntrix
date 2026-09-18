@@ -268,7 +268,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	// Note: Request ID and panic recovery are handled by the unified server middleware
 	// URL format: /api/v1/databases/{database}/documents/{path...}
 	// Database validation middleware ensures database exists and is active
-	mux.HandleFunc("GET /api/v1/databases/{database}/documents/{path...}", withTimeout(h.withDatabaseValidation(h.maybeProtected(h.authorized(h.handleGetDocument, "read"))), DefaultRequestTimeout))
+	mux.HandleFunc("GET /api/v1/databases/{database}/documents/{path...}", withTimeout(h.withBoundDatabaseIdentity(h.handleGetDocument, h.withDatabaseValidation(h.maybeProtected(h.authorized(h.handleGetDocument, "read")))), DefaultRequestTimeout))
 	mux.HandleFunc("POST /api/v1/databases/{database}/documents/{path...}", withTimeout(maxBodySize(h.withDatabaseValidation(h.maybeProtected(h.authorized(h.handleCreateDocument, "create"))), DefaultMaxBodySize), DefaultRequestTimeout))
 	mux.HandleFunc("PUT /api/v1/databases/{database}/documents/{path...}", withTimeout(maxBodySize(h.withDatabaseValidation(h.maybeProtected(h.authorized(h.handleReplaceDocument, "update"))), DefaultMaxBodySize), DefaultRequestTimeout))
 	mux.HandleFunc("PATCH /api/v1/databases/{database}/documents/{path...}", withTimeout(maxBodySize(h.withDatabaseValidation(h.maybeProtected(h.authorized(h.handlePatchDocument, "update"))), DefaultMaxBodySize), DefaultRequestTimeout))
@@ -276,12 +276,12 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 
 	// Query Operations
 	// URL format: /api/v1/databases/{database}/query
-	mux.HandleFunc("POST /api/v1/databases/{database}/query", withTimeout(maxBodySize(h.withDatabaseValidation(h.protected(h.handleQuery)), DefaultMaxBodySize), DefaultRequestTimeout))
+	mux.HandleFunc("POST /api/v1/databases/{database}/query", withTimeout(maxBodySize(h.withBoundDatabaseIdentity(h.handleQuery, h.withDatabaseValidation(h.protected(h.handleQuery))), DefaultMaxBodySize), DefaultRequestTimeout))
 
 	// Replication Operations (use longer timeout for potentially large data transfers)
 	// URL format: /replication/v1/databases/{database}/pull
-	mux.HandleFunc("POST /replication/v1/databases/{database}/pull", withTimeout(h.protected(h.withDatabaseValidation(h.pullAuthorized(h.handlePull))), DefaultRequestTimeout))
-	mux.HandleFunc("POST /replication/v1/databases/{database}/push", withTimeout(maxBodySize(h.withDatabaseValidation(h.protected(h.handlePush)), LargeMaxBodySize), LongRequestTimeout))
+	mux.HandleFunc("POST /replication/v1/databases/{database}/pull", withTimeout(h.protected(h.handlePull), DefaultRequestTimeout))
+	mux.HandleFunc("POST /replication/v1/databases/{database}/push", withTimeout(maxBodySize(h.withBoundDatabaseIdentity(h.handlePush, h.withDatabaseValidation(h.protected(h.handlePush))), LargeMaxBodySize), LongRequestTimeout))
 
 	// Trigger Internal Operations
 	// URL format: /trigger/v1/databases/{database}/get

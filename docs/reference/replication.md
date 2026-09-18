@@ -1,8 +1,41 @@
 # Replication API Reference
 
 Replication endpoints use an explicit database URL namespace. Pull returns
-typed document states and an opaque continuation; Push accepts typed document
-objects and returns conflicts with typed current state.
+typed document states or query-membership events with an opaque continuation; Push
+accepts typed document objects and returns conflicts with typed current state.
+
+## Bound Database Identity
+
+A client bound to a database incarnation sends the optional header
+`X-Syntrix-Expected-Database-Identity: <database ID>` on Pull, Push, ordinary Query,
+and document GET requests. The value is exactly one lowercase 16-digit hexadecimal
+ID. An empty, repeated, or malformed header returns HTTP 400 `BAD_REQUEST`.
+
+| Request | Database resolution and authorization |
+|---|---|
+| Any request carrying the header on these routes | Read the management store afresh; require an active database and its owner or matching `db_admin` grant before comparing identity |
+| Query-source Pull without the header | Use the same authoritative resolution and full-scope authorization; return the real ID for initial binding |
+| Existing requests without the header or a Pull source | Preserve their existing resolution and authorization behavior |
+
+Status, permission, and identity use the same fresh database object. A cache hit
+cannot replace this check, and management-store failure has no cache fallback.
+Missing, suspended, and deleting databases retain their existing errors.
+Unauthorized callers receive the permission error before identity comparison.
+A different identity returns HTTP 409 `DATABASE_IDENTITY_MISMATCH` before any
+document read, scan, Watch, or write. Push reports it as a request error, not a
+per-document conflict. Bound ordinary Query and GET use this full-scope gate as
+well; the header does not enable per-document-authorized replication reads.
+
+The URL namespace still selects storage. This check does not rewrite a slug into
+an ID address. It checks database identity when admitting the request; it does
+not lock the database against concurrent deletion or slug reassignment for the
+request's lifetime. Keep pending writes and uncertain earlier attempts after an
+identity failure: rejecting this request says nothing about an earlier timed-out
+Push.
+
+All Gateway and Query nodes must support this contract before query-replication
+protocol version 1 is enabled. Header presence alone cannot establish support
+when an older node may ignore it.
 
 ## Pull Changes
 
@@ -127,6 +160,117 @@ the frame or source-byte budget without progress returns retryable
 `REPLICATION_UNAVAILABLE`; reaching the hard deadline returns `DEADLINE_EXCEEDED`.
 The HTTP write deadline leaves time to transmit the encoded result or error after
 processing ends. Other routes retain the configured server write timeout.
+
+## Query-Source Pull
+
+The same Pull endpoint accepts a `source` to synchronize an entire matching set.
+Omitting `source` preserves the collection Pull request and response above. The
+SDK's existing public manual Pull method still exposes only collection Pull.
+
+```json
+{
+  "collection": "users",
+  "source": {
+    "version": 1,
+    "filters": [
+      {"field": "active", "op": "==", "value": {"type": "bool", "value": true}}
+    ]
+  },
+  "checkpoint": null,
+  "limit": 100
+}
+```
+
+| Field | Contract |
+|---|---|
+| `source.version` | Required integer `1` |
+| `source.filters` | Required array, possibly empty; AND conjunction with the existing [filter semantics](filters.md#fields-and-operators); operands require recursive typed nodes |
+| `source.orderBy` | Optional array of `{field, direction}` with `asc` or `desc`; normalized into source identity, but does not reorder source events |
+| Top-level `limit` | Transfer event limit, default 100, range 0–1000; zero selects the default |
+| `checkpoint` | Omit, null, or empty string to initialize; otherwise reuse the returned opaque string |
+| `source.limit` | Reserved result-window size, integer 1–1000; window execution is unsupported |
+| `requestId` | Forbidden for matching sets; required for a reserved window request, which also forbids top-level `limit` and `checkpoint` |
+
+Unknown or duplicate structural fields, null `source`, unsupported versions,
+invalid Unicode, malformed typed nodes, and invalid field combinations return
+HTTP 400 `INVALID_REPLICATION_SOURCE`. A structurally valid window request returns
+HTTP 501 `REPLICATION_UNSUPPORTED`; it never returns a successful partial window.
+
+### Events and Source Identity
+
+```json
+{
+  "protocolVersion": 1,
+  "mode": "events",
+  "databaseIdentity": "0123456789abcdef",
+  "sourceHash": "server-computed-source-hash",
+  "events": [
+    {"type": "leave", "id": "alice"},
+    {"type": "delete", "id": "bob"}
+  ],
+  "checkpoint": "opaque-query-continuation",
+  "generationId": "server-generated-generation",
+  "phase": "replay",
+  "caughtUp": false,
+  "bootstrapComplete": false
+}
+```
+
+All response envelope fields are required, including an empty `events` array and
+false boolean values. `databaseIdentity` comes from the authoritative database
+check. `sourceHash` binds protocol version, actual database identity, collection,
+normalized typed filters, effective ordering, and result limit. Filter order and
+other equivalent normalized predicates produce the same identity. Effective
+ordering appends logical ID ascending when not explicitly ordered; absent ordering
+is ID ascending for this identity. Clients retain the hash rather than deriving it.
+
+| Source state | Event | Consumer meaning |
+|---|---|---|
+| Live document matching every predicate | `upsert` with `document` in the existing recursive typed object format | Apply the current state and include its ID in this source |
+| Live document failing a predicate during replay/live | `leave` with `id` | Remove this source's membership, even if that ID was never observed locally |
+| Logical deletion | `delete` with `id` | Apply deletion without inventing a version, timestamps, or payload |
+| Filtered scan candidate or progress-only frame | No event | Persist the returned checkpoint even when events are empty |
+
+Delete events currently emit no `observedMetadata`. A leave is not a deletion of
+the stored document or of its membership in another source. Full-scope owner or
+`db_admin` authorization is required because stateless leaves may reveal IDs that
+never matched. Query filters do not confer permissions.
+
+### Generations and Recovery
+
+```text
+new generation -> scan -> replay -> live
+                     original C0 ----^
+```
+
+| Phase | Completion contract |
+|---|---|
+| `scan` | Scan committed candidates in logical ID order; `caughtUp` and `bootstrapComplete` are false |
+| `replay` | Replay from the scan's original C0; neither a short nor empty page proves completion |
+| `live` | Enter only after Watch proves caught-up progress; `bootstrapComplete` remains true for the generation, while `caughtUp` describes the current page |
+
+The opaque version-4 cursor binds source hash, generation, phase, database scope,
+and existing Store progress. It can resume on another service instance. Changing
+the source or database scope fails validation; old collection-mode cursors cannot
+be used for query mode. Expired source history returns `RESYNC_REQUIRED`; an
+explicit new initialization creates a new generation. Consumers activate rebuilt
+membership only after the completed generation and its checkpoint are durable,
+retaining unsent local edits throughout recovery.
+
+The moving scan overlaps replay and is not a fixed historical snapshot. Current
+state enrichment may yield a recreated document, then a historical deletion, then
+the recreated document again. Apply source order and permit temporary regression;
+maximum document version cannot establish delete/recreate order.
+
+All existing Pull budgets apply to query mode, including every scanned candidate,
+filtered-out work, source bytes, Watch frames, and encoded envelope. The transfer
+limit counts events; rejected scan candidates still consume the bounded source
+page. An empty events page may therefore advance without completing bootstrap.
+A cursor never advances beyond an event that did not fit the response. These
+adapter-visible budgets do not promise a bound on all internal database work.
+
+The [query-source decision](../../.agents/notes/implemented/feature/2026-09-18-query-replication-source.md)
+records source projection, identity checking, and their guarantees.
 
 ## Push Changes
 
@@ -298,13 +442,15 @@ for exact version extraction.
 
 | HTTP status / code | Meaning and recovery |
 |---|---|
-| 400 `BAD_REQUEST` | Invalid request, cursor, or scope; correct the request |
+| 400 `BAD_REQUEST` | Invalid request, cursor, scope, or database identity header; correct the request |
+| 400 `INVALID_REPLICATION_SOURCE` | Invalid source structure, version, or field combination |
 | 401 / 403 | Authentication or full-scope access denied |
+| 409 `DATABASE_IDENTITY_MISMATCH` | Bound database identity no longer matches; stop this binding and preserve pending or uncertain writes |
 | 409 `RESYNC_REQUIRED` | Old timestamp cursor, source replacement, expired history, or unavailable required payload; rebuild from null |
 | 413 `REQUEST_TOO_LARGE` | Request body or checkpoint exceeds its size limit |
 | 422 `REPLICATION_BUDGET_EXCEEDED` | A response cannot satisfy work/size limits |
 | 499 | Request canceled; keep the last saved checkpoint |
-| 501 `REPLICATION_UNSUPPORTED` | Selected source lacks required capabilities |
+| 501 `REPLICATION_UNSUPPORTED` | Selected source lacks required capabilities or requests unsupported result-window execution |
 | 503 `REPLICATION_UNAVAILABLE` | Transient source failure or work budget exhausted without checkpoint progress; retry the saved checkpoint |
 | 504 `DEADLINE_EXCEEDED` | Request timeout; retry the saved checkpoint |
 | 500 `INTERNAL_ERROR` | Invalid source output or other server failure; no progress returned |

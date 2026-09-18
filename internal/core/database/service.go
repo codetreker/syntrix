@@ -72,6 +72,9 @@ type Service interface {
 	// ResolveDatabase resolves an identifier to a database and checks status
 	ResolveDatabase(ctx context.Context, identifier string) (*Database, error)
 
+	// ResolveDatabaseAuthoritative bypasses metadata caches and checks the current status.
+	ResolveDatabaseAuthoritative(ctx context.Context, identifier string) (*Database, error)
+
 	// ValidateDatabase checks if a database exists and is active
 	ValidateDatabase(ctx context.Context, identifier string) error
 }
@@ -323,7 +326,25 @@ func (s *service) ResolveDatabase(ctx context.Context, identifier string) (*Data
 		return nil, err
 	}
 
-	// Check status
+	return validateResolvedDatabase(db)
+}
+
+func (s *service) ResolveDatabaseAuthoritative(ctx context.Context, identifier string) (*Database, error) {
+	id, slug, isID := ParseIdentifier(identifier)
+	var db *Database
+	var err error
+	if isID {
+		db, err = s.store.Get(ctx, id)
+	} else {
+		db, err = s.store.GetBySlug(ctx, slug)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return validateResolvedDatabase(db)
+}
+
+func validateResolvedDatabase(db *Database) (*Database, error) {
 	switch db.Status {
 	case StatusActive:
 		return db, nil

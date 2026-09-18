@@ -1078,7 +1078,9 @@ type PullRequest struct {
 	Limit       int32  `protobuf:"varint,4,opt,name=limit,proto3" json:"limit,omitempty"`
 	WireVersion uint32 `protobuf:"varint,5,opt,name=wire_version,json=wireVersion,proto3" json:"wire_version,omitempty"`
 	// Trusted resolved entity identity; database remains the storage namespace.
-	DatabaseIdentity string `protobuf:"bytes,6,opt,name=database_identity,json=databaseIdentity,proto3" json:"database_identity,omitempty"`
+	DatabaseIdentity string             `protobuf:"bytes,6,opt,name=database_identity,json=databaseIdentity,proto3" json:"database_identity,omitempty"`
+	Source           *ReplicationSource `protobuf:"bytes,7,opt,name=source,proto3" json:"source,omitempty"`
+	RequestId        *string            `protobuf:"bytes,8,opt,name=request_id,json=requestId,proto3,oneof" json:"request_id,omitempty"`
 	unknownFields    protoimpl.UnknownFields
 	sizeCache        protoimpl.SizeCache
 }
@@ -1155,21 +1157,171 @@ func (x *PullRequest) GetDatabaseIdentity() string {
 	return ""
 }
 
+func (x *PullRequest) GetSource() *ReplicationSource {
+	if x != nil {
+		return x.Source
+	}
+	return nil
+}
+
+func (x *PullRequest) GetRequestId() string {
+	if x != nil && x.RequestId != nil {
+		return *x.RequestId
+	}
+	return ""
+}
+
+type ReplicationSource struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Version       int32                  `protobuf:"varint,1,opt,name=version,proto3" json:"version,omitempty"`
+	Filters       []*Filter              `protobuf:"bytes,2,rep,name=filters,proto3" json:"filters,omitempty"`
+	OrderBy       []*OrderBy             `protobuf:"bytes,3,rep,name=order_by,json=orderBy,proto3" json:"order_by,omitempty"`
+	Limit         *int32                 `protobuf:"varint,4,opt,name=limit,proto3,oneof" json:"limit,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ReplicationSource) Reset() {
+	*x = ReplicationSource{}
+	mi := &file_query_proto_msgTypes[17]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ReplicationSource) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ReplicationSource) ProtoMessage() {}
+
+func (x *ReplicationSource) ProtoReflect() protoreflect.Message {
+	mi := &file_query_proto_msgTypes[17]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ReplicationSource.ProtoReflect.Descriptor instead.
+func (*ReplicationSource) Descriptor() ([]byte, []int) {
+	return file_query_proto_rawDescGZIP(), []int{17}
+}
+
+func (x *ReplicationSource) GetVersion() int32 {
+	if x != nil {
+		return x.Version
+	}
+	return 0
+}
+
+func (x *ReplicationSource) GetFilters() []*Filter {
+	if x != nil {
+		return x.Filters
+	}
+	return nil
+}
+
+func (x *ReplicationSource) GetOrderBy() []*OrderBy {
+	if x != nil {
+		return x.OrderBy
+	}
+	return nil
+}
+
+func (x *ReplicationSource) GetLimit() int32 {
+	if x != nil && x.Limit != nil {
+		return *x.Limit
+	}
+	return 0
+}
+
+type ReplicationEvent struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Type          string                 `protobuf:"bytes,1,opt,name=type,proto3" json:"type,omitempty"`
+	Document      *Document              `protobuf:"bytes,2,opt,name=document,proto3" json:"document,omitempty"`
+	Id            string                 `protobuf:"bytes,3,opt,name=id,proto3" json:"id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ReplicationEvent) Reset() {
+	*x = ReplicationEvent{}
+	mi := &file_query_proto_msgTypes[18]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ReplicationEvent) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ReplicationEvent) ProtoMessage() {}
+
+func (x *ReplicationEvent) ProtoReflect() protoreflect.Message {
+	mi := &file_query_proto_msgTypes[18]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ReplicationEvent.ProtoReflect.Descriptor instead.
+func (*ReplicationEvent) Descriptor() ([]byte, []int) {
+	return file_query_proto_rawDescGZIP(), []int{18}
+}
+
+func (x *ReplicationEvent) GetType() string {
+	if x != nil {
+		return x.Type
+	}
+	return ""
+}
+
+func (x *ReplicationEvent) GetDocument() *Document {
+	if x != nil {
+		return x.Document
+	}
+	return nil
+}
+
+func (x *ReplicationEvent) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
 type PullResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Documents to replicate.
 	Documents []*Document `protobuf:"bytes,1,rep,name=documents,proto3" json:"documents,omitempty"`
 	// New checkpoint for next pull.
-	Checkpoint    string `protobuf:"bytes,2,opt,name=checkpoint,proto3" json:"checkpoint,omitempty"`
-	CaughtUp      bool   `protobuf:"varint,3,opt,name=caught_up,json=caughtUp,proto3" json:"caught_up,omitempty"`
-	WireVersion   uint32 `protobuf:"varint,4,opt,name=wire_version,json=wireVersion,proto3" json:"wire_version,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Checkpoint        string              `protobuf:"bytes,2,opt,name=checkpoint,proto3" json:"checkpoint,omitempty"`
+	CaughtUp          bool                `protobuf:"varint,3,opt,name=caught_up,json=caughtUp,proto3" json:"caught_up,omitempty"`
+	WireVersion       uint32              `protobuf:"varint,4,opt,name=wire_version,json=wireVersion,proto3" json:"wire_version,omitempty"`
+	ProtocolVersion   int32               `protobuf:"varint,5,opt,name=protocol_version,json=protocolVersion,proto3" json:"protocol_version,omitempty"`
+	Mode              string              `protobuf:"bytes,6,opt,name=mode,proto3" json:"mode,omitempty"`
+	DatabaseIdentity  string              `protobuf:"bytes,7,opt,name=database_identity,json=databaseIdentity,proto3" json:"database_identity,omitempty"`
+	SourceHash        string              `protobuf:"bytes,8,opt,name=source_hash,json=sourceHash,proto3" json:"source_hash,omitempty"`
+	Events            []*ReplicationEvent `protobuf:"bytes,9,rep,name=events,proto3" json:"events,omitempty"`
+	GenerationId      string              `protobuf:"bytes,10,opt,name=generation_id,json=generationId,proto3" json:"generation_id,omitempty"`
+	Phase             string              `protobuf:"bytes,11,opt,name=phase,proto3" json:"phase,omitempty"`
+	BootstrapComplete *bool               `protobuf:"varint,12,opt,name=bootstrap_complete,json=bootstrapComplete,proto3,oneof" json:"bootstrap_complete,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *PullResponse) Reset() {
 	*x = PullResponse{}
-	mi := &file_query_proto_msgTypes[17]
+	mi := &file_query_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1181,7 +1333,7 @@ func (x *PullResponse) String() string {
 func (*PullResponse) ProtoMessage() {}
 
 func (x *PullResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_query_proto_msgTypes[17]
+	mi := &file_query_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1194,7 +1346,7 @@ func (x *PullResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PullResponse.ProtoReflect.Descriptor instead.
 func (*PullResponse) Descriptor() ([]byte, []int) {
-	return file_query_proto_rawDescGZIP(), []int{17}
+	return file_query_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *PullResponse) GetDocuments() []*Document {
@@ -1225,6 +1377,62 @@ func (x *PullResponse) GetWireVersion() uint32 {
 	return 0
 }
 
+func (x *PullResponse) GetProtocolVersion() int32 {
+	if x != nil {
+		return x.ProtocolVersion
+	}
+	return 0
+}
+
+func (x *PullResponse) GetMode() string {
+	if x != nil {
+		return x.Mode
+	}
+	return ""
+}
+
+func (x *PullResponse) GetDatabaseIdentity() string {
+	if x != nil {
+		return x.DatabaseIdentity
+	}
+	return ""
+}
+
+func (x *PullResponse) GetSourceHash() string {
+	if x != nil {
+		return x.SourceHash
+	}
+	return ""
+}
+
+func (x *PullResponse) GetEvents() []*ReplicationEvent {
+	if x != nil {
+		return x.Events
+	}
+	return nil
+}
+
+func (x *PullResponse) GetGenerationId() string {
+	if x != nil {
+		return x.GenerationId
+	}
+	return ""
+}
+
+func (x *PullResponse) GetPhase() string {
+	if x != nil {
+		return x.Phase
+	}
+	return ""
+}
+
+func (x *PullResponse) GetBootstrapComplete() bool {
+	if x != nil && x.BootstrapComplete != nil {
+		return *x.BootstrapComplete
+	}
+	return false
+}
+
 type PushChange struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Document to push. Data is a typed-value object or typed null.
@@ -1239,7 +1447,7 @@ type PushChange struct {
 
 func (x *PushChange) Reset() {
 	*x = PushChange{}
-	mi := &file_query_proto_msgTypes[18]
+	mi := &file_query_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1251,7 +1459,7 @@ func (x *PushChange) String() string {
 func (*PushChange) ProtoMessage() {}
 
 func (x *PushChange) ProtoReflect() protoreflect.Message {
-	mi := &file_query_proto_msgTypes[18]
+	mi := &file_query_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1264,7 +1472,7 @@ func (x *PushChange) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PushChange.ProtoReflect.Descriptor instead.
 func (*PushChange) Descriptor() ([]byte, []int) {
-	return file_query_proto_rawDescGZIP(), []int{18}
+	return file_query_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *PushChange) GetDocument() *Document {
@@ -1302,7 +1510,7 @@ type PushRequest struct {
 
 func (x *PushRequest) Reset() {
 	*x = PushRequest{}
-	mi := &file_query_proto_msgTypes[19]
+	mi := &file_query_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1314,7 +1522,7 @@ func (x *PushRequest) String() string {
 func (*PushRequest) ProtoMessage() {}
 
 func (x *PushRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_query_proto_msgTypes[19]
+	mi := &file_query_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1327,7 +1535,7 @@ func (x *PushRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PushRequest.ProtoReflect.Descriptor instead.
 func (*PushRequest) Descriptor() ([]byte, []int) {
-	return file_query_proto_rawDescGZIP(), []int{19}
+	return file_query_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *PushRequest) GetDatabase() string {
@@ -1364,7 +1572,7 @@ type PushConflict struct {
 
 func (x *PushConflict) Reset() {
 	*x = PushConflict{}
-	mi := &file_query_proto_msgTypes[20]
+	mi := &file_query_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1376,7 +1584,7 @@ func (x *PushConflict) String() string {
 func (*PushConflict) ProtoMessage() {}
 
 func (x *PushConflict) ProtoReflect() protoreflect.Message {
-	mi := &file_query_proto_msgTypes[20]
+	mi := &file_query_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1389,7 +1597,7 @@ func (x *PushConflict) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PushConflict.ProtoReflect.Descriptor instead.
 func (*PushConflict) Descriptor() ([]byte, []int) {
-	return file_query_proto_rawDescGZIP(), []int{20}
+	return file_query_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *PushConflict) GetChangeIndex() int32 {
@@ -1429,7 +1637,7 @@ type PushResponse struct {
 
 func (x *PushResponse) Reset() {
 	*x = PushResponse{}
-	mi := &file_query_proto_msgTypes[21]
+	mi := &file_query_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1441,7 +1649,7 @@ func (x *PushResponse) String() string {
 func (*PushResponse) ProtoMessage() {}
 
 func (x *PushResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_query_proto_msgTypes[21]
+	mi := &file_query_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1454,7 +1662,7 @@ func (x *PushResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PushResponse.ProtoReflect.Descriptor instead.
 func (*PushResponse) Descriptor() ([]byte, []int) {
-	return file_query_proto_rawDescGZIP(), []int{21}
+	return file_query_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *PushResponse) GetConflicts() []*PushConflict {
@@ -1539,7 +1747,7 @@ const file_query_proto_rawDesc = "" +
 	"nextCursor\x12\x19\n" +
 	"\bhas_more\x18\x03 \x01(\bR\ahasMore\x12B\n" +
 	"\x0feffective_order\x18\x04 \x03(\v2\x19.syntrix.query.v1.OrderByR\x0eeffectiveOrder\x12!\n" +
-	"\fwire_version\x18\x05 \x01(\rR\vwireVersion\"\xcf\x01\n" +
+	"\fwire_version\x18\x05 \x01(\rR\vwireVersion\"\xbf\x02\n" +
 	"\vPullRequest\x12\x1a\n" +
 	"\bdatabase\x18\x01 \x01(\tR\bdatabase\x12\x1e\n" +
 	"\n" +
@@ -1550,14 +1758,39 @@ const file_query_proto_rawDesc = "" +
 	"checkpoint\x12\x14\n" +
 	"\x05limit\x18\x04 \x01(\x05R\x05limit\x12!\n" +
 	"\fwire_version\x18\x05 \x01(\rR\vwireVersion\x12+\n" +
-	"\x11database_identity\x18\x06 \x01(\tR\x10databaseIdentity\"\xa8\x01\n" +
+	"\x11database_identity\x18\x06 \x01(\tR\x10databaseIdentity\x12;\n" +
+	"\x06source\x18\a \x01(\v2#.syntrix.query.v1.ReplicationSourceR\x06source\x12\"\n" +
+	"\n" +
+	"request_id\x18\b \x01(\tH\x00R\trequestId\x88\x01\x01B\r\n" +
+	"\v_request_id\"\xbc\x01\n" +
+	"\x11ReplicationSource\x12\x18\n" +
+	"\aversion\x18\x01 \x01(\x05R\aversion\x122\n" +
+	"\afilters\x18\x02 \x03(\v2\x18.syntrix.query.v1.FilterR\afilters\x124\n" +
+	"\border_by\x18\x03 \x03(\v2\x19.syntrix.query.v1.OrderByR\aorderBy\x12\x19\n" +
+	"\x05limit\x18\x04 \x01(\x05H\x00R\x05limit\x88\x01\x01B\b\n" +
+	"\x06_limit\"n\n" +
+	"\x10ReplicationEvent\x12\x12\n" +
+	"\x04type\x18\x01 \x01(\tR\x04type\x126\n" +
+	"\bdocument\x18\x02 \x01(\v2\x1a.syntrix.query.v1.DocumentR\bdocument\x12\x0e\n" +
+	"\x02id\x18\x03 \x01(\tR\x02id\"\xf7\x03\n" +
 	"\fPullResponse\x128\n" +
 	"\tdocuments\x18\x01 \x03(\v2\x1a.syntrix.query.v1.DocumentR\tdocuments\x12\x1e\n" +
 	"\n" +
 	"checkpoint\x18\x02 \x01(\tR\n" +
 	"checkpoint\x12\x1b\n" +
 	"\tcaught_up\x18\x03 \x01(\bR\bcaughtUp\x12!\n" +
-	"\fwire_version\x18\x04 \x01(\rR\vwireVersion\"\xb3\x01\n" +
+	"\fwire_version\x18\x04 \x01(\rR\vwireVersion\x12)\n" +
+	"\x10protocol_version\x18\x05 \x01(\x05R\x0fprotocolVersion\x12\x12\n" +
+	"\x04mode\x18\x06 \x01(\tR\x04mode\x12+\n" +
+	"\x11database_identity\x18\a \x01(\tR\x10databaseIdentity\x12\x1f\n" +
+	"\vsource_hash\x18\b \x01(\tR\n" +
+	"sourceHash\x12:\n" +
+	"\x06events\x18\t \x03(\v2\".syntrix.query.v1.ReplicationEventR\x06events\x12#\n" +
+	"\rgeneration_id\x18\n" +
+	" \x01(\tR\fgenerationId\x12\x14\n" +
+	"\x05phase\x18\v \x01(\tR\x05phase\x122\n" +
+	"\x12bootstrap_complete\x18\f \x01(\bH\x00R\x11bootstrapComplete\x88\x01\x01B\x15\n" +
+	"\x13_bootstrap_complete\"\xb3\x01\n" +
 	"\n" +
 	"PushChange\x126\n" +
 	"\bdocument\x18\x01 \x01(\v2\x1a.syntrix.query.v1.DocumentR\bdocument\x12&\n" +
@@ -1606,7 +1839,7 @@ func file_query_proto_rawDescGZIP() []byte {
 }
 
 var file_query_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_query_proto_msgTypes = make([]protoimpl.MessageInfo, 22)
+var file_query_proto_msgTypes = make([]protoimpl.MessageInfo, 24)
 var file_query_proto_goTypes = []any{
 	(PushAction)(0),                 // 0: syntrix.query.v1.PushAction
 	(*Document)(nil),                // 1: syntrix.query.v1.Document
@@ -1626,11 +1859,13 @@ var file_query_proto_goTypes = []any{
 	(*ExecuteQueryRequest)(nil),     // 15: syntrix.query.v1.ExecuteQueryRequest
 	(*ExecuteQueryResponse)(nil),    // 16: syntrix.query.v1.ExecuteQueryResponse
 	(*PullRequest)(nil),             // 17: syntrix.query.v1.PullRequest
-	(*PullResponse)(nil),            // 18: syntrix.query.v1.PullResponse
-	(*PushChange)(nil),              // 19: syntrix.query.v1.PushChange
-	(*PushRequest)(nil),             // 20: syntrix.query.v1.PushRequest
-	(*PushConflict)(nil),            // 21: syntrix.query.v1.PushConflict
-	(*PushResponse)(nil),            // 22: syntrix.query.v1.PushResponse
+	(*ReplicationSource)(nil),       // 18: syntrix.query.v1.ReplicationSource
+	(*ReplicationEvent)(nil),        // 19: syntrix.query.v1.ReplicationEvent
+	(*PullResponse)(nil),            // 20: syntrix.query.v1.PullResponse
+	(*PushChange)(nil),              // 21: syntrix.query.v1.PushChange
+	(*PushRequest)(nil),             // 22: syntrix.query.v1.PushRequest
+	(*PushConflict)(nil),            // 23: syntrix.query.v1.PushConflict
+	(*PushResponse)(nil),            // 24: syntrix.query.v1.PushResponse
 }
 var file_query_proto_depIdxs = []int32{
 	2,  // 0: syntrix.query.v1.Query.filters:type_name -> syntrix.query.v1.Filter
@@ -1647,33 +1882,38 @@ var file_query_proto_depIdxs = []int32{
 	4,  // 11: syntrix.query.v1.ExecuteQueryRequest.query:type_name -> syntrix.query.v1.Query
 	1,  // 12: syntrix.query.v1.ExecuteQueryResponse.documents:type_name -> syntrix.query.v1.Document
 	3,  // 13: syntrix.query.v1.ExecuteQueryResponse.effective_order:type_name -> syntrix.query.v1.OrderBy
-	1,  // 14: syntrix.query.v1.PullResponse.documents:type_name -> syntrix.query.v1.Document
-	1,  // 15: syntrix.query.v1.PushChange.document:type_name -> syntrix.query.v1.Document
-	0,  // 16: syntrix.query.v1.PushChange.action:type_name -> syntrix.query.v1.PushAction
-	19, // 17: syntrix.query.v1.PushRequest.changes:type_name -> syntrix.query.v1.PushChange
-	1,  // 18: syntrix.query.v1.PushConflict.current:type_name -> syntrix.query.v1.Document
-	21, // 19: syntrix.query.v1.PushResponse.conflicts:type_name -> syntrix.query.v1.PushConflict
-	5,  // 20: syntrix.query.v1.QueryService.GetDocument:input_type -> syntrix.query.v1.GetDocumentRequest
-	7,  // 21: syntrix.query.v1.QueryService.CreateDocument:input_type -> syntrix.query.v1.CreateDocumentRequest
-	9,  // 22: syntrix.query.v1.QueryService.ReplaceDocument:input_type -> syntrix.query.v1.ReplaceDocumentRequest
-	11, // 23: syntrix.query.v1.QueryService.PatchDocument:input_type -> syntrix.query.v1.PatchDocumentRequest
-	13, // 24: syntrix.query.v1.QueryService.DeleteDocument:input_type -> syntrix.query.v1.DeleteDocumentRequest
-	15, // 25: syntrix.query.v1.QueryService.ExecuteQuery:input_type -> syntrix.query.v1.ExecuteQueryRequest
-	17, // 26: syntrix.query.v1.QueryService.Pull:input_type -> syntrix.query.v1.PullRequest
-	20, // 27: syntrix.query.v1.QueryService.Push:input_type -> syntrix.query.v1.PushRequest
-	6,  // 28: syntrix.query.v1.QueryService.GetDocument:output_type -> syntrix.query.v1.GetDocumentResponse
-	8,  // 29: syntrix.query.v1.QueryService.CreateDocument:output_type -> syntrix.query.v1.CreateDocumentResponse
-	10, // 30: syntrix.query.v1.QueryService.ReplaceDocument:output_type -> syntrix.query.v1.ReplaceDocumentResponse
-	12, // 31: syntrix.query.v1.QueryService.PatchDocument:output_type -> syntrix.query.v1.PatchDocumentResponse
-	14, // 32: syntrix.query.v1.QueryService.DeleteDocument:output_type -> syntrix.query.v1.DeleteDocumentResponse
-	16, // 33: syntrix.query.v1.QueryService.ExecuteQuery:output_type -> syntrix.query.v1.ExecuteQueryResponse
-	18, // 34: syntrix.query.v1.QueryService.Pull:output_type -> syntrix.query.v1.PullResponse
-	22, // 35: syntrix.query.v1.QueryService.Push:output_type -> syntrix.query.v1.PushResponse
-	28, // [28:36] is the sub-list for method output_type
-	20, // [20:28] is the sub-list for method input_type
-	20, // [20:20] is the sub-list for extension type_name
-	20, // [20:20] is the sub-list for extension extendee
-	0,  // [0:20] is the sub-list for field type_name
+	18, // 14: syntrix.query.v1.PullRequest.source:type_name -> syntrix.query.v1.ReplicationSource
+	2,  // 15: syntrix.query.v1.ReplicationSource.filters:type_name -> syntrix.query.v1.Filter
+	3,  // 16: syntrix.query.v1.ReplicationSource.order_by:type_name -> syntrix.query.v1.OrderBy
+	1,  // 17: syntrix.query.v1.ReplicationEvent.document:type_name -> syntrix.query.v1.Document
+	1,  // 18: syntrix.query.v1.PullResponse.documents:type_name -> syntrix.query.v1.Document
+	19, // 19: syntrix.query.v1.PullResponse.events:type_name -> syntrix.query.v1.ReplicationEvent
+	1,  // 20: syntrix.query.v1.PushChange.document:type_name -> syntrix.query.v1.Document
+	0,  // 21: syntrix.query.v1.PushChange.action:type_name -> syntrix.query.v1.PushAction
+	21, // 22: syntrix.query.v1.PushRequest.changes:type_name -> syntrix.query.v1.PushChange
+	1,  // 23: syntrix.query.v1.PushConflict.current:type_name -> syntrix.query.v1.Document
+	23, // 24: syntrix.query.v1.PushResponse.conflicts:type_name -> syntrix.query.v1.PushConflict
+	5,  // 25: syntrix.query.v1.QueryService.GetDocument:input_type -> syntrix.query.v1.GetDocumentRequest
+	7,  // 26: syntrix.query.v1.QueryService.CreateDocument:input_type -> syntrix.query.v1.CreateDocumentRequest
+	9,  // 27: syntrix.query.v1.QueryService.ReplaceDocument:input_type -> syntrix.query.v1.ReplaceDocumentRequest
+	11, // 28: syntrix.query.v1.QueryService.PatchDocument:input_type -> syntrix.query.v1.PatchDocumentRequest
+	13, // 29: syntrix.query.v1.QueryService.DeleteDocument:input_type -> syntrix.query.v1.DeleteDocumentRequest
+	15, // 30: syntrix.query.v1.QueryService.ExecuteQuery:input_type -> syntrix.query.v1.ExecuteQueryRequest
+	17, // 31: syntrix.query.v1.QueryService.Pull:input_type -> syntrix.query.v1.PullRequest
+	22, // 32: syntrix.query.v1.QueryService.Push:input_type -> syntrix.query.v1.PushRequest
+	6,  // 33: syntrix.query.v1.QueryService.GetDocument:output_type -> syntrix.query.v1.GetDocumentResponse
+	8,  // 34: syntrix.query.v1.QueryService.CreateDocument:output_type -> syntrix.query.v1.CreateDocumentResponse
+	10, // 35: syntrix.query.v1.QueryService.ReplaceDocument:output_type -> syntrix.query.v1.ReplaceDocumentResponse
+	12, // 36: syntrix.query.v1.QueryService.PatchDocument:output_type -> syntrix.query.v1.PatchDocumentResponse
+	14, // 37: syntrix.query.v1.QueryService.DeleteDocument:output_type -> syntrix.query.v1.DeleteDocumentResponse
+	16, // 38: syntrix.query.v1.QueryService.ExecuteQuery:output_type -> syntrix.query.v1.ExecuteQueryResponse
+	20, // 39: syntrix.query.v1.QueryService.Pull:output_type -> syntrix.query.v1.PullResponse
+	24, // 40: syntrix.query.v1.QueryService.Push:output_type -> syntrix.query.v1.PushResponse
+	33, // [33:41] is the sub-list for method output_type
+	25, // [25:33] is the sub-list for method input_type
+	25, // [25:25] is the sub-list for extension type_name
+	25, // [25:25] is the sub-list for extension extendee
+	0,  // [0:25] is the sub-list for field type_name
 }
 
 func init() { file_query_proto_init() }
@@ -1681,14 +1921,17 @@ func file_query_proto_init() {
 	if File_query_proto != nil {
 		return
 	}
-	file_query_proto_msgTypes[18].OneofWrappers = []any{}
+	file_query_proto_msgTypes[16].OneofWrappers = []any{}
+	file_query_proto_msgTypes[17].OneofWrappers = []any{}
+	file_query_proto_msgTypes[19].OneofWrappers = []any{}
+	file_query_proto_msgTypes[20].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_query_proto_rawDesc), len(file_query_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   22,
+			NumMessages:   24,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

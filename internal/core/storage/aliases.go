@@ -19,6 +19,9 @@ type EventType = types.EventType
 type Event = types.Event
 type ReplicationPullRequest = types.ReplicationPullRequest
 type ReplicationPullResponse = types.ReplicationPullResponse
+type ReplicationSource = types.ReplicationSource
+type ReplicationEvent = types.ReplicationEvent
+type ReplicationEventType = types.ReplicationEventType
 type ReplicationPushChange = types.ReplicationPushChange
 type ReplicationPushRequest = types.ReplicationPushRequest
 type ReplicationPushResponse = types.ReplicationPushResponse
@@ -35,6 +38,12 @@ type Router = types.Router
 type DocumentRouter = types.DocumentRouter
 type UserRouter = types.UserRouter
 type RevocationRouter = types.RevocationRouter
+
+const (
+	ReplicationUpsert = types.ReplicationUpsert
+	ReplicationLeave  = types.ReplicationLeave
+	ReplicationDelete = types.ReplicationDelete
+)
 
 const (
 	ReadDefault       = types.ReadDefault

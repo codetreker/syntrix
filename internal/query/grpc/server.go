@@ -148,12 +148,18 @@ func (s *Server) Pull(ctx context.Context, req *pb.PullRequest) (*pb.PullRespons
 	if req == nil || req.WireVersion != wire.Version || proto.Size(req) > core.MaxPullRequestBytes {
 		return nil, wire.ReplicationErrorToStatus(&types.WatchError{Code: types.WatchInvalidCheckpoint, Cause: errors.New("unsupported pull request version")})
 	}
-	pullReq := protoToPullRequest(req)
+	pullReq, err := wire.DecodePullRequest(req)
+	if err != nil {
+		return nil, wire.ReplicationErrorToStatus(err)
+	}
 	if err := core.ValidatePullRequest(req.Database, pullReq); err != nil {
 		return nil, wire.ReplicationErrorToStatus(err)
 	}
 	resp, err := s.service.Pull(ctx, req.Database, pullReq)
 	if err != nil {
+		return nil, wire.ReplicationErrorToStatus(err)
+	}
+	if err := wire.ValidatePullResponseScope(pullReq, resp); err != nil {
 		return nil, wire.ReplicationErrorToStatus(err)
 	}
 	encoded, err := wire.EncodePullPage(resp)

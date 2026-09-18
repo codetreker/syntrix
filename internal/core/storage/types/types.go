@@ -292,19 +292,30 @@ type Event struct {
 
 // ReplicationPullRequest represents a request to pull changes
 type ReplicationPullRequest struct {
-	// DatabaseIdentity is supplied by a trusted database resolver. Empty uses the
-	// storage namespace as identity for internal callers without that resolver.
-	DatabaseIdentity string `json:"-"`
-	Collection       string `json:"collection"`
-	Checkpoint       string `json:"checkpoint"`
-	Limit            int    `json:"limit"`
+	// DatabaseIdentity is supplied by a trusted database resolver. Legacy Pull
+	// permits internal callers to use the namespace fallback; query sources
+	// require a resolved identity.
+	DatabaseIdentity string             `json:"-"`
+	Collection       string             `json:"collection"`
+	Checkpoint       string             `json:"checkpoint"`
+	Limit            int                `json:"limit"`
+	Source           *ReplicationSource `json:"source,omitempty"`
+	RequestID        *string            `json:"requestId,omitempty"`
 }
 
 // ReplicationPullResponse represents the response for a pull request
 type ReplicationPullResponse struct {
-	Documents  []model.Document `json:"documents"`
-	Checkpoint string           `json:"checkpoint"`
-	CaughtUp   bool             `json:"caughtUp"`
+	Documents         []model.Document   `json:"documents"`
+	Checkpoint        string             `json:"checkpoint"`
+	CaughtUp          bool               `json:"caughtUp"`
+	ProtocolVersion   int                `json:"protocolVersion,omitempty"`
+	Mode              string             `json:"mode,omitempty"`
+	DatabaseIdentity  string             `json:"databaseIdentity,omitempty"`
+	SourceHash        string             `json:"sourceHash,omitempty"`
+	Events            []ReplicationEvent `json:"events,omitempty"`
+	GenerationID      string             `json:"generationId,omitempty"`
+	Phase             string             `json:"phase,omitempty"`
+	BootstrapComplete bool               `json:"bootstrapComplete,omitempty"`
 }
 
 type PushAction string

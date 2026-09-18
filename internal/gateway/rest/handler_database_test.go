@@ -68,6 +68,10 @@ func (m *fullMockDatabaseService) ResolveDatabase(ctx context.Context, identifie
 	return nil, database.ErrDatabaseNotFound
 }
 
+func (m *fullMockDatabaseService) ResolveDatabaseAuthoritative(ctx context.Context, identifier string) (*database.Database, error) {
+	return m.ResolveDatabase(ctx, identifier)
+}
+
 func (m *fullMockDatabaseService) ValidateDatabase(ctx context.Context, identifier string) error {
 	if m.validateFunc != nil {
 		return m.validateFunc(ctx, identifier)
