@@ -18,6 +18,8 @@ local edit 等术语继续表示修改发生的位置。公开数据库入口命
 维护内部契约；[SDK reference](../../../../docs/reference/typescript_sdk.md#replica-availability)
 维护公共可用性。公共 openReplica、查询/watch、自动 HTTP 下行/上行继续由
 [离线复制 proposal](../../proposed/feature/2026-09-07-sdk-offline-replication.md)负责。
+[私有查询层](2026-09-18-sdk-replica-query-watch.md)已实现查询求值与动态 watch；其读取
+适配在此层持有视图锁，接收共享预算并延后 payload 解码。
 
 ### 身份与所有权
 
@@ -87,7 +89,7 @@ alias shared -> 当前 epoch -> view exclusive -> d/m + 冻结条件
 当前行也分块预留额度；保留的写入输入和冲突结果受 native handoff 预算约束，每次委派
 下一块之前按最坏行大小准入。额度不足明确失败，已成功块保持持久化，复制 checkpoint
 不能推进；重试通过原有逐行 CAS 协调部分成功。上述界限不声称限制全局 JavaScript heap、
-所有原生队列或尚未实现的查询缓存。
+所有原生队列或查询层独立核算的缓存。
 
 仅使用 collection 的 raw storage，不使用 RxDocument/RxQuery。关闭未使用的高层
 change-event history 并同步排空 lazy document-cache tasks，保留真实 change feed。

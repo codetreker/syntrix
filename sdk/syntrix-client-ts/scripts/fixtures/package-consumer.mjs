@@ -5,6 +5,7 @@ import { createTestLockManager } from './test-locks.mjs';
 const remote = await import('@syntrix/client');
 assert.equal(typeof remote.SyntrixClient, 'function');
 assert.equal('createReplicationRuntime' in remote, false);
+assert.equal('createReplicaQueryClient' in remote, false);
 await import('fake-indexeddb/auto');
 const sdkEntry = import.meta.resolve('@syntrix/client');
 const { loadReplicaRuntime } = await import(new URL('./internal/replica/loader.js', sdkEntry));
@@ -202,6 +203,34 @@ await alias.delete('specified-id');
 assert.equal(await alias.get('specified-id'), null);
 await alias.set('specified-id', { counter: 9007199254740994n });
 assert.equal((await alias.get('specified-id')).counter, 9007199254740994n);
+await alias.set('earlier', { counter: 9007199254740993n });
+const queries = replica.createReplicaQueryClient(alias);
+try {
+  const spec = { orderBy: [{ field: 'counter', direction: 'asc' }], limit: 1 };
+  const first = await queries.getPage(spec);
+  assert.deepEqual(first.documents.map(doc => doc.id), ['earlier']);
+  assert.equal(first.documents[0].counter, 9007199254740993n);
+  const second = await queries.getPage({ ...spec, startAfter: first.nextCursor });
+  assert.deepEqual(second.documents.map(doc => doc.id), ['specified-id']);
+  assert.equal(second.nextCursor, null);
+  const snapshots = [];
+  const failures = [];
+  const stop = queries.watch(spec, documents => snapshots.push(documents), error => failures.push(error));
+  try {
+    await until(() => snapshots.length === 1 || failures.length);
+    await alias.update('specified-id', { counter: 0n });
+    await until(() => snapshots.length === 2 || failures.length);
+    assert.equal(snapshots[1][0].id, 'specified-id');
+    assert.equal(snapshots[1][0].counter, 0n);
+    await alias.update('specified-id', { counter: 0 });
+    await until(() => snapshots.length === 3 || failures.length);
+    assert.equal(snapshots[2][0].counter, 0);
+    assert.deepEqual(failures, []);
+  } finally { stop(); }
+} finally { await queries.close(); }
+assert.equal(queries.debugStats().payloadBytes, 0);
+assert.equal(queries.debugStats().nodes, 0);
+console.log('Packed replica queries: exact keyset pages, dynamic window refill, typed changes and resource release passed');
 provider.setToken(token('bob'));
 await provider.getToken();
 await assert.rejects(alias.get('specified-id'));

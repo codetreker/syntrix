@@ -1,7 +1,7 @@
 # TypeScript Client SDK Architecture
 
 **Date:** December 27, 2025
-**Status:** Remote clients, a private replication runtime, and private replica alias storage are implemented; the public replica database API remains planned.
+**Status:** Remote clients, a private replication runtime, replica alias storage and bounded private query/watch are implemented; the public replica database API remains planned.
 
 **Related:** [003_authentication.md](003_authentication.md) defines the shared auth surface used by HTTP clients, replication, and realtime. Client specifics: [004_syntrix_client.md](004_syntrix_client.md), [005_trigger_client.md](005_trigger_client.md).
 
@@ -106,9 +106,10 @@ work. Its bundled dependencies load lazily and are absent from the remote API's
 initial dependency graph. This foundation does not expose a replica database API
 or connect automatic synchronization to the HTTP routes. Private alias storage
 provides account-scoped Dexie persistence, lossless typed values, raw CAS CRUD,
-source/physical generation records, and clean compaction. Its invalidation feed
-and request guards are integration points; query-source application, local
-query/watch, and automatic Push remain planned. See
+source/physical generation records, and clean compaction. Private queries use
+bounded storage projections, exact scalar semantics, shared AVL candidates and
+dynamic watch with manifest reconciliation. Query-source application and automatic
+Push remain planned. See
 [002_replication_client.md](002_replication_client.md).
 
 ## 6. Primary Test Coverage (Planned/Implemented)
@@ -119,5 +120,6 @@ query/watch, and automatic Push remain planned. See
 - Realtime: WS auth ack gates resubscribe; SSE delivers events/snapshots with header auth; inactivity triggers reconnect.
 - Manual Pull: typed page validation, request routing, cancellation, and session replacement.
 - Private runtime and storage: bounded scans, durable page/checkpoint ordering, identity and lifecycle fences, raw CAS CRUD, size admission, and compaction recovery. Public local replication and browser-to-server end-to-end coverage remain planned.
+- Private queries: exact filtering/order/cursors, window refill, generation and metadata invalidations, shared handle lifecycle, and continuous resource admission.
 
 More error corners and perf cases will be added as features land.

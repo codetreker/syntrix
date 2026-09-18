@@ -198,9 +198,11 @@ RxDB, Dexie, and RxJS. Applications do not need to install or patch those
 dependencies. Importing the remote client does not load this bundle.
 
 Private alias storage provides account-scoped Dexie persistence, typed values,
-local CAS operations, view invalidations, and clean physical compaction. These
-internal capabilities are not exported as application APIs. Public replica database
-creation, automatic HTTP synchronization, and local query/watch remain in development. Manual Pull continues to supply pages for an
+local CAS operations, view invalidations, and clean physical compaction. Private
+query/watch provides exact filtering and ordering, keyset pages, dynamic windows,
+and bounded shared resources. These internal capabilities are not exported as
+application APIs. Public replica database creation and automatic HTTP
+synchronization remain in development. Manual Pull continues to supply pages for an
 application-owned consumer. Direct writes use the existing document REST methods;
 the SDK has no public manual Push API. See the
 [replication design](../../docs/design/sdk/002_replication_client.md).

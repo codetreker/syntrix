@@ -19,6 +19,7 @@ export { defaultConflictHandler, defaultHashSha256, fillWithDefaultSettings, get
 export { createReplicaSession } from './session.js';
 export { openAliasStorage } from './storage.js';
 export { compactAlias } from './compaction.js';
+export { createReplicaQueryClient } from './query.js';
 
 export interface SourcePage<T, C extends object> {
   documents: WithDeletedAndAttachments<T>[];

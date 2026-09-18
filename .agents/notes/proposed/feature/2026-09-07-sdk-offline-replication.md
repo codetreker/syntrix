@@ -21,7 +21,9 @@ and authoritative bound database checks. Its SDK adapters and local membership
 application remain outstanding. The
 [private alias storage](../../implemented/architecture/2026-09-18-sdk-replica-storage.md)
 now owns local identity, typed records, CAS CRUD, bounded storage access, and clean
-physical compaction; this proposal retains public API and synchronization integration.
+physical compaction. The [private query client](../../implemented/architecture/2026-09-18-sdk-replica-query-watch.md)
+owns exact local query/watch, bounded shared indexes and generation reconciliation;
+this proposal retains public API and synchronization integration.
 
 ## Proposal
 
@@ -34,7 +36,7 @@ to replication; no public manual Push method is required.
 |---|---|
 | Remote sources | Connect delivered matching-set and result-window HTTP sources to named local collection aliases; refresh windows using realtime hints plus polling |
 | Membership | Apply delivered source upsert/leave/delete events or complete window replacements and activate durable generations without treating every membership exit as a document deletion |
-| Local operations | Expose the delivered private CRUD through the public replica API and implement dynamic local query/watch results |
+| Local operations | Expose delivered private CRUD and query/watch through the public replica API |
 | Identity | Connect source and Push adapters to delivered namespace/session/binding guards; obsolete work cannot apply or send across reassignment |
 | Initialization | Activate a complete source generation durably before uploading, while preserving pending local edits |
 | Upstream | Use native durable changed-document scanning and acknowledgement metadata; keep newer local edits when an earlier write is acknowledged |
@@ -71,9 +73,9 @@ scheduling, and cancellation/drain contract. Durable local state and native
 metadata own pending work; there is no additional SDK Outbox requirement.
 
 Private alias storage supplies final-row admission, fixed records, paired metadata
-cleanup, indexed bounded reads, and row/manifest invalidations. Local query scans
-and retained payload/order-key caches still need their own byte limits and bounded
-generation rebuild across tabs. Storage invalidations alone do not establish those
+cleanup, indexed bounded reads, and row/manifest invalidations. Private queries
+provide their own serialized read pool, retained payload/order-key limits and
+bounded generation rebuild across tabs. Public integration must preserve those
 query guarantees. The public API also needs browser capability
 checks and clear failure behavior for quota exhaustion or unavailable storage.
 
