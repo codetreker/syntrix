@@ -71,6 +71,10 @@ func (e *Engine) Push(ctx context.Context, database string, req storage.Replicat
 			return nil, err
 		}
 		missing := current == nil || current.Deleted
+		if change.Action == storage.PushCreate && !missing {
+			conflicts = append(conflicts, pushConflict(index, path, change, current, true))
+			continue
+		}
 		if change.Action != storage.PushCreate && change.BaseVersion != nil && missing {
 			conflicts = append(conflicts, pushConflict(index, path, change, current, false))
 			continue

@@ -1,6 +1,6 @@
 # Agent Note: Define Insert-Only Replication Push
 
-Status: proposed
+Status: rejected - Tombstones must permit same-ID recreation; tombstone occupancy and version-zero insertion semantics contradict that requirement.
 
 ## Problem
 

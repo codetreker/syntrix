@@ -45,11 +45,15 @@ flattened; SDK outbound bigint encoding remains separate work.
 | Unversioned delete | Live | Delete |
 | Unversioned delete | Missing or tombstoned | Idempotent success |
 | Explicit create | Missing or tombstoned | Existing create/recreate behavior; supplied valid version is ignored |
-| Explicit create | Live | Existing update behavior, conditional when a version is supplied |
+| Explicit create | Live | `already_exists` without a write, regardless of supplied version |
 
 Storage assigns resulting versions. Explicit zero remains an equality condition
-on live targets. Strict insert-only create and new invalid action/version
-combinations are separately [proposed](../../proposed/feature/2026-09-07-replication-push-insert-only.md).
+for update/delete. The later
+[create-conflict decision](2026-09-18-replication-push-create-conflict.md) changes
+the original live-target create behavior to reject overwrites before version
+comparison, while retaining same-ID recreation over tombstones. The stricter
+[tombstone-occupancy proposal](../../rejected/feature/2026-09-07-replication-push-insert-only.md)
+is rejected because it would prevent that required recreation.
 
 ### Encoded message limits
 
@@ -91,7 +95,7 @@ preventing business-data keys from overriding their authoritative values.
 | `missing` | Target absent |
 | `tombstoned` | Retained tombstone |
 | `version_mismatch` | Live target differs from the supplied version |
-| `already_exists` | Create/recreate lost to an existing live target |
+| `already_exists` | Create observed a live target, or create/recreate lost to one |
 | `precondition_failed` | Mutation failed, but the subsequent read cannot identify a more specific cause |
 
 The current document is an observation made after the failure, not an atomic
@@ -116,7 +120,9 @@ Structured conflict outcomes preserve absence and retained deletion separately.
 
 **Introduce strict insert-only create together with the repair.** This changes
 accepted create/version combinations and tombstone recreation policy. The
-separate proposal retains that decision and its future atomic-write requirements.
+separate proposal recorded those additional atomic-write requirements; it was
+[later rejected](../../rejected/feature/2026-09-07-replication-push-insert-only.md)
+because retained tombstones must allow same-ID recreation.
 
 ## Consequences
 

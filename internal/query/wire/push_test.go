@@ -112,6 +112,26 @@ func TestPushConflictRoundTrip(t *testing.T) {
 	require.Equal(t, response, decoded)
 }
 
+func TestPushCreateAlreadyExistsRoundTrip(t *testing.T) {
+	for _, version := range []*int64{nil, proto.Int64(0), proto.Int64(1), proto.Int64(9), proto.Int64(math.MaxInt64)} {
+		req := pushFixture()
+		req.Changes[0].Action = types.PushCreate
+		req.Changes[0].BaseVersion = version
+		current := *req.Changes[0].Doc
+		current.Version = 9
+		response := &types.ReplicationPushResponse{Conflicts: []types.ReplicationPushConflict{{ID: "alice", Reason: types.PushAlreadyExists, Current: &current}}}
+		encoded, err := EncodePushResponse("db", req, response)
+		require.NoError(t, err)
+		payload, err := proto.Marshal(encoded)
+		require.NoError(t, err)
+		var remote pb.PushResponse
+		require.NoError(t, proto.Unmarshal(payload, &remote))
+		decoded, err := DecodePushResponse("db", req, &remote)
+		require.NoError(t, err)
+		require.Equal(t, response, decoded)
+	}
+}
+
 func TestPushConflictRejectsInvalidResponse(t *testing.T) {
 	req := pushFixture()
 	for _, conflict := range []*pb.PushConflict{
