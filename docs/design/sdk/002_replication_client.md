@@ -1,6 +1,6 @@
 # Replication Client Design (RxDB + Syntrix replication/realtime)
 
-**Status:** Manual Pull, WebSocket lifecycle, and a private native replication runtime are implemented. The server also supports matching-set query sources and bound database identity checks. Their SDK adapters, the public local database API, and automatic HTTP synchronization remain planned.
+**Status:** Manual Pull, WebSocket lifecycle, and a private native replication runtime are implemented. The server also supports matching-set query sources, complete result windows, and bound database identity checks. Their SDK adapters, the public local database API, and automatic HTTP synchronization remain planned.
 
 ## Context & Why
 - We need offline-first replication for web clients using RxDB as local store.
@@ -141,9 +141,10 @@ owns these unimplemented capabilities:
 
 - Public local database creation and SDK-owned persistence with account/database
   identity isolation; public types do not expose RxDB objects.
-- HTTP adapters for the server's matching-set query sources and bound database
-  identity header; map sources to independent local aliases and durably activate
-  membership generations. Result-window execution remains server work.
+- HTTP adapters for the server's matching-set and result-window sources and bound
+  database identity header; map sources to independent local aliases, schedule
+  window refreshes using realtime hints plus polling, and durably activate
+  membership generations.
 - Local CRUD, lossless typed-value storage, local query results, and dynamic watch.
 - Automatic typed HTTP Push, durable acknowledgement/conflict reconciliation,
   cancellation, and recovery across restarts and reconnects.

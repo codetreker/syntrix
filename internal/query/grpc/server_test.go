@@ -322,9 +322,9 @@ func TestServer_Pull(t *testing.T) {
 		resp, err := server.Pull(context.Background(), &pb.PullRequest{
 			Database:    "database1",
 			Collection:  "users",
-			Checkpoint:  "",
+			Checkpoint:  proto.String(""),
 			WireVersion: 2,
-			Limit:       100,
+			Limit:       proto.Int32(100),
 		})
 
 		assert.NoError(t, err)

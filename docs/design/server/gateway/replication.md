@@ -1,7 +1,8 @@
 # Replication Design
 
 Replication Pull uses committed Store Watch progress to synchronize current
-document state. Push preserves explicit actions and optional version conditions
+document state, or one ordinary Query to replace a bounded result window. Push
+preserves explicit actions and optional version conditions
 through atomic writes and structured conflict responses.
 [Replication reference](../../../reference/replication.md) owns exact request,
 response, typed-value, and error contracts.
@@ -10,12 +11,12 @@ response, typed-value, and error contracts.
 
 | Boundary | Responsibility |
 |---|---|
-| `POST /replication/v1/databases/{database}/pull` | Bounded page of current document states or logical deletions with an opaque continuation |
+| `POST /replication/v1/databases/{database}/pull` | Current document states or membership events with continuation; complete bounded query windows |
 | `POST /replication/v1/databases/{database}/push` | Apply requested changes and return conflicts |
 | Gateway | Authenticate, resolve and authorize the database, enforce optional bound identity, validate and encode HTTP |
-| Query | Bind public cursor scope, sequence scan/replay, and enforce complete-page budgets |
+| Query | Bind source/cursor scope, sequence scan/replay or execute a complete window, and enforce response budgets |
 | Store | Establish committed scan overlap, ordered Watch frames, source identity, and explicit failures |
-| Client | Atomically apply a whole page and persist its checkpoint |
+| Client | Durably apply a page and its checkpoint, or activate a complete replacement window |
 
 The request's database URL value remains the storage namespace used by ordinary
 CRUD. The resolved database identity is additionally bound into the public cursor;
@@ -37,8 +38,8 @@ when a permission set changes.
 Query-source Pull returns an entire matching set through the existing committed
 scan and Watch. It adds membership projection and generation completion without
 introducing a parallel source or server-side client membership table. Ordinary
-collection Pull retains its existing response. Result windows are a reserved,
-unsupported mode; valid requests fail explicitly until their execution exists.
+collection Pull retains its existing response. Result windows use one ordinary
+Query and return a complete replacement, under the same database identity gate.
 
 ### Request identity
 
@@ -110,7 +111,47 @@ Every candidate and frame consumes existing source work/byte limits, including
 nonmatches. Encoded events and their generation/source envelope consume complete
 response budgets. The cursor cannot pass an unreturned event. The original
 collection Pull state machine below still owns source sequencing and failure
-handling; query mode projects its accepted prefix.
+handling; matching-set mode projects its accepted prefix.
+
+### Bounded result windows
+
+`source.limit` selects a result window of 1–1000 documents. Each request carries
+its own `requestId` and forbids a transfer limit or checkpoint. The existing
+normalizer binds filters, effective order, and result size into sourceHash.
+Default order is explicit logical ID ascending; other orders append that tie
+breaker unless ID is already ordered. The same normalized order is executed,
+including the ordinary Query requirement for a suitable index.
+
+```text
+authoritative identity + full-scope authorization
+  -> one ordinary Query(filters, effective order, N)
+  -> exactly N OR fewer than N with no continuation
+  -> complete envelope budget validation
+  -> replace(new generation, echoed requestId, complete=true, documents)
+```
+
+A short Query page with continuation returns `REPLICATION_WINDOW_INCOMPLETE`;
+there is no successful incomplete window. Query pages are not combined into a
+snapshot. Missing/unready indexes, Query work limits, source errors, and full
+response encoding failures remain errors. The complete replace envelope observes
+16 MiB JSON and 20 MiB protobuf limits; no documents are removed to make it fit.
+
+Each success has a fresh generation and reports effectiveOrder. Window responses
+have no event progress, source checkpoint, or bootstrap completion fields. The
+consumer retains the active window on failure and rejects stale responses by
+request/session identity. Replacing source membership does not delete documents
+in the remote collection.
+
+Window consistency is the ordinary Query model. Authoritative validation rejects
+stale index candidates, but index lag can also omit an existing still-matching
+member until its new posting arrives. Clients may observe exit followed by
+reentry. No stricter source freshness fence or lifecycle lock is introduced; a
+complete window is not a cross-document transaction snapshot.
+
+Subsequent complete refreshes perform rank displacement and fill vacated slots.
+SDK automatic refresh and durable membership activation remain part of local
+replication integration. Realtime notifications serve as refresh hints alongside
+polling; neither a live connection nor a notification is proof of a fresh window.
 
 ## Pull State Machine
 
@@ -356,8 +397,8 @@ records native-source selection, alternatives, and accepted retention and client
 integration limits. Public Pull and source capabilities have separate owners.
 
 The [query-source decision](../../../../.agents/notes/implemented/feature/2026-09-18-query-replication-source.md)
-owns matching-set events, generation completion, and authoritative request
-identity. It extends public Pull without replacing its source guarantees.
+owns matching-set events, complete query windows, generation completion, and
+authoritative request identity. It extends public Pull without replacing its source guarantees.
 
 The [Push conditional-write decision](../../../../.agents/notes/implemented/bug-fix/2026-09-07-replication-push-version-checks.md)
 records conditional mutation semantics and conflict observations. The

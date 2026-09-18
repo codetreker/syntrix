@@ -244,10 +244,10 @@ message PullRequest {
   string collection = 2;
 
   // Opaque, source-bound continuation; empty begins bootstrap.
-  string checkpoint = 3;
+  optional string checkpoint = 3;
 
   // Maximum number of documents to return.
-  int32 limit = 4;
+  optional int32 limit = 4;
 
   uint32 wire_version = 5;
 
@@ -287,6 +287,9 @@ message PullResponse {
   string generation_id = 10;
   string phase = 11;
   optional bool bootstrap_complete = 12;
+  optional string request_id = 13;
+  optional bool complete = 14;
+  repeated OrderBy effective_order = 15;
 }
 
 // ============================================================================

@@ -220,15 +220,13 @@ func TestPullSourceInvalidRequestsDoNotAccessStorage(t *testing.T) {
 	}
 }
 
-func TestPullSourceReservedWindowIsUnsupported(t *testing.T) {
-	req := sourceRequest()
+func TestPullSourceRejectsInvalidWindowRequests(t *testing.T) {
 	limit, requestID := 2, "request-1"
-	req.Source.Limit, req.RequestID = &limit, &requestID
-	_, err := New(&pullStore{}, nil).Pull(context.Background(), "db", req)
-	pullCode(t, err, types.WatchUnsupported)
 	for _, mutate := range []func(*types.ReplicationPullRequest){
 		func(r *types.ReplicationPullRequest) { r.Limit = 1 },
 		func(r *types.ReplicationPullRequest) { r.Checkpoint = "cursor" },
+		func(r *types.ReplicationPullRequest) { r.LimitPresent = true },
+		func(r *types.ReplicationPullRequest) { r.CheckpointPresent = true },
 		func(r *types.ReplicationPullRequest) { id := ""; r.RequestID = &id },
 		func(r *types.ReplicationPullRequest) { n := 0; r.Source.Limit = &n },
 		func(r *types.ReplicationPullRequest) { r.Source.Filters[0].Op = "invalid" },

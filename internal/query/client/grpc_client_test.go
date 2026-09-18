@@ -325,7 +325,7 @@ func TestClient_Pull(t *testing.T) {
 		})
 		require.NoError(t, err)
 		mockClient.On("Pull", mock.Anything, mock.MatchedBy(func(request *pb.PullRequest) bool {
-			return request.Database == "database1" && request.Collection == "users" && request.Checkpoint == "" && request.Limit == 100 && request.WireVersion == wire.Version
+			return request.Database == "database1" && request.Collection == "users" && request.GetCheckpoint() == "" && request.GetLimit() == 100 && request.WireVersion == wire.Version
 		})).Return(encoded, nil)
 
 		resp, err := client.Pull(context.Background(), "database1", storage.ReplicationPullRequest{

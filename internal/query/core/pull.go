@@ -192,6 +192,9 @@ func (e *Engine) Pull(ctx context.Context, database string, req types.Replicatio
 	if err != nil {
 		return nil, err
 	}
+	if source != nil && req.Source.Limit != nil {
+		return e.pullWindow(ctx, database, req, source)
+	}
 	hashes := []string{}
 	if source != nil {
 		hashes = append(hashes, source.hash)

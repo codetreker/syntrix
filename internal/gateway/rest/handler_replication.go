@@ -14,6 +14,7 @@ import (
 	"github.com/syntrixbase/syntrix/internal/core/storage"
 	storagetypes "github.com/syntrixbase/syntrix/internal/core/storage/types"
 	"github.com/syntrixbase/syntrix/internal/helper"
+	"github.com/syntrixbase/syntrix/internal/indexer"
 	querycore "github.com/syntrixbase/syntrix/internal/query/core"
 	"github.com/syntrixbase/syntrix/internal/query/wire"
 	"github.com/syntrixbase/syntrix/pkg/model"
@@ -135,7 +136,28 @@ func decodePullRequest(body io.Reader) (request storage.ReplicationPullRequest, 
 	return req, semanticErr
 }
 
+func writePullRequestError(w http.ResponseWriter, req storage.ReplicationPullRequest, err error) {
+	if req.Source != nil && req.Source.Limit != nil && errors.Is(err, model.ErrQueryWorkLimit) {
+		writeError(w, http.StatusUnprocessableEntity, "QUERY_WORK_LIMIT", "Query exceeds work or size limits")
+		return
+	}
+	writePullError(w, err)
+}
+
 func writePullError(w http.ResponseWriter, err error) {
+	if errors.Is(err, storagetypes.ErrReplicationWindowIncomplete) {
+		writeError(w, http.StatusServiceUnavailable, "REPLICATION_WINDOW_INCOMPLETE", "Query did not produce a complete replication window")
+		return
+	}
+	if errors.Is(err, indexer.ErrNoMatchingIndex) {
+		writeError(w, http.StatusBadRequest, "NO_MATCHING_INDEX", "No matching index")
+		return
+	}
+	if errors.Is(err, indexer.ErrIndexNotReady) || errors.Is(err, indexer.ErrIndexRebuilding) {
+		writeError(w, http.StatusServiceUnavailable, "INDEX_UNAVAILABLE", "Query index is unavailable")
+		return
+	}
+
 	if errors.Is(err, storagetypes.ErrInvalidReplicationSource) {
 		writeError(w, http.StatusBadRequest, "INVALID_REPLICATION_SOURCE", "Invalid replication source")
 		return
@@ -194,7 +216,7 @@ func (h *Handler) handlePull(w http.ResponseWriter, r *http.Request) {
 		var tooLarge *http.MaxBytesError
 		var failure *storagetypes.WatchError
 		if errors.As(err, &tooLarge) || errors.As(err, &failure) || errors.Is(err, storagetypes.ErrInvalidReplicationSource) {
-			writePullError(w, err)
+			writePullRequestError(w, req, err)
 		} else {
 			writeError(w, http.StatusBadRequest, ErrCodeBadRequest, "Invalid pull request body")
 		}
@@ -218,32 +240,32 @@ func (h *Handler) handlePull(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := validateReplicationPull(database, req); err != nil {
-		writePullError(w, err)
+		writePullRequestError(w, req, err)
 		return
 	}
-	if req.Limit == 0 {
+	if req.Limit == 0 && (req.Source == nil || req.Source.Limit == nil) {
 		req.Limit = querycore.DefaultPullLimit
 	}
 	if err := ctx.Err(); err != nil {
-		writePullError(w, err)
+		writePullRequestError(w, req, err)
 		return
 	}
 	resp, err := h.engine.Pull(ctx, database, req)
 	if err != nil {
-		writePullError(w, err)
+		writePullRequestError(w, req, err)
 		return
 	}
-	if err := wire.ValidatePullResponseScope(req, resp); err != nil {
-		writePullError(w, err)
+	if err := querycore.ValidatePullResponseScope(req, resp); err != nil {
+		writePullRequestError(w, req, err)
 		return
 	}
 	encoded, err := wire.EncodeJSONPullPage(resp)
 	if err != nil {
-		writePullError(w, err)
+		writePullRequestError(w, req, err)
 		return
 	}
 	if err := ctx.Err(); err != nil {
-		writePullError(w, err)
+		writePullRequestError(w, req, err)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")

@@ -15,6 +15,7 @@ import (
 	pb "github.com/syntrixbase/syntrix/api/gen/query/v1"
 	"github.com/syntrixbase/syntrix/internal/core/storage"
 	"github.com/syntrixbase/syntrix/internal/core/storage/types"
+	"github.com/syntrixbase/syntrix/internal/indexer"
 	queryclient "github.com/syntrixbase/syntrix/internal/query/client"
 	querygrpc "github.com/syntrixbase/syntrix/internal/query/grpc"
 	"github.com/syntrixbase/syntrix/internal/query/wire"
@@ -131,8 +132,8 @@ func TestPullGRPCSourceErrorsRemainTyped(t *testing.T) {
 func TestPullGRPCRejectsInvalidRequestBeforeService(t *testing.T) {
 	for _, request := range []*pb.PullRequest{
 		{Database: "database1", Collection: "users"},
-		{Database: "database1", Collection: "users", WireVersion: wire.Version, Limit: -1},
-		{Database: "database1", Collection: "users", WireVersion: wire.Version, Checkpoint: "malformed"},
+		{Database: "database1", Collection: "users", WireVersion: wire.Version, Limit: proto.Int32(-1)},
+		{Database: "database1", Collection: "users", WireVersion: wire.Version, Checkpoint: proto.String("malformed")},
 	} {
 		service := pullService{pull: func(context.Context, string, storage.ReplicationPullRequest) (*storage.ReplicationPullResponse, error) {
 			t.Error("invalid request reached query service")
@@ -190,4 +191,46 @@ func TestPullGRPCQuerySourceRejectsMalformedAndDowngrade(t *testing.T) {
 	var failure *types.WatchError
 	require.ErrorAs(t, err, &failure)
 	require.Equal(t, types.WatchInvalidEvent, failure.Code)
+}
+
+func TestPullGRPCWindowRejectsExplicitProgressFields(t *testing.T) {
+	for _, field := range []string{"checkpoint", "limit"} {
+		t.Run(field, func(t *testing.T) {
+			request := &pb.PullRequest{WireVersion: wire.Version, Database: "db", DatabaseIdentity: "entity", Collection: "users", Source: &pb.ReplicationSource{Version: 1, Limit: proto.Int32(5)}, RequestId: proto.String("request")}
+			if field == "checkpoint" {
+				request.Checkpoint = proto.String("")
+			} else {
+				request.Limit = proto.Int32(0)
+			}
+			raw, err := proto.Marshal(request)
+			require.NoError(t, err)
+			var decoded pb.PullRequest
+			require.NoError(t, proto.Unmarshal(raw, &decoded))
+			service := pullService{pull: func(context.Context, string, storage.ReplicationPullRequest) (*storage.ReplicationPullResponse, error) {
+				t.Error("forbidden field reached service")
+				return nil, nil
+			}}
+			response, err := querygrpc.NewServer(service).Pull(context.Background(), &decoded)
+			require.Nil(t, response)
+			require.ErrorIs(t, wire.ReplicationStatusToError(err), types.ErrInvalidReplicationSource)
+		})
+	}
+}
+
+func TestPullGRPCWindowErrorCategories(t *testing.T) {
+	limit := 5
+	request := storage.ReplicationPullRequest{Collection: "users", DatabaseIdentity: "entity", Source: &types.ReplicationSource{Version: 1, Filters: model.Filters{}, Limit: &limit}, RequestID: proto.String("request")}
+	for _, failure := range []error{types.ErrReplicationWindowIncomplete, indexer.ErrNoMatchingIndex, indexer.ErrIndexNotReady, indexer.ErrIndexRebuilding, model.ErrQueryWorkLimit} {
+		t.Run(failure.Error(), func(t *testing.T) {
+			client := newPullTransport(t, pullService{pull: func(context.Context, string, storage.ReplicationPullRequest) (*storage.ReplicationPullResponse, error) {
+				return nil, fmt.Errorf("private query detail: %w", failure)
+			}})
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			response, err := client.Pull(ctx, "db", request)
+			require.Nil(t, response)
+			require.ErrorIs(t, err, failure)
+			require.NotContains(t, err.Error(), "private query detail")
+		})
+	}
 }

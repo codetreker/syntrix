@@ -22,6 +22,7 @@ import (
 	"github.com/syntrixbase/syntrix/internal/core/storage"
 	storagetypes "github.com/syntrixbase/syntrix/internal/core/storage/types"
 	"github.com/syntrixbase/syntrix/internal/ctxkeys"
+	"github.com/syntrixbase/syntrix/internal/indexer"
 	querycore "github.com/syntrixbase/syntrix/internal/query/core"
 	"github.com/syntrixbase/syntrix/internal/query/wire"
 	"github.com/syntrixbase/syntrix/pkg/model"
@@ -379,14 +380,7 @@ func TestHandlePullStrictQuerySource(t *testing.T) {
 			service.AssertNotCalled(t, "Pull", mock.Anything, mock.Anything, mock.Anything)
 		})
 	}
-	t.Run("reserved window", func(t *testing.T) {
-		service := new(MockQueryService)
-		rr := newPullRecorder()
-		pullHandler(service).handlePull(rr, pullRequest(context.Background(), `{"collection":"users","source":{"version":1,"filters":[],"limit":5},"requestId":"window"}`))
-		require.Equal(t, 501, rr.Code, rr.Body.String())
-		require.Contains(t, rr.Body.String(), "REPLICATION_UNSUPPORTED")
-		service.AssertNotCalled(t, "Pull", mock.Anything, mock.Anything, mock.Anything)
-	})
+
 }
 
 func TestHandlePullQuerySourceTypedAndEmptyPage(t *testing.T) {
@@ -405,4 +399,33 @@ func TestHandlePullQuerySourceTypedAndEmptyPage(t *testing.T) {
 	assert.JSONEq(t, "false", string(response["bootstrapComplete"]))
 	assert.JSONEq(t, "false", string(response["caughtUp"]))
 	service.AssertExpectations(t)
+}
+
+func TestHandlePullWindowErrorCategories(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		failure error
+		status  int
+		code    string
+	}{
+		{"incomplete", storagetypes.ErrReplicationWindowIncomplete, 503, "REPLICATION_WINDOW_INCOMPLETE"},
+		{"no index", indexer.ErrNoMatchingIndex, 400, "NO_MATCHING_INDEX"},
+		{"not ready", indexer.ErrIndexNotReady, 503, "INDEX_UNAVAILABLE"},
+		{"rebuilding", indexer.ErrIndexRebuilding, 503, "INDEX_UNAVAILABLE"},
+		{"budget", model.ErrQueryWorkLimit, 422, "QUERY_WORK_LIMIT"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			service := new(MockQueryService)
+			service.On("Pull", mock.Anything, "friendly-name", mock.MatchedBy(func(req storage.ReplicationPullRequest) bool {
+				return req.Source != nil && req.Source.Limit != nil && *req.Source.Limit == 5 && req.Limit == 0 && req.Checkpoint == "" && req.RequestID != nil && *req.RequestID == "window"
+			})).Return((*storage.ReplicationPullResponse)(nil), fmt.Errorf("private detail: %w", test.failure)).Once()
+			rr := newPullRecorder()
+			pullHandler(service).handlePull(rr, pullRequest(context.Background(), `{"collection":"users","source":{"version":1,"filters":[],"limit":5},"requestId":"window"}`))
+			require.Equal(t, test.status, rr.Code, rr.Body.String())
+			require.Contains(t, rr.Body.String(), `"code":"`+test.code+`"`)
+			require.NotContains(t, rr.Body.String(), "private detail")
+			require.NotContains(t, rr.Body.String(), `"documents"`)
+			service.AssertExpectations(t)
+		})
+	}
 }

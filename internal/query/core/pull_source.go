@@ -17,6 +17,7 @@ import (
 type pullSource struct {
 	filters model.Filters
 	hash    string
+	query   model.Query
 }
 
 func normalizePullSource(req types.ReplicationPullRequest) (*pullSource, error) {
@@ -37,7 +38,7 @@ func normalizePullSource(req types.ReplicationPullRequest) (*pullSource, error) 
 		return invalid("query replication requires a resolved database identity")
 	}
 	if source.Limit != nil {
-		if *source.Limit < 1 || *source.Limit > 1000 || req.RequestID == nil || *req.RequestID == "" || !utf8.ValidString(*req.RequestID) || strings.ContainsRune(*req.RequestID, '\x00') || len(*req.RequestID) > MaxPullRequestBytes || req.Limit != 0 || req.Checkpoint != "" {
+		if *source.Limit < 1 || *source.Limit > 1000 || req.RequestID == nil || *req.RequestID == "" || !utf8.ValidString(*req.RequestID) || strings.ContainsRune(*req.RequestID, '\x00') || len(*req.RequestID) > MaxPullRequestBytes || req.Limit != 0 || req.Checkpoint != "" || req.LimitPresent || req.CheckpointPresent {
 			return invalid("invalid window request fields")
 		}
 	} else if req.RequestID != nil {
@@ -72,14 +73,18 @@ func normalizePullSource(req types.ReplicationPullRequest) (*pullSource, error) 
 		}
 		filterBytes += len(value) + len(filter.Field) + len(filter.Op)
 	}
-	if len(encoded)+filterBytes+len(req.Checkpoint)+len(req.Collection)+len(req.DatabaseIdentity) > MaxPullRequestBytes {
+	requestIDBytes := 0
+	if req.RequestID != nil {
+		requestIDBytes = len(*req.RequestID)
+	}
+	if len(encoded)+filterBytes+len(req.Checkpoint)+len(req.Collection)+len(req.DatabaseIdentity)+requestIDBytes > MaxPullRequestBytes {
 		return invalid("source exceeds request budget")
 	}
 	if source.Limit != nil {
-		return nil, pullError(types.WatchUnsupported, "window replication is not supported")
+		q.Limit = *source.Limit
 	}
 	sum := sha256.Sum256(encoded)
-	return &pullSource{filters: q.Filters, hash: hex.EncodeToString(sum[:])}, nil
+	return &pullSource{filters: q.Filters, hash: hex.EncodeToString(sum[:]), query: q}, nil
 }
 
 func validSourceHash(hash string) bool {
