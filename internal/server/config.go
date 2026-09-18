@@ -56,7 +56,7 @@ func DefaultConfig() Config {
 		GRPCPort:         9000,
 		ShutdownTimeout:  10 * time.Second,
 		AllowedMethods:   []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
-		AllowedHeaders:   []string{"Content-Type", "Authorization", "X-Request-ID"},
+		AllowedHeaders:   []string{"Content-Type", "Authorization", "X-Request-ID", "X-Syntrix-Expected-Database-Identity"},
 		AllowCredentials: true,
 		CORSMaxAge:       86400, // 24 hours
 		RateLimit: RateLimitConfig{

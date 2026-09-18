@@ -240,27 +240,3 @@ func protoToFilters(filters []*pb.Filter) model.Filters {
 // ============================================================================
 // Replication conversions
 // ============================================================================
-
-// pullRequestToProto converts storage.ReplicationPullRequest to proto.
-func pullRequestToProto(req storage.ReplicationPullRequest) *pb.PullRequest {
-	return &pb.PullRequest{
-		DatabaseIdentity: req.DatabaseIdentity,
-		WireVersion:      2,
-		Collection:       req.Collection,
-		Checkpoint:       req.Checkpoint,
-		Limit:            int32(req.Limit),
-	}
-}
-
-// protoToPullRequest converts proto PullRequest to storage type.
-func protoToPullRequest(req *pb.PullRequest) storage.ReplicationPullRequest {
-	if req == nil {
-		return storage.ReplicationPullRequest{}
-	}
-	return storage.ReplicationPullRequest{
-		DatabaseIdentity: req.DatabaseIdentity,
-		Collection:       req.Collection,
-		Checkpoint:       req.Checkpoint,
-		Limit:            int(req.Limit),
-	}
-}

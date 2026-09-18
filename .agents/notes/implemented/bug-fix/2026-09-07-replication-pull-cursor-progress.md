@@ -14,7 +14,10 @@ Independent scans also need a committed replay overlap to cover concurrent write
 Pull directly composes Store Watch and ScanDocuments. The
 [Watch scan-boundary decision](../architecture/2026-09-15-watch-scan-boundary.md)
 owns committed overlap, source checkpoints, logical event identity and watermark
-proof. Query owns the public two-phase cursor and response budgets. The
+proof. Query owns the collection Pull two-phase cursor and response budgets. The
+[query-source decision](../feature/2026-09-18-query-replication-source.md) extends
+this source with matching-set projection, generation completion, and bound
+database request checks; it does not replace these source guarantees. The
 [replication design](../../../../docs/design/server/gateway/replication.md) and
 [reference](../../../../docs/reference/replication.md) own the architecture and
 client contract.

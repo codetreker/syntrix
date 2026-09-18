@@ -143,3 +143,51 @@ func TestPullGRPCRejectsInvalidRequestBeforeService(t *testing.T) {
 		assert.Equal(t, codes.InvalidArgument, status.Code(err))
 	}
 }
+
+func TestPullGRPCQuerySourceLargeTypedEvents(t *testing.T) {
+	page := &storage.ReplicationPullResponse{ProtocolVersion: 1, Mode: "events", DatabaseIdentity: "resolved-entity", SourceHash: strings.Repeat("a", 64), GenerationID: "generation", Phase: "live", BootstrapComplete: true, Checkpoint: "cp", CaughtUp: true, Events: []types.ReplicationEvent{}}
+	for i := range 6 {
+		page.Events = append(page.Events, types.ReplicationEvent{Type: types.ReplicationUpsert, Document: model.Document{"id": fmt.Sprintf("doc-%d", i), "collection": "users", "payload": strings.Repeat("x", 900<<10), "version": int64(math.MaxInt64)}})
+	}
+	page.Events = append(page.Events, types.ReplicationEvent{Type: types.ReplicationLeave, ID: "left"}, types.ReplicationEvent{Type: types.ReplicationDelete, ID: "deleted"})
+	source := &types.ReplicationSource{Version: 1, Filters: model.Filters{{Field: "version", Op: model.OpEq, Value: int64(math.MaxInt64)}}}
+	request := storage.ReplicationPullRequest{Collection: "users", DatabaseIdentity: "resolved-entity", Source: source, Limit: 100}
+	client := newPullTransport(t, pullService{pull: func(_ context.Context, database string, req storage.ReplicationPullRequest) (*storage.ReplicationPullResponse, error) {
+		require.Equal(t, "database1", database)
+		require.Equal(t, request, req)
+		return page, nil
+	}})
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	remote, err := client.Pull(ctx, "database1", request)
+	require.NoError(t, err)
+	require.Equal(t, page, remote)
+	encoded, err := wire.EncodePullPage(page)
+	require.NoError(t, err)
+	require.Greater(t, proto.Size(encoded), 4<<20)
+}
+
+func TestPullGRPCQuerySourceRejectsMalformedAndDowngrade(t *testing.T) {
+	for _, source := range []*pb.ReplicationSource{
+		{Version: 2}, {Version: 1, Filters: []*pb.Filter{{Field: "score", Op: "==", Value: []byte(`{"type":"int64","value":"1","value":"2"}`)}}},
+		{Version: 1, Filters: []*pb.Filter{{Field: "score", Op: "=="}}}, {Version: 1, Limit: proto.Int32(0)},
+	} {
+		service := pullService{pull: func(context.Context, string, storage.ReplicationPullRequest) (*storage.ReplicationPullResponse, error) {
+			t.Fatal("invalid source reached service")
+			return nil, nil
+		}}
+		page, err := querygrpc.NewServer(service).Pull(context.Background(), &pb.PullRequest{Database: "db", DatabaseIdentity: "entity", Collection: "users", WireVersion: wire.Version, Source: source})
+		require.Nil(t, page)
+		require.ErrorIs(t, wire.ReplicationStatusToError(err), types.ErrInvalidReplicationSource)
+	}
+	client := newPullTransport(t, pullService{pull: func(context.Context, string, storage.ReplicationPullRequest) (*storage.ReplicationPullResponse, error) {
+		return &storage.ReplicationPullResponse{Checkpoint: "cp"}, nil
+	}})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	page, err := client.Pull(ctx, "db", storage.ReplicationPullRequest{Collection: "users", DatabaseIdentity: "entity", Source: &types.ReplicationSource{Version: 1, Filters: model.Filters{}}})
+	require.Nil(t, page)
+	var failure *types.WatchError
+	require.ErrorAs(t, err, &failure)
+	require.Equal(t, types.WatchInvalidEvent, failure.Code)
+}

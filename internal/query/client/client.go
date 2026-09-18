@@ -150,14 +150,22 @@ func (c *Client) Pull(ctx context.Context, database string, req storage.Replicat
 	if err := core.ValidatePullRequest(database, req); err != nil {
 		return nil, err
 	}
-	resp, err := c.client.Pull(ctxkeys.OutgoingRequestContext(ctx), &pb.PullRequest{
-		Database: database, DatabaseIdentity: req.DatabaseIdentity, Collection: req.Collection, Checkpoint: req.Checkpoint,
-		Limit: int32(req.Limit), WireVersion: wire.Version,
-	})
+	encoded, err := wire.EncodePullRequest(database, req)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.client.Pull(ctxkeys.OutgoingRequestContext(ctx), encoded)
 	if err != nil {
 		return nil, wire.ReplicationStatusToError(err)
 	}
-	return wire.DecodePullPage(resp)
+	page, err := wire.DecodePullPage(resp)
+	if err != nil {
+		return nil, err
+	}
+	if err := wire.ValidatePullResponseScope(req, page); err != nil {
+		return nil, err
+	}
+	return page, nil
 }
 
 // Push sends documents for replication.

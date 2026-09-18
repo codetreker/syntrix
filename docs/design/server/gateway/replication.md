@@ -12,7 +12,7 @@ response, typed-value, and error contracts.
 |---|---|
 | `POST /replication/v1/databases/{database}/pull` | Bounded page of current document states or logical deletions with an opaque continuation |
 | `POST /replication/v1/databases/{database}/push` | Apply requested changes and return conflicts |
-| Gateway | Authenticate, validate the active database, authorize full-scope Pull, validate and encode HTTP |
+| Gateway | Authenticate, resolve and authorize the database, enforce optional bound identity, validate and encode HTTP |
 | Query | Bind public cursor scope, sequence scan/replay, and enforce complete-page budgets |
 | Store | Establish committed scan overlap, ordered Watch frames, source identity, and explicit failures |
 | Client | Atomically apply a whole page and persist its checkpoint |
@@ -31,6 +31,86 @@ role, and a valid cursor alone do not grant Pull access. Authorization is checke
 on every request. This profile is provisional pending approval; it does not
 implement per-document permission filtering or document-removal notifications
 when a permission set changes.
+
+## Bound Identity and Query Sources
+
+Query-source Pull returns an entire matching set through the existing committed
+scan and Watch. It adds membership projection and generation completion without
+introducing a parallel source or server-side client membership table. Ordinary
+collection Pull retains its existing response. Result windows are a reserved,
+unsupported mode; valid requests fail explicitly until their execution exists.
+
+### Request identity
+
+| Request | Gate before data access |
+|---|---|
+| Query-source Pull, including initial binding | Resolve the database directly from management storage; check active status and owner/`db_admin` authorization on that same object |
+| Pull, Push, ordinary Query, or document GET with `X-Syntrix-Expected-Database-Identity` | Apply the same fresh resolution and full-scope authorization, then compare the expected ID |
+| Existing unbound request | Keep existing resolution and authorization |
+
+Fresh resolution bypasses cached database metadata. Status, authorization, and
+identity cannot refer to different database objects. Management-store errors fail
+the request; there is no cache fallback. Permission checks precede identity
+mismatch reporting. A mismatch rejects the complete request before document
+access, including every change in Push. Ordinary Query and GET carrying this
+header adopt the replication full-scope gate.
+
+```text
+authenticate -> authoritative database object -> active + full-scope access
+             -> expected ID comparison -> local or trusted remote Query
+             -> existing URL storage namespace
+```
+
+The response and cursor use the verified database identity. The namespace remains
+the URL value because changing it to an ID address would select a different
+existing storage namespace. This admission check prevents an old binding from
+accessing a replacement already visible in management storage. It does not lease
+the database or serialize data requests against concurrent deletion/reassignment.
+A rejection cannot settle an earlier timed-out write. All participating Gateway
+and Query nodes require a coordinated upgrade before exposing query-replication
+protocol version 1.
+
+### Projection and source binding
+
+| Input | Matching-set projection |
+|---|---|
+| Matching live scan candidate or Watch document | Typed `upsert` |
+| Nonmatching scan candidate | Advance scan progress without an event |
+| Nonmatching live Watch document | ID-only `leave`, regardless of prior client membership |
+| Logical deletion | ID-only `delete`; no fabricated document metadata |
+| Progress frame | Advance the cursor, possibly with an empty events page |
+
+A stateless leave can disclose an ID that never matched, so source filters cannot
+replace full-scope authorization. Physical cleanup retains its existing
+progress-only behavior. Existing current-state enrichment can temporarily produce
+recreated/deleted/recreated states; source order and eventual convergence remain
+the contract, not maximum document version.
+
+The source hash binds version, actual database identity, collection, normalized
+typed filters, effective ordering, and result limit. The hash uses existing query
+normalization, including numeric equality and logical-ID tie breaking. Ordering
+is part of source identity but does not sort the matching-set event stream.
+Version-4 query cursors additionally retain generation and public phase alongside
+existing Store progress. They require no service-instance memory.
+
+```text
+C0 -> bounded scan -> replay from C0 -> Watch caught-up proof -> live
+          bootstrapComplete = false             |               |
+                                                 +-- true -------+
+```
+
+`generationId` remains stable through scan, replay, and live. Only the Watch proof
+establishes the first `bootstrapComplete`; later pages preserve that fact while
+`caughtUp` continues to describe their current source progress. An empty page does
+not imply completion. Expired history fails with explicit resynchronization; a
+new initialization creates a new generation. Clients own durable activation of
+rebuilt membership while preserving pending local edits.
+
+Every candidate and frame consumes existing source work/byte limits, including
+nonmatches. Encoded events and their generation/source envelope consume complete
+response budgets. The cursor cannot pass an unreturned event. The original
+collection Pull state machine below still owns source sequencing and failure
+handling; query mode projects its accepted prefix.
 
 ## Pull State Machine
 
@@ -274,6 +354,10 @@ request and response examples.
 The [Pull checkpoint decision](../../../../.agents/notes/implemented/bug-fix/2026-09-07-replication-pull-cursor-progress.md)
 records native-source selection, alternatives, and accepted retention and client
 integration limits. Public Pull and source capabilities have separate owners.
+
+The [query-source decision](../../../../.agents/notes/implemented/feature/2026-09-18-query-replication-source.md)
+owns matching-set events, generation completion, and authoritative request
+identity. It extends public Pull without replacing its source guarantees.
 
 The [Push conditional-write decision](../../../../.agents/notes/implemented/bug-fix/2026-09-07-replication-push-version-checks.md)
 records conditional mutation semantics and conflict observations. The

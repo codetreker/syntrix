@@ -13,6 +13,7 @@ func TestDefaultConfig(t *testing.T) {
 
 	assert.Equal(t, "localhost", cfg.Host)
 	assert.Equal(t, 8080, cfg.HTTPPort)
+	assert.Contains(t, cfg.AllowedHeaders, "X-Syntrix-Expected-Database-Identity")
 	assert.Equal(t, 10*time.Second, cfg.HTTPReadTimeout)
 	assert.Equal(t, 10*time.Second, cfg.HTTPWriteTimeout)
 	assert.Equal(t, 60*time.Second, cfg.HTTPIdleTimeout)

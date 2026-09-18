@@ -132,6 +132,7 @@ func TestCORSMiddleware(t *testing.T) {
 	assert.Equal(t, http.StatusNoContent, resp.StatusCode)
 	assert.Equal(t, "https://example.com", resp.Header.Get("Access-Control-Allow-Origin"))
 	assert.Contains(t, resp.Header.Get("Access-Control-Allow-Methods"), "GET")
+	assert.Contains(t, resp.Header.Get("Access-Control-Allow-Headers"), "X-Syntrix-Expected-Database-Identity")
 	assert.Equal(t, "true", resp.Header.Get("Access-Control-Allow-Credentials"))
 
 	// Test Normal Request with Origin header

@@ -315,6 +315,10 @@ func (s *stubDatabaseService) DeleteDatabase(ctx context.Context, userID string,
 func (s *stubDatabaseService) ResolveDatabase(ctx context.Context, identifier string) (*database.Database, error) {
 	return nil, nil
 }
+func (s *stubDatabaseService) ResolveDatabaseAuthoritative(ctx context.Context, identifier string) (*database.Database, error) {
+	return s.ResolveDatabase(ctx, identifier)
+}
+
 func (s *stubDatabaseService) ValidateDatabase(ctx context.Context, identifier string) error {
 	return nil
 }

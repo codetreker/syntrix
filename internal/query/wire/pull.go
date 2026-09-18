@@ -37,6 +37,12 @@ func validatePullEnvelope(page *types.ReplicationPullResponse) error {
 	if len(page.Checkpoint) > MaxPullCursorBytes || len(page.Documents) > MaxPullLimit {
 		return model.ErrQueryWorkLimit
 	}
+	if page.ProtocolVersion != 0 {
+		return validateSourceEnvelope(page)
+	}
+	if page.Mode != "" || page.DatabaseIdentity != "" || page.SourceHash != "" || page.GenerationID != "" || page.Phase != "" || page.BootstrapComplete || len(page.Events) != 0 {
+		return pullFailure(types.WatchInvalidEvent, "unexpected query replication envelope")
+	}
 	return nil
 }
 
@@ -52,9 +58,9 @@ func validatePullDocument(doc model.Document) error {
 	return nil
 }
 
-// CheckPullPageSize accounts for already encoded documents without encoding them
-// again. documentBytes is the sum of compact typed JSON lengths;
-// protobufDocumentBytes includes each repeated Document field's tag and length.
+// CheckPullPageSize accounts for documents in legacy mode and events in query
+// mode. Byte totals include each complete JSON entry and each repeated protobuf
+// field tag and length; the envelope and cursor are added here.
 func CheckPullPageSize(page *types.ReplicationPullResponse, documentBytes, protobufDocumentBytes int) error {
 	if err := validatePullEnvelope(page); err != nil {
 		return err
@@ -62,12 +68,21 @@ func CheckPullPageSize(page *types.ReplicationPullResponse, documentBytes, proto
 	if documentBytes < 0 || protobufDocumentBytes < 0 {
 		return pullFailure(types.WatchInvalidEvent, "negative pull response encoded size")
 	}
-	envelope, err := json.Marshal(jsonPullEnvelope{Documents: []json.RawMessage{}, Checkpoint: page.Checkpoint, CaughtUp: page.CaughtUp})
+	var envelope []byte
+	var err error
+	count := len(page.Documents)
+	protoOverhead := proto.Size(&pb.PullResponse{Checkpoint: page.Checkpoint, CaughtUp: page.CaughtUp, WireVersion: Version})
+	if page.ProtocolVersion != 0 {
+		envelope, err = json.Marshal(sourceEnvelope(page))
+		count = len(page.Events)
+		protoOverhead = proto.Size(sourceProtoEnvelope(page))
+	} else {
+		envelope, err = json.Marshal(jsonPullEnvelope{Documents: []json.RawMessage{}, Checkpoint: page.Checkpoint, CaughtUp: page.CaughtUp})
+	}
 	if err != nil {
 		return pullFailure(types.WatchInvalidEvent, "pull response envelope cannot be encoded")
 	}
-	jsonOverhead := len(envelope) + max(0, len(page.Documents)-1)
-	protoOverhead := proto.Size(&pb.PullResponse{Checkpoint: page.Checkpoint, CaughtUp: page.CaughtUp, WireVersion: Version})
+	jsonOverhead := len(envelope) + max(0, count-1)
 	if documentBytes > MaxPageBytes-jsonOverhead || protobufDocumentBytes > MaxGRPCBytes-protoOverhead {
 		return model.ErrQueryWorkLimit
 	}
@@ -105,6 +120,13 @@ func encodePullDocuments(page *types.ReplicationPullResponse) (*pb.PullResponse,
 }
 
 func EncodeJSONPullPage(page *types.ReplicationPullResponse) ([]byte, error) {
+	if page != nil && page.ProtocolVersion != 0 {
+		_, envelope, err := encodeSourcePullPage(page)
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(envelope)
+	}
 	_, envelope, err := encodePullDocuments(page)
 	if err != nil {
 		return nil, err
@@ -117,6 +139,10 @@ func EncodeJSONPullPage(page *types.ReplicationPullResponse) ([]byte, error) {
 }
 
 func EncodePullPage(page *types.ReplicationPullResponse) (*pb.PullResponse, error) {
+	if page != nil && page.ProtocolVersion != 0 {
+		out, _, err := encodeSourcePullPage(page)
+		return out, err
+	}
 	out, _, err := encodePullDocuments(page)
 	return out, err
 }
@@ -127,6 +153,12 @@ func DecodePullPage(in *pb.PullResponse) (*types.ReplicationPullResponse, error)
 	}
 	if proto.Size(in) > MaxGRPCBytes {
 		return nil, model.ErrQueryWorkLimit
+	}
+	if in.ProtocolVersion != 0 {
+		return decodeSourcePullPage(in)
+	}
+	if in.Mode != "" || in.DatabaseIdentity != "" || in.SourceHash != "" || in.GenerationId != "" || in.Phase != "" || in.BootstrapComplete != nil || len(in.Events) != 0 {
+		return nil, pullFailure(types.WatchInvalidEvent, "unexpected query replication envelope")
 	}
 	out := &types.ReplicationPullResponse{Checkpoint: in.Checkpoint, CaughtUp: in.CaughtUp, Documents: make([]model.Document, 0, len(in.Documents))}
 	if len(in.Documents) > MaxPullLimit {
@@ -194,6 +226,10 @@ func ReplicationErrorToStatus(err error) error {
 	if errors.Is(err, context.DeadlineExceeded) {
 		return status.Error(codes.DeadlineExceeded, "replication request deadline exceeded")
 	}
+	if errors.Is(err, types.ErrInvalidReplicationSource) {
+		st, _ := status.New(codes.InvalidArgument, "invalid replication source").WithDetails(&errdetails.ErrorInfo{Domain: "syntrix.replication", Reason: "INVALID_REPLICATION_SOURCE"})
+		return st.Err()
+	}
 	if errors.Is(err, model.ErrQueryWorkLimit) {
 		st, _ := status.New(codes.ResourceExhausted, "pull page exceeds budget").WithDetails(&errdetails.ErrorInfo{Domain: "syntrix.replication", Reason: "PAGE_BUDGET"})
 		return st.Err()
@@ -226,6 +262,9 @@ func ReplicationStatusToError(err error) error {
 			info, ok := detail.(*errdetails.ErrorInfo)
 			if !ok || info.Domain != "syntrix.replication" {
 				continue
+			}
+			if info.Reason == "INVALID_REPLICATION_SOURCE" && st.Code() == codes.InvalidArgument {
+				return types.ErrInvalidReplicationSource
 			}
 			if info.Reason == "PAGE_BUDGET" && st.Code() == codes.ResourceExhausted {
 				return model.ErrQueryWorkLimit

@@ -253,6 +253,21 @@ message PullRequest {
 
   // Trusted resolved entity identity; database remains the storage namespace.
   string database_identity = 6;
+  ReplicationSource source = 7;
+  optional string request_id = 8;
+}
+
+message ReplicationSource {
+  int32 version = 1;
+  repeated Filter filters = 2;
+  repeated OrderBy order_by = 3;
+  optional int32 limit = 4;
+}
+
+message ReplicationEvent {
+  string type = 1;
+  Document document = 2;
+  string id = 3;
 }
 
 message PullResponse {
@@ -264,6 +279,14 @@ message PullResponse {
 
   bool caught_up = 3;
   uint32 wire_version = 4;
+  int32 protocol_version = 5;
+  string mode = 6;
+  string database_identity = 7;
+  string source_hash = 8;
+  repeated ReplicationEvent events = 9;
+  string generation_id = 10;
+  string phase = 11;
+  optional bool bootstrap_complete = 12;
 }
 
 // ============================================================================

@@ -13,6 +13,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/google/uuid"
 	pb "github.com/syntrixbase/syntrix/api/gen/query/v1"
 	"github.com/syntrixbase/syntrix/internal/core/storage/types"
 	"github.com/syntrixbase/syntrix/internal/ctxkeys"
@@ -40,6 +41,8 @@ type pullCursor struct {
 	Phase            string                `json:"phase"`
 	Position         types.WatchCheckpoint `json:"position"`
 	AfterID          string                `json:"afterId,omitempty"`
+	SourceHash       string                `json:"sourceHash,omitempty"`
+	GenerationID     string                `json:"generationId,omitempty"`
 }
 
 var numericCheckpoint = regexp.MustCompile(`^[+-]?[0-9]+$`)
@@ -55,7 +58,7 @@ func pullDatabaseIdentity(database string, req types.ReplicationPullRequest) str
 	return req.DatabaseIdentity
 }
 
-func decodePullCursor(database, identity, collection, encoded string) (pullCursor, error) {
+func decodePullCursor(database, identity, collection, encoded string, sourceHash ...string) (pullCursor, error) {
 	var cursor pullCursor
 	invalid := pullError(types.WatchInvalidCheckpoint, "invalid pull checkpoint")
 	if len(encoded) > MaxPullCursorBytes {
@@ -73,11 +76,25 @@ func decodePullCursor(database, identity, collection, encoded string) (pullCurso
 	if decoder.Decode(&cursor) != nil || decoder.Decode(new(any)) != io.EOF {
 		return cursor, invalid
 	}
+	version, phases := 3, cursor.Phase == "scan" || cursor.Phase == "changes"
+	if len(sourceHash) > 0 {
+		version, phases = 4, cursor.Phase == "scan" || cursor.Phase == "replay" || cursor.Phase == "live"
+	}
 	canonical, err := json.Marshal(cursor)
-	if err != nil || !bytes.Equal(data, canonical) || cursor.Version != 3 || cursor.Position == "" ||
-		(cursor.Phase != "scan" && cursor.Phase != "changes") || strings.ContainsAny(cursor.AfterID, "/\x00") ||
-		(cursor.Phase == "changes" && cursor.AfterID != "") {
+	if err != nil || !bytes.Equal(data, canonical) || cursor.Version != version || cursor.Position == "" || !phases || strings.ContainsAny(cursor.AfterID, "/\x00") ||
+		(cursor.Phase != "scan" && cursor.AfterID != "") {
 		return cursor, invalid
+	}
+	if version == 3 && (cursor.SourceHash != "" || cursor.GenerationID != "") {
+		return cursor, invalid
+	}
+	if version == 4 {
+		if !validSourceHash(cursor.SourceHash) || !validGenerationID(cursor.GenerationID) {
+			return cursor, invalid
+		}
+		if cursor.SourceHash != sourceHash[0] {
+			return cursor, pullError(types.WatchScopeMismatch, "checkpoint belongs to another source")
+		}
 	}
 	if cursor.Database != database || cursor.DatabaseIdentity != identity || cursor.Collection != collection {
 		return cursor, pullError(types.WatchScopeMismatch, "checkpoint belongs to another scope")
@@ -108,11 +125,22 @@ func ValidatePullRequest(database string, req types.ReplicationPullRequest) erro
 		types.ValidateConcreteCollection(req.Collection) != nil || helper.CheckCollectionPath(req.Collection) != nil {
 		return pullError(types.WatchInvalidScope, "pull requires a concrete database and collection")
 	}
+	if req.Source != nil && (req.Limit < 0 || req.Limit > wire.MaxPullLimit) {
+		return types.ErrInvalidReplicationSource
+	}
 	if req.Limit < 0 || req.Limit > wire.MaxPullLimit || len(database)+len(req.DatabaseIdentity)+len(req.Collection)+len(req.Checkpoint) > MaxPullRequestBytes {
 		return pullError(types.WatchInvalidCheckpoint, "pull request exceeds limits")
 	}
+	source, err := normalizePullSource(req)
+	if err != nil {
+		return err
+	}
+	hashes := []string{}
+	if source != nil {
+		hashes = append(hashes, source.hash)
+	}
 	if req.Checkpoint != "" {
-		_, err := decodePullCursor(database, identity, req.Collection, req.Checkpoint)
+		_, err := decodePullCursor(database, identity, req.Collection, req.Checkpoint, hashes...)
 		return err
 	}
 	return nil
@@ -125,7 +153,7 @@ func (e *Engine) Pull(ctx context.Context, database string, req types.Replicatio
 		reason := "page"
 		returned, checkpoint := 0, ""
 		if response != nil {
-			returned, checkpoint = len(response.Documents), response.Checkpoint
+			returned, checkpoint = len(response.Documents)+len(response.Events), response.Checkpoint
 			if response.CaughtUp {
 				reason = "watermark"
 			}
@@ -160,18 +188,28 @@ func (e *Engine) Pull(ctx context.Context, database string, req types.Replicatio
 	if limit == 0 {
 		limit = DefaultPullLimit
 	}
-	var err error
+	source, err := normalizePullSource(req)
+	if err != nil {
+		return nil, err
+	}
+	hashes := []string{}
+	if source != nil {
+		hashes = append(hashes, source.hash)
+	}
 	if req.Checkpoint == "" {
 		stream, err := e.storage.Watch(ctx, database, req.Collection, "", types.WatchOptions{StartMode: types.WatchStartForScan})
 		if err != nil {
 			return nil, err
 		}
 		cursor = pullCursor{Version: 3, Database: database, DatabaseIdentity: pullDatabaseIdentity(database, req), Collection: req.Collection, Phase: "scan", Position: stream.InitialCheckpoint()}
+		if source != nil {
+			cursor.Version, cursor.SourceHash, cursor.GenerationID = 4, source.hash, uuid.NewString()
+		}
 		if err := stream.Close(); err != nil {
 			return nil, err
 		}
 	} else {
-		cursor, err = decodePullCursor(database, pullDatabaseIdentity(database, req), req.Collection, req.Checkpoint)
+		cursor, err = decodePullCursor(database, pullDatabaseIdentity(database, req), req.Collection, req.Checkpoint, hashes...)
 		if err != nil {
 			return nil, err
 		}
@@ -180,7 +218,15 @@ func (e *Engine) Pull(ctx context.Context, database string, req types.Replicatio
 	if err != nil {
 		return nil, err
 	}
-	page := &pullPage{response: types.ReplicationPullResponse{Documents: []model.Document{}, Checkpoint: checkpoint}}
+	page := &pullPage{source: source, response: types.ReplicationPullResponse{Documents: []model.Document{}, Checkpoint: checkpoint}}
+	if source != nil {
+		page.response.Documents = nil
+		page.response.ProtocolVersion, page.response.Mode = 1, "events"
+		page.response.DatabaseIdentity, page.response.SourceHash = cursor.DatabaseIdentity, cursor.SourceHash
+		page.response.GenerationID, page.response.Phase = cursor.GenerationID, cursor.Phase
+		page.response.BootstrapComplete = cursor.Phase == "live"
+		page.response.Events = []types.ReplicationEvent{}
+	}
 	if cursor.Phase == "scan" {
 		err = e.pullScan(ctx, cursor, limit, page)
 	} else {
@@ -198,20 +244,35 @@ func (e *Engine) Pull(ctx context.Context, database string, req types.Replicatio
 // pullPage advances only after the full typed document and its continuation fit
 // both transports. Prefetched records outside this prefix are read again later.
 type pullPage struct {
+	source     *pullSource
 	response   types.ReplicationPullResponse
 	jsonBytes  int
 	protoBytes int
 	accepted   int
 }
 
-func (p *pullPage) admit(cursor pullCursor, doc model.Document, caughtUp bool) (bool, error) {
+func (p *pullPage) admit(cursor pullCursor, doc model.Document, caughtUp bool, events ...*types.ReplicationEvent) (bool, error) {
 	checkpoint, err := encodePullCursor(cursor)
 	if err != nil {
 		return false, err
 	}
 	candidate := p.response
 	candidate.Checkpoint, candidate.CaughtUp = checkpoint, caughtUp
+	if p.source != nil {
+		candidate.Phase, candidate.BootstrapComplete = cursor.Phase, cursor.Phase == "live"
+	}
 	addedJSON, addedProto := 0, 0
+	var event *types.ReplicationEvent
+	if len(events) > 0 {
+		event = events[0]
+	}
+	if event != nil {
+		addedJSON, addedProto, err = wire.MeasurePullEvent(*event)
+		if err != nil {
+			return false, err
+		}
+		candidate.Events = append(candidate.Events, *event)
+	}
 	if doc != nil {
 		encoded, err := model.EncodeTypedValue(map[string]any(doc))
 		if err != nil {
@@ -227,7 +288,7 @@ func (p *pullPage) admit(cursor pullCursor, doc model.Document, caughtUp bool) (
 		}
 		return false, err
 	}
-	if checkpoint != p.response.Checkpoint || doc != nil || caughtUp {
+	if checkpoint != p.response.Checkpoint || doc != nil || event != nil || caughtUp {
 		p.accepted++
 	}
 	p.response = candidate
@@ -276,7 +337,15 @@ func (e *Engine) pullScan(ctx context.Context, cursor pullCursor, limit int, pag
 			return pullError(types.WatchInvalidEvent, "scan documents are not ordered")
 		}
 		cursor.AfterID = id
-		accepted, err := page.admit(cursor, doc, false)
+		var projected *types.ReplicationEvent
+		if page.source != nil {
+			projected, err = page.source.project(stored, doc, true)
+			if err != nil {
+				return err
+			}
+			doc = nil
+		}
+		accepted, err := page.admit(cursor, doc, false, projected)
 		if err != nil || !accepted {
 			return err
 		}
@@ -286,6 +355,9 @@ func (e *Engine) pullScan(ctx context.Context, cursor pullCursor, limit int, pag
 	}
 	if batch.Exhausted {
 		cursor.Phase, cursor.AfterID = "changes", ""
+		if page.source != nil {
+			cursor.Phase = "replay"
+		}
 		_, err := page.admit(cursor, nil, false)
 		return err
 	}
@@ -351,7 +423,7 @@ func (e *Engine) pullChanges(ctx context.Context, cursor pullCursor, limit int, 
 	var sourceBytes int64
 	initialPosition := cursor.Position
 	progressed := false
-	for frames := 0; frames < maxPullFrames && len(page.response.Documents) < limit && (!progressed || time.Now().Before(softDeadline)); frames++ {
+	for frames := 0; frames < maxPullFrames && len(page.response.Documents)+len(page.response.Events) < limit && (!progressed || time.Now().Before(softDeadline)); frames++ {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
@@ -379,8 +451,21 @@ func (e *Engine) pullChanges(ctx context.Context, cursor pullCursor, limit int, 
 				return err
 			}
 		}
+		var projected *types.ReplicationEvent
+		if page.source != nil {
+			if frame.Event != nil {
+				projected, err = page.source.project(frame.Event.Document, doc, false)
+				if err != nil {
+					return err
+				}
+			}
+			doc = nil
+			if frame.CaughtUp {
+				cursor.Phase = "live"
+			}
+		}
 		cursor.Position = frame.Checkpoint
-		accepted, err := page.admit(cursor, doc, frame.CaughtUp)
+		accepted, err := page.admit(cursor, doc, frame.CaughtUp, projected)
 		if err != nil || !accepted {
 			return err
 		}

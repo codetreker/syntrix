@@ -253,43 +253,4 @@ func TestFilterConversions(t *testing.T) {
 }
 
 func TestPullRequestConversions(t *testing.T) {
-	t.Run("pullRequestToProto", func(t *testing.T) {
-		req := storage.ReplicationPullRequest{
-			DatabaseIdentity: "resolved-entity",
-			Collection:       "users",
-			Checkpoint:       "opaque",
-			Limit:            100,
-		}
-
-		result := pullRequestToProto(req)
-
-		assert.Equal(t, "users", result.Collection)
-		assert.Equal(t, "resolved-entity", result.DatabaseIdentity)
-		assert.Equal(t, "opaque", result.Checkpoint)
-		assert.EqualValues(t, 2, result.WireVersion)
-		assert.Equal(t, int32(100), result.Limit)
-	})
-
-	t.Run("protoToPullRequest", func(t *testing.T) {
-		proto := &pb.PullRequest{
-			DatabaseIdentity: "resolved-entity",
-			Database:         "database1",
-			Collection:       "users",
-			Checkpoint:       "opaque",
-			Limit:            100,
-		}
-
-		result := protoToPullRequest(proto)
-
-		assert.Equal(t, "users", result.Collection)
-		assert.Equal(t, "resolved-entity", result.DatabaseIdentity)
-		assert.Equal(t, "opaque", result.Checkpoint)
-		assert.Equal(t, 100, result.Limit)
-	})
-
-	t.Run("protoToPullRequest nil", func(t *testing.T) {
-		result := protoToPullRequest(nil)
-		assert.Empty(t, result.Collection)
-	})
-
 }

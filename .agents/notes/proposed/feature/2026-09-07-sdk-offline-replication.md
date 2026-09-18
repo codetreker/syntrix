@@ -14,7 +14,10 @@ The [private native runtime](../../implemented/architecture/2026-09-18-sdk-nativ
 provides bounded replication inputs, durable completion hooks, failure isolation,
 and a bundled patched dependency. It is not yet connected to Syntrix source/Push
 HTTP adapters or a public local database API. This proposal owns that remaining
-integration; the runtime note owns the delivered mechanism.
+integration; the runtime note owns the delivered mechanism. The
+[query-source contract](../../implemented/feature/2026-09-18-query-replication-source.md)
+now supplies matching-set events, completed generations, and authoritative bound
+database checks. Its SDK adapters and result-window execution remain outstanding.
 
 ## Proposal
 
@@ -25,8 +28,8 @@ to replication; no public manual Push method is required.
 
 | Remaining capability | Required behavior |
 |---|---|
-| Remote sources | Replicate a query result into a named local collection alias; each source remains independently scoped |
-| Membership | Server-provided membership exits remove documents from that source, without treating every exit as a document deletion |
+| Remote sources | Connect the delivered matching-set HTTP source to a named local collection alias; add bounded result-window execution and its adapter |
+| Membership | Apply delivered source upsert/leave/delete events and activate durable generations without treating every membership exit as a document deletion |
 | Local operations | Persist offline CRUD and support dynamic local query/watch results |
 | Identity | Isolate endpoint, account, bound database identity, source, and local alias; obsolete work cannot apply or send across reassignment |
 | Initialization | Activate a complete source generation durably before uploading, while preserving pending local edits |
@@ -113,8 +116,10 @@ persistence, wire encoding, and conflict application.
   and [typed HTTP Push](../../implemented/bug-fix/2026-09-18-http-push-typed-values.md)
   own existing server write guarantees.
 - [Pull cursor progress](../../implemented/bug-fix/2026-09-07-replication-pull-cursor-progress.md)
-  owns the existing source cursor and manual transport. Query-source membership
-  and automatic SDK adapters remain additional work.
+  owns the existing source cursor and manual transport. The
+  [query-source contract](../../implemented/feature/2026-09-18-query-replication-source.md)
+  owns matching-set projection and request identity checks; local membership,
+  bounded windows, and automatic SDK adapters remain additional work.
 - [Realtime resume](2026-09-07-realtime-client-resume.md) owns transport recovery;
   notifications do not replace authoritative source reads.
 
