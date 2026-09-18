@@ -25,6 +25,7 @@ TEST_EXIT_CODE=$?
 echo "$COVERAGE_OUTPUT" | grep -E "^\(pass\)|\(fail\)|pass|fail|tests|expect"
 
 if [ $TEST_EXIT_CODE -ne 0 ]; then
+    printf '%s\n' "$COVERAGE_OUTPUT"
     echo "::error::Tests failed with exit code $TEST_EXIT_CODE"
     exit $TEST_EXIT_CODE
 fi

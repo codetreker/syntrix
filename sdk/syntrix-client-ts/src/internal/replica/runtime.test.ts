@@ -120,7 +120,9 @@ describe('private replication runtime', () => {
         const alias = await openAliasStorage({ session, endpoint: 'https://example.test', database: 'app',
           name: crypto.randomUUID(), alias: 'people', source: { collection: 'users', filters: [] },
           lockManager: createTestLockManager(), storage });
+        const database = await alias.withMaintenance(async access => access.backend.database);
         const native = await alias.native(await alias.captureScope());
+        const collections = Object.values(database.collections);
         const errors: unknown[] = [];
         let sourceCalls = 0;
         armed = true;
@@ -184,7 +186,12 @@ describe('private replication runtime', () => {
         } finally {
           gate.resolve();
           await Promise.allSettled([runtime.close(), alias.close(), session.close()]);
-          await Promise.allSettled(raw.map(instance => instance.close()));
+          // The injected runtime failure intentionally blocks alias cleanup. Close
+          // the actual collection owner after checking that failure remains cached.
+          try {
+            await database.close();
+            for (const collection of collections) expect(collection.closed).toBe(true);
+          } finally { await Promise.allSettled(raw.map(instance => instance.close())); }
         }
       }, 5000);
     }
