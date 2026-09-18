@@ -10,7 +10,7 @@
 **Related:** Authentication flows and retry semantics are defined in [003_authentication.md](003_authentication.md); replication uses the same token/refresh handling and does not advance checkpoints on auth errors.
 
 ## Goals
-- Reliable pull/push replication using RxDB, respecting server wire format (flattened docs, no storage internals).
+- Reliable pull/push replication using RxDB, with typed wire values and flattened decoded documents that exclude storage internals.
 - Realtime events only trigger pulls; checkpoint managed solely by pull responses.
 - Conflict-safe push with server-returned conflicts written back or surfaced.
 - Offline tolerance: queued pushes (outbox), resumable pulls with checkpoint persistence.
@@ -120,10 +120,14 @@ App
 
 ### Push sequence
 1) Read batch from Outbox (bounded size).
-2) Send `/replication/v1/databases/{database}/push` with `{collection, changes}`.
+2) Encode every change's document as a recursive typed object and send
+   `/replication/v1/databases/{database}/push` with `{collection, changes}`.
+   Preserve bigint as canonical int64 strings and number as float64. The server
+   accepts this transport; the SDK Pusher and encoder remain planned.
 3) On success, remove sent entries from Outbox.
-4) Correlate structured conflicts to sent entries by `changeIndex`. Apply a non-null
-   `current` document or tombstone; treat null as authoritative absence under the
+4) Correlate structured conflicts to sent entries by `changeIndex`. Decode a
+   non-null typed `current` object into the document or tombstone; treat raw JSON
+   null as authoritative absence under the
    selected resolution policy. Emit `onConflict(conflicts, locals?)` with the reason
    and original request item. Do not upsert the conflict wrapper as a document.
 5) Errors: retry with backoff, keep Outbox intact.

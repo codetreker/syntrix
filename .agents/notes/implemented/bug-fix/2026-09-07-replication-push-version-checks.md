@@ -22,7 +22,7 @@ concurrently recreated live document.
 
 HTTP, local Query calls, and gRPC preserve an explicit create/update/delete action.
 Missing and unknown actions fail validation. The existing exact nonnegative
-`document.version` input remains optional; protobuf uses `optional int64`, with
+`document.version` precondition remains optional; protobuf uses `optional int64`, with
 no negative sentinel or omitted-action fallback. Query validates the entire
 batch before its first storage operation, including direct callers.
 
@@ -31,8 +31,10 @@ codec in both requests and current conflict documents. This preserves nested
 int64 values and their distinction from integral float64 values across gRPC;
 ordinary JSON decoding would otherwise round values or change runtime types.
 Nil data is encoded as typed null. Untyped legacy Push data is rejected as part
-of the coordinated protocol change. Ordinary HTTP input/output remains flattened
-JSON, and this does not provide an SDK outbound bigint codec.
+of the coordinated protocol change. The later
+[typed HTTP Push decision](2026-09-18-http-push-typed-values.md) uses this codec for
+HTTP documents and non-null conflict state as well. The decoded document remains
+flattened; SDK outbound bigint encoding remains separate work.
 
 | Request | Target | Result |
 |---|---|---|
@@ -55,9 +57,9 @@ Push requests and conflict responses each have a 20 MiB encoded protobuf budget,
 including the message envelope and typed document data. Local Query calls apply
 the same budget as gRPC calls; production gRPC receive limits admit those messages.
 This prevents deployment mode from changing which otherwise valid Push messages
-can be processed. The HTTP request body retains its independent 10 MiB limit.
-Typed-value expansion can exceed the protobuf budget even when the JSON body
-fits, so the body limit is not a promise that every such request is accepted.
+can be processed. The HTTP request body retains its independent 10 MiB limit, including its typed
+JSON envelope. Encoded HTTP and protobuf sizes are checked independently; the
+body limit does not waive the protobuf budget.
 
 Oversized encoded requests fail validation with HTTP 400 before any storage
 operation. An oversized conflict response fails with a work-limit error, mapped
@@ -78,8 +80,9 @@ It never fabricates a tombstone or document after a failed write.
 
 Each conflict contains the zero-based request `changeIndex`, logical document
 `id`, `reason`, and nullable `current`. Request position distinguishes repeated
-changes to the same ID. The HTTP current document uses ordinary flattened JSON;
-tombstones contain their real retained metadata, and absence is JSON null.
+changes to the same ID. The HTTP current document now uses a typed object with
+flattened decoded fields, as defined by the later typed transport decision.
+Tombstones contain their real retained metadata, and absence is raw JSON null.
 Conflict rendering takes ID and deletion state from validated storage metadata,
 preventing business-data keys from overriding their authoritative values.
 
@@ -126,8 +129,8 @@ separate proposal retains that decision and its future atomic-write requirements
 - The structured conflict response and explicit action/version presence change
   the HTTP/gRPC contract. Gateway, Query services, and consumers require a
   coordinated upgrade; there is no legacy-message fallback.
-- Exact precondition extraction remains independent of business-number decoding.
-  The durable SDK Pusher and a lossless outbound bigint codec remain owned by
+- Exact precondition presence remains separate from stored document metadata.
+  The durable SDK Pusher and its lossless outbound bigint encoder remain owned by
   [SDK offline replication](../../proposed/feature/2026-09-07-sdk-offline-replication.md).
 - A lost success response may produce a conflict on retry. Version equality
   does not provide exactly-once execution or document-generation identity.

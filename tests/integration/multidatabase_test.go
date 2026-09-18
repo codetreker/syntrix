@@ -217,10 +217,10 @@ func TestMultiDatabase_ReplicationIsolation(t *testing.T) {
 		"changes": []map[string]interface{}{
 			{
 				"action": "create",
-				"document": map[string]interface{}{
+				"document": encodePushDocument(t, map[string]interface{}{
 					"id":    "doc-b",
 					"title": "Repl Doc B",
-				},
+				}),
 			},
 		},
 	}

@@ -11,7 +11,9 @@ import (
 	"github.com/stretchr/testify/require"
 	storage "github.com/syntrixbase/syntrix/internal/core/storage/types"
 	queryclient "github.com/syntrixbase/syntrix/internal/query/client"
+	"github.com/syntrixbase/syntrix/pkg/model"
 	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/bsontype"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
@@ -42,7 +44,7 @@ func TestReplicationPushPreconditions(t *testing.T) {
 		if version != nil {
 			doc["version"] = *version
 		}
-		return map[string]any{"action": action, "document": doc}
+		return map[string]any{"action": action, "document": encodePushDocument(t, doc)}
 	}
 	push := func(changes ...map[string]any) []map[string]json.RawMessage {
 		resp := env.MakeRequest(t, http.MethodPost, "/replication/v1/databases/default/push", map[string]any{
@@ -112,13 +114,12 @@ func TestReplicationPushPreconditions(t *testing.T) {
 		require.Len(t, conflicts, 2)
 		for index, conflict := range conflicts {
 			assertConflict(conflict, index, "deleted", "tombstoned")
-			var current map[string]any
-			require.NoError(t, json.Unmarshal(conflict["current"], &current))
+			current := decodePushCurrent(t, conflict["current"])
 			require.Equal(t, "deleted", current["id"])
 			require.Equal(t, true, current["deleted"])
-			require.Equal(t, float64(before.Version), current["version"])
-			require.Equal(t, float64(before.CreatedAt), current["createdAt"])
-			require.Equal(t, float64(before.UpdatedAt), current["updatedAt"])
+			require.Equal(t, before.Version, current["version"])
+			require.Equal(t, before.CreatedAt, current["createdAt"])
+			require.Equal(t, before.UpdatedAt, current["updatedAt"])
 			require.NotContains(t, current, "value")
 		}
 		require.Empty(t, push(change("delete", "deleted", nil)))
@@ -132,9 +133,8 @@ func TestReplicationPushPreconditions(t *testing.T) {
 		conflicts := push(change("update", "repeated", &one), change("delete", "repeated", &one))
 		require.Len(t, conflicts, 1)
 		assertConflict(conflicts[0], 1, "repeated", "version_mismatch")
-		var current map[string]any
-		require.NoError(t, json.Unmarshal(conflicts[0]["current"], &current))
-		require.Equal(t, float64(2), current["version"])
+		current := decodePushCurrent(t, conflicts[0]["current"])
+		require.Equal(t, int64(2), current["version"])
 		require.Equal(t, "update", current["value"])
 		doc, err := read("repeated")
 		require.NoError(t, err)
@@ -155,15 +155,9 @@ func TestReplicationPushPreconditions(t *testing.T) {
 		conflicts := push(change("update", "precise", &staleVersion))
 		require.Len(t, conflicts, 1)
 		assertConflict(conflicts[0], 0, "precise", "version_mismatch")
-		var current struct {
-			Version json.RawMessage              `json:"version"`
-			Nested  []map[string]json.RawMessage `json:"nested"`
-		}
-		require.NoError(t, json.Unmarshal(conflicts[0]["current"], &current))
-		require.Equal(t, "9223372036854775807", string(current.Version))
-		require.Len(t, current.Nested, 1)
-		require.Equal(t, "9223372036854775807", string(current.Nested[0]["integer"]))
-		require.Equal(t, "1", string(current.Nested[0]["double"]))
+		current := decodePushCurrent(t, conflicts[0]["current"])
+		require.Equal(t, int64(math.MaxInt64), current["version"])
+		require.Equal(t, seed.Data["nested"], current["nested"])
 
 		remote, err := queryclient.New(env.QueryURL)
 		require.NoError(t, err)
@@ -194,4 +188,99 @@ func TestReplicationPushPreconditions(t *testing.T) {
 		_, err := read("invalid-batch")
 		require.ErrorIs(t, err, mongo.ErrNoDocuments)
 	})
+
+	t.Run("raw typed values survive create update conflict and pull", func(t *testing.T) {
+		rawDoc := json.RawMessage(`{"type":"object","value":{
+			"id":{"type":"string","value":"typed-roundtrip"},
+			"version":{"type":"int64","value":"1"},
+			"nested":{"type":"array","value":[{"type":"object","value":{
+				"maximum":{"type":"int64","value":"9223372036854775807"},
+				"minimum":{"type":"int64","value":"-9223372036854775808"},
+				"integral":{"type":"float64","value":1},
+				"type":{"type":"string","value":"business-property"},
+				"value":{"type":"null"}
+			}}]}
+		}}`)
+		require.Empty(t, push(map[string]any{"action": "create", "document": rawDoc}))
+		require.Empty(t, push(map[string]any{"action": "update", "document": rawDoc}))
+		raw, err := documents.FindOne(ctx, bson.M{"database": "default", "fullpath": collection + "/typed-roundtrip"}).Raw()
+		require.NoError(t, err)
+		require.Equal(t, int64(2), raw.Lookup("version").Int64())
+		nested := raw.Lookup("data", "nested").Array().Index(0).Value().Document()
+		require.Equal(t, bsontype.Int64, nested.Lookup("maximum").Type)
+		require.Equal(t, int64(math.MaxInt64), nested.Lookup("maximum").Int64())
+		require.Equal(t, int64(math.MinInt64), nested.Lookup("minimum").Int64())
+		require.Equal(t, bsontype.Double, nested.Lookup("integral").Type)
+		require.Equal(t, float64(1), nested.Lookup("integral").Double())
+
+		conflicts := push(map[string]any{"action": "update", "document": rawDoc})
+		require.Len(t, conflicts, 1)
+		assertConflict(conflicts[0], 0, "typed-roundtrip", "version_mismatch")
+		var envelope struct {
+			Type  string                     `json:"type"`
+			Value map[string]json.RawMessage `json:"value"`
+		}
+		require.NoError(t, json.Unmarshal(conflicts[0]["current"], &envelope))
+		require.Equal(t, "object", envelope.Type)
+		require.JSONEq(t, `{"type":"int64","value":"2"}`, string(envelope.Value["version"]))
+		require.JSONEq(t, `{"type":"array","value":[{"type":"object","value":{
+			"maximum":{"type":"int64","value":"9223372036854775807"},
+			"minimum":{"type":"int64","value":"-9223372036854775808"},
+			"integral":{"type":"float64","value":1},
+			"type":{"type":"string","value":"business-property"},
+			"value":{"type":"null"}
+		}}]}`, string(envelope.Value["nested"]))
+		current := decodePushCurrent(t, conflicts[0]["current"])
+		token = replicationAdminToken(t, env, "default", token)
+		page := pullReplicationPage(t, env, "default", collection, "", 100, token)
+		var pulled model.Document
+		for _, doc := range page.Documents {
+			if doc.GetID() == "typed-roundtrip" {
+				pulled = doc
+			}
+		}
+		require.NotNil(t, pulled)
+		require.Equal(t, current, map[string]any(pulled))
+	})
+
+	t.Run("invalid later typed item prevents earlier write", func(t *testing.T) {
+		for _, item := range []struct {
+			name string
+			doc  string
+		}{
+			{"legacy", `{"id":"invalid"}`},
+			{"unknown-type", `{"type":"object","value":{"id":{"type":"string","value":"invalid"},"nested":{"type":"decimal","value":"1"}}}`},
+			{"float-version", `{"type":"object","value":{"id":{"type":"string","value":"invalid"},"version":{"type":"float64","value":1}}}`},
+			{"negative-version", `{"type":"object","value":{"id":{"type":"string","value":"invalid"},"version":{"type":"int64","value":"-1"}}}`},
+			{"null-version", `{"type":"object","value":{"id":{"type":"string","value":"invalid"},"version":{"type":"null"}}}`},
+		} {
+			t.Run(item.name, func(t *testing.T) {
+				id := "invalid-" + item.name
+				resp := env.MakeRequest(t, http.MethodPost, "/replication/v1/databases/default/push", map[string]any{
+					"collection": collection,
+					"changes":    []map[string]any{change("create", id, nil), {"action": "create", "document": json.RawMessage(item.doc)}},
+				}, token)
+				defer resp.Body.Close()
+				require.Equal(t, http.StatusBadRequest, resp.StatusCode)
+				_, err := read(id)
+				require.ErrorIs(t, err, mongo.ErrNoDocuments)
+			})
+		}
+	})
+}
+
+func encodePushDocument(t *testing.T, doc map[string]any) json.RawMessage {
+	t.Helper()
+	encoded, err := model.EncodeTypedValue(doc)
+	require.NoError(t, err)
+	return encoded
+}
+
+func decodePushCurrent(t *testing.T, data json.RawMessage) map[string]any {
+	t.Helper()
+	value, err := model.DecodeTypedValue(data)
+	require.NoError(t, err)
+	doc, ok := value.(map[string]any)
+	require.True(t, ok)
+	return doc
 }

@@ -12,13 +12,21 @@ import (
 type ReplicaChange struct {
 	Action string `json:"action"` // "create", "update", "delete"
 
-	// User facing document type, represents a JSON object.
-	//
-	//	"id" field is reserved for document ID.
-	//	"version" field is reserved for document version.
+	// Doc is an application object encoded as a typed value on the wire.
 	Doc model.Document `json:"document"`
 
 	BaseVersion *int64 `json:"-"`
+}
+
+func (c ReplicaChange) MarshalJSON() ([]byte, error) {
+	doc, err := model.EncodeTypedValue(c.Doc)
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(struct {
+		Action string          `json:"action"`
+		Doc    json.RawMessage `json:"document"`
+	}{Action: c.Action, Doc: doc})
 }
 
 func (c *ReplicaChange) UnmarshalJSON(data []byte) error {
@@ -33,24 +41,21 @@ func (c *ReplicaChange) UnmarshalJSON(data []byte) error {
 		return err
 	}
 
-	decoded := ReplicaChange{Action: raw.Action}
-	if len(raw.Doc) > 0 {
-		// Preserve exact version bytes without changing business numbers to json.Number.
-		var fields map[string]json.RawMessage
-		if err := json.Unmarshal(raw.Doc, &fields); err != nil {
-			return err
+	value, err := model.DecodeTypedValue(raw.Doc)
+	if err != nil {
+		return fmt.Errorf("invalid document: %w", err)
+	}
+	fields, ok := value.(map[string]any)
+	if !ok {
+		return errors.New("document must be a typed object")
+	}
+	decoded := ReplicaChange{Action: raw.Action, Doc: model.Document(fields)}
+	if value, exists := fields["version"]; exists {
+		version, ok := value.(int64)
+		if !ok || version < 0 {
+			return errors.New("document.version must be a non-negative int64 integer")
 		}
-		if version, exists := fields["version"]; exists {
-			if err := json.Unmarshal(version, &decoded.BaseVersion); err != nil {
-				return fmt.Errorf("invalid document.version: %w", err)
-			}
-			if decoded.BaseVersion == nil || *decoded.BaseVersion < 0 {
-				return errors.New("document.version must be a non-negative int64 integer")
-			}
-		}
-		if err := json.Unmarshal(raw.Doc, &decoded.Doc); err != nil {
-			return err
-		}
+		decoded.BaseVersion = &version
 	}
 	*c = decoded
 	return nil
@@ -66,10 +71,10 @@ type ReplicaPushResponse struct {
 }
 
 type ReplicaPushConflict struct {
-	ChangeIndex int            `json:"changeIndex"`
-	ID          string         `json:"id"`
-	Reason      string         `json:"reason"`
-	Current     model.Document `json:"current"`
+	ChangeIndex int             `json:"changeIndex"`
+	ID          string          `json:"id"`
+	Reason      string          `json:"reason"`
+	Current     json.RawMessage `json:"current"`
 }
 
 type ReplicaPullRequest struct {

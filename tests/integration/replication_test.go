@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/syntrixbase/syntrix/internal/gateway/realtime"
-	"github.com/syntrixbase/syntrix/internal/gateway/rest"
 	"github.com/syntrixbase/syntrix/pkg/model"
 
 	"github.com/stretchr/testify/assert"
@@ -106,17 +105,12 @@ func TestReplication_FullFlow(t *testing.T) {
 	docData := map[string]interface{}{
 		"id":      docID,
 		"msg":     "hello replication",
-		"version": float64(0), // New document
+		"version": int64(0), // New document
 	}
 
-	pushBody := rest.ReplicaPushRequest{
-		Collection: collectionName,
-		Changes: []rest.ReplicaChange{
-			{
-				Action: "create",
-				Doc:    docData,
-			},
-		},
+	pushBody := map[string]any{
+		"collection": collectionName,
+		"changes":    []map[string]any{{"action": "create", "document": encodePushDocument(t, docData)}},
 	}
 
 	bodyBytes, _ := json.Marshal(pushBody)
@@ -162,17 +156,12 @@ func TestReplication_FullFlow(t *testing.T) {
 	// 5. Scenario: Delete Document
 	deleteDocData := map[string]interface{}{
 		"id":      docID,
-		"version": float64(1),
+		"version": int64(1),
 	}
 
-	deleteBody := rest.ReplicaPushRequest{
-		Collection: collectionName,
-		Changes: []rest.ReplicaChange{
-			{
-				Action: "delete",
-				Doc:    deleteDocData,
-			},
-		},
+	deleteBody := map[string]any{
+		"collection": collectionName,
+		"changes":    []map[string]any{{"action": "delete", "document": encodePushDocument(t, deleteDocData)}},
 	}
 
 	deleteBytes, _ := json.Marshal(deleteBody)

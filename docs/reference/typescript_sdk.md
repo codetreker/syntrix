@@ -65,8 +65,11 @@ automatically fetch more pages, save progress, or maintain an outbox.
 Plain JSON serialization rejects bigint, including values in decoded Pull and
 Query documents. Existing SDK document `set`/`update` therefore cannot blindly
 round-trip such documents. Converting to Number can lose precision. Use a lossless
-local persistence representation; the matching outbound codec and Pusher remain
-tracked by the [offline replication proposal](../../.agents/notes/proposed/feature/2026-09-07-sdk-offline-replication.md).
+local persistence representation. The server's
+[HTTP Push](replication.md#push-changes) accepts typed document objects, but the SDK
+outbound encoder and internal Pusher remain unimplemented and tracked by the
+[offline replication proposal](../../.agents/notes/proposed/feature/2026-09-07-sdk-offline-replication.md).
+Ordinary CRUD formats remain unchanged.
 
 Pull binds the session before scheduling the request. Login, signup, or logout
 invalidates a successful old-session response with `AuthSessionChangedError`;

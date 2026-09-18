@@ -1,8 +1,8 @@
 # Replication API Reference
 
 Replication endpoints use an explicit database URL namespace. Pull returns
-typed document states and an opaque continuation; Push accepts ordinary flattened
-JSON documents and returns conflicts.
+typed document states and an opaque continuation; Push accepts typed document
+objects and returns conflicts with typed current state.
 
 ## Pull Changes
 
@@ -68,8 +68,10 @@ Decoded documents are flattened business fields plus reserved metadata:
 Decoded bigint values cannot be blindly passed to `JSON.stringify` or sent back to SDK
 document `set`/`update`, whose current JSON serialization rejects them before HTTP
 transmission. Number conversion can lose precision. Local storage needs a lossless
-representation; a matching outbound codec and durable Pusher remain proposed.
-The typed Pull envelope is not an accepted replacement for ordinary Push input.
+representation. HTTP Push accepts the same document typed-value representation
+inside its change envelope; the SDK outbound encoder and durable Pusher remain
+proposed. The complete Pull response is not a Push request, and ordinary CRUD
+still uses its existing JSON format.
 
 A logical-delete event may return only `id`, `collection`, and `deleted: true`;
 version and timestamps are then absent. Do not require or manufacture them.
@@ -131,8 +133,11 @@ processing ends. Other routes retain the configured server write timeout.
 **Endpoint:** `POST /replication/v1/databases/{database}/push`
 
 The request contains one concrete `collection` and a nonempty `changes` array.
-Each change requires `action` (`create`, `update`, or `delete`) and a flattened
-`document` with a nonempty logical `id`. Missing or unknown actions are invalid.
+Each change requires `action` (`create`, `update`, or `delete`) and a `document`
+encoded as one recursive typed object. Its decoded fields are flattened and must
+include a nonempty logical `id`. Missing or unknown actions are invalid.
+Ordinary untyped documents, typed null, arrays, and scalar document roots are
+rejected; there is no legacy decoding fallback.
 
 ```json
 {
@@ -140,11 +145,24 @@ Each change requires `action` (`create`, `update`, or `delete`) and a flattened
   "changes": [
     {
       "action": "create",
-      "document": { "id": "msg-2", "text": "Offline message", "version": 1 }
+      "document": {
+        "type": "object",
+        "value": {
+          "id": { "type": "string", "value": "msg-2" },
+          "text": { "type": "string", "value": "Offline message" },
+          "version": { "type": "int64", "value": "1" }
+        }
+      }
     },
     {
       "action": "delete",
-      "document": { "id": "msg-3", "version": 5 }
+      "document": {
+        "type": "object",
+        "value": {
+          "id": { "type": "string", "value": "msg-3" },
+          "version": { "type": "int64", "value": "5" }
+        }
+      }
     }
   ]
 }
@@ -167,23 +185,43 @@ zero-based position in the request, so repeated IDs remain distinguishable.
 }
 ```
 
-When present, `current` is an ordinary flattened document with server metadata,
-for example `{"id":"msg-3","collection":"rooms/room-1/messages","text":"Server copy","version":6,"createdAt":1700000000000,"updatedAt":1710000001000}`.
-A retained tombstone includes `deleted: true` and its real metadata, with former
-business fields cleared. The conflict's `current.id` and `current.deleted` reflect
+When present, `current` is a recursive typed object using the same value codec
+as the request document and Pull documents. For example:
+
+```json
+{
+  "type": "object",
+  "value": {
+    "id": { "type": "string", "value": "msg-3" },
+    "collection": { "type": "string", "value": "rooms/room-1/messages" },
+    "text": { "type": "string", "value": "Server copy" },
+    "version": { "type": "int64", "value": "6" },
+    "createdAt": { "type": "int64", "value": "1700000000000" },
+    "updatedAt": { "type": "int64", "value": "1710000001000" }
+  }
+}
+```
+
+A retained tombstone includes typed `deleted: true` and its real metadata, with
+former business fields cleared. Decoded `current.id` and `current.deleted` reflect
 validated document identity and stored deletion state; business data cannot
-override them. This response uses ordinary JSON, not Pull's typed-value envelope.
+override them. An absent target uses raw JSON null for `current`, not a typed-null
+object. The outer `changeIndex`, `id`, and `reason` fields keep their existing shape.
 
 ### Version Preconditions
 
 `document.version` is optional and case-sensitive. Storage assigns the resulting
 document version; the supplied value is never copied into stored metadata.
 
-| JSON value | Behavior |
+| Typed `version` field | Behavior |
 |---|---|
 | Field omitted | No version precondition |
-| Integer literal from `0` through `9223372036854775807` | Preserve exact value and presence |
-| Null, string, boolean, negative value, fraction, exponent notation, or out-of-range integer | HTTP 400 before any change reaches the Engine |
+| `{"type":"int64","value":"0"}` through `{"type":"int64","value":"9223372036854775807"}` | Preserve exact value and presence |
+| Null, string, bool, float64, negative/out-of-range int64, or noncanonical int64 string | HTTP 400 before any change reaches the Engine |
+
+Int64 strings use canonical decimal notation: no leading plus, leading zeros,
+negative zero, fraction, or exponent. A float64 value of `1` is not a valid version.
+Nested business values retain their declared numeric type.
 
 | Request | Target | Result |
 |---|---|---|
@@ -205,14 +243,14 @@ otherwise valid action/version combinations remain
 
 | Boundary | Limit |
 |---|---|
-| HTTP request body | 10 MiB |
+| HTTP request body, including all typed-value tags and the outer envelope | 10 MiB |
 | Encoded protobuf request, including typed data and envelope | 20 MiB |
 | Encoded protobuf conflict response, including typed data and envelope | 20 MiB |
 
 The protobuf budgets also apply to local Query execution. Production gRPC
-receive limits admit messages within these budgets. Typed-value encoding can
-expand ordinary JSON, so a request body below 10 MiB can still exceed the encoded
-request budget. Such a request returns HTTP 400 before any storage operation.
+receive limits admit messages within these budgets. The HTTP body limit counts
+the encoded typed JSON, not only business data. The HTTP and protobuf budgets
+apply independently; fitting the body limit does not waive the protobuf check. Such a request returns HTTP 400 before any storage operation.
 An oversized conflict response returns HTTP 422 `REPLICATION_BUDGET_EXCEEDED`
 without truncation; earlier changes in the batch may already have committed.
 
@@ -241,8 +279,10 @@ The conflict object replaces the document-only response. The internal gRPC
 contract requires explicit action and optional int64 version presence, with no
 legacy negative sentinel or unspecified-action fallback. Push document data also
 uses recursive typed values internally over gRPC; old untyped gRPC data is invalid.
-This preserves numeric types internally and does not change HTTP's ordinary JSON
-format. Upgrade Gateway, Query, and response consumers together. See the
+HTTP uses the same typed-value codec for documents, with no ordinary-JSON
+fallback. Upgrade Push request and response consumers together. The
+[HTTP typed-value decision](../../.agents/notes/implemented/bug-fix/2026-09-18-http-push-typed-values.md)
+owns this encoding change. See the
 [conditional-write decision](../../.agents/notes/implemented/bug-fix/2026-09-07-replication-push-version-checks.md)
 for rationale and the [HTTP decoder decision](../../.agents/notes/implemented/bug-fix/2026-09-07-http-push-version-preconditions.md)
 for exact version extraction.
