@@ -149,9 +149,11 @@ global replication order and may reset after deletion and recreation.
 Decoded bigint values need a lossless local storage representation. Plain
 `JSON.stringify` and existing SDK document `set`/`update` serialization reject
 bigint, so a pulled document cannot be blindly saved as JSON or sent back through
-those methods. Converting to `Number` can lose precision. A matching lossless
-outbound codec and durable Pusher remain part of the offline replication work;
-the typed Pull response is not a CRUD/Push request format.
+those methods. Converting to `Number` can lose precision.
+[HTTP Push](../../docs/reference/replication.md#push-changes) accepts typed document
+objects, but the SDK outbound encoder and internal Pusher remain unimplemented.
+The complete Pull response is not a Push request; ordinary CRUD formats remain
+unchanged. Durable synchronization remains part of the offline replication work.
 
 The caller must atomically apply the entire page and persist its checkpoint.
 An empty page can advance progress while `caughtUp` remains false; continue using

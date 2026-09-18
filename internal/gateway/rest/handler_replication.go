@@ -201,7 +201,6 @@ func (h *Handler) handlePull(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handlePush(w http.ResponseWriter, r *http.Request) {
-	// Parse flattened push request
 	var reqBody ReplicaPushRequest
 	if err := json.NewDecoder(r.Body).Decode(&reqBody); err != nil {
 		slog.Warn("Push: invalid request body", "error", err)
@@ -302,16 +301,21 @@ func (h *Handler) handlePush(w http.ResponseWriter, r *http.Request) {
 	}
 	conflicts := make([]ReplicaPushConflict, len(resp.Conflicts))
 	for i, conflict := range resp.Conflicts {
-		var current model.Document
+		var encodedCurrent json.RawMessage
 		if conflict.Current != nil {
-			current = flattenDocument(conflict.Current)
+			current := flattenDocument(conflict.Current)
 			current["id"] = conflict.ID
 			delete(current, "deleted")
 			if conflict.Current.Deleted {
 				current["deleted"] = true
 			}
+			encodedCurrent, err = model.EncodeTypedValue(current)
+			if err != nil {
+				writeInternalError(w, err, "Failed to encode push conflicts")
+				return
+			}
 		}
-		conflicts[i] = ReplicaPushConflict{ChangeIndex: conflict.ChangeIndex, ID: conflict.ID, Reason: string(conflict.Reason), Current: current}
+		conflicts[i] = ReplicaPushConflict{ChangeIndex: conflict.ChangeIndex, ID: conflict.ID, Reason: string(conflict.Reason), Current: encodedCurrent}
 	}
 	encoded, err := json.Marshal(ReplicaPushResponse{Conflicts: conflicts})
 	if err != nil {

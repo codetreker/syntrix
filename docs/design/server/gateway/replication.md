@@ -126,7 +126,8 @@ Pull uses POST because opaque source continuations can exceed practical URL
 limits. HTTP and gRPC encode each flattened document using the shared recursive
 typed-value representation, preserving nested int64 values. Protobuf carries an
 explicit wire version and the same complete logical document representation.
-Push retains its ordinary flattened JSON decoding and version preconditions.
+Push uses the same recursive value codec for request and conflict documents,
+while retaining its action and version semantics.
 
 Clients persist opaque cursor strings verbatim without parsing or comparing
 them. Missing/null/empty HTTP checkpoint starts a bootstrap. Old timestamp
@@ -154,8 +155,8 @@ payloads, and document data are excluded.
 | Route | `POST /replication/v1/databases/{database}/push` |
 | Scope | One concrete collection; nonempty ordered changes |
 | Action | Explicit `create`, `update`, or `delete`; missing/unknown values fail |
-| Document | Flattened data with a required logical `id`; protected metadata is stripped |
-| Version | Optional exact nonnegative int64 `document.version`, extracted before stripping |
+| Document | Typed object decoding to flattened data with required logical `id`; protected metadata is stripped |
+| Version | Optional nonnegative typed int64 `document.version`, extracted before stripping |
 | Validation | HTTP and Query validate the complete request before any storage operation |
 | Batch | Sequential, nontransactional; conflicts do not stop later changes |
 
@@ -172,15 +173,17 @@ payloads, and document data are excluded.
 | Create | Live | Existing update behavior; supplied version is an equality condition |
 | Create | Missing or tombstoned | Existing create/recreate behavior; supplied valid version is ignored |
 
-The raw JSON decoder preserves exact version presence and value before ordinary
-business-number decoding. Null, non-integer, negative, or out-of-range versions
-reject the batch. Ordinary business numbers retain their existing representation;
-storage assigns resulting metadata. Local and gRPC calls retain action and an
-optional int64 precondition, with no negative sentinel or unspecified-action
-fallback. Push-specific protobuf document data uses recursive typed values in
-requests and conflict responses, preserving nested int64 values separately from
-float64. HTTP keeps ordinary flattened JSON; this internal encoding is not an
-additional HTTP request format or an SDK bigint write contract.
+The shared recursive typed-value codec preserves nested int64 and finite float64
+values across HTTP and gRPC. HTTP request documents must be typed objects, with
+no ordinary-JSON fallback. A supplied version must be a nonnegative int64 encoded
+as a canonical decimal string; null, float64, other scalar types, noncanonical
+strings, negative values, and overflow reject the whole batch. Version extraction
+precedes protected-field stripping; storage assigns resulting metadata.
+
+Local and gRPC calls retain action and an optional int64 precondition, with no
+negative sentinel or unspecified-action fallback. Ordinary CRUD formats remain
+unchanged. SDK Pusher and its outbound encoder remain planned; the typed server
+contract alone does not implement them.
 
 A versioned update/delete must not enter Create when its target disappears.
 Push reads from the authoritative write source with tombstones included, then
@@ -208,13 +211,14 @@ and create/version 1 retain their accepted meanings. New insert-only rules remai
 
 | Boundary | Maximum |
 |---|---|
-| HTTP Push body | 10 MiB |
+| HTTP Push body | 10 MiB, including typed-value tags and the request envelope |
 | Encoded protobuf request | 20 MiB, including typed data and envelope |
 | Encoded protobuf conflict response | 20 MiB, including typed data and envelope |
 
 Local and remote Query execution enforce the same encoded message budgets;
-production gRPC receive limits admit messages within them. Typed-value expansion
-means the HTTP body cap does not guarantee that every body below it is accepted.
+production gRPC receive limits admit messages within them. HTTP and protobuf
+encoded sizes are checked independently; fitting the HTTP body cap does not waive
+the protobuf budget.
 An oversized request fails validation before storage access. An oversized conflict
 response returns HTTP 422 `REPLICATION_BUDGET_EXCEEDED` without truncating
 outcomes; earlier changes may already have committed.
@@ -236,7 +240,7 @@ Each successful Push response contains a `conflicts` array of objects:
 | `changeIndex` | Zero-based request position, preserving duplicate-ID operations |
 | `id` | Logical document ID |
 | `reason` | `version_mismatch`, `missing`, `tombstoned`, `already_exists`, or `precondition_failed` |
-| `current` | Real flattened live document or tombstone; null for absence |
+| `current` | Typed object for a real live document or tombstone; raw JSON null for absence |
 
 Conflict rendering takes logical ID and deletion state from validated storage
 metadata; business-data keys cannot override either value.
@@ -266,4 +270,6 @@ integration limits. Public Pull and source capabilities have separate owners.
 The [Push conditional-write decision](../../../../.agents/notes/implemented/bug-fix/2026-09-07-replication-push-version-checks.md)
 records action semantics, conflict observations, and deferred insert-only creation.
 The [HTTP decoder decision](../../../../.agents/notes/implemented/bug-fix/2026-09-07-http-push-version-preconditions.md)
-records why raw version extraction remains local to replication decoding.
+records the original version-extraction and authoritative-read rationale.
+The [HTTP typed-value decision](../../../../.agents/notes/implemented/bug-fix/2026-09-18-http-push-typed-values.md)
+owns lossless HTTP document transport and the strict typed version encoding.

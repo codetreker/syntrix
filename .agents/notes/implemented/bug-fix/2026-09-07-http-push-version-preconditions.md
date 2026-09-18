@@ -14,22 +14,28 @@ the HTTP precondition was preserved.
 
 ## Decision
 
-The local [HTTP change decoder](../../../../internal/gateway/rest/types.go)
-extracts the exact, case-sensitive `document.version` field from its raw JSON
-before decoding ordinary document data. It stores the precondition in an internal
-`BaseVersion *int64` field excluded from JSON output.
+The original [HTTP change decoder](../../../../internal/gateway/rest/types.go)
+extracted the exact, case-sensitive `document.version` from raw ordinary JSON
+before decoding business numbers as float64. This preserved optional int64
+preconditions without changing the then-existing document-number representation.
+The [typed HTTP Push decision](2026-09-18-http-push-typed-values.md) replaces that
+wire encoding with a complete typed object so nested business values also retain
+their numeric types.
 
-| Supplied version | Internal result |
+The decoded precondition remains an internal `BaseVersion *int64` field excluded
+from document output:
+
+| Supplied typed version | Internal result |
 |---|---|
 | Omitted | `nil`; preserve the optional unconditional-write behavior |
-| Nonnegative int64 integer literal, including explicit zero | Preserve the exact value and presence |
-| Null, string, boolean, negative value, fraction, exponent notation, or out-of-range integer | Reject the request with HTTP 400 before any Engine call |
+| Nonnegative typed int64, including explicit zero | Preserve exact value and presence |
+| Null, string, bool, float64, negative/out-of-range int64, or noncanonical decimal string | Reject with HTTP 400 before any Engine call |
 
-Decoding retains ordinary business numbers as `float64` and leaves generic
-`model.Document` behavior unchanged. A reused change value is replaced only after
-successful decoding, so a later valid change without a version clears any prior
-precondition. A malformed version anywhere in a batch prevents the entire request
-from reaching the Engine; this input validation does not make writes transactional.
+A reused change value is replaced only after successful decoding, so a later
+valid change without a version clears any prior precondition. A malformed version
+anywhere in a batch prevents the entire request from reaching the Engine; input
+validation does not make writes transactional. Ordinary document CRUD retains its
+existing number representation.
 
 [The handler](../../../../internal/gateway/rest/handler_replication.go) forwards
 the extracted precondition separately while continuing to strip protected fields.
@@ -41,8 +47,9 @@ predicates without changing the action or conflict-response contract. It used
 `-1` to preserve omitted versions across the then-existing gRPC contract. The
 [complete conditional-write decision](2026-09-07-replication-push-version-checks.md)
 now owns explicit actions, protobuf optional version presence, tombstone-aware
-reads, and structured conflicts. Exact extraction remains unchanged: `create`
-with version 1 is accepted, and zero is an equality precondition on live targets.
+reads, and structured conflicts. Version semantics remain unchanged by typed
+encoding: `create` with version 1 is accepted, and zero is an equality precondition
+on live targets.
 
 Push's initial and conflict lookups explicitly request
 `ReadOptions{Consistency: ReadAuthoritative, ShowDeleted: true}`. The routed store selects that
@@ -71,8 +78,9 @@ metadata explicitly, but changes the established flattened protocol when
 `document.version` already owns the optional precondition.
 
 **Decode all document numbers as exact-number wrappers** would preserve version
-precision, but also changes business-data runtime types throughout the existing
-document path. A local raw-field decoder preserves precision without that change.
+precision, but would also have changed business-data runtime types throughout the
+then-existing document path. The original repair used a local raw-field decoder;
+the later typed HTTP decision explicitly changes Push's document representation.
 
 **Add a separate `GetForWrite` method** would name the intent explicitly but
 duplicate the single-document read API. A typed per-call option keeps the routing
@@ -99,6 +107,7 @@ now describes the accepted input and current limits.
 
 The original extraction repair did not close the not-found/Create branch or
 represent absent conflict targets. The later conditional-write decision closes
-those gaps while preserving the local decoder and authoritative read option.
+those gaps while preserving exact precondition presence and the authoritative
+read option. The later typed transport extends precision to business values.
 Strict insert-only create remains a separate semantic decision. Retries after a
 lost response remain ambiguous; version checks do not establish exactly-once effects.

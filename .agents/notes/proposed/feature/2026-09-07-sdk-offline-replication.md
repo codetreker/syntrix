@@ -21,11 +21,17 @@ document cannot be blindly passed to JSON.stringify, persisted in JSON, or sent
 back through ordinary document writes. Converting bigint to Number loses values
 outside the safe-integer range and is not an acceptable synchronization codec.
 
-The coordinator needs a lossless persisted representation and a matching write
-transport contract for int64 metadata and nested business values. Preserve numeric
-type and value across local edits, outbox persistence, retry, and server decoding;
-the typed Pull envelope is not automatically a supported CRUD/Push input format.
-This is deferred write-side integration, not a guarantee supplied by manual Pull.
+The server-side [typed HTTP Push transport](../../implemented/bug-fix/2026-09-18-http-push-typed-values.md)
+is implemented: request documents and non-null current conflict documents use the
+same recursive value representation as Pull. This completes the server transport
+step, while the SDK outbound encoder, internal Pusher, and durable coordinator
+remain unimplemented. The complete Pull response is not a Push request.
+
+The coordinator still needs a lossless persisted representation and an SDK encoder
+for int64 metadata and nested business values. Preserve numeric type and value
+across local edits, outbox persistence, retry, server decoding, and typed conflict
+application. Ordinary CRUD keeps its existing JSON format. Server transport alone
+does not make decoded bigint values serializable by the current SDK methods.
 
 ### Worker Lifecycle
 
