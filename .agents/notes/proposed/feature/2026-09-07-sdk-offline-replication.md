@@ -12,18 +12,18 @@ API with lossless values, crash recovery, and dynamic local query results.
 
 The [private native runtime](../../implemented/architecture/2026-09-18-sdk-native-replication-runtime.md)
 provides bounded replication inputs, durable completion hooks, failure isolation,
-and a bundled patched dependency. It is not yet connected to Syntrix source/Push
-HTTP adapters or a public replica database API. This proposal owns that remaining
-integration; the runtime note owns the delivered mechanism. The
+and a bundled patched dependency. The public replica database API and real Push
+integration remain outstanding; the runtime note owns the delivered mechanism. The
 [query-source contract](../../implemented/feature/2026-09-18-query-replication-source.md)
 now supplies matching-set events, complete result windows, generation identity,
-and authoritative bound database checks. Its SDK adapters and local membership
-application remain outstanding. The
+and authoritative bound database checks. The [private downstream coordinator](../../implemented/architecture/2026-09-19-sdk-downstream-replication.md)
+connects these HTTP sources with member activation, pins, polling, read retry and
+native leadership. The
 [private alias storage](../../implemented/architecture/2026-09-18-sdk-replica-storage.md)
 now owns local identity, typed records, CAS CRUD, bounded storage access, and clean
 physical compaction. The [private query client](../../implemented/architecture/2026-09-18-sdk-replica-query-watch.md)
 owns exact local query/watch, bounded shared indexes and generation reconciliation;
-this proposal retains public API and synchronization integration.
+this proposal retains the public API, real upstream transport and recovery integration.
 
 ## Proposal
 
@@ -34,14 +34,13 @@ to replication; no public manual Push method is required.
 
 | Remaining capability | Required behavior |
 |---|---|
-| Remote sources | Connect delivered matching-set and result-window HTTP sources to named local collection aliases; refresh windows using realtime hints plus polling |
-| Membership | Apply delivered source upsert/leave/delete events or complete window replacements and activate durable generations without treating every membership exit as a document deletion |
+| Remote sources | Expose source builders and alias creation over delivered HTTP downstream; connect notifications only with matching source authorization |
 | Local operations | Expose delivered private CRUD and query/watch through the public replica API |
-| Identity | Connect source and Push adapters to delivered namespace/session/binding guards; obsolete work cannot apply or send across reassignment |
-| Initialization | Activate a complete source generation durably before uploading, while preserving pending local edits |
+| Identity | Apply the delivered immutable database/session guard to real Push, preflight and recovery reads |
+| Initialization | Preserve delivered fresh-source and pin boundaries when enabling the real upstream adapter |
 | Upstream | Use native durable changed-document scanning and acknowledgement metadata; keep newer local edits when an earlier write is acknowledged |
 | Recovery | Restart from reliable metadata, reconcile uncertain outcomes, and retain pending edits during source rebuild |
-| Lifecycle | Coordinate automatic synchronization ownership across tabs and schedule delivered clean compaction without crossing pending work |
+| Lifecycle | Expose pause/resume, diagnostics and recovery over delivered native ownership and maintenance coordination |
 
 Local document identity is the logical document segment of its collection path.
 Tombstones communicate deletion and must permit recreation with the same ID.

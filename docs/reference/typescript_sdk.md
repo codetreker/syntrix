@@ -91,8 +91,10 @@ The private storage layer now provides account-scoped Dexie persistence, lossles
 typed values, local CRUD with revision CAS, identity guards, view invalidations,
 and clean physical compaction. Private query/watch adds exact typed filtering and
 ordering, keyset pages, dynamic complete results, manifest reconciliation, and
-shared resource limits. These internal APIs are not exported for application use;
-automatic HTTP synchronization remains unimplemented.
+shared resource limits. A private downstream coordinator now connects matching-set
+and window HTTP sources, maintains membership and pins, and owns polling and native
+leadership. These internal APIs are not exported for application use. Real HTTP
+Push, explicit upstream recovery and the public replica facade remain unimplemented.
 
 There is no public `openReplica` API yet. The private runtime and storage do not
 make `pull()` persist data or add a public Push method.

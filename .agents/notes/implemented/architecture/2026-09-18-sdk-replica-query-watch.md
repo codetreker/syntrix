@@ -11,9 +11,11 @@ Status: implemented
 
 ## Decision
 
-私有副本运行时提供查询客户端，消费已有 alias 存储；公开 `openReplica()` 与自动网络
-同步仍由[离线复制 proposal](../../proposed/feature/2026-09-07-sdk-offline-replication.md)
+私有副本运行时提供查询客户端，消费已有 alias 存储；公开 `openReplica()`、真实上行
+与恢复仍由[离线复制 proposal](../../proposed/feature/2026-09-07-sdk-offline-replication.md)
 负责。查询不改变存储真相源、复制 checkpoint 或 pending 的持有方式。
+[私有下行协调器](2026-09-19-sdk-downstream-replication.md)已通过持久化成员和 manifest
+通知驱动这些查询视图。
 
 ### 查询契约
 
@@ -97,7 +99,7 @@ AVL 保存完整匹配候选，普通单 ID 维护为 O(log M)；输出构造仍
 
 ## Consequences
 
-- 公开 facade 与自动同步仍需后续集成；此处交付私有查询能力及存储读取边界。
+- 公开 facade、真实上行与恢复仍需后续集成；此处交付私有查询能力及存储读取边界。
 - 大结果、复杂排序或持续增长可以触发明确查询失败；limit 不豁免窗口外候选成本。
 - 完整初始化和切代需要有界扫描，读取次数随候选数增长；不沿用较大批次原型的性能结论。
 - 同一数据库的查询句柄使用一致的预算配置，不以新句柄扩大既有资源上限。

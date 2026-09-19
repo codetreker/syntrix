@@ -10,6 +10,7 @@ import { decodeBusinessPayload, encodeBusinessPayload, recordKey } from './recor
 import type { DataRecord, MemberRecord } from './storage-types.js';
 import { ReadBudget } from './backend.js';
 import { QueryViewChangedError, type QueryProjection } from './query-source.js';
+import type { ReplicationAccess } from './replication-access.js';
 const jwt = (subject: string) => `${btoa('{}')}.${btoa(JSON.stringify({ sub: subject, exp: 0 }))}.sig`.replace(/=/g, '');
 const setup = async (extra: Partial<OpenAliasStorageOptions> = {}) => {
   const provider = new DefaultTokenProvider({ token: jwt('alice') });
@@ -30,6 +31,92 @@ const seedMember = async (storage: AliasStorage, id: string, version: string) =>
   const previous = (await opened.fork.findDocumentsById([next.key], false))[0];
   await access.backend.writeRecord(opened, next, previous, 'test-member');
   await access.writeManifest({ ...access.manifest, activeSourceGeneration: 'g1', sourceReady: true });
+});
+
+describe('downstream storage ownership', () => {
+  test('source reads admit initial binding and always carry the persisted identity before readiness', async () => {
+    const { storage } = await setup();
+    try {
+      const scope = await storage.captureScope();
+      expect(await storage.guardSourceRead(scope)).toEqual({});
+      await storage.bind(scope, 'database-1', 'source-1');
+      expect(await storage.guardSourceRead(scope)).toEqual({ 'X-Syntrix-Expected-Database-Identity': 'database-1' });
+      await expect(storage.guardNetwork(scope)).rejects.toMatchObject({ code: 'ReplicaSourceNotReady' });
+      storage.blockScope();
+      await expect(storage.guardSourceRead(scope)).rejects.toMatchObject({ code: 'ReplicaScopeChanged' });
+    } finally { await storage.close(); }
+  });
+
+  test('maintenance drains only native owners while alias close drains the coordinator before storage', async () => {
+    const { storage } = await setup();
+    const gate = deferred(); const events: string[] = [];
+    storage.registerResource({ invalidate: () => { events.push('coordinator-invalidated'); }, close: async () => { events.push('coordinator-draining'); await gate.promise; events.push('coordinator-closed'); } });
+    storage.registerNative({ invalidate: () => { events.push('native-invalidated'); }, close: async () => { events.push('native-closed'); } });
+    try {
+      await storage.withMaintenance(async () => { events.push('maintenance'); });
+      expect(events).toEqual(['native-invalidated', 'native-closed', 'maintenance']);
+      expect(storage.signal.aborted).toBe(false);
+      let closed = false;
+      const closing = storage.close().then(() => { closed = true; });
+      await new Promise(resolve => setTimeout(resolve, 5));
+      expect(storage.signal.aborted).toBe(true); expect(closed).toBe(false);
+      expect(events).toContain('coordinator-draining');
+      gate.resolve(); await closing;
+      expect(events[events.length - 1]).toBe('coordinator-closed');
+    } finally { gate.resolve(); await storage.close(); }
+  });
+
+  test('bounded access keeps the native scope valid, scans data only, and expires after its callback', async () => {
+    const { storage } = await setup();
+    try {
+      await storage.set('alice', { value: 1 }); await storage.set('bob', { value: 2 });
+      const scope = await storage.captureScope();
+      let held!: ReplicationAccess;
+      const ids: string[] = [];
+      await storage.withReplicationAccess(scope, async access => {
+        held = access;
+        await access.writeManifest({ ...access.manifest, activeSourceGeneration: 'g1' });
+        await access.writeRecord(await member('alice', '2'));
+        await access.writeRecord({ key: 'c:progress', kind: 'c', checkpoint: { sequence: 1 }, generation: 'g1', phase: 'live', bootstrapComplete: true, partialDelivery: false });
+        let after: string | undefined;
+        do { after = await access.scanData(after, async row => { ids.push(row.logicalId); }); } while (after);
+        await access.withDocument({ key: await recordKey('d', 'alice') }, async current => {
+          expect(current.data?.pin?.stage).toBe('await-settlement');
+          expect(current.member?.metadata.version).toBe('2'); expect(current.assumed).toBeUndefined();
+          await access.writeRecord({ ...current.data!, pin: null }, current.data);
+        });
+        await access.withControl(async control => { expect(control?.checkpoint).toEqual({ sequence: 1 }); });
+        await access.withUpCheckpoint(async checkpoint => { expect(checkpoint).toBeUndefined(); });
+        await access.withDownCheckpoint(async checkpoint => { expect(checkpoint).toBeUndefined(); });
+      });
+      expect(ids.sort()).toEqual(['alice', 'bob']);
+      expect((await storage.native(scope)).ownerSignal.aborted).toBe(false);
+      await expect(held.withControl(async () => {})).rejects.toMatchObject({ code: 'ReplicaWriteFence' });
+      await expect(held.writeRecord(await member('bad', '3'))).rejects.toMatchObject({ code: 'ReplicaWriteFence' });
+    } finally { await storage.close(); }
+  });
+
+  test('native source application retains the current edit token and pin without weakening CAS', async () => {
+    const { storage } = await setup();
+    try {
+      await storage.set('alice', { value: 1 });
+      const native = await storage.native(await storage.captureScope());
+      const key = await recordKey('d', 'alice');
+      const previous = (await native.fork.findDocumentsById([key], false))[0];
+      expect(previous.kind).toBe('d');
+      const source = { ...previous, payload: encodeBusinessPayload({ value: 2 }), editToken: null, pin: null, wire: { version: '2' } };
+      const result = await native.fork.bulkWrite([{ previous, document: source }], 'replication-downstream-test');
+      expect(result.error).toEqual([]);
+      const applied = (await native.fork.findDocumentsById([key], false))[0] as DataRecord;
+      expect(applied.editToken).toBe((previous as DataRecord).editToken);
+      expect(applied.pin).toEqual((previous as DataRecord).pin);
+      expect(applied.wire.version).toBe('2');
+      await storage.set('alice', { value: 3 });
+      const stale = await native.fork.bulkWrite([{ previous, document: source }], 'replication-downstream-test');
+      expect(stale.error[0].status).toBe(409);
+      expect(await storage.get('alice')).toMatchObject({ value: 3 });
+    } finally { await storage.close(); }
+  });
 });
 
 describe('bounded query storage access', () => {
