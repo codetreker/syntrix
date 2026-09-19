@@ -6,6 +6,8 @@ const remote = await import('@syntrix/client');
 assert.equal(typeof remote.SyntrixClient, 'function');
 assert.equal('createReplicationRuntime' in remote, false);
 assert.equal('createReplicaQueryClient' in remote, false);
+assert.equal('createReplicaDownstream' in remote, false);
+assert.equal('createReplicaHttpSource' in remote, false);
 await import('fake-indexeddb/auto');
 const sdkEntry = import.meta.resolve('@syntrix/client');
 const { loadReplicaRuntime } = await import(new URL('./internal/replica/loader.js', sdkEntry));
@@ -240,3 +242,54 @@ assert.equal(await isolated.get('specified-id'), null);
 await isolated.close();
 await bob.close();
 console.log('Packed replica storage: exact values, offline reopen, same-ID recreation and cross-bundle account isolation passed');
+
+const sourceGeneration = crypto.randomUUID();
+const databaseIdentity = '0123456789abcdef';
+const sourceHash = 'a'.repeat(64);
+let sourceReads = 0;
+const sourceServer = Bun.serve({ hostname: '127.0.0.1', port: 0, async fetch(request) {
+  assert.equal(new URL(request.url).pathname, '/base/replication/v1/databases/app/pull');
+  const body = await request.json();
+  assert.equal(body.limit, 100);
+  assert.equal(body.source.version, 1);
+  assert.equal(request.headers.get('X-Syntrix-Expected-Database-Identity'), sourceReads === 0 ? null : databaseIdentity);
+  assert.equal(body.checkpoint, sourceReads === 0 ? null : 'packed-source-1');
+  sourceReads++;
+  const events = sourceReads === 1 ? [{ type: 'upsert', document: { type: 'object', value: {
+    id: { type: 'string', value: 'remote-user' }, collection: { type: 'string', value: 'users' },
+    version: { type: 'int64', value: '1' }, createdAt: { type: 'int64', value: '1' }, updatedAt: { type: 'int64', value: '1' },
+    score: { type: 'int64', value: '9007199254740993' },
+  } } }] : [{ type: 'leave', id: 'remote-user' }];
+  return Response.json({ protocolVersion: 1, mode: 'events', databaseIdentity, sourceHash, events,
+    checkpoint: `packed-source-${sourceReads}`, generationId: sourceGeneration,
+    phase: 'live', caughtUp: true, bootstrapComplete: true });
+} });
+let sourceSession, sourceAlias, downstream, sourceQueries;
+try {
+  const sourceClient = new remote.SyntrixClient(`${sourceServer.url.href}base`, { database: 'app', auth: { token: token('source-user') } });
+  sourceSession = await replica.createReplicaSession(sourceClient.tokenProvider);
+  sourceAlias = await replica.openAliasStorage({ session: sourceSession, endpoint: `${sourceServer.url.href}base`,
+    database: 'app', name: crypto.randomUUID(), alias: 'users', source: { collection: 'users', filters: [] },
+    lockManager: createTestLockManager() });
+  const source = replica.createReplicaHttpSource({ axios: sourceClient.pullTransport.axios,
+    provider: sourceClient.tokenProvider, database: 'app', definition: (await sourceAlias.readManifest()).definition });
+  downstream = replica.createReplicaDownstream({ storage: sourceAlias, source, options: { pollIntervalMs: 60_000 } }, {
+    leadership: () => ({ wait: async signal => signal.throwIfAborted(), close: async () => {} }),
+    now: Date.now, random: () => 0.5, set: (callback, delay) => setTimeout(callback, delay), clear: timer => clearTimeout(timer),
+  });
+  await until(() => downstream.snapshot.state === 'idle' || downstream.snapshot.state === 'blocked');
+  assert.equal(downstream.snapshot.state, 'idle');
+  assert.equal(downstream.snapshot.ready, true);
+  sourceQueries = replica.createReplicaQueryClient(sourceAlias);
+  assert.equal((await sourceQueries.get())[0].score, 9007199254740993n);
+  await sourceAlias.update('remote-user', { score: 9n });
+  downstream.refresh();
+  await until(() => sourceReads === 2 && downstream.snapshot.state === 'idle');
+  assert.equal((await sourceQueries.get())[0].score, 9n);
+  assert.equal((await sourceAlias.readManifest()).boundDatabaseId, databaseIdentity);
+  console.log('Packed downstream: typed HTTP source, bound resume and query visibility preserve pending edits on leave');
+} finally {
+  const cleanup = await Promise.allSettled([sourceQueries?.close(), downstream?.close(), sourceAlias?.close(), sourceSession?.close()]);
+  sourceServer.stop(true);
+  for (const result of cleanup) if (result.status === 'rejected') throw result.reason;
+}
