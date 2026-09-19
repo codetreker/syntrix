@@ -1,11 +1,12 @@
-import { getChangedDocumentsSince, type RxStorage, type RxStorageReplicationMeta } from 'rxdb';
+import { getChangedDocumentsSince, normalizeMangoQuery, prepareQuery, type RxStorage, type RxStorageReplicationMeta } from 'rxdb';
 import { Subject, type Observable, type Subscription } from 'rxjs';
 import { openAliasBackend, BackendCleanupError, ReadBudget, validateStorageLimits, withRows, withScanPage, withMetadataScanPage, countRows, encodedRowBytes, type AliasBackend, type NativeRow, type NativeStorage, type PhysicalStorage } from './backend.js';
 import { createNamespace } from './identity.js';
 import { createAliasLocks, type AliasLockOwner, type ViewLockOwner } from './locks.js';
-import { businessEqual, canonicalJson, decodeBusinessPayload, definitionHash, encodeBusinessPayload, freezeSourceDefinition, frozenConditions, matchesConditions, projectDocument, recordKey, validateLogicalId, validateManifestIdentity, validateRecordIdentity } from './records.js';
+import { businessEqual, canonicalJson, decodeBusinessPayload, definitionHash, encodeBusinessPayload, freezeSourceDefinition, frozenConditions, matchesConditions, projectDocument, recordKey, validateLogicalId, validateManifestIdentity, validateRecordEnvelope, validateRecordIdentity } from './records.js';
 import type { ReplicaResource, ReplicaSession } from './session.js';
 import { ReplicaStorageError, type AliasManifest, type DataRecord, type ReplicaCondition, type ReplicaDocument, type ReplicaRecord, type ReplicaSourceDefinition, type MemberRecord, type StorageLimits } from './storage-types.js';
+import { QueryViewChangedError, type AliasQueryAccess, type QueryProjection, type QueryView } from './query-source.js';
 
 export type RequestScope = Readonly<{ subject: string; sessionVersion: number; definitionHash: string; physicalEpoch: string; requestId: string; nativeInstanceId: string; }>;
 export type AliasInvalidation = { type: 'row'; physicalEpoch: string; keys: string[]; } | { type: 'view'; physicalEpoch: string; activeSourceGeneration: string | null; };
@@ -28,7 +29,9 @@ export type OpenAliasStorageOptions = {
 export type AliasStorage = {
   readonly changes: Observable<AliasInvalidation>;
   readonly namespace: string;
+  readonly databaseNamespace: string;
   readonly limits: StorageLimits;
+  queryAccess(sharedReadBudget: ReadBudget): AliasQueryAccess;
   get(id: string, options?: { showDeleted?: boolean; }): Promise<ReplicaDocument | null>;
   read(id: string, options?: { showDeleted?: boolean; }): Promise<ReplicaDocument | null>;
   set(id: string, data: Record<string, unknown>, options?: MutationOptions): Promise<void>;
@@ -268,6 +271,10 @@ export const openAliasStorage = (options: OpenAliasStorageOptions): Promise<Alia
         registerAccount(`records_${epoch}`, opened.fork, db.limits.maxRecordBytes);
         registerAccount(`meta_${epoch}`, opened.meta, db.limits.maxMetadataBytes);
         subscriptions.push(opened.fork.changeStream().subscribe(event => changes.next({ type: 'row', physicalEpoch: epoch, keys: event.events.map(item => item.documentId) })));
+        subscriptions.push(opened.meta.changeStream().subscribe(event => {
+          const keys = event.events.map(item => item.documentId).filter(id => /^d:[0-9a-f]{64}\|0$/.test(id)).map(id => id.slice(0, -2));
+          if (keys.length) changes.next({ type: 'row', physicalEpoch: epoch, keys });
+        }));
       }
       return opened;
     };
@@ -387,8 +394,135 @@ export const openAliasStorage = (options: OpenAliasStorageOptions): Promise<Alia
         fail('ReplicaWriteConflict', 'Replica CAS retry limit exceeded');
       }, undefined, id);
     };
+    const databaseNamespace = JSON.stringify([identity.tuple.endpoint, identity.tuple.subject, identity.tuple.database, identity.tuple.name]);
+    const queryAccess = (queryBudget: ReadBudget): AliasQueryAccess => {
+      const sameView = (actual: QueryView, expected: QueryView) => {
+        if (actual.physicalEpoch !== expected.physicalEpoch || actual.sourceGeneration !== expected.sourceGeneration || actual.manifestRevision !== expected.manifestRevision) {
+          throw new QueryViewChangedError();
+        }
+      };
+      const queryManifest = (id?: string) => withRows(db.manifestStorage, ['manifest'], db.limits.maxManifestBytes, queryBudget, async rows => {
+        const row = rows[0];
+        // Persisted writes validate the complete record. Query reads inspect only
+        // their control fields, so recovery payloads never decode before admission.
+        if (!row || canonicalJson(row.namespace) !== canonicalJson(identity.tuple) || row.definitionHash !== hash ||
+            canonicalJson(row.definition) !== canonicalJson(definition) ||
+            typeof row.activePhysicalEpoch !== 'string' || !row.activePhysicalEpoch ||
+            !Array.isArray(row.physicalEpochs) || !row.physicalEpochs.includes(row.activePhysicalEpoch) ||
+            (row.activeSourceGeneration !== null && (typeof row.activeSourceGeneration !== 'string' || !row.activeSourceGeneration)) ||
+            typeof row._rev !== 'string' || !row._rev || !Array.isArray(row.issues) ||
+            row.issues.some(issue => !issue || (issue.logicalId !== null && typeof issue.logicalId !== 'string')) ||
+            (row.dirtyUpstream !== null && (!row.dirtyUpstream || !Array.isArray(row.dirtyUpstream.targets) ||
+              row.dirtyUpstream.targets.some(target => !target || typeof target.logicalId !== 'string')))) {
+          return fail('ReplicaStorageCorruption', 'Invalid query manifest');
+        }
+        const protectedId = id !== undefined && (!!row.dirtyUpstream?.targets.some(target => target.logicalId === id) || row.issues.some(issue => issue.logicalId === id));
+        return { view: Object.freeze({ physicalEpoch: row.activePhysicalEpoch, sourceGeneration: row.activeSourceGeneration, manifestRevision: row._rev }), protectedId };
+      });
+      const queryOperation = <T>(callback: (view: QueryView, opened: PhysicalStorage) => Promise<T>, expected?: QueryView): Promise<T> => {
+        const previous = accessQueue;
+        const operation = run(async () => {
+          await previous; assertActive();
+          return locks.withAlias('shared', alias => owned(alias, 'shared', async () => {
+            const { view } = await queryManifest();
+            if (expected) sameView(view, expected);
+            return callback(view, await openPhysical(view.physicalEpoch));
+          }), lifetime.signal);
+        });
+        accessQueue = operation.catch(() => undefined);
+        return operation;
+      };
+      return {
+        databaseNamespace,
+        namespace: identity.hash, signal: lifetime.signal, changes: changes.asObservable(),
+        view: () => queryOperation(async view => view),
+        scan: (after, expected) => queryOperation(async (view, opened) => {
+          if (after !== undefined && !/^d:[0-9a-f]{64}$/.test(after)) throw new TypeError('Invalid query scan continuation');
+          const count = Math.min(4, Math.floor(queryBudget.availableBytes / db.limits.maxRecordBytes));
+          if (count < 1) return fail('ReplicaReadBudgetExceeded', 'No query scan read capacity');
+          const query = prepareQuery(opened.fork.schema, normalizeMangoQuery(opened.fork.schema, {
+            selector: { _deleted: { $eq: false }, key: { $gt: after ?? 'd:', $lt: 'e:' } } as any,
+            sort: [{ key: 'asc' }], index: ['_deleted', 'key'], skip: 0, limit: count,
+          }));
+          if (!query.queryPlan.selectorSatisfiedByIndex || !query.queryPlan.sortSatisfiedByIndex || query.query.skip !== 0) {
+            return fail('ReplicaStorageCorruption', 'Query scan requires an index-satisfied seek');
+          }
+          return queryBudget.withReservation(count * db.limits.maxRecordBytes, async () => {
+            const { documents } = await opened.fork.query(query);
+            if (documents.length > count) return fail('ReplicaStorageCorruption', 'Query scan exceeded its row bound');
+            let previous = after;
+            const rows = documents.map(row => {
+              const encodedBytes = encodedRowBytes(row);
+              if (row.kind !== 'd' || !/^d:[0-9a-f]{64}$/.test(row.key) || (previous !== undefined && row.key <= previous)) {
+                return fail('ReplicaStorageCorruption', 'Invalid query scan order or identity');
+              }
+              if (encodedBytes > db.limits.maxRecordBytes) return fail('ReplicaRecordTooLarge', 'Query scan contains an oversized row');
+              previous = row.key;
+              return { key: row.key, encodedBytes };
+            });
+            return { view, rows, lastKey: previous, done: rows.length < count };
+          });
+        }, expected),
+        withProjection: (keyOrId, expected, consume) => queryOperation(async (view, opened) => {
+          let key: string;
+          if ('id' in keyOrId) { validateLogicalId(keyOrId.id); key = await recordKey('d', keyOrId.id); }
+          else {
+            if (!/^[dm]:[0-9a-f]{64}$/.test(keyOrId.key)) throw new TypeError('Invalid query projection key');
+            key = `d:${keyOrId.key.slice(2)}`;
+          }
+          return withRows(opened.fork, [key], db.limits.maxRecordBytes, queryBudget, async dataRows => {
+            let data = dataRows[0] as NativeRow<DataRecord> | undefined;
+            if (!data) return consume(null);
+            validateRecordEnvelope(data);
+            validateLogicalId(data.logicalId);
+            if (data.kind !== 'd' || data.key !== key || typeof data._rev !== 'string' || !data._rev || data.key !== await recordKey('d', data.logicalId) ||
+                ('id' in keyOrId && data.logicalId !== keyOrId.id)) return fail('ReplicaStorageCorruption', 'Invalid query document identity');
+            // Keep one bounded data row while resolving its per-ID protections;
+            // release the full manifest before joining member and assumed rows.
+            const manifest = await queryManifest(data.logicalId);
+            sameView(manifest.view, view);
+            return withRows(opened.fork, [`m:${key.slice(2)}`], db.limits.maxRecordBytes, queryBudget, async memberRows => {
+              let member = memberRows[0] as NativeRow<MemberRecord> | undefined;
+              if (member) validateRecordEnvelope(member);
+              if (member && (member.kind !== 'm' || typeof member._rev !== 'string' || !member._rev || member.logicalId !== data!.logicalId || member.key !== `m:${key.slice(2)}`)) {
+                return fail('ReplicaStorageCorruption', 'Invalid query member identity');
+              }
+              let shown = data!.existence !== 'absent' && (!!data!.pin || !!member?.slots.some(slot => slot.generation === view.sourceGeneration && slot.member) || manifest.protectedId);
+              let assumedRevision = '';
+              if (!shown && data!.existence !== 'absent') {
+                shown = await withRows(opened.meta, [`${key}|0`], db.limits.maxMetadataBytes, queryBudget, async rows => {
+                  const assumed = rows[0]; assumedRevision = assumed?._rev ?? '';
+                  if (!assumed) return true;
+                  if (!assumedRevision || assumed.id !== `${key}|0` || assumed.itemId !== key || assumed.isCheckpoint !== '0') return fail('ReplicaStorageCorruption', 'Invalid assumed query envelope');
+                  const prior = assumed.docData;
+                  validateRecordEnvelope(prior);
+                  if (prior.kind !== 'd' || prior.key !== key || prior.logicalId !== data!.logicalId) return fail('ReplicaStorageCorruption', 'Invalid assumed query identity');
+                  return prior.existence !== data!.existence || (data!.existence === 'live' && prior.payload !== data!.payload);
+                });
+              }
+              let active = true;
+              let decoded: ReplicaDocument | null | undefined;
+              const projection: QueryProjection = Object.freeze({
+                id: data!.logicalId, key, revision: JSON.stringify([data!._rev, member?._rev ?? '', assumedRevision, view.manifestRevision]),
+                encodedBytes: encodedRowBytes(data) + (member ? encodedRowBytes(member) : 0) + new TextEncoder().encode(definition.collection).byteLength + 128,
+                visible: shown,
+                decode: () => {
+                  assertActive();
+                  if (!active) return fail('ReplicaQueryProjectionExpired', 'Query projection is outside its read reservation');
+                  if (decoded === undefined) decoded = shown ? projectDocument(definition.collection, data ?? null, member ?? null) : null;
+                  return decoded;
+                },
+              });
+              try { return await consume(projection); }
+              finally { active = false; data = undefined; member = undefined; decoded = undefined; }
+            });
+          });
+        }, expected),
+      };
+    };
     const storage: AliasStorage = {
-      changes: changes.asObservable(), namespace: identity.hash, limits: db.limits,
+      changes: changes.asObservable(), namespace: identity.hash, databaseNamespace, limits: db.limits,
+      queryAccess,
       read, get: read, set: (id, value, mutation) => mutate(id, 'set', value, mutation),
       update: (id, value, mutation) => mutate(id, 'update', value, mutation), delete: (id, mutation) => mutate(id, 'delete', undefined, mutation),
       generateId: () => { assertActive(); return crypto.randomUUID(); },

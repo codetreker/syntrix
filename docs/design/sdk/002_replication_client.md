@@ -1,6 +1,6 @@
 # Replication Client Design (RxDB + Syntrix replication/realtime)
 
-**Status:** Manual Pull, WebSocket lifecycle, a private native replication runtime, and private replica alias storage are implemented. The server also supports matching-set query sources, complete result windows, and bound database identity checks. Their SDK adapters, the public replica database API, and automatic HTTP synchronization remain planned.
+**Status:** Manual Pull, WebSocket lifecycle, a private native replication runtime, replica alias storage, and bounded private query/watch are implemented. The server also supports matching-set query sources, complete result windows, and bound database identity checks. Their SDK adapters, the public replica database API, and automatic HTTP synchronization remain planned.
 
 ## Context & Why
 - We need offline-first replication for web clients using RxDB as local store.
@@ -18,7 +18,7 @@
 ## Non-Goals
 - Owning server checkpoint or transport design, defined in the [replication reference](../../reference/replication.md).
 - Rich conflict resolution UI/strategies (provide hooks only).
-- Full-text/local secondary indexes beyond RxDB schema basics.
+- Full-text search and application-defined persistent secondary indexes.
 
 ## Assumptions
 - `/realtime/ws` (or `/realtime/sse`) can subscribe per collection and delivers at least `{ collection, id, action, updatedAt, deleted? }` plus some monotonic seq/lsn (used only for diagnostics; not trusted as checkpoint).
@@ -28,7 +28,7 @@
 
 ## Data Model (flattened)
 - Decoded fields: `id`, `collection`, optional deletion flag and server metadata, plus business fields. HTTP uses recursive typed values; int64 values decode to bigint.
-- The private runtime accepts storage records and source adapters. Private alias storage supplies a lossless typed-value schema, local CRUD, identity fences, and clean compaction. Public replica types and query indexes remain part of the replica API integration.
+- The private runtime accepts storage records and source adapters. Private alias storage supplies a lossless typed-value schema, local CRUD, identity fences, and clean compaction. Private query indexes evaluate this stored view; public replica types remain part of the replica API integration.
 - Tombstones clear former business fields. Minimal logical deletions contain only identity and `deleted: true`; timestamps and version can be absent. Physical cleanup is not another business deletion. See [deletion semantics](../server/core/storage/03.stores.md#document-deletion-and-physical-cleanup).
 
 ## Implemented Manual Pull
@@ -274,6 +274,31 @@ manifest write, reread the active epoch before removing either copy; startup rem
 confirmed inactive orphans and their explicitly paired native metadata. An unreadable
 manifest retains both copies. Only one shadow exists at a time.
 
+## Private Replica Queries and Watch
+
+The private query client evaluates authoritative alias projections using the
+[filter and ordering contract](../../reference/filters.md). It preserves exact
+bigint/number comparisons, UTF-8 order, missing/null distinction, and logical ID
+tie-breaking. Page reads default to 100 documents with a maximum of 1000; typed
+cursors bind the alias and normalized query, with no cross-page snapshot promise.
+Watch returns complete matching results or a limited ordered window and does not
+accept a continuation cursor. Returned values are isolated from the internal cache.
+
+| Mechanism | Contract |
+|---|---|
+| Sharing | One resource manager per replica database in each execution context; identical canonical queries share a matcher and full candidate AVL |
+| Ordinary changes | Coalesce d/m/assumed changes to document keys and update candidates incrementally; retain candidates outside a limited window for refill |
+| Structural changes | Rebuild a shadow view after manifest revision or physical epoch changes; active and shadow resources share the same limits, and only a complete current view can publish |
+| Missed notifications | Verify the manifest before publication, every 10 seconds while queries are active, and when the page becomes visible |
+| Reads | Serialize query materialization across database handles; reserve the shared 64 MiB pool before indexed reads, including manifest reads, and decode only after cache admission |
+| Retained state | Bound payload/cache, query configuration, ordering keys, nodes, queued invalidations and output throughout the query lifetime; fail explicitly rather than truncate |
+| Ownership | A closing handle releases its observers; remaining handles rebind storage access. Managers retain budgets until owned work drains, including close/reopen overlap |
+| Failure | Terminate the affected canonical query and release its resources without altering records, pending edits or replication progress; isolate application callback errors |
+
+The [query decision](../../../.agents/notes/implemented/architecture/2026-09-18-sdk-replica-query-watch.md)
+owns default quotas, algorithms and trade-offs. Private query availability does
+not expose a public replica database or connect a network replication adapter.
+
 ## Remaining Replica Database Integration
 
 The [offline replication proposal](../../../.agents/notes/proposed/feature/2026-09-07-sdk-offline-replication.md)
@@ -286,8 +311,8 @@ owns these unimplemented capabilities:
   database identity header; map sources to independent local aliases, schedule
   window refreshes using realtime hints plus polling, and durably activate
   membership generations.
-- Public CRUD exposure, local query results, and dynamic watch over stored records
-  and manifest invalidations.
+- Public CRUD, query and dynamic watch facades over the delivered private storage
+  and query clients.
 - Automatic typed HTTP Push, durable acknowledgement/conflict reconciliation,
   cancellation, and recovery across restarts and reconnects.
 - Automatic synchronization ownership and scheduling across tabs, and complete
@@ -383,5 +408,7 @@ interface RealtimeClientOptions {
   metadata conditions, admission budgets, and clean compaction recovery. Real
   browser multi-tab checks cover storage and locks; they do not establish power-loss
   durability or complete browser-to-server synchronization.
-- Public replica API, query-source membership application, local query/watch, and
-  real HTTP Push integration require their own implementation and validation.
+- Private queries: typed semantics, bounded materialization, incremental window
+  refill, manifest-only changes, shared ownership and continuous resource limits.
+- Public replica API, query-source membership application, and real HTTP Push
+  integration require their own implementation and validation.

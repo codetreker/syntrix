@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'bun:test';
+import { describe, expect, spyOn, test } from 'bun:test';
 import { indexedDB, IDBKeyRange } from 'fake-indexeddb';
 import { fillObjectDataBeforeInsert, getChangedDocumentsSince, normalizeMangoQuery, prepareQuery, type RxStorage } from 'rxdb';
 import { getRxStorageDexie } from 'rxdb/plugins/storage-dexie';
@@ -8,6 +8,8 @@ import { createTestLockManager } from './lock-manager.test-fixture.js';
 import { openAliasStorage, type AliasStorage, type OpenAliasStorageOptions } from './storage.js';
 import { decodeBusinessPayload, encodeBusinessPayload, recordKey } from './records.js';
 import type { DataRecord, MemberRecord } from './storage-types.js';
+import { ReadBudget } from './backend.js';
+import { QueryViewChangedError, type QueryProjection } from './query-source.js';
 const jwt = (subject: string) => `${btoa('{}')}.${btoa(JSON.stringify({ sub: subject, exp: 0 }))}.sig`.replace(/=/g, '');
 const setup = async (extra: Partial<OpenAliasStorageOptions> = {}) => {
   const provider = new DefaultTokenProvider({ token: jwt('alice') });
@@ -28,6 +30,181 @@ const seedMember = async (storage: AliasStorage, id: string, version: string) =>
   const previous = (await opened.fork.findDocumentsById([next.key], false))[0];
   await access.backend.writeRecord(opened, next, previous, 'test-member');
   await access.writeManifest({ ...access.manifest, activeSourceGeneration: 'g1', sourceReady: true });
+});
+
+describe('bounded query storage access', () => {
+  test('scans only bounded data descriptors and decodes only inside the reserved callback', async () => {
+    const calls: { limit: number; skip: number; selector: any }[] = [];
+    let observe = false;
+    const original = getRxStorageDexie({ indexedDB, IDBKeyRange });
+    const native: RxStorage<any, any> = { ...original, createStorageInstance: async params => {
+      const raw = await original.createStorageInstance(params);
+      return new Proxy(raw, { get(target, property) {
+        if (property === 'query') return (query: any) => {
+          if (observe && params.collectionName.startsWith('records_')) calls.push(query.query);
+          return target.query(query);
+        };
+        const value = Reflect.get(target, property, target); return typeof value === 'function' ? value.bind(target) : value;
+      } });
+    } };
+    const env = await setup({ storage: native });
+    let spy: ReturnType<typeof spyOn> | undefined;
+    try {
+      for (let i = 0; i < 9; i++) await env.storage.set(`person-${i}`, { exact: 9007199254740993n });
+      await seedMember(env.storage, 'person-0', '10');
+      const payload = encodeBusinessPayload({ exact: 9007199254740993n });
+      await env.storage.withMaintenance(async access => {
+        const current: DataRecord = { key: await recordKey('d', 'recovery'), kind: 'd', logicalId: 'recovery', existence: 'live', payload, editToken: null, pin: null, wire: {} };
+        await access.writeManifest({ ...access.manifest, recoveryIntent: { id: 'recover', action: 'merge', logicalId: 'recovery', protectedToken: null, resultToken: 'result', current, desired: { ...current, editToken: 'result' } } });
+      });
+      let decoded = 0;
+      const parse = JSON.parse;
+      spy = spyOn(JSON, 'parse').mockImplementation((text, reviver) => { if (text === payload) decoded++; return parse(text, reviver); });
+      const budget = new ReadBudget(64 * 1024 * 1024), source = env.storage.queryAccess(budget), view = await source.view();
+      observe = true;
+      let after: string | undefined;
+      const descriptors: { key: string; encodedBytes: number }[] = [];
+      while (true) {
+        const page = await source.scan(after, view); descriptors.push(...page.rows); after = page.lastKey;
+        if (page.done) break;
+      }
+      expect(descriptors).toHaveLength(9); expect(decoded).toBe(0);
+      expect(calls).toHaveLength(3);
+      expect(calls.every(call => call.limit <= 4 && call.skip === 0 && call.selector.key.$lt === 'e:')).toBe(true);
+      expect(Object.keys(descriptors[0]).sort()).toEqual(['encodedBytes', 'key']);
+      let held!: QueryProjection;
+      await source.withProjection({ key: await recordKey('m', 'person-0') }, view, async projection => {
+        held = projection!; expect(decoded).toBe(0); expect(budget.usedBytes).toBeGreaterThan(0);
+        expect(projection?.decode()).toMatchObject({ id: 'person-0', exact: 9007199254740993n, version: 10n });
+        const count = decoded; expect(count).toBeGreaterThan(0); projection?.decode(); expect(decoded).toBe(count);
+      });
+      expect(() => held.decode()).toThrow('outside its read reservation');
+      expect(budget.usedBytes).toBe(0); expect(budget.peakBytes).toBeLessThanOrEqual(budget.maxBytes);
+      expect(await source.withProjection({ id: 'missing' }, view, async projection => projection)).toBeNull();
+      await expect(source.scan('m:invalid', view)).rejects.toThrow('continuation');
+      await expect(source.withProjection({ key: 'c:progress' }, view, async () => undefined)).rejects.toThrow('projection key');
+    } finally { spy?.mockRestore(); await env.storage.close(); }
+  });
+
+  test('view revisions detect generation and same-generation protection changes', async () => {
+    const { storage } = await setup();
+    try {
+      const key = await recordKey('d', 'alice');
+      const data: DataRecord = { key, kind: 'd', logicalId: 'alice', existence: 'live', payload: encodeBusinessPayload({ value: 1 }), editToken: null, pin: null, wire: {} };
+      await storage.withMaintenance(async access => {
+        const physical = await access.backend.openPhysical(access.manifest.activePhysicalEpoch);
+        await access.backend.writeRecord(physical, data, undefined, 'query-fixture');
+        expect((await physical.meta.bulkWrite([{ document: {
+          id: `${key}|0`, itemId: key, isCheckpoint: '0', docData: data,
+          _deleted: false, _attachments: {}, _rev: '1-fixture', _meta: { lwt: Date.now() },
+        } as any }], 'query-assumed')).error).toEqual([]);
+      });
+      const source = storage.queryAccess(new ReadBudget(64 * 1024 * 1024));
+      const first = await source.view();
+      expect(await source.withProjection({ key }, first, async projection => projection?.visible)).toBe(false);
+      await storage.withMaintenance(async access => { await access.writeManifest({ ...access.manifest, issues: [{ id: 'issue', logicalId: 'alice', code: 'conflict' }] }); });
+      await expect(source.scan(undefined, first)).rejects.toBeInstanceOf(QueryViewChangedError);
+      const protectedView = await source.view(); expect(protectedView.sourceGeneration).toBe(first.sourceGeneration);
+      expect(protectedView.manifestRevision).not.toBe(first.manifestRevision);
+      expect(await source.withProjection({ key }, protectedView, async projection => projection?.decode())).toMatchObject({ id: 'alice', value: 1 });
+      await storage.withMaintenance(async access => { await access.writeManifest({ ...access.manifest, issues: [], activeSourceGeneration: 'g2' }); });
+      await expect(source.withProjection({ key }, protectedView, async () => undefined)).rejects.toBeInstanceOf(QueryViewChangedError);
+      const last = await source.view(); expect(last.sourceGeneration).toBe('g2');
+      expect(await source.withProjection({ key }, last, async projection => projection?.decode())).toBeNull();
+    } finally { await storage.close(); }
+  });
+
+  test('assumed-only settlement invalidates row visibility without retaining metadata payloads', async () => {
+    const { storage } = await setup();
+    const key = await recordKey('d', 'alice');
+    const seen: string[][] = [];
+    const source = storage.queryAccess(new ReadBudget(64 * 1024 * 1024));
+    const sub = source.changes.subscribe(event => { if (event.type === 'row') seen.push(event.keys); });
+    try {
+      const data: DataRecord = { key, kind: 'd', logicalId: 'alice', existence: 'live', payload: encodeBusinessPayload({ value: 'downloaded' }), editToken: null, pin: null, wire: {} };
+      await storage.withMaintenance(async access => {
+        const physical = await access.backend.openPhysical(access.manifest.activePhysicalEpoch);
+        await access.backend.writeRecord(physical, data, undefined, 'query-fixture');
+      });
+      const view = await source.view();
+      expect(await source.withProjection({ key }, view, async projection => projection?.visible)).toBe(true);
+      seen.length = 0;
+      await storage.withMaintenance(async access => {
+        const physical = await access.backend.openPhysical(access.manifest.activePhysicalEpoch);
+        expect((await physical.meta.bulkWrite([{ document: {
+          id: `${key}|0`, itemId: key, isCheckpoint: '0', docData: data,
+          _deleted: false, _attachments: {}, _rev: '1-fixture', _meta: { lwt: Date.now() },
+        } as any }], 'query-assumed')).error).toEqual([]);
+      });
+      expect(seen).toContainEqual([key]);
+      expect(await source.view()).toEqual(view);
+      expect(await source.withProjection({ key }, view, async projection => projection?.visible)).toBe(false);
+    } finally { sub.unsubscribe(); await storage.close(); }
+  });
+
+  test('query ownership is per handle and database budget identity excludes alias', async () => {
+    const env = await setup(), second = await openAliasStorage(env.options), other = await openAliasStorage({ ...env.options, alias: 'others' });
+    try {
+      const budget = new ReadBudget(64 * 1024 * 1024);
+      const firstAccess = env.storage.queryAccess(budget), secondAccess = second.queryAccess(budget), otherAccess = other.queryAccess(budget);
+      expect(firstAccess.databaseNamespace).toBe(secondAccess.databaseNamespace);
+      expect(firstAccess.databaseNamespace).toBe(otherAccess.databaseNamespace);
+      expect(firstAccess.namespace).not.toBe(otherAccess.namespace);
+      const view = await firstAccess.view(); await env.storage.close();
+      expect(firstAccess.signal.aborted).toBe(true); expect(secondAccess.signal.aborted).toBe(false);
+      await expect(firstAccess.scan(undefined, view)).rejects.toBe(firstAccess.signal.reason);
+      expect(await secondAccess.view()).toEqual(view);
+      const insufficient = second.queryAccess(new ReadBudget(1024));
+      await expect(insufficient.view()).rejects.toMatchObject({ code: 'ReplicaReadBudgetExceeded' });
+    } finally { await env.storage.close(); await second.close(); await other.close(); }
+  });
+
+  test('closing a handle aborts and drains an in-flight query without leaking read reservations', async () => {
+    const entered = deferred(), release = deferred(); let pause = false;
+    const original = getRxStorageDexie({ indexedDB, IDBKeyRange });
+    const native: RxStorage<any, any> = { ...original, createStorageInstance: async params => {
+      const raw = await original.createStorageInstance(params);
+      return new Proxy(raw, { get(target, property) {
+        if (property === 'findDocumentsById') return async (ids: string[], deleted: boolean) => {
+          if (pause && params.collectionName.startsWith('records_')) { pause = false; entered.resolve(); await release.promise; }
+          return target.findDocumentsById(ids, deleted);
+        };
+        const value = Reflect.get(target, property, target); return typeof value === 'function' ? value.bind(target) : value;
+      } });
+    } };
+    const { storage } = await setup({ storage: native });
+    const budget = new ReadBudget(64 * 1024 * 1024), source = storage.queryAccess(budget);
+    try {
+      await storage.set('alice', { value: 1 }); const view = await source.view(); pause = true;
+      const pending = source.withProjection({ id: 'alice' }, view, async projection => projection?.decode()).catch(error => error);
+      await entered.promise; const closing = storage.close();
+      expect(source.signal.aborted).toBe(true); release.resolve();
+      expect(await pending).toBe(source.signal.reason); await closing;
+      expect(budget.usedBytes).toBe(0);
+    } finally { release.resolve(); await storage.close(); }
+  });
+
+  test('malformed invisible record envelopes fail before a query can hide them', async () => {
+    let corrupt = false;
+    const original = getRxStorageDexie({ indexedDB, IDBKeyRange });
+    const native: RxStorage<any, any> = { ...original, createStorageInstance: async params => {
+      const raw = await original.createStorageInstance(params);
+      return new Proxy(raw, { get(target, property) {
+        if (property === 'findDocumentsById') return async (ids: string[], deleted: boolean) => {
+          const rows = await target.findDocumentsById(ids, deleted);
+          return corrupt && params.collectionName.startsWith('records_') ? rows.map(row => (row as any).kind === 'd' ? { ...row, existence: 'absent' } : row) : rows;
+        };
+        const value = Reflect.get(target, property, target); return typeof value === 'function' ? value.bind(target) : value;
+      } });
+    } };
+    const { storage } = await setup({ storage: native });
+    try {
+      await storage.set('alice', { valid: true });
+      const source = storage.queryAccess(new ReadBudget(64 * 1024 * 1024)), view = await source.view();
+      corrupt = true;
+      await expect(source.withProjection({ id: 'alice' }, view, async projection => projection?.visible)).rejects.toMatchObject({ code: 'ReplicaStorageCorruption' });
+    } finally { corrupt = false; await storage.close(); }
+  });
 });
 
 describe('private alias storage', () => {

@@ -89,13 +89,13 @@ export const decodeBusinessPayload = (payload: string): Record<string, QueryValu
   }
 };
 
-const validateField: (field: unknown) => asserts field is string = (field) => {
+export const validateField: (field: unknown) => asserts field is string = (field) => {
   if (!string(field) || /[.\p{Cc}]/u.test(field)) throw new TypeError('Query fields must be literal nonempty top-level names');
   encodeQueryValue(field);
 };
 const scalar = (value: QueryValue) => value === null || ['boolean', 'string', 'number', 'bigint'].includes(typeof value);
 const numeric = (value: QueryValue): value is number | bigint => typeof value === 'number' || typeof value === 'bigint';
-const equalValue = (a: QueryValue, b: QueryValue): boolean => {
+export const equalValue = (a: QueryValue, b: QueryValue): boolean => {
   if (!scalar(a) || !scalar(b)) return false;
   // ECMAScript's mixed BigInt/Number relational comparison is exact and does
   // not round the BigInt through Number, including values beyond 2^53.
@@ -126,22 +126,33 @@ export const frozenConditions = (conditions: readonly ReplicaCondition[]): reado
   }));
 };
 
-const compareStrings = (a: string, b: string): number => {
-  const left = encoder.encode(a);
-  const right = encoder.encode(b);
-  for (let i = 0; i < Math.min(left.length, right.length); i++) {
-    if (left[i] !== right[i]) return left[i] < right[i] ? -1 : 1;
+// UTF-8 preserves Unicode scalar order. Comparing code points avoids allocating
+// encoded copies of large strings during repeated residual evaluation.
+export const compareStrings = (a: string, b: string): number => {
+  let left = 0;
+  let right = 0;
+  while (left < a.length && right < b.length) {
+    const x = a.codePointAt(left)!;
+    const y = b.codePointAt(right)!;
+    if (x !== y) return x < y ? -1 : 1;
+    left += x > 0xffff ? 2 : 1;
+    right += y > 0xffff ? 2 : 1;
   }
-  return Math.sign(left.length - right.length);
+  return left < a.length ? 1 : right < b.length ? -1 : 0;
 };
 
-export const matchesConditions = (document: ReplicaDocument | null, conditions: readonly ReplicaCondition[]): boolean => {
+export const readQueryField = (document: ReplicaDocument, field: string): QueryValue | undefined =>
+  field === 'deleted' ? document.deleted === true : own(document, field) ?
+    (document as Record<string, QueryValue>)[field] : undefined;
+
+// Input documents have already passed the storage typed-value boundary. Only
+// operands are copied here, once per compiled matcher, never document payloads.
+export const compileConditions = (conditions: readonly ReplicaCondition[]): ((document: ReplicaDocument | null) => boolean) => {
   const frozen = frozenConditions(conditions);
-  return frozen.every(({ field, op, value: operand }) => {
-    if (!document || (field !== 'deleted' && !own(document, field))) return false;
-    const value = field === 'deleted' ? document.deleted === true : (document as Record<string, QueryValue>)[field];
-    // Validate observed values even when a wrong family would compare false.
-    encodeQueryValue(value);
+  return document => frozen.every(({ field, op, value: operand }) => {
+    if (!document) return false;
+    const value = readQueryField(document, field);
+    if (value === undefined) return false;
     switch (op) {
       case '==': return equalValue(value, operand);
       case '!=': return !equalValue(value, operand);
@@ -157,6 +168,9 @@ export const matchesConditions = (document: ReplicaDocument | null, conditions: 
     }
   });
 };
+
+export const matchesConditions = (document: ReplicaDocument | null, conditions: readonly ReplicaCondition[]): boolean =>
+  compileConditions(conditions)(document);
 
 export const freezeSourceDefinition = (definition: ReplicaSourceDefinition): FrozenSourceDefinition => {
   if (!object(definition) || Object.keys(definition).some(key => !['collection', 'filters', 'orderBy', 'limit'].includes(key))) {
@@ -225,7 +239,7 @@ const jsonObject = (value: unknown) => {
   try { canonicalJson(value); } catch (error) { throw new ReplicaStorageError('ReplicaStorageCorruption', 'Invalid JSON object', { cause: error }); }
 };
 
-export const validateRecord: (value: unknown) => asserts value is ReplicaRecord = (value) => {
+export const validateRecordEnvelope: (value: unknown) => asserts value is ReplicaRecord = (value) => {
   if (!object(value)) corruption('Replica record must be an object');
   if (value.kind === 'c') {
     exactFields(value, ['key', 'kind', 'checkpoint', 'generation', 'phase', 'bootstrapComplete', 'partialDelivery']);
@@ -240,8 +254,7 @@ export const validateRecord: (value: unknown) => asserts value is ReplicaRecord 
   if (value.kind === 'd') {
     exactFields(value, ['key', 'kind', 'logicalId', 'existence', 'payload', 'editToken', 'pin', 'wire']);
     if (!existence(value.existence) || typeof value.payload !== 'string' || !nullableString(value.editToken)) corruption('Invalid data state');
-    if (value.existence === 'live') decodeBusinessPayload(value.payload);
-    else if (value.payload !== '') corruption('Non-live data must have an empty payload');
+    if (value.existence !== 'live' && value.payload !== '') corruption('Non-live data must have an empty payload');
     metadata(value.wire);
     if (value.pin !== null) {
       if (!object(value.pin) || Object.keys(value.pin).some(key => !['token', 'stage', 'settledRound'].includes(key)) ||
@@ -260,6 +273,11 @@ export const validateRecord: (value: unknown) => asserts value is ReplicaRecord 
     }
     metadata(value.metadata);
   }
+};
+
+export const validateRecord: (value: unknown) => asserts value is ReplicaRecord = (value) => {
+  validateRecordEnvelope(value);
+  if (value.kind === 'd' && value.existence === 'live') decodeBusinessPayload(value.payload);
 };
 
 export const validateRecordIdentity = async (record: ReplicaRecord): Promise<void> => {

@@ -89,8 +89,10 @@ not load the replica runtime.
 
 The private storage layer now provides account-scoped Dexie persistence, lossless
 typed values, local CRUD with revision CAS, identity guards, view invalidations,
-and clean physical compaction. These internal APIs are not exported for application
-use. They do not yet implement local query/watch or automatic HTTP synchronization.
+and clean physical compaction. Private query/watch adds exact typed filtering and
+ordering, keyset pages, dynamic complete results, manifest reconciliation, and
+shared resource limits. These internal APIs are not exported for application use;
+automatic HTTP synchronization remains unimplemented.
 
 There is no public `openReplica` API yet. The private runtime and storage do not
 make `pull()` persist data or add a public Push method.
