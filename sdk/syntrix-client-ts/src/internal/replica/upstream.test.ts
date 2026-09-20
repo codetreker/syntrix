@@ -144,6 +144,38 @@ describe('upstream native phase adapter', () => {
     }
   });
 
+  test('known offline writes leave no uncertain phase and safely upload pending data after reconnect', async () => {
+    const env = await fixture();
+    const previous = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+    const connectivity = { onLine: false };
+    Object.defineProperty(globalThis, 'navigator', { configurable: true, value: connectivity });
+    try {
+      const desired = await env.local('alice');
+      const failure = await env.execute([{ newDocumentState: desired }]).catch(error => error);
+      expect(failure).toBeInstanceOf(UpstreamFailure);
+      expect(failure.cause).toMatchObject({ code: 'OFFLINE', status: 503 });
+      expect(env.adapter.outcome?.kind).toBe('retry');
+      expect(env.requests).toHaveLength(0);
+      const offline = await env.storage.readManifest();
+      expect(offline.dirtyUpstream).toBeNull(); expect(offline.issues).toEqual([]);
+      expect(await env.storage.get('alice')).toMatchObject({ value: 'desired' });
+      connectivity.onLine = true;
+      const resumed = createUpstreamAdapter({ storage: env.storage, scope: env.scope, transport: env.transport, onSettlement: async () => {} });
+      env.handlers.push(() => ({ conflicts: [] }));
+      await resumed.upstreamPersistence.begin([desired], checkpoint, signal());
+      expect(await resumed.writeRemote([{ newDocumentState: desired }], signal())).toEqual([]);
+      await resumed.upstreamPersistence.complete(checkpoint, signal());
+      expect(env.requests).toHaveLength(1);
+      expect((await env.storage.readManifest()).dirtyUpstream).toBeNull();
+    } finally {
+      try { await env.close(); }
+      finally {
+        if (previous) Object.defineProperty(globalThis, 'navigator', previous);
+        else Reflect.deleteProperty(globalThis, 'navigator');
+      }
+    }
+  });
+
   test('no-op phases settle without creating a marker or sending a request', async () => {
     const env = await fixture();
     try {

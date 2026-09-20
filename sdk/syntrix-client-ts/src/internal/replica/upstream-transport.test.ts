@@ -22,6 +22,16 @@ const deferred = () => {
 const conflict = (reason: string, current: unknown = live, changeIndex = 0, id = 'alice') => ({
   changeIndex, id, reason, current: current === null ? null : encodeQueryValue(current),
 });
+const withConnectivity = async (run: (connectivity: { onLine: boolean }) => Promise<void>) => {
+  const previous = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+  const connectivity = { onLine: false };
+  Object.defineProperty(globalThis, 'navigator', { configurable: true, value: connectivity });
+  try { await run(connectivity); }
+  finally {
+    if (previous) Object.defineProperty(globalThis, 'navigator', previous);
+    else Reflect.deleteProperty(globalThis, 'navigator');
+  }
+};
 
 describe('private upstream transport', () => {
   let server: ReturnType<typeof Bun.serve> | undefined;
@@ -118,6 +128,48 @@ describe('private upstream transport', () => {
     const changed = await transport.push(batch, { ...context(), beforeDispatch: async () => { provider.setToken('other'); } }).catch(error => error);
     expect(changed).toBeInstanceOf(AuthSessionChangedError); expect(upstreamFailureDisposition(changed)).toBe('not-dispatched');
     expect(calls).toBe(0);
+  });
+
+  it('rejects known offline writes before the dispatch callback and safely retries after reconnection', async () => {
+    await withConnectivity(async connectivity => {
+      let calls = 0, prepared = 0;
+      const { transport } = fixture(() => { calls++; return Response.json({ conflicts: [] }); });
+      const batch = transport.prepare([create()])[0]!;
+      const requestContext = { ...context(), beforeDispatch: async () => { prepared++; } };
+      const error = await transport.push(batch, requestContext).catch(error => error);
+      expect(error).toBeInstanceOf(SyntrixError);
+      expect(error.code).toBe('OFFLINE'); expect(error.status).toBe(503);
+      expect(upstreamFailureDisposition(error)).toBe('not-dispatched');
+      expect(prepared).toBe(0); expect(calls).toBe(0);
+      connectivity.onLine = true;
+      expect(await transport.push(batch, requestContext)).toEqual({ conflicts: [] });
+      expect(prepared).toBe(1); expect(calls).toBe(1);
+    });
+  });
+
+  it('rechecks connectivity after marker persistence without dispatching a now-offline request', async () => {
+    await withConnectivity(async connectivity => {
+      connectivity.onLine = true;
+      let calls = 0, prepared = 0;
+      const { transport } = fixture(() => { calls++; return Response.json({ conflicts: [] }); });
+      const error = await transport.push(transport.prepare([create()])[0]!, { ...context(), beforeDispatch: async () => {
+        prepared++; connectivity.onLine = false;
+      } }).catch(error => error);
+      expect(error.code).toBe('OFFLINE'); expect(upstreamFailureDisposition(error)).toBe('not-dispatched');
+      expect(prepared).toBe(1); expect(calls).toBe(0);
+    });
+  });
+
+  it('keeps a possibly committed request uncertain when the browser goes offline after dispatch', async () => {
+    await withConnectivity(async connectivity => {
+      connectivity.onLine = true;
+      const { transport } = fixture(() => {
+        connectivity.onLine = false;
+        return Response.json({ code: 'INTERNAL_ERROR', message: 'A prefix may have committed' }, { status: 500 });
+      });
+      const error = await transport.push(transport.prepare([create()])[0]!, context()).catch(error => error);
+      expect(error.code).toBe('INTERNAL_ERROR'); expect(upstreamFailureDisposition(error)).toBe('unknown');
+    });
   });
 
   it('decodes complete conflicts by request index, including repeated IDs and later missing create targets', async () => {

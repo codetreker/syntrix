@@ -78,11 +78,25 @@ await writeFile(join(root, 'dist/THIRD_PARTY_NOTICES.txt'), notices.join('\n'));
 const remote = await Bun.build({
   entrypoints: [join(root, 'src/index.ts')], target: 'browser', format: 'esm',
   minify: true, metafile: true, external: ['axios'],
+  plugins: [{ name: 'preserve-replica-lazy-import', setup(build) {
+    build.onResolve({ filter: /^\.\/runtime\.js$/ }, args => {
+      if (args.importer === join(root, 'src/internal/replica/loader.ts')) {
+        return { path: './internal/replica/runtime.js', external: true };
+      }
+    });
+  } }],
 });
 check(remote.success && remote.metafile, 'Remote entry validation failed');
-check(!Object.keys(remote.metafile.inputs).some((input) => input.includes('/internal/replica/')),
-  'Remote entry must not load the private replica runtime');
+const lightweightReplicaModules = new Set(['loader.ts', 'session.ts', 'identity.ts', 'records.ts', 'storage-types.ts']);
+for (const input of Object.keys(remote.metafile.inputs)) {
+  const replicaModule = input.split('/internal/replica/')[1];
+  check(replicaModule === undefined || lightweightReplicaModules.has(replicaModule),
+    `Replica storage and synchronization must remain lazy: ${input}`);
+  check(!/(?:^|\/)(?:rxdb|rxjs|dexie)(?:\/|@)/.test(input), `Remote entry must not include replica vendors: ${input}`);
+}
 const remoteBytes = Buffer.from(await remote.outputs[0].arrayBuffer());
+check([...remoteBytes.toString('utf8').matchAll(/\bimport\(["']\.\/internal\/replica\/runtime\.js["']\)/g)].length === 1,
+  'Replica runtime must be reached through one dynamic import');
 for (const [name, bytes] of [['replica runtime', replicaBytes], ['REST/realtime entry (axios external)', remoteBytes]] as const) {
   console.log(`${name}: ${bytes.length} bytes, gzip ${gzipSync(bytes).length}, brotli ${brotliCompressSync(bytes).length}`);
 }

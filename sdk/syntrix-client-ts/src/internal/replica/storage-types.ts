@@ -72,18 +72,20 @@ export type RecoveryIntent = {
 export type AliasManifest = {
   key: 'manifest';
   formatVersion: 1;
+  lifecycleId: string;
   namespace: NamespaceTuple;
   definition: FrozenSourceDefinition;
   definitionHash: string;
   boundDatabaseId: string | null;
   sourceHash: string | null;
-  state: 'creating' | 'ready';
+  state: 'creating' | 'ready' | 'removed';
   activePhysicalEpoch: string;
   physicalEpochs: string[];
   maintenance: MaintenanceState | null;
   activeSourceGeneration: string | null;
   stagedSourceGeneration: string | null;
   sourceReady: boolean;
+  lastCompleteRound: string | null;
   partialDelivery: boolean;
   dirtyUpstream: UpstreamMarker | null;
   issues: StorageIssue[];

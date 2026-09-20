@@ -25,6 +25,7 @@ export { createReplicaHttpSource } from './source.js';
 export { createReplicaDownstream } from './coordinator.js';
 export { createReplicaHttpUpstream } from './upstream-transport.js';
 export { inspectReplica, resolveReplica, replayReplicaRecovery } from './recovery.js';
+export { openReplicaDatabase } from './database.js';
 
 export interface SourcePage<T, C extends object> {
   documents: WithDeletedAndAttachments<T>[];

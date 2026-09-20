@@ -191,24 +191,76 @@ response with `AuthSessionChangedError` (`AUTH_SESSION_CHANGED`); account change
 after the response returns must also invalidate the application's pending local
 apply operation. See the [replication reference](../../docs/reference/replication.md).
 
-## Offline Replication (WIP)
+## Replica Database
 
-A private replication runtime is included as a lazy bundle containing patched
-RxDB, Dexie, and RxJS. Applications do not need to install or patch those
-dependencies. Importing the remote client does not load this bundle.
+Use `openReplica` for local persisted CRUD/query/watch with automatic HTTP
+replication. Existing `client.collection()` references keep direct REST behavior.
+Open returns when local storage is ready, without waiting for network convergence.
 
-Private alias storage provides account-scoped Dexie persistence, typed values,
-local CAS operations, view invalidations, and clean physical compaction. Private
-query/watch provides exact filtering and ordering, keyset pages, dynamic windows,
-and bounded shared resources. Private downstream connects authenticated query
-sources with member generations, pin protection, polling and native leadership.
-Private upstream adds typed HTTP Push, bounded CAS retries and durable
-conflict/uncertain-result recovery. Pausing synchronization preserves local CRUD
-and watch; explicit recovery rechecks database identity and current edit tokens.
-These internal capabilities are not exported as application APIs. Public replica
-database creation, authorized notification integration and complete
-browser-to-server validation remain in development.
-Manual Pull continues to supply pages for an
-application-owned consumer. Direct writes use the existing document REST methods;
-the SDK has no public manual Push API. See the
-[replication design](../../docs/design/sdk/002_replication_client.md).
+```typescript
+import { SyntrixClient } from '@syntrix/client';
+
+type Task = { title: string; status: 'open' | 'closed'; estimate: bigint };
+
+export const openTaskReplica = async (endpoint: string, token: string) => {
+  const client = new SyntrixClient(endpoint, {
+    database: 'app',
+    auth: { token },
+  });
+  const replica = await client.openReplica({
+    name: 'task-cache',
+    collections: { tasks: client.replicate<Task>('tasks') },
+    onDiagnostic: event => console.log(event.operationId, event.alias, event.phase),
+  });
+  const tasks = replica.collection<Task>('tasks');
+  const task = await tasks.add({ title: 'Review', status: 'open', estimate: 2n });
+  await task.update({ status: 'closed' });
+  const stopWatch = tasks.where('status', '==', 'open').limit(20)
+    .watch(documents => console.log(documents), console.error);
+  const stopStatus = replica.sync.subscribe(status => {
+    console.log(status.aliases.tasks?.state);
+  }, console.error);
+
+  return {
+    replica,
+    close: async () => {
+      stopWatch();
+      stopStatus();
+      await replica.close();
+    },
+  };
+};
+```
+
+Run in a browser with IndexedDB, Web Locks and Web Crypto, supplying an endpoint
+and JWT with a nonempty subject. An expired token permits offline local open;
+network synchronization still requires valid source authorization. Account changes
+invalidate old handles. Local writes resolve after persistence and remain usable
+offline or while synchronization is paused. A known-offline Push is refused
+before dispatch and can retry under whole-phase rules; going offline after a
+request was dispatched does not make an uncertain result safe to resend.
+Bigint values remain lossless.
+
+Sources are immutable and client-owned. Two aliases retain independent state,
+even for the same source. Source `limit(1..1000)` selects a complete remote window;
+local query limits select a local view. Omitting an old alias preserves its data.
+`removeCollection(alias)` explicitly removes safe local state, including an alias
+omitted from the current configuration; pending or protected work blocks removal.
+Closing preserves data, and removal does not delete remote documents.
+`openReplica({ name: 'task-cache', collections: {} })` supports historical-only
+removal without starting any source.
+
+`sync.pause/resume`, `inspect` and explicit `resolve` expose conflict and uncertain
+result handling. Ordinary resume does not authorize repeating an unknown write.
+Inspection reports the durable phase, any recovery intent and advisory available
+actions; a dispatched marker does not prove remote execution. Content conflicts
+cannot be bypassed by blind uncertain retry.
+Replica synchronization uses authorized polling; automatic WebSocket hints await
+matching query-source authorization. Local watch remains available independently.
+
+The patched RxDB/Dexie/RxJS runtime loads lazily and is bundled with its licenses;
+applications do not install vendor packages or receive RxDB objects. Manual Pull
+retains application-owned page processing, and no public manual Push is added.
+See the [replica reference](../../docs/reference/typescript_sdk.md#replica-availability)
+for complete typed examples, recovery guards, configuration, limits and errors,
+and the [replication design](../../docs/design/sdk/002_replication_client.md).

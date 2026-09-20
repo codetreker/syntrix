@@ -30,8 +30,7 @@ try {
   await copyFile(join(root, 'scripts/fixtures/package-consumer.mjs'), join(consumer, 'consumer.mjs'));
   const locks = await readFile(join(root, 'src/internal/replica/lock-manager.test-fixture.ts'), 'utf8');
   await writeFile(join(consumer, 'test-locks.mjs'), new Bun.Transpiler({ loader: 'ts', target: 'browser' }).transformSync(locks));
-  await writeFile(join(consumer, 'consumer.ts'),
-    "import { SyntrixClient } from '@syntrix/client';\nconst client: typeof SyntrixClient = SyntrixClient;\nvoid client;\n");
+  await copyFile(join(root, 'scripts/fixtures/replica-public-types.ts'), join(consumer, 'consumer.ts'));
   const require = createRequire(import.meta.url);
   await run([process.execPath, require.resolve('typescript/bin/tsc'), '--noEmit', '--strict',
     '--target', 'ES2020', '--module', 'ESNext', '--moduleResolution', 'bundler', '--lib', 'ES2020,DOM', 'consumer.ts'], consumer);

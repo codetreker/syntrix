@@ -95,13 +95,13 @@ export const createDownstreamAdapter = (options: DownstreamOptions) => {
         if (!allowed(access.manifest)) throw new ReplicaStorageError('ReplicaRecoveryRequired', 'Unresolved upstream work blocks source application');
         if (cp.complete) {
           await access.writeManifest({ ...access.manifest, activeSourceGeneration: cp.generation, stagedSourceGeneration: null,
-            sourceReady: true, partialDelivery: false });
+            sourceReady: true, partialDelivery: false, lastCompleteRound: cp.roundId });
         } else if (cp.final) await access.writeManifest({ ...access.manifest, partialDelivery: false });
       });
     } catch (error) {
       // A lost acknowledgement must not make a committed generation look absent.
       const activated = await storage.withReplicationAccess(scope, async access => allowed(access.manifest) && cp.complete &&
-        access.manifest.activeSourceGeneration === cp.generation && access.manifest.sourceReady && !access.manifest.partialDelivery);
+        access.manifest.activeSourceGeneration === cp.generation && access.manifest.sourceReady && !access.manifest.partialDelivery && access.manifest.lastCompleteRound === cp.roundId);
       await assert(signal);
       if (!activated) throw error;
     }

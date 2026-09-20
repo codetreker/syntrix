@@ -14,6 +14,9 @@ export type RecoveryDecision =
 export type ReplicaInspection = {
   issueId: string | null; stateToken: string; physicalEpoch: string;
   issues: StorageIssue[]; targets: { logicalId: string; token: string }[];
+  phase: { id: string; state: 'prepared' | 'dispatched' } | null;
+  recovering: boolean;
+  availableActions: { kind: RecoveryDecision['kind']; issueId: string }[];
   document?: { desired: DataRecord | null; assumed: DataRecord | null;
     current?: { source: 'authoritative-read'; document: RemoteDocument | null } };
 };
@@ -99,11 +102,27 @@ export const inspectReplica = async (storage: AliasStorage, options: ReplicaInsp
       const issue = options.logicalId === undefined ? manifest.issues[0] : manifest.issues.find(value => value.logicalId === options.logicalId);
       const inspection: ReplicaInspection = { issueId: issue?.id ?? manifest.dirtyUpstream?.id ?? null,
         physicalEpoch: manifest.activePhysicalEpoch, stateToken: digest,
+        phase: manifest.dirtyUpstream ? { id: manifest.dirtyUpstream.id, state: manifest.dirtyUpstream.mayHaveDispatched ? 'dispatched' : 'prepared' } : null,
+        recovering: manifest.recoveryIntent !== null, availableActions: [],
         issues: manifest.issues.map(value => ({ ...value })), targets: manifest.dirtyUpstream?.targets.map(value => ({ ...value })) ?? [] };
       if (options.logicalId !== undefined) {
         await access.withDocument(options.logicalId, async ({ data, assumed }) => {
           inspection.document = { desired: data ? plain(data) : null, assumed: assumed ? plain(assumed) : null };
         });
+      }
+      if (inspection.issueId !== null) {
+        const protectedTarget = options.logicalId !== undefined && (issue?.logicalId === options.logicalId ||
+          manifest.dirtyUpstream?.targets.some(target => target.logicalId === options.logicalId));
+        if (!inspection.recovering && binding && protectedTarget && inspection.document?.desired) {
+          inspection.availableActions.push({ kind: 'adopt-server', issueId: inspection.issueId }, { kind: 'merge-local', issueId: inspection.issueId });
+        }
+        // A durable marker describes possible dispatch, not proven uncertainty.
+        // Explicit retry remains advisory and cannot conceal a content conflict.
+        const conflict = manifest.issues.some(entry => entry.logicalId !== null || ['ReplicaWriteConflict', 'ReplicaConflictUnresolved'].includes(entry.code));
+        if (!inspection.recovering && manifest.dirtyUpstream && !conflict) {
+          inspection.availableActions.push({ kind: 'retry-uncertain', issueId: manifest.dirtyUpstream.id });
+        }
+        inspection.availableActions.push({ kind: 'reset-alias', issueId: inspection.issueId });
       }
       return inspection;
     });
@@ -243,7 +262,7 @@ const reset = async (access: MaintenanceAccess, decision: Extract<RecoveryDecisi
     await saveManifest(access, { ...access.manifest, physicalEpochs: [oldEpoch, newEpoch], maintenance });
     await access.backend.openPhysical(newEpoch);
     await saveManifest(access, { ...access.manifest, activePhysicalEpoch: newEpoch, maintenance: { ...maintenance, stage: 'flipped' },
-      activeSourceGeneration: null, stagedSourceGeneration: null, sourceReady: false, partialDelivery: false,
+      activeSourceGeneration: null, stagedSourceGeneration: null, sourceReady: false, lastCompleteRound: null, partialDelivery: false,
       dirtyUpstream: null, issues: [], recoveryIntent: null });
   } catch (error) {
     const actual = await access.readManifest();

@@ -82,29 +82,359 @@ grant; that full-scope policy remains provisional pending approval. See the
 
 ### Replica availability
 
-The package contains a private, lazily loaded replication runtime. Its patched
-RxDB, Dexie, and RxJS dependencies are bundled with the SDK; applications do not
-install or patch these dependencies themselves. Importing the remote client does
-not load the replica runtime.
+`client.replicate<T>(path)` builds a source definition.
+`client.openReplica(options)` opens an account-scoped `ReplicaDatabase` with
+local CRUD, query/watch and automatic HTTP replication. It returns after local
+initialization, without waiting for the network or source convergence.
 
-The private storage layer now provides account-scoped Dexie persistence, lossless
-typed values, local CRUD with revision CAS, identity guards, view invalidations,
-and clean physical compaction. Private query/watch adds exact typed filtering and
-ordering, keyset pages, dynamic complete results, manifest reconciliation, and
-shared resource limits. A private downstream coordinator now connects matching-set
-and window HTTP sources, maintains membership and pins, and owns polling and native
-leadership. Private upstream adds typed HTTP Push, bounded conflict-driven CAS,
-durable phase tracking, and explicit adopt/merge/retry/reset recovery. Pausing
-synchronization preserves local CRUD and watch; an active recovery intent protects
-its target from concurrent edits. These internal APIs are not exported for
-application use. The public replica facade, authorized notification integration
-and complete browser-to-server validation remain outstanding.
+| Access | Behavior |
+|---|---|
+| `client.collection(path)` / `client.doc(path)` | Existing direct REST reads and writes |
+| `replica.collection(alias)` | Local persisted state; no implicit remote fallback or child-collection navigation |
+| `client.pull()` | One manual page; the application owns local application and checkpoint persistence |
 
-There is no public `openReplica` API yet. The private runtime and storage do not
-make `pull()` persist data or add a public Push method.
-Use document REST methods for direct writes. The
-[replication design](../design/sdk/002_replication_client.md) distinguishes the
-delivered runtime and storage from the remaining replica database integration.
+The runtime loads lazily on open. Patched RxDB, Dexie and RxJS are bundled with
+their licenses; applications do not install them, apply patches or receive RxDB
+objects. Importing the remote client and constructing a source do not load that
+bundle. There is no public manual Push method.
+
+#### Browser and identity requirements
+
+Open requires a browser window/document, IndexedDB, Web Locks and Web Crypto
+(`subtle.digest` and `randomUUID`). Missing capabilities fail with
+`ReplicaUnsupportedEnvironment`; Node/SSR and workers are not supported replica
+hosts. Direct REST APIs retain their existing environment support.
+
+A token must identify a nonempty JWT `sub`; `oid`, when present, must match.
+An expired token can open existing or new local storage offline. Opening does
+not authenticate that token with the server; online operations still require
+valid authentication and the source's database-owner or matching `db_admin`
+authorization. Invalid/missing local identity fails rather than choosing a shared
+anonymous namespace. Same-subject refresh retains storage; account replacement
+invalidates old handles and pending opens.
+
+Endpoint (including its path prefix), subject, exact configured database string,
+local `name` and alias identify storage. Distinct database URL spellings remain
+separate even if they resolve to one server ID. A source's first accepted identity
+is bound durably; later Push, Pull, preflight and recovery requests retain that
+identity. Database reassignment blocks synchronization without rebinding or
+discarding local edits.
+
+#### Typed quick start
+
+Run this from a browser application with a configured endpoint and JWT. The
+server must provide the indexes required by the source filter/window.
+
+```typescript
+import { SyntrixClient, type ReplicaDocument } from '@syntrix/client';
+
+type Task = {
+  projectId: string;
+  title: string;
+  status: 'open' | 'closed';
+  estimate: bigint;
+};
+
+export const openTasks = async (endpoint: string, token: string) => {
+  const client = new SyntrixClient(endpoint, {
+    database: 'app',
+    auth: { token },
+  });
+  const source = client.replicate<Task>('projects/p1/tasks')
+    .where('projectId', '==', 'p1');
+  const replica = await client.openReplica({
+    name: 'task-cache',
+    collections: {
+      projectTasks: source,
+      recentTasks: source.orderBy('updatedAt', 'desc').limit(100),
+    },
+  });
+  const tasks = replica.collection<Task>('projectTasks');
+  const created = await tasks.add({
+    projectId: 'p1', title: 'Review', status: 'open', estimate: 2n,
+  });
+  await created.ifMatch('status', '==', 'open').update({ status: 'closed' });
+
+  const query = tasks.where('status', '==', 'open').orderBy('id').limit(20);
+  const page = await query.getPage();
+  if (page.nextCursor !== null) {
+    const next = await query.startAfter(page.nextCursor).getPage();
+    console.log(next.documents);
+  }
+  const render = (documents: ReplicaDocument<Task>[]) => {
+    for (const document of documents) {
+      if (!document.deleted) console.log(document.id, document.title);
+    }
+  };
+  const stopWatch = query.watch(render, console.error);
+  const stopStatus = replica.sync.subscribe(status => {
+    console.log(status.aliases.projectTasks?.state);
+  }, console.error);
+
+  return {
+    replica,
+    close: async () => {
+      stopWatch();
+      stopStatus();
+      await replica.close();
+    },
+  };
+};
+```
+
+Source builders are immutable and belong to the client that created them.
+`where` adds typed filters; `orderBy` adds unique fields; `limit(1..1000)`
+selects a complete remote window. Without a limit, the source tracks all matching
+members. Sources have no `startAfter`, direct read or write methods.
+Configuration and query arguments are copied before asynchronous work.
+
+Aliases are independent, including aliases with identical sources. A local edit
+in one alias reaches another through server synchronization, not shared local
+records. Reopening an alias requires its frozen source definition to match.
+Omitting an old alias from `collections` preserves it but does not open it.
+Use a new alias, or remove a clean alias and reopen it, to change its source.
+`reset-alias` rebuilds the current definition and retains the database binding.
+
+#### Local references and queries
+
+| Method | Result and semantics |
+|---|---|
+| `collection.doc(id?)` | Reference to a logical document ID; omission generates an ID without writing |
+| `collection.add(data)` | Persist a generated-ID document and return its reference |
+| `doc.get({showDeleted?})` | Local document or null; deletions are hidden by default, absence is always hidden |
+| `doc.set(data)` | Create or replace business content; permits recreation of the same logical ID |
+| `doc.update(partial)` | Shallow-merge into a live document; missing/deleted targets fail |
+| `doc.delete()` | Persist a logical tombstone; missing/deleted targets are idempotent |
+| `doc.ifMatch(field, op, value)` | Freeze a local condition for the next write; multiple conditions combine |
+| `query.get()` / `getPage()` | One local page; default 100, maximum 1000; page adds cursor and effective order |
+| `query.startAfter(cursor)` | Continue the same normalized query; no cross-page snapshot promise |
+| `query.showDeleted()` | Include tombstones, whose former business content is absent |
+| `query.watch(onResult, onError?)` | Complete local matches or ordered limited window; returns unsubscribe and rejects continuation cursors |
+
+Writes resolve after local persistence, not remote ACK. They remain available
+offline or while synchronization is paused/blocked, except a target protected
+by an unfinished recovery intent. `set`, `update` and `delete` return void.
+
+Values preserve bigint and number distinctly, including nested fields. Reserved
+metadata is read-only. Version/timestamps are optional and reflect the last
+source observation, not the revision of an unsent local edit; document versions
+may reset after recreation. Narrow `deleted` before reading business fields.
+
+Local storage permits broader logical IDs than HTTP Push. IDs intended for
+upload must match ASCII `[A-Za-z0-9_.-]{1,64}`; the adapter rejects other IDs
+before dispatch and does not remap them. Queries preserve exact numeric types,
+UTF-8 order, missing/null distinction and logical-ID ties under the
+[filter contract](filters.md). Resource failure ends the affected query instead
+of publishing truncated results.
+
+#### Synchronization, status and recovery
+
+`replica.sync.pause(alias?)` cancels/drains synchronization while preserving local
+CRUD/watch. `resume(alias?)` restarts runnable aliases; omission selects all
+currently configured aliases. Unresolved conflict/uncertain state rejects resume.
+Pause/resume does not authorize repeating a possibly committed mutation.
+
+When `navigator.onLine === false`, a new Push is refused locally before dispatch
+with retryable `OFFLINE`; whole-phase retry rules still apply. Going offline
+after dispatch does not prove nonexecution: a possibly committed write remains
+uncertain and is not automatically resent.
+
+`sync.subscribe(onStatus, onError?)` immediately supplies a snapshot and returns
+unsubscribe. Each alias reports:
+
+| Fields | Meaning |
+|---|---|
+| `mode`, `state`, `leader` | Source mode `events`/`replace`; state `waiting`, `syncing`, `idle`, `retrying`, `paused`, `blocked` or `closed`; current network ownership |
+| `ready`, `sourceReady` | Durable source initialization/activation, independent of native idle |
+| `generation`, `physicalEpoch`, `checkpoint` | Activated source generation, local physical storage generation, and opaque events cursor; windows have no event cursor |
+| `lastCompleteRound`, `pending`, `pins` | Last durably completed source round and local work/protection counts |
+| `issues`, `error?`, `retryAt?` | Current issue identifiers/codes, original failure and scheduled retry time |
+
+Snapshots may be coalesced; follower readiness comes from durable shared state.
+A source-ready alias can still be offline, paused or blocked. Multiple tabs share
+one elected network owner per alias; all can use local CRUD/watch. A replacement
+leader checks unfinished phases before dispatching writes.
+
+`sync.inspect<T>(alias, {id?, readCurrent?})` defaults to offline inspection.
+It returns `issueId`, `stateToken`, `physicalEpoch`, bounded issue/target metadata
+and, when `id` is supplied, one desired/assumed document pair and
+`editToken: string | null`. Explicit `readCurrent: true` requires an ID and
+bound identity. It performs a guarded authoritative read outside the alias lock
+and then rechecks identity, issue and local state.
+
+| Inspection field | Meaning |
+|---|---|
+| `phase` | Null, or `{id, state: 'prepared' \| 'dispatched'}` from the durable phase marker; dispatched records possible dispatch, not proof of remote execution |
+| `recovering` | An unfinished durable recovery intent is present |
+| `availableActions` | Advisory `{kind, issueId}` choices from the same snapshot; resolve revalidates all guards |
+
+No issue means no recovery action. Explicit retry is not offered to bypass an
+unresolved content conflict; adopt/merge or reset must address that protected work.
+
+An omitted `document.current` is unknown. A returned observation has
+`source: 'authoritative-read'` and `state`: `existence: 'absent'` with
+`document: null` means confirmed missing; `deleted` and `live` remain distinct.
+This is a current observation, not proof of whether an earlier request executed.
+
+Resolve requires the elected owner, drains replication and remains paused until
+explicit resume. Adopt/merge independently reread current; an old issue, token or
+physical epoch fails without overwriting later edits.
+
+```typescript
+import type { ReplicaDatabase } from '@syntrix/client';
+
+export const adoptInspectedServerState = async (
+  replica: ReplicaDatabase,
+  alias: string,
+  id: string,
+) => {
+  await replica.sync.pause(alias);
+  const inspected = await replica.sync.inspect(alias, { id, readCurrent: true });
+  const action = inspected.availableActions.find(value => value.kind === 'adopt-server');
+  if (action === undefined || inspected.document === undefined) {
+    throw new Error('Server adoption is not available for this document');
+  }
+
+  // Invoke this function only after the application authorizes server adoption.
+  await replica.sync.resolve(alias, {
+    kind: 'adopt-server',
+    issueId: action.issueId,
+    id,
+    editToken: inspected.document.editToken,
+    physicalEpoch: inspected.physicalEpoch,
+  });
+  await replica.sync.resume(alias);
+};
+```
+
+| Recovery decision | Required fields and effect |
+|---|---|
+| `adopt-server` | `issueId, id, editToken, physicalEpoch`; adopt actual current, including absence |
+| `merge-local` | Same guards plus typed `data`; current becomes assumed, chosen data becomes a new local edit |
+| `retry-uncertain` | `issueId, acknowledgeRepeatedEffects: true`; explicitly permit repeated effects |
+| `reset-alias` | `issueId, stateToken, discardPending: true`; discard inspected local state and rebuild the same source/binding |
+
+An unknown create may have succeeded and then been deleted; retry can recreate
+that ID. Recovery intents protect partial fork/assumed writes across reopen.
+Adopt/merge leave other IDs, membership and ordinary checkpoints unchanged.
+Reset rejects an inspection made before any later local edit.
+
+#### Close and remove
+
+`replica.close()` stops admission/callbacks, cancels and drains owned work, and
+preserves persisted data. It attempts all cleanup and reports failures; closing
+one handle does not close other database handles in the same account. Clearing
+browser site data removes that account's local state independently of the SDK.
+
+`replica.removeCollection(alias)` removes local data only. It also accepts a
+persisted alias omitted from this open's `collections`; its original identity
+selects the store without needing the old source builder. A missing historical
+alias is a no-op. Pending changes, pins, issues or unfinished phases/intents
+reject removal; a failed attempt leaves the configured alias paused for explicit
+handling. Removal never deletes remote documents.
+
+An empty configuration opens only the named local database handle, so historical
+aliases can be removed without creating or starting another source:
+
+```typescript
+import type { SyntrixClient } from '@syntrix/client';
+
+export const removeHistoricalAlias = async (
+  client: SyntrixClient,
+  name: string,
+  alias: string,
+) => {
+  const replica = await client.openReplica({ name, collections: {} });
+  try {
+    await replica.removeCollection(alias);
+  } finally {
+    await replica.close();
+  }
+};
+```
+
+Removal persists a terminal lifetime fence before deleting paired physical
+stores. A cleanup failure retains retry/reopen information. Recreating the alias
+uses a new lifetime and physical epoch; stale handles cannot write into it, even
+after missed notifications. Clean compaction retains the alias lifetime.
+Close cancels queued removal work; once terminal removal is durable, owned
+physical cleanup finishes before its cancellation is reported.
+
+#### Configuration and budgets
+
+`OpenReplicaOptions` requires nonempty `name` and a `collections` object, which
+may be empty for historical-only removal. Optional `storageLimits`, `queryLimits`, `sync` and `onDiagnostic`
+are frozen at open. Numeric options are positive safe integers; unknown options
+fail validation.
+
+| Option | Default |
+|---|---:|
+| `sync.pollIntervalMs` | 10,000 |
+| `sync.hintDelayMs` | 200 |
+| `sync.retryBaseMs` / `retryMaxMs` | 1,000 / 30,000, with jitter; base must not exceed maximum |
+| `sync.maintenanceBackoffMs` | 30,000 |
+| `storageLimits.maxRecordBytes` / `maxMetadataBytes` | 16 MiB / 17 MiB; metadata must exceed record budget |
+| `storageLimits.maxManifestBytes` | 34 MiB |
+| `storageLimits.maxKnownIds` | 100,000 per alias |
+| `storageLimits.maxStoredBytes` | `Number.MAX_SAFE_INTEGER`; browser quota still applies |
+| `queryLimits.readBytes` / `payloadBytes` / `keyBytes` | 64 MiB / 128 MiB / 64 MiB |
+| `queryLimits.nodes` / `scanCandidates` | 1,000,000 / 100,000 |
+| `queryLimits.scanBytes` | 128 MiB |
+| `queryLimits.queuedKeys` / `queuedBytes` | 100,000 / 16 MiB |
+| `queryLimits.outputBytes` / `rebuildAttempts` | 16 MiB / 8 |
+
+Query budgets are shared by handles of the same replica database in an execution
+context. Retained candidates outside a limited window still count. Lowering a
+limit never authorizes dropping pending work. Limits describe encoded records
+and controlled materialization, not total browser heap or power-loss durability.
+
+Transport bounds remain independent: source pages use 100 events; windows allow
+at most 1000 documents; native delivery uses at most 201 rows/16 MiB; Push uses
+50 changes, 10 MiB HTTP and 20 MiB protobuf request budgets, plus a 32 MiB client
+response cap. Upstream dispatch concurrency is one per alias; conditional writes
+have at most three CAS attempts, local writes eight. See the
+[replication design](../design/sdk/002_replication_client.md) for persistence and
+recovery boundaries.
+
+#### Errors and diagnostics
+
+Method failures reject with the original error or a preserved `cause`. Query
+watch and status subscriptions expose `onError`; synchronization failures also
+appear in alias status. Uncertain mutation results are not ordinary read retries.
+
+| Error/code | Meaning and handling |
+|---|---|
+| `ReplicaUnsupportedEnvironment` | Required browser capabilities are unavailable |
+| `OFFLINE` | Browser reported offline before Push dispatch; retry follows whole-phase safety rules |
+| `AUTH_SESSION_CHANGED`, `ReplicaScopeChanged` | Old account/database ownership ended; retain its pending data in the original namespace |
+| `ReplicaSourceMismatch` | Reopened alias definition differs; use a new alias or clean remove/recreate |
+| `ReplicaWriteConflict`, `ReplicaUpstreamUncertain`, `ReplicaRecoveryRequired` | Inspect and explicitly resolve before resume |
+| `ReplicaRecoveryStale` | Issue, token, epoch or inspected state changed; obtain a new inspection |
+| `ReplicaStorageLimit`, `ReplicaRecordTooLarge`, `ReplicaReadBudgetExceeded`, `QueryBudgetExceeded` | Budget/storage admission failed; pending state is preserved |
+| `ReplicaRemovalBlocked` | Resolve protected work or finish synchronization before removal |
+| `ReplicaAliasUnknown`, `ReplicaAliasRemoved`, `ReplicaRemoved`, `ReplicaDatabaseClosed` | Reference no longer identifies an open usable alias/handle |
+| `TypeError`, `RangeError` | Invalid public configuration, query or write input |
+
+`onDiagnostic` receives `replicaId` (one facade-open lifetime), `operationId`,
+`sessionVersion`, `alias`, `operation`, `phase` and `timestamp`. Optional fields
+are `physicalEpoch`, `durationMs`, `count`, `requestId` and an allowlisted `code`.
+Operation IDs correlate start/completion/failure and watch lifetimes; Pull events
+include the observed request ID and returned event/document count when available.
+These are local correlations, not a distributed server tracing guarantee.
+Diagnostics exclude credentials, payloads, filter values and raw error objects.
+The callback does not introduce a telemetry service.
+It runs synchronously and may close the database, unsubscribe or change accounts.
+Ownership and subscription checks run again afterward: obsolete successful
+operations reject, and inactive watches receive neither results nor errors.
+Thrown diagnostic exceptions are isolated; returned asynchronous work is not
+awaited by the SDK.
+
+Authorized HTTP polling supplies convergence. Replica synchronization does not
+automatically subscribe to WebSocket notifications: current realtime authorization
+does not yet match query-source authorization. Local `watch` is fully local and
+continues to receive persisted changes. This costs periodic source reads and up
+to polling/backoff delay; notifications can become an optimization only after
+their authorization contract matches.
 
 ### Authentication sessions
 

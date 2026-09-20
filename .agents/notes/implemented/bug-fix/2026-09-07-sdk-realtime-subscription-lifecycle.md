@@ -69,7 +69,7 @@ closing a manually managed connection when a subscription ends.
   The last unsubscribe leaves the connection open until explicit teardown.
 - No server protocol, durable checkpoint, or replay continuity guarantee changes.
   [Realtime resume](../../proposed/feature/2026-09-07-realtime-client-resume.md) and
-  [offline replication](../../proposed/feature/2026-09-07-sdk-offline-replication.md)
+  [offline replication](../feature/2026-09-07-sdk-offline-replication.md)
   retain those responsibilities.
 - WebSocket teardown and provider ownership have separate responsibilities. The
   [authentication session decision](2026-09-10-sdk-authentication-session-race.md)

@@ -10,6 +10,10 @@ assert.equal('createReplicaDownstream' in remote, false);
 assert.equal('createReplicaHttpSource' in remote, false);
 assert.equal('createReplicaHttpUpstream' in remote, false);
 assert.equal('resolveReplica' in remote, false);
+const unsupportedClient = new remote.SyntrixClient('https://example.test', { database: 'app' });
+assert.equal(typeof unsupportedClient.replicate('users').where('active', '==', true).limit(10), 'object');
+await assert.rejects(unsupportedClient.openReplica({ name: 'unsupported', collections: { users: unsupportedClient.replicate('users') } }),
+  error => error.code === 'ReplicaUnsupportedEnvironment');
 await import('fake-indexeddb/auto');
 const sdkEntry = import.meta.resolve('@syntrix/client');
 const { loadReplicaRuntime } = await import(new URL('./internal/replica/loader.js', sdkEntry));
@@ -376,5 +380,81 @@ try {
 } finally {
   const cleanup = await Promise.allSettled([synchronization?.close(), upstreamAlias?.close(), upstreamSession?.close()]);
   upstreamServer.stop(true);
+  for (const result of cleanup) if (result.status === 'rejected') throw result.reason;
+}
+
+const browserProperties = [
+  [globalThis, 'window', Object.getOwnPropertyDescriptor(globalThis, 'window')],
+  [globalThis, 'document', Object.getOwnPropertyDescriptor(globalThis, 'document')],
+  [navigator, 'locks', Object.getOwnPropertyDescriptor(navigator, 'locks')],
+  [navigator, 'onLine', Object.getOwnPropertyDescriptor(navigator, 'onLine')],
+];
+Object.defineProperty(globalThis, 'window', { configurable: true, value: globalThis });
+Object.defineProperty(globalThis, 'document', { configurable: true, value: {
+  visibilityState: 'visible', addEventListener() {}, removeEventListener() {},
+} });
+Object.defineProperty(navigator, 'locks', { configurable: true, value: createTestLockManager() });
+Object.defineProperty(navigator, 'onLine', { configurable: true, value: false });
+const publicServer = Bun.serve({ hostname: '127.0.0.1', port: 0, fetch() {
+  return Response.json({ code: 'UNAVAILABLE', message: 'Offline consumer fixture' }, { status: 503 });
+} });
+let publicReplica, historyReplica, reopenedReplica;
+let stopPublicWatch = () => {};
+try {
+  const client = new remote.SyntrixClient(publicServer.url.href, { database: 'app', auth: { token: token('public-user') } });
+  const name = `packed-public-${crypto.randomUUID()}`;
+  const diagnostics = [];
+  let closeOnRead = false, diagnosticClose;
+  publicReplica = await client.openReplica({ name, collections: {
+    tasks: client.replicate('users').where('active', '==', true),
+    scratch: client.replicate('users').where('active', '==', false),
+  }, onDiagnostic: event => {
+    diagnostics.push(event);
+    if (closeOnRead && event.operation === 'get-document' && event.phase === 'complete') {
+      closeOnRead = false;
+      diagnosticClose = publicReplica.close();
+    }
+  } });
+  await publicReplica.sync.pause();
+  const tasks = publicReplica.collection('tasks');
+  await tasks.doc('specified-id').set({ active: true, exact: 9007199254740993n, score: 1 });
+  await tasks.doc('next').set({ active: true, score: 2 });
+  const page = await tasks.orderBy('score').limit(1).getPage();
+  assert.deepEqual(page.documents.map(row => row.id), ['specified-id']);
+  assert.ok(page.nextCursor);
+  assert.deepEqual((await tasks.orderBy('score').limit(1).startAfter(page.nextCursor).getPage()).documents.map(row => row.id), ['next']);
+  const windows = [];
+  stopPublicWatch = tasks.orderBy('score').limit(1).watch(rows => windows.push(rows.map(row => row.id)));
+  await until(() => windows.length === 1);
+  await tasks.doc('next').update({ score: 0 });
+  await until(() => windows.at(-1)?.[0] === 'next');
+  assert.equal((await tasks.doc('specified-id').get()).exact, 9007199254740993n);
+  assert.equal(await publicReplica.collection('scratch').doc('specified-id').get(), null);
+  await assert.rejects(publicReplica.removeCollection('tasks'), error => error.code === 'ReplicaRemovalBlocked');
+  const inspected = await publicReplica.sync.inspect('tasks', { id: 'specified-id' });
+  assert.equal(inspected.document.desired.document.exact, 9007199254740993n);
+  assert.equal('payload' in inspected.document.desired, false);
+  assert.ok(diagnostics.some(event => event.operationId && event.replicaId && Number.isInteger(event.sessionVersion)));
+  assert.ok(diagnostics.every(event => !JSON.stringify(event).includes('9007199254740993')));
+  stopPublicWatch();
+  closeOnRead = true;
+  await assert.rejects(tasks.doc('specified-id').get(), error => error.code === 'ReplicaDatabaseClosed');
+  await diagnosticClose;
+  historyReplica = await client.openReplica({ name, collections: {} });
+  await historyReplica.removeCollection('scratch');
+  await assert.rejects(historyReplica.removeCollection('tasks'), error => error.code === 'ReplicaRemovalBlocked');
+  await historyReplica.close();
+  reopenedReplica = await client.openReplica({ name, collections: { tasks: client.replicate('users').where('active', '==', true) } });
+  await reopenedReplica.sync.pause();
+  assert.equal((await reopenedReplica.collection('tasks').doc('specified-id').get()).exact, 9007199254740993n);
+  console.log('Packed public replica: local CRUD/watch/pages, alias isolation, diagnostic close fence, offline reopen and historical removal passed');
+} finally {
+  stopPublicWatch();
+  const cleanup = await Promise.allSettled([publicReplica?.close(), historyReplica?.close(), reopenedReplica?.close()]);
+  publicServer.stop(true);
+  for (const [target, key, descriptor] of browserProperties) {
+    if (descriptor) Object.defineProperty(target, key, descriptor);
+    else delete target[key];
+  }
   for (const result of cleanup) if (result.status === 'rejected') throw result.reason;
 }

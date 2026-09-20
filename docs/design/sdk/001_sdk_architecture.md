@@ -1,7 +1,7 @@
 # TypeScript Client SDK Architecture
 
 **Date:** December 27, 2025
-**Status:** Remote clients, private replica storage/query/watch, HTTP replication and explicit upstream recovery are implemented; the public replica database API remains planned.
+**Status:** Remote clients and the public replica database API are implemented, including local query/watch, HTTP replication and explicit recovery.
 
 **Related:** [003_authentication.md](003_authentication.md) defines the shared auth surface used by HTTP clients, replication, and realtime. Client specifics: [004_syntrix_client.md](004_syntrix_client.md), [005_trigger_client.md](005_trigger_client.md).
 
@@ -103,7 +103,7 @@ leaves local state/checkpoint transactions to the application.
 The private replication runtime uses a pinned, patched RxDB protocol with bounded
 durable scans, checkpoint completion hooks, and cancellation that drains owned
 work. Its bundled dependencies load lazily and are absent from the remote API's
-initial dependency graph. This foundation does not expose a public replica database API. Private alias storage
+initial dependency graph. The public `openReplica` facade composes private alias storage, which
 provides account-scoped Dexie persistence, lossless typed values, raw CAS CRUD,
 source/physical generation records, and clean compaction. Private queries use
 bounded storage projections, exact scalar semantics, shared AVL candidates and
@@ -113,7 +113,9 @@ and per-alias native leadership. Private upstream sends typed HTTP Push, retains
 native successful acknowledgements, and persists bounded phase/recovery state.
 Uncertain results pause automatic synchronization while local CRUD remains
 available; explicit recovery is guarded by the original database identity and
-current edit token. The public replica facade remains planned. See
+current edit token. Public replica references use local state; REST references
+retain direct remote behavior. Authorized polling supplies convergence while
+automatic WebSocket hints await matching source authorization. See
 [002_replication_client.md](002_replication_client.md).
 
 ## 6. Primary Test Coverage (Planned/Implemented)
@@ -123,9 +125,10 @@ current edit token. The public replica facade remains planned. See
 - Auth layer: serialized refresh under concurrent 401s; hooks fire correctly; realtime auth failure retries once then surfaces.
 - Realtime: WS auth ack gates resubscribe; SSE delivers events/snapshots with header auth; inactivity triggers reconnect.
 - Manual Pull: typed page validation, request routing, cancellation, and session replacement.
-- Private runtime and storage: bounded scans, durable page/checkpoint ordering, identity and lifecycle fences, raw CAS CRUD, size admission, and compaction recovery. Public local replication and browser-to-server end-to-end coverage remain planned.
+- Runtime and storage: bounded scans, durable page/checkpoint ordering, identity and lifecycle fences, raw CAS CRUD, size admission, and compaction recovery.
 - Private queries: exact filtering/order/cursors, window refill, generation and metadata invalidations, shared handle lifecycle, and continuous resource admission.
 - Private downstream: authenticated bounded HTTP sources, ordered member projection, durable pin boundaries, leader takeover and late-response cancellation.
 - Private upstream: typed request limits, conflict-driven CAS, whole-phase failure classification, durable recovery intent and paused local access.
+- Public replica integration: immutable source definitions, offline open, typed references, status/recovery projection, safe alias removal, lifecycle fencing and lazy package exports.
 
 More error corners and perf cases will be added as features land.

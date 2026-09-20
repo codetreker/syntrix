@@ -14,7 +14,7 @@ const data = async (id = 'alice'): Promise<DataRecord> => ({
 });
 const manifestRow = async (): Promise<AliasManifest> => {
   const definition = freezeSourceDefinition({ collection: 'users', filters: [] });
-  return { key: 'manifest', formatVersion: 1,
+  return { key: 'manifest', formatVersion: 1, lifecycleId: 'lifecycle-1', lastCompleteRound: null,
     namespace: { endpoint: 'https://example.test', subject: 'user', database: 'db', name: 'local', alias: 'users' },
     definition, definitionHash: await definitionHash(definition), boundDatabaseId: null, sourceHash: null,
     state: 'ready', activePhysicalEpoch: 'p1', physicalEpochs: ['p1'], maintenance: null,

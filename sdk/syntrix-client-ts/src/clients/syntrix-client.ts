@@ -1,4 +1,4 @@
-import axios from 'axios';
+import axios, { type AxiosInstance } from 'axios';
 import { AuthConfig, LoginResponse, AuthService } from '../internal/auth/types';
 import { DefaultTokenProvider } from '../internal/auth/provider';
 import { setupAuthInterceptor } from '../internal/auth/interceptor';
@@ -9,6 +9,12 @@ import { PullTransport } from '../internal/pull';
 import { CollectionReferenceImpl, DocumentReferenceImpl } from '../api/reference';
 import { RealtimeClient, SubscriptionCallbacks, SubscribeOptions } from '../replication/realtime';
 import { RealtimeSSEClient, RealtimeSSEOptions } from '../replication/realtime-sse';
+import type { OpenReplicaOptions, ReplicaDatabase, ReplicaSource } from '../api/replica-types.js';
+import type { QueryValue } from '../api/value.js';
+import { createReplicaSource, snapshotReplicaOptions } from '../api/replica-reference.js';
+import { createReplicaSession, type ReplicaSession } from '../internal/replica/session.js';
+import { loadReplicaRuntime } from '../internal/replica/loader.js';
+import { ReplicaStorageError } from '../internal/replica/storage-types.js';
 
 export interface SyntrixClientConfig {
   database: string;
@@ -19,6 +25,7 @@ export class SyntrixClient implements AuthService {
   private storage: StorageClient;
   private tokenProvider: DefaultTokenProvider;
   private pullTransport: PullTransport;
+  private axios: AxiosInstance;
   private realtimeClient: RealtimeClient | null = null;
   private realtimeSseClient: RealtimeSSEClient | null = null;
   private baseUrl: string;
@@ -28,6 +35,7 @@ export class SyntrixClient implements AuthService {
     this.baseUrl = baseUrl;
     this.database = config.database;
     const axiosInstance = axios.create({ baseURL: baseUrl });
+    this.axios = axiosInstance;
     this.tokenProvider = new DefaultTokenProvider(config.auth || {}, baseUrl);
     setupAuthInterceptor(axiosInstance, this.tokenProvider);
     this.storage = new RestTransport(axiosInstance, config.database);
@@ -36,6 +44,43 @@ export class SyntrixClient implements AuthService {
 
   getDatabase(): string {
     return this.database;
+  }
+
+  replicate<T = Record<string, QueryValue>>(path: string): ReplicaSource<T> {
+    return createReplicaSource<T>(this, path);
+  }
+
+  async openReplica(options: OpenReplicaOptions): Promise<ReplicaDatabase> {
+    const snapshot = snapshotReplicaOptions(this, options);
+    if (typeof window === 'undefined' || typeof document === 'undefined' || typeof indexedDB === 'undefined' ||
+        typeof navigator === 'undefined' || typeof navigator.locks?.request !== 'function' ||
+        typeof crypto === 'undefined' || typeof crypto.subtle?.digest !== 'function' || typeof crypto.randomUUID !== 'function') {
+      throw new ReplicaStorageError('ReplicaUnsupportedEnvironment', 'Replica storage requires a browser with IndexedDB, Web Locks, and Web Crypto');
+    }
+    // Registration occurs synchronously, before importing the storage runtime.
+    // A credential refresh during import must still respect this account owner.
+    const opening = createReplicaSession(this.tokenProvider);
+    let session: ReplicaSession | undefined;
+    try {
+      session = await opening;
+      session.assertCurrent();
+      const runtime = await loadReplicaRuntime();
+      session.assertCurrent();
+      const replica = await session.track(() => runtime.openReplicaDatabase({
+        session: session!, axios: this.axios, provider: this.tokenProvider,
+        endpoint: this.baseUrl, database: this.database, options: snapshot,
+      }));
+      session.assertCurrent();
+      return replica;
+    } catch (error) {
+      if (session) {
+        try { await session.close(); }
+        catch (cleanupError) {
+          throw Object.assign(new ReplicaStorageError('ReplicaStorageCleanupFailed', 'Replica open cleanup failed', { cause: error }), { cleanupErrors: [cleanupError] });
+        }
+      }
+      throw error;
+    }
   }
 
   // Auth methods

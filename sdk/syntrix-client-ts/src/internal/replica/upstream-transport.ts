@@ -20,6 +20,11 @@ const failureDispositions = new WeakMap<object, UpstreamFailureDisposition>();
 export const upstreamFailureDisposition = (error: unknown): UpstreamFailureDisposition =>
   typeof error === 'object' && error !== null ? failureDispositions.get(error) ?? 'unknown' : 'unknown';
 const fail = (message: string): never => { throw new ReplicaStorageError('ReplicaUpstreamInvalid', message); };
+const assertOnline = (): void => {
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+    throw new SyntrixError('OFFLINE', 'Browser is offline; Push has not been dispatched', 503);
+  }
+};
 const size = (text: string): number => utf8.encode(text).byteLength;
 const object = (value: unknown): Record<string, unknown> => {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return fail('Expected an upstream object');
@@ -200,8 +205,10 @@ export const createReplicaHttpUpstream = (options: {
       try {
         if (!prepared.has(batch)) return fail('Push batch does not belong to this transport');
         assert(context);
+        assertOnline();
         await context.beforeDispatch?.();
         assert(context);
+        assertOnline();
         dispatched = true;
         const response = await axios.post(`/replication/v1/databases/${encodeURIComponent(database)}/push`, batch.body, config(context, pushResponseBytes));
         assert(context);
