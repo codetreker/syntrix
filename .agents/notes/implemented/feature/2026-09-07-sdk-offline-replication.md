@@ -86,6 +86,9 @@ operationId 关联操作与 watch 生命周期，携带 sessionVersion、alias�
 timestamp，以及可用的 physicalEpoch、durationMs、count、requestId 和净化 code。
 Pull 记录观察到的请求 ID 与结果计数；这些本地关联不承诺分布式服务端 tracing。
 诊断不带凭据、payload、filter 值或原始 error；方法与错误回调仍保留实际失败和 cause。
+diagnostic 是可重入的应用回调，可能同步关闭句柄、退订或更换账号。回调返回后，方法
+完成与 watch 交付必须再次核对会话、alias 和订阅；已失效的成功结果改为拒绝，已失效
+的 watch 不再收到结果或错误。回调抛错仍与同步工作隔离，不等待其返回的异步工作。
 
 ### Removal and lifetime fencing
 
@@ -103,7 +106,8 @@ close 可取消尚在排队的历史移除；若 terminal removal 已持久化�
 
 重建分配新 lifecycleId 与 physical epoch。旧句柄每次访问核对 lifetime，即使遗漏通知
 也不能读写新代。alias 锁名保持稳定以串行化移除/重建，election 与查询 namespace
-绑定 lifetime，旧 owner 的清理不能影响新 owner。普通 compaction 保留 lifetime。
+绑定 lifetime，旧 owner 的清理不能影响新 owner。通知只触发对持久化 manifest 的核对，
+迟到的旧代 removed 通知不能撤销当前有效的新句柄。普通 compaction 保留 lifetime。
 
 close 同步停止准入与回调，尝试全部 drain/清理并保留失败，持久数据保留。不同公共
 句柄有各自会话关闭责任，关闭一个不结束同账号的其他句柄。

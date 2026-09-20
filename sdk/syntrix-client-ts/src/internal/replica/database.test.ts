@@ -212,3 +212,115 @@ test('an empty database handle can cancel historical removal waiting for a peer 
     expect(await removal).toMatchObject({ code: 'ReplicaDatabaseClosed' });
   } finally { release(); await lock; await db.close(); }
 });
+
+for (const action of ['close', 'account', 'unsubscribe'] as const) {
+  test(`watch result diagnostics cannot deliver data after ${action}`, async () => {
+    const f = fixture(); let diagnosticAction = (_event: ReplicaDiagnostic) => {};
+    const db = await f.open({ name: crypto.randomUUID(), collections: { users: definition }, onDiagnostic: event => diagnosticAction(event) });
+    let stop = () => {}, triggered = false, cleanup: Promise<unknown> | undefined;
+    const results: unknown[] = [], errors: unknown[] = [];
+    try {
+      await db.sync.pause(); await db.collection('users').doc('alice').set({ secret: 'old-account-data' });
+      diagnosticAction = event => {
+        if (triggered || event.operation !== 'watch' || event.phase !== 'result') return;
+        triggered = true;
+        if (action === 'close') cleanup = db.close();
+        else if (action === 'account') { f.provider.setToken(token('bob')); cleanup = f.provider.getToken(); }
+        else stop();
+      };
+      stop = db.collection('users').watch(value => results.push(value), error => errors.push(error));
+      await until(() => triggered); await cleanup; await Bun.sleep(10);
+      expect(results).toEqual([]); expect(errors).toEqual([]);
+      if (action === 'unsubscribe') {
+        const again: unknown[] = [];
+        const stopAgain = db.collection('users').watch(value => again.push(value));
+        try { await until(() => again.length === 1); } finally { stopAgain(); }
+      }
+    } finally { stop(); await cleanup; await db.close(); }
+  });
+}
+
+for (const [operation, action] of [['get-document', 'close'], ['get-document', 'account'], ['inspect', 'account']] as const) {
+  test(`${operation} completion diagnostics reject obsolete results after ${action}`, async () => {
+    const f = fixture(); let diagnosticAction = (_event: ReplicaDiagnostic) => {};
+    const db = await f.open({ name: crypto.randomUUID(), collections: { users: definition }, onDiagnostic: event => diagnosticAction(event) });
+    let triggered = false, cleanup: Promise<unknown> | undefined;
+    try {
+      await db.sync.pause(); await db.collection('users').doc('alice').set({ secret: 'old-account-data' });
+      diagnosticAction = event => {
+        if (triggered || event.operation !== operation || event.phase !== 'complete') return;
+        triggered = true;
+        if (action === 'close') cleanup = db.close();
+        else { f.provider.setToken(token('bob')); cleanup = f.provider.getToken(); }
+      };
+      const result = operation === 'inspect' ? db.sync.inspect('users', { id: 'alice' }) : db.collection('users').doc('alice').get();
+      await expect(result).rejects.toMatchObject({ code: 'ReplicaDatabaseClosed' });
+      expect(triggered).toBe(true); await cleanup;
+    } finally { await cleanup; await db.close(); }
+  });
+}
+
+for (const phase of ['start', 'failed'] as const) {
+  for (const action of ['close', 'account'] as const) {
+    test(`watch ${phase} diagnostic ${action} prevents later admission or error delivery`, async () => {
+      const f = fixture(); let diagnosticAction = (_event: ReplicaDiagnostic) => {};
+      const db = await f.open({ name: crypto.randomUUID(), collections: { users: definition }, onDiagnostic: event => diagnosticAction(event) });
+      let triggered = false, cleanup: Promise<unknown> | undefined, stop = () => {};
+      const results: unknown[] = [], errors: unknown[] = [];
+      try {
+        await db.sync.pause();
+        diagnosticAction = event => {
+          if (triggered || event.operation !== 'watch' || event.phase !== phase) return;
+          triggered = true;
+          if (action === 'close') cleanup = db.close();
+          else { f.provider.setToken(token('bob')); cleanup = f.provider.getToken(); }
+        };
+        const query = phase === 'failed' ? db.collection('users').startAfter('not-allowed-for-watch') : db.collection('users');
+        stop = query.watch(value => results.push(value), error => errors.push(error));
+        await until(() => triggered); await cleanup; await Bun.sleep(10);
+        expect(results).toEqual([]); expect(errors).toEqual([]);
+      } finally { stop(); await cleanup; await db.close(); }
+    });
+  }
+}
+
+test('thrown diagnostics are isolated while valid reads, watches, and watch errors remain observable', async () => {
+  const f = fixture();
+  const db = await f.open({ name: crypto.randomUUID(), collections: { users: definition }, onDiagnostic: () => { throw new Error('observer failed'); } });
+  let stop = () => {}, stopInvalid = () => {};
+  try {
+    await db.sync.pause(); await db.collection('users').doc('alice').set({ value: 1n });
+    expect(await db.collection('users').doc('alice').get()).toMatchObject({ value: 1n });
+    expect((await db.sync.inspect('users', { id: 'alice' })).document?.desired).toMatchObject({ existence: 'live' });
+    const results: unknown[] = [], errors: unknown[] = [];
+    stop = db.collection('users').watch(value => results.push(value));
+    stopInvalid = db.collection('users').startAfter('invalid-for-watch').watch(() => { throw new Error('Invalid query returned data'); }, error => errors.push(error));
+    await until(() => results.length === 1 && errors.length === 1);
+    expect(errors[0]).toBeInstanceOf(TypeError);
+  } finally { stop(); stopInvalid(); await db.close(); }
+});
+
+test('a diagnostic-triggered close preserves the original storage read failure', async () => {
+  const original = getRxStorageDexie({ indexedDB, IDBKeyRange });
+  const failure = new Error('actual storage read failed'); let inject = false;
+  const storage: RxStorage<any, any> = { ...original, createStorageInstance: async parameters => {
+    const raw = await original.createStorageInstance(parameters);
+    return new Proxy(raw, { get(target, property) {
+      if (property === 'findDocumentsById' && parameters.collectionName.startsWith('records_')) return (...args: Parameters<typeof target.findDocumentsById>) => {
+        if (inject) throw failure;
+        return target.findDocumentsById(...args);
+      };
+      const value = Reflect.get(target, property, target); return typeof value === 'function' ? value.bind(target) : value;
+    } });
+  } };
+  const f = fixture({ storage }); let diagnosticAction = (_event: ReplicaDiagnostic) => {};
+  const db = await f.open({ name: crypto.randomUUID(), collections: { users: definition }, onDiagnostic: event => diagnosticAction(event) });
+  let cleanup: Promise<void> | undefined;
+  try {
+    await db.sync.pause(); await db.collection('users').doc('alice').set({ value: 1 });
+    diagnosticAction = event => { if (event.operation === 'get-document' && event.phase === 'failed') { inject = false; cleanup = db.close(); } };
+    inject = true;
+    await expect(db.collection('users').doc('alice').get()).rejects.toBe(failure);
+    expect(cleanup).toBeDefined(); await cleanup;
+  } finally { inject = false; await cleanup; await db.close(); }
+});

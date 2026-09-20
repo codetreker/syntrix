@@ -404,10 +404,17 @@ try {
   const client = new remote.SyntrixClient(publicServer.url.href, { database: 'app', auth: { token: token('public-user') } });
   const name = `packed-public-${crypto.randomUUID()}`;
   const diagnostics = [];
+  let closeOnRead = false, diagnosticClose;
   publicReplica = await client.openReplica({ name, collections: {
     tasks: client.replicate('users').where('active', '==', true),
     scratch: client.replicate('users').where('active', '==', false),
-  }, onDiagnostic: event => diagnostics.push(event) });
+  }, onDiagnostic: event => {
+    diagnostics.push(event);
+    if (closeOnRead && event.operation === 'get-document' && event.phase === 'complete') {
+      closeOnRead = false;
+      diagnosticClose = publicReplica.close();
+    }
+  } });
   await publicReplica.sync.pause();
   const tasks = publicReplica.collection('tasks');
   await tasks.doc('specified-id').set({ active: true, exact: 9007199254740993n, score: 1 });
@@ -430,7 +437,9 @@ try {
   assert.ok(diagnostics.some(event => event.operationId && event.replicaId && Number.isInteger(event.sessionVersion)));
   assert.ok(diagnostics.every(event => !JSON.stringify(event).includes('9007199254740993')));
   stopPublicWatch();
-  await publicReplica.close();
+  closeOnRead = true;
+  await assert.rejects(tasks.doc('specified-id').get(), error => error.code === 'ReplicaDatabaseClosed');
+  await diagnosticClose;
   historyReplica = await client.openReplica({ name, collections: {} });
   await historyReplica.removeCollection('scratch');
   await assert.rejects(historyReplica.removeCollection('tasks'), error => error.code === 'ReplicaRemovalBlocked');
@@ -438,7 +447,7 @@ try {
   reopenedReplica = await client.openReplica({ name, collections: { tasks: client.replicate('users').where('active', '==', true) } });
   await reopenedReplica.sync.pause();
   assert.equal((await reopenedReplica.collection('tasks').doc('specified-id').get()).exact, 9007199254740993n);
-  console.log('Packed public replica: local CRUD, dynamic watch, exact cursor pages, alias isolation, offline reopen and historical removal passed');
+  console.log('Packed public replica: local CRUD/watch/pages, alias isolation, diagnostic close fence, offline reopen and historical removal passed');
 } finally {
   stopPublicWatch();
   const cleanup = await Promise.allSettled([publicReplica?.close(), historyReplica?.close(), reopenedReplica?.close()]);

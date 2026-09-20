@@ -10,6 +10,8 @@ import { decodeBusinessPayload, encodeBusinessPayload, recordKey } from './recor
 import { inspectReplica, replayReplicaRecovery, resolveReplica, type RecoveryDecision } from './recovery.js';
 import type { DataRecord, ReplicaRecord } from './storage-types.js';
 import type { UpstreamTransport } from './upstream-types.js';
+import { openAliasBackend } from './backend.js';
+import { createNamespace } from './identity.js';
 
 type Fault = (rows: any[], context: string, commit: () => Promise<any>) => Promise<any>;
 const setup = async () => {
@@ -32,8 +34,11 @@ const setup = async () => {
   const options = { session, endpoint: 'https://example.test', database: 'app', name: crypto.randomUUID(), alias: 'people',
     source: { collection: 'users', filters: [] }, lockManager: createTestLockManager(), storage: engine };
   let storage = await openAliasStorage(options);
-  return { get storage() { return storage; }, setFault: (value?: Fault) => { fault = value; }, setReadFailure: (value?: Error) => { readFailure = value; },
-    reopen: async () => { await storage.close(); storage = await openAliasStorage(options); },
+  return { options, get storage() { return storage; }, setFault: (value?: Fault) => { fault = value; }, setReadFailure: (value?: Error) => { readFailure = value; },
+    reopen: async (closeFailure?: unknown) => {
+      if (closeFailure === undefined) await storage.close(); else await expect(storage.close()).rejects.toBe(closeFailure);
+      storage = await openAliasStorage(options);
+    },
     close: async () => { await storage.close(); await session.close(); } };
 };
 const meta = (row: ReplicaRecord) => ({ id: `${row.key}|0`, itemId: row.key, isCheckpoint: '0', docData: { ...row, _deleted: false },
@@ -430,15 +435,22 @@ describe('explicit replica recovery', () => {
         return result;
       });
       await expect(resolveReplica(env.storage, transport(), { kind: 'reset-alias', issueId: 'phase', stateToken: inspected.stateToken, discardPending: true })).rejects.toBe(unreadable);
+      if (!env.storage.signal.aborted) await new Promise<void>(resolve => env.storage.signal.addEventListener('abort', () => resolve(), { once: true }));
+      expect(env.storage.signal.reason).toBe(unreadable);
       env.setFault(); env.setReadFailure();
-      const manifest = await env.storage.readManifest();
-      expect(manifest.physicalEpochs).toHaveLength(2); expect(manifest.activePhysicalEpoch).not.toBe(inspected.physicalEpoch);
-      await env.storage.withMaintenance(async access => {
-        const old = await access.backend.openPhysical(inspected.physicalEpoch);
+      await expect(env.storage.close()).rejects.toBe(unreadable);
+      const identity = await createNamespace(env.options.endpoint, env.options.database, env.options.name, env.options.alias, env.options.session.subject);
+      const backend = await openAliasBackend({ name: `syntrix-${identity.hash}`, storage: env.options.storage });
+      let selected: string;
+      try {
+        const manifest = (await backend.manifestStorage.findDocumentsById(['manifest'], false))[0];
+        expect(manifest.physicalEpochs).toHaveLength(2); expect(manifest.activePhysicalEpoch).not.toBe(inspected.physicalEpoch);
+        selected = manifest.activePhysicalEpoch;
+        const old = await backend.openPhysical(inspected.physicalEpoch);
         expect(await old.fork.findDocumentsById([await recordKey('d', 'b')], false)).toHaveLength(1);
-      });
-      await env.reopen(); expect(await env.storage.get('b')).toBeNull();
-      expect((await env.storage.readManifest()).physicalEpochs).toEqual([manifest.activePhysicalEpoch]);
+      } finally { await backend.close(); }
+      await env.reopen(unreadable); expect(await env.storage.get('b')).toBeNull();
+      expect((await env.storage.readManifest()).physicalEpochs).toEqual([selected]);
     } finally { env.setFault(); env.setReadFailure(); await env.close(); }
   });
 });

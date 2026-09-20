@@ -423,6 +423,11 @@ include the observed request ID and returned event/document count when available
 These are local correlations, not a distributed server tracing guarantee.
 Diagnostics exclude credentials, payloads, filter values and raw error objects.
 The callback does not introduce a telemetry service.
+It runs synchronously and may close the database, unsubscribe or change accounts.
+Ownership and subscription checks run again afterward: obsolete successful
+operations reject, and inactive watches receive neither results nor errors.
+Thrown diagnostic exceptions are isolated; returned asynchronous work is not
+awaited by the SDK.
 
 Authorized HTTP polling supplies convergence. Replica synchronization does not
 automatically subscribe to WebSocket notifications: current realtime authorization

@@ -108,6 +108,8 @@ export const openAliasStorage = (options: OpenAliasStorageOptions): Promise<Alia
   let opening: Promise<AliasStorage>;
   let closing: Promise<void> | undefined;
   let cleanupFailure: unknown;
+  let backgroundFailure: unknown;
+  const laterBackgroundFailures: unknown[] = [];
   let cleanup: Promise<void> | undefined;
   const inflight = new Set<Promise<unknown>>();
   const natives = new Set<ReplicaResource>();
@@ -146,6 +148,13 @@ export const openAliasStorage = (options: OpenAliasStorageOptions): Promise<Alia
       const drained = await Promise.allSettled([stopNative(), ...[...resources].map(resource => resource.close())]);
       resources.clear();
       while (inflight.size) await Promise.allSettled([...inflight]);
+      if (backgroundFailure !== undefined) {
+        const failures = [...laterBackgroundFailures, ...drained.filter((result): result is PromiseRejectedResult => result.status === 'rejected')
+          .map(result => result.reason).filter(error => error !== backgroundFailure)];
+        try { await cleanupStorage(); } catch (error) { if (error !== backgroundFailure) failures.push(error); }
+        if (failures.length) throw new BackendCleanupError(backgroundFailure, [...new Set(failures)]);
+        throw backgroundFailure;
+      }
       for (const result of drained) if (result.status === 'rejected') throw result.reason;
       await cleanupStorage();
     })();
@@ -261,6 +270,7 @@ export const openAliasStorage = (options: OpenAliasStorageOptions): Promise<Alia
     const db = backend;
     registerAccount('manifest', db.manifestStorage, db.limits.maxManifestBytes);
     const assertLifecycle = (row: Pick<AliasManifest, 'lifecycleId' | 'state'>) => {
+      lifetime.signal.throwIfAborted();
       if (lifecycleId !== undefined && (row.lifecycleId !== lifecycleId || row.state === 'removed')) {
         const reason = new ReplicaStorageError('ReplicaRemoved', 'Alias was removed or recreated');
         lifetime.abort(reason); invalidate();
@@ -341,10 +351,16 @@ export const openAliasStorage = (options: OpenAliasStorageOptions): Promise<Alia
       if (scope.subject !== session.subject || scope.sessionVersion !== session.version || scope.definitionHash !== hash ||
         scope.physicalEpoch !== manifest.activePhysicalEpoch || scope.nativeInstanceId !== nativeInstanceId) fail('ReplicaScopeChanged', 'Request scope is obsolete');
     };
+    let publishedManifestRevision: string | undefined;
+    const publishManifestView = (manifest: NativeRow<AliasManifest>) => {
+      if (manifest._rev === publishedManifestRevision) return;
+      publishedManifestRevision = manifest._rev;
+      changes.next({ type: 'view', physicalEpoch: manifest.activePhysicalEpoch, activeSourceGeneration: manifest.activeSourceGeneration });
+    };
     const writeManifest = async (next: AliasManifest, previous: NativeRow<AliasManifest>) => {
       await assertManifest(next);
       const saved = await db.writeManifest(next, previous, 'alias-manifest');
-      changes.next({ type: 'view', physicalEpoch: saved.activePhysicalEpoch, activeSourceGeneration: saved.activeSourceGeneration });
+      publishManifestView(saved);
       return saved;
     };
     await locks.withAlias('exclusive', alias => owned(alias, 'exclusive', async () => {
@@ -377,14 +393,50 @@ export const openAliasStorage = (options: OpenAliasStorageOptions): Promise<Alia
         if (manifest.physicalEpochs.length > 1 || manifest.maintenance) await writeManifest({ ...manifest, physicalEpochs: [manifest.activePhysicalEpoch], maintenance: null }, manifest);
       } finally { releaseInitialManifest(); }
     }), lifetime.signal);
-    subscriptions.push(db.manifestStorage.changeStream().subscribe(event => {
-      for (const item of event.events) if (item.documentData) {
-        if (item.documentData.lifecycleId !== lifecycleId || item.documentData.state === 'removed') {
-          try { assertLifecycle(item.documentData); } catch { /* close() owns the observable cleanup result. */ }
-          return;
+    let manifestDirty = false;
+    let manifestReconciliation: Promise<void> | undefined;
+    const manifestFailure = (error: unknown) => {
+      if ((lifetime.signal.aborted && error === lifetime.signal.reason) || (session.signal.aborted && error === session.signal.reason)) return;
+      if (backgroundFailure === undefined) backgroundFailure = error;
+      else if (error !== backgroundFailure && !laterBackgroundFailures.includes(error)) laterBackgroundFailures.push(error);
+      lifetime.abort(error); invalidate();
+      void close().catch(closeError => { if (backgroundFailure === undefined) backgroundFailure = closeError; });
+    };
+    const reconcileManifest = () => {
+      if (manifestReconciliation || lifetime.signal.aborted) return;
+      // Broadcast events can arrive after a newer lifetime has been created.
+      // They wake a fenced read; their payload never authorizes invalidation.
+      manifestReconciliation = run(async () => {
+        while (manifestDirty && !lifetime.signal.aborted) {
+          manifestDirty = false;
+          await locks.withAlias('shared', alias => owned(alias, 'shared', async () => {
+            await withRows(db.manifestStorage, ['manifest'], db.limits.maxManifestBytes, controlBudget, async rows => {
+              const manifest = rows[0];
+              // Notification reads need only the control envelope and do not
+              // decode a recovery intent's business snapshots.
+              if (!manifest || manifest.formatVersion !== 1 || typeof manifest._rev !== 'string' || !manifest._rev || typeof manifest.lifecycleId !== 'string' || !manifest.lifecycleId ||
+                  !['creating', 'ready', 'removed'].includes(manifest.state) || typeof manifest.activePhysicalEpoch !== 'string' || !manifest.activePhysicalEpoch ||
+                  !Array.isArray(manifest.physicalEpochs) || !manifest.physicalEpochs.includes(manifest.activePhysicalEpoch) ||
+                  (manifest.activeSourceGeneration !== null && (typeof manifest.activeSourceGeneration !== 'string' || !manifest.activeSourceGeneration))) {
+                fail('ReplicaStorageCorruption', 'Invalid manifest notification control fields');
+              }
+              assertLifecycle(manifest);
+              if (canonicalJson(manifest.namespace) !== canonicalJson(identity.tuple) || manifest.definitionHash !== hash || canonicalJson(manifest.definition) !== canonicalJson(definition)) {
+                fail('ReplicaScopeChanged', 'Alias namespace or source definition differs from its durable binding');
+              }
+              publishManifestView(manifest);
+            });
+          }), lifetime.signal);
         }
-        changes.next({ type: 'view', physicalEpoch: item.documentData.activePhysicalEpoch, activeSourceGeneration: item.documentData.activeSourceGeneration });
-      }
+      });
+      void manifestReconciliation.then(() => {
+        manifestReconciliation = undefined;
+        if (manifestDirty) reconcileManifest();
+      }, error => { manifestReconciliation = undefined; manifestFailure(error); });
+    };
+    subscriptions.push(db.manifestStorage.changeStream().subscribe({
+      next: () => { manifestDirty = true; reconcileManifest(); },
+      error: manifestFailure,
     }));
     const rowsFor = async (opened: PhysicalStorage, id: string) => {
       const dk = await recordKey('d', id), mk = await recordKey('m', id);

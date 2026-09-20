@@ -106,7 +106,7 @@ export const openReplicaDatabase = async (input: OpenDatabaseOptions, environmen
       alias, operation, phase, timestamp, ...details,
       ...(phase === 'start' ? {} : { durationMs: timestamp - context.started }),
       ...(error === undefined ? {} : { code: code(error) }) });
-    try { onDiagnostic(event); } catch { /* Diagnostic observers do not own synchronization. */ }
+    try { onDiagnostic(event); } catch { /* Observer exceptions stay isolated; handoff checks fence reentrant invalidation. */ }
   };
   const snapshot = (): ReplicaSyncStatus => Object.freeze({ aliases: Object.freeze(Object.fromEntries([...aliases].filter(([, alias]) => !alias.removed).map(([name, alias]) => {
     const native = alias.nativeStatus, durable = alias.durable;
@@ -152,7 +152,7 @@ export const openReplicaDatabase = async (input: OpenDatabaseOptions, environmen
     assertAlias(alias);
     const context = correlation(); diagnostic(alias.name, name, 'start', undefined, context);
     const task = Promise.resolve().then(() => { assertAlias(alias); return operation(); }).then(result => {
-      assertAlias(alias); diagnostic(alias.name, name, 'complete', undefined, context); return result;
+      assertAlias(alias); diagnostic(alias.name, name, 'complete', undefined, context); assertAlias(alias); return result;
     }).catch(error => { diagnostic(alias.name, name, 'failed', error, context); throw error; });
     operations.add(task);
     void task.then(() => operations.delete(task), () => operations.delete(task));
@@ -215,21 +215,32 @@ export const openReplicaDatabase = async (input: OpenDatabaseOptions, environmen
     getPage: () => track(alias, 'query-page', () => alias.query.getPage(spec)) as Promise<import('../../api/replica-types.js').ReplicaQueryPage<T>>,
     watch: (onResult, onError) => {
       assertAlias(alias);
-      const context = correlation(); diagnostic(alias.name, 'watch', 'start', undefined, context);
+      const context = correlation();
       let watching = true;
-      const detach = alias.query.watch(spec, documents => {
-        if (watching && !closed && !alias.removed) {
+      let detach = () => {};
+      const stop = () => { if (!watching) return; watching = false; detach(); alias.watches.delete(stop); diagnostic(alias.name, 'watch', 'complete', undefined, context); };
+      const activeWatch = () => {
+        if (!watching || !alias.watches.has(stop)) return false;
+        try { assertAlias(alias); return true; } catch { return false; }
+      };
+      alias.watches.add(stop);
+      diagnostic(alias.name, 'watch', 'start', undefined, context);
+      if (!activeWatch()) { stop(); return stop; }
+      detach = alias.query.watch(spec, documents => {
+        if (activeWatch()) {
           diagnostic(alias.name, 'watch', 'result', undefined, context, { count: documents.length });
-          onResult(documents as ReplicaDocument<T>[]);
+          if (activeWatch()) onResult(documents as ReplicaDocument<T>[]);
         }
       }, error => {
-        if (watching && !closed && !alias.removed && !alias.removing) {
+        if (activeWatch()) {
           diagnostic(alias.name, 'watch', 'failed', error, context);
-          if (onError) onError(error); else report(error);
+          if (activeWatch()) { if (onError) onError(error); else report(error); }
         }
       });
-      const stop = () => { if (!watching) return; watching = false; detach(); alias.watches.delete(stop); diagnostic(alias.name, 'watch', 'complete', undefined, context); };
-      alias.watches.add(stop); return stop;
+      // A synchronous query callback can invalidate the subscription before
+      // query.watch returns its cancellation function.
+      if (!activeWatch()) { stop(); detach(); }
+      return stop;
     },
   } satisfies ReplicaQuery<T>);
   const collection = <T>(name: string): ReplicaCollection<T> => {
@@ -252,6 +263,7 @@ export const openReplicaDatabase = async (input: OpenDatabaseOptions, environmen
     const context = correlation(); diagnostic(name, 'remove', 'start', undefined, context);
     const removal = (async () => {
       try {
+        assert();
         if (alias) await alias.coordinator!.pause();
         await removeAliasStorage({ session, endpoint, database, name: options.name, alias: name,
           lockManager: environment.lockManager, storage: environment.storage, limits: options.storageLimits, signal: lifetime.signal });
@@ -263,7 +275,7 @@ export const openReplicaDatabase = async (input: OpenDatabaseOptions, environmen
           const results = await Promise.allSettled([alias.coordinator!.close(), alias.query.close(), alias.storage.close(), alias.statusTask]);
           throwCleanupFailures(results.flatMap(result => result.status === 'rejected' ? [result.reason] : []));
         }
-        publish(); diagnostic(name, 'remove', 'complete', undefined, context);
+        publish(); diagnostic(name, 'remove', 'complete', undefined, context); assert();
       } catch (error) { diagnostic(name, 'remove', 'failed', error, context); throw error; }
       finally { if (alias) alias.removing = false; }
     })();
@@ -297,6 +309,7 @@ export const openReplicaDatabase = async (input: OpenDatabaseOptions, environmen
       assert();
       openingAlias = { name: descriptor.name, context: correlation() };
       diagnostic(descriptor.name, 'open', 'start', undefined, openingAlias.context);
+      assert();
       const storage = await openAliasStorage({ session, endpoint, database, name: options.name, alias: descriptor.name, source: descriptor.definition,
         limits: options.storageLimits, lockManager: environment.lockManager, storage: environment.storage });
       let queryClient: ReplicaQueryClient | undefined;
@@ -307,6 +320,7 @@ export const openReplicaDatabase = async (input: OpenDatabaseOptions, environmen
           nativeStatus: { state: 'waiting', leader: false, ready: durable.sourceReady, generation: durable.generation },
           removed: false, removing: false, watches: new Set(), subscriptions: [], statusDirty: false });
         diagnostic(descriptor.name, 'open', 'complete', undefined, openingAlias.context, { physicalEpoch: durable.physicalEpoch });
+        assert();
         openingAlias = undefined;
       } catch (error) {
         const results = await Promise.allSettled([queryClient?.close(), storage.close()]);
@@ -322,8 +336,10 @@ export const openReplicaDatabase = async (input: OpenDatabaseOptions, environmen
         source: { ...source, read: async request => {
           const context = correlation(); diagnostic(alias.name, 'pull', 'start', undefined, context, { requestId: request.requestId });
           try {
+            assertAlias(alias);
             const page = await source.read(request);
             diagnostic(alias.name, 'pull', 'complete', undefined, context, { requestId: request.requestId, count: page.mode === 'events' ? page.events.length : page.documents.length });
+            assertAlias(alias);
             return page;
           } catch (error) { diagnostic(alias.name, 'pull', 'failed', error, context, { requestId: request.requestId }); throw error; }
         } },

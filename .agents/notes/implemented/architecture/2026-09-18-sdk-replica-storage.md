@@ -75,7 +75,13 @@ alias shared -> 当前 epoch -> view exclusive -> d/m + 冻结条件
 表示本地整理换代，两者独立。
 
 行与 manifest feed 只发视图失效提示。跨 tab 以持久化 manifest 为真相，source generation
-或 physical epoch 改变都需要重读；本层不实现查询索引或动态查询结果。
+或 physical epoch 改变都需要重读。通知中的 removed 或不同 lifecycleId 也不能直接撤销
+句柄：需在稳定 alias 锁内核对当前 manifest，避免旧代的迟到通知误伤已重建的新代。
+每次实际访问仍独立校验 lifetime，漏通知不允许旧句柄访问替代者。本层不实现查询索引
+或动态查询结果。
+核对任务由 alias 拥有并在 close 时排空。同一 manifest revision 的重复通知不重复发布
+视图变化；新 revision 仍能通知同代保护状态的改变。后台读取或校验真实失败时终止当前
+句柄，尝试关闭存储并保留完整错误链；重新打开后从持久化状态恢复。
 
 ### 准入、读取与容量
 

@@ -464,6 +464,7 @@ owns signatures, runnable examples, defaults, errors and browser requirements.
 | Recovery | Project private issues, durable phase/intent facts and advisory actions with bounded document inspection, including explicit authoritative current; preserve nullable edit tokens and physical-epoch guards |
 | Ownership | Browser capability checks precede lazy open; account changes invalidate old handles and pending opens, and close drains all owned work while retaining failures |
 | Diagnostics | Correlate facade lifetime, operation, session and available request/epoch/count/duration fields; exclude payloads, filter values, credentials and raw errors, without claiming distributed server tracing |
+| Diagnostic reentrancy | Recheck ownership and subscription activity after application diagnostics before delivering results or errors; callbacks may synchronously close, unsubscribe or change accounts |
 
 One elected coordinator per alias owns network work; followers use durable
 manifest state for readiness and all tabs retain local CRUD/watch. Query managers
@@ -487,6 +488,11 @@ epoch. Old handles reject the new lifetime even after missed notifications;
 stable alias locks serialize the transition, while election/query ownership is
 scoped to the lifetime. Compaction preserves that lifetime. These boundaries
 prevent a delayed old close or write from operating on a recreated alias.
+Manifest notifications are hints, including removal and lifetime changes. Verify
+the current durable manifest under the stable alias lock before invalidating a
+handle, so delayed notifications from a prior lifetime cannot retire its valid
+replacement. Per-operation lifetime checks still fence genuinely obsolete handles
+when notifications are missed.
 
 ### Conditional notification optimization
 
