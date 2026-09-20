@@ -4,12 +4,11 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "bun build src/main.ts --outfile dist/main.js --format esm && bunx serve -l 3000 -C"
+    "dev": "./start-demo.sh",
+    "typecheck": "bun ../../sdk/syntrix-client-ts/node_modules/typescript/bin/tsc --noEmit -p tsconfig.json",
+    "build": "bun run typecheck && bun build src/main.ts --target browser --format esm --splitting --outdir dist --entry-naming '[name].js' --chunk-naming 'chunks/[name]-[hash].js'"
   },
   "dependencies": {
     "@syntrix/client": "file:../../sdk/syntrix-client-ts"
-  },
-  "devDependencies": {
-    "serve": "^14.2.0"
   }
 }
