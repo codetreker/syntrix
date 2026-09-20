@@ -1,6 +1,6 @@
 import { describe, expect, spyOn, test } from 'bun:test';
 import { indexedDB, IDBKeyRange } from 'fake-indexeddb';
-import { fillObjectDataBeforeInsert, getChangedDocumentsSince, normalizeMangoQuery, prepareQuery, type RxStorage } from 'rxdb';
+import { defaultHashSha256, fillObjectDataBeforeInsert, getChangedDocumentsSince, normalizeMangoQuery, prepareQuery, type RxStorage } from 'rxdb';
 import { getRxStorageDexie } from 'rxdb/plugins/storage-dexie';
 import { DefaultTokenProvider } from '../auth/provider.js';
 import { createReplicaSession } from './session.js';
@@ -66,6 +66,36 @@ describe('downstream storage ownership', () => {
     } finally { gate.resolve(); await storage.close(); }
   });
 
+  for (const outcome of ['complete', 'failure', 'cancel'] as const) test(`scope capture waits outside maintenance drain and observes ${outcome}`, async () => {
+    const { storage } = await setup();
+    const draining = deferred(); const release = deferred();
+    const failure = new Error('maintenance storage failed');
+    storage.registerNative({ invalidate: () => {}, close: async () => {
+      draining.resolve(); await release.promise;
+      // Draining native work still needs ordinary reads; queued captures must
+      // not hold accessQueue while waiting for maintenance to finish.
+      if (!storage.signal.aborted) await storage.readManifest();
+    } });
+    const previous = await storage.captureScope();
+    const maintenance = storage.withMaintenance(async () => { if (outcome === 'failure') throw failure; }).then(() => undefined, error => error);
+    let settled = false;
+    let closing: Promise<void> | undefined;
+    try {
+      await draining.promise;
+      const capture = storage.captureScope().then(scope => { settled = true; return scope; }, error => { settled = true; return error; });
+      await new Promise(resolve => setTimeout(resolve, 5)); expect(settled).toBe(false);
+      if (outcome === 'cancel') {
+        closing = storage.close();
+        expect(await capture).toBe(storage.signal.reason);
+      }
+      release.resolve();
+      const result = await capture;
+      if (outcome === 'complete') expect(result.nativeInstanceId).not.toBe(previous.nativeInstanceId);
+      if (outcome === 'failure') expect(result).toBe(failure);
+      expect(await maintenance).toBe(outcome === 'failure' ? failure : outcome === 'cancel' ? storage.signal.reason : undefined);
+    } finally { release.resolve(); await maintenance; await closing; await storage.close(); }
+  });
+
   test('bounded access keeps the native scope valid, scans data only, and expires after its callback', async () => {
     const { storage } = await setup();
     try {
@@ -120,6 +150,34 @@ describe('downstream storage ownership', () => {
 });
 
 describe('bounded query storage access', () => {
+  for (const mode of ['current', 'historical-token', 'foreign', 'stale-revision', 'pin', 'membership', 'issue'] as const) {
+    test(`get and query agree on native download provenance: ${mode}`, async () => {
+      const { storage } = await setup();
+      const key = await recordKey('d', 'alice');
+      const token = crypto.randomUUID();
+      try {
+        await storage.withMaintenance(async access => {
+          const physical = await access.backend.openPhysical(access.manifest.activePhysicalEpoch);
+          const data = { key, kind: 'd' as const, logicalId: 'alice', existence: 'live' as const,
+            payload: encodeBusinessPayload({ value: 'downloaded' }), editToken: mode === 'historical-token' || mode === 'pin' ? token : null,
+            pin: mode === 'pin' ? { token, stage: 'await-settlement' as const } : null, wire: {},
+            _meta: { lwt: Date.now(), o: { hash: await defaultHashSha256(mode === 'foreign' ? 'foreign-source' : physical.identifier), _rev: mode === 'stale-revision' ? 0 : 1 } },
+          };
+          await access.backend.writeRecord(physical, data, undefined, 'provenance-fixture');
+          if (mode === 'membership') await access.backend.writeRecord(physical, await member('alice', '1'), undefined, 'provenance-member');
+          await access.writeManifest({ ...access.manifest, activeSourceGeneration: 'g1',
+            issues: mode === 'issue' ? [{ id: 'issue', logicalId: 'alice', code: 'conflict' }] : [] });
+        });
+        const expected = mode === 'current' || mode === 'historical-token' ? null : expect.objectContaining({ id: 'alice', value: 'downloaded' });
+        expect(await storage.get('alice')).toEqual(expected);
+        const budget = new ReadBudget(64 * 1024 * 1024);
+        const source = storage.queryAccess(budget);
+        expect(await source.withProjection({ id: 'alice' }, await source.view(), async projection => projection?.decode())).toEqual(expected);
+        expect(budget.usedBytes).toBe(0);
+      } finally { await storage.close(); }
+    });
+  }
+
   test('scans only bounded data descriptors and decodes only inside the reserved callback', async () => {
     const calls: { limit: number; skip: number; selector: any }[] = [];
     let observe = false;
@@ -400,7 +458,7 @@ describe('private alias storage', () => {
     } finally { sub.unsubscribe(); await second.close(); await env.storage.close(); }
   });
 
-  test('foreign epoch retirement cancels captured native ownership and admits a fresh scope', async () => {
+  for (const entry of ['native', 'source-guard'] as const) test(`foreign epoch retirement through ${entry} cancels captured ownership and admits a fresh scope`, async () => {
     const env = await setup();
     const second = await openAliasStorage(env.options);
     const firstScope = await env.storage.captureScope();
@@ -412,7 +470,7 @@ describe('private alias storage', () => {
         await access.backend.openPhysical(nextEpoch);
         await access.writeManifest({ ...access.manifest, activePhysicalEpoch: nextEpoch });
       });
-      await expect(native.meta.findDocumentsById(['down|1'], false)).rejects.toMatchObject({ code: 'ReplicaScopeChanged' });
+      await expect(entry === 'native' ? native.meta.findDocumentsById(['down|1'], false) : env.storage.guardSourceRead(firstScope)).rejects.toMatchObject({ code: 'ReplicaScopeChanged' });
       expect(native.ownerSignal.aborted).toBe(true);
       await expect(native.fork.findDocumentsById([], false)).rejects.toBe(native.ownerSignal.reason);
       const nextScope = await env.storage.captureScope();

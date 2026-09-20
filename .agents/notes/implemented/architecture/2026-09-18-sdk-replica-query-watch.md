@@ -26,7 +26,7 @@ Status: implemented
 | 排序 | missing、null、false、true、numeric、string；array/object 排序明确失败；默认逻辑 ID 升序，显式排序补 ID tie-break |
 | 页读取 | get/getPage 默认 100、最大 1000；cursor 绑定 alias 与规范查询、携带 typed 排序位置，不承诺跨页快照 |
 | watch | 无 limit 时返回全部匹配，有 limit 时返回动态窗口；每次交付完整、与内部缓存隔离的数组；不接受 startAfter |
-| 删除 | showDeleted 可见业务 tombstone，absence 始终不可见；保留既有 pending/pin/保护状态可见性 |
+| 删除与成员可见性 | showDeleted 可见业务 tombstone，absence 始终不可见；保留既有 pending/pin/保护状态。来源 hash 与当前 revision 匹配的下载不因 assumed 缺失或滞后而成为 pending，staged 新成员等待激活 |
 | 配置 | 异步初始化前冻结；同义 AND/in 条件规范化，相同查询共享索引，窗口大小独立 |
 
 服务端 metadata 从成员观察取得，修改 metadata 可以影响过滤、排序及回调内容。

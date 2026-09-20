@@ -58,6 +58,8 @@ payload，同 ID 可以立即重建。读出的业务内容来自 d，version/ti
 fork 插入保留原生下载来源 metadata，同时沿用 wrapper 的 revision、lwt、hooks 和
 实际写入准入。文档成功落盘而 assumed 写入失败时，重放用来源与 revision 的对应关系
 识别下载状态；后来的本地修改推进 revision，使旧来源标记失效，仍需正常上传。
+读取与查询同样核对来源 hash 和当前 revision，避免 assumed 缺失或滞后时把 staged
+下载误判为本地 pending；该判定不取消 active 成员、pin 或恢复保护的可见性。
 
 ```text
 alias shared -> 当前 epoch -> view exclusive -> d/m + 冻结条件
@@ -118,6 +120,10 @@ maintenance capability 在已有独占锁内完成 shadow 写入，不嵌套请�
 扫描或持久化进度才触发 seed 超时，不对大型集合设置 30 秒总时限。新旧代需要同时容纳。
 manifest CAS 结果不确定时先重读，无法读出选择就保留两代；成功 flip 后和重开时清理
 确认非 active 的 fork 及 paired metadata。清理完成前不建立第二个 shadow。
+
+捕获请求 scope 在进入存储访问队列前等待本句柄维护结束，避免阻塞旧 native 的 drain。
+等待者保留维护失败的原始错误，alias/session 取消可中止等待。源读取准入归属 native
+owner；发现其他句柄已切换 physical epoch 时取消该 owner，由协调器重新取得所选代。
 
 ## Alternatives
 

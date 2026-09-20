@@ -7,8 +7,10 @@ import { SyntrixError } from '../../api/errors.js';
 import { createReplicaSession } from './session.js';
 import { createTestLockManager } from './lock-manager.test-fixture.js';
 import { openAliasStorage } from './storage.js';
+import { compactAlias } from './compaction.js';
 import { createReplicaDownstream, type CoordinatorEnvironment, type ReplicaDownstream } from './coordinator.js';
 import { encodeBusinessPayload, freezeSourceDefinition } from './records.js';
+import { ReplicaStorageError } from './storage-types.js';
 import type { ReplicaSourceAdapter, SourceEventsPage } from './source-types.js';
 
 const until = async (predicate: () => boolean | Promise<boolean>) => {
@@ -161,6 +163,196 @@ test('not-clean maintenance recaptures native scope and uses capped retry schedu
     expect((await env.storage.get('pending'))?.id).toBe('pending');
     await Bun.sleep(50); expect(calls).toBe(2);
   } finally { spy.mockRestore(); await coordinator.close(); await env.storage.close(); }
+});
+
+for (const mode of ['same-handle', 'pending', 'other-handle'] as const) test(`external ${mode} compaction resumes source reads under the existing leader`, async () => {
+  const env = await fixture();
+  const maintenanceStorage = mode === 'other-handle' ? await openAliasStorage(env.options) : env.storage;
+  const contexts: Parameters<ReplicaSourceAdapter['read']>[0][] = [];
+  let elections = 0, releases = 0;
+  const coordinator = createReplicaDownstream({ storage: env.storage, source: source(async context => {
+    contexts.push(context);
+    return { ...page(`c${contexts.length}`), events: [{ type: 'upsert', document: {
+      id: 'remote', collection: 'users', version: BigInt(contexts.length), createdAt: 1n, updatedAt: BigInt(contexts.length), value: contexts.length,
+    } }] };
+  }) }, { ...immediate, leadership: () => ({ wait: async () => { elections++; }, close: async () => { releases++; } }) });
+  try {
+    await until(() => coordinator.snapshot.state === 'idle');
+    if (mode === 'pending') await env.storage.set('pending', { value: 'keep' });
+    const before = await env.storage.captureScope();
+    const result = await compactAlias(maintenanceStorage);
+    expect(result.status).toBe(mode === 'pending' ? 'not-clean' : 'compacted');
+    coordinator.refresh();
+    await until(() => contexts.length === 2 && coordinator.snapshot.state === 'idle');
+    expect(contexts[1].checkpoint).toBe('c1');
+    expect(contexts[1].expectedDatabaseIdentity).toBe('db1');
+    expect(await env.storage.get('remote')).toMatchObject({ value: 2, version: 2n });
+    expect((await env.storage.captureScope()).nativeInstanceId).not.toBe(before.nativeInstanceId);
+    if (mode === 'pending') expect(await env.storage.get('pending')).toMatchObject({ value: 'keep' });
+    expect(coordinator.snapshot).toMatchObject({ state: 'idle', ready: true, leader: true, error: undefined });
+    expect(elections).toBe(1); expect(releases).toBe(0);
+    coordinator.refresh();
+    await until(() => contexts.length === 3 && coordinator.snapshot.state === 'idle');
+    expect(contexts[2].checkpoint).toBe('c2');
+  } finally {
+    await coordinator.close();
+    if (maintenanceStorage !== env.storage) await maintenanceStorage.close();
+    await env.storage.close();
+  }
+});
+
+for (const mode of ['same-handle', 'other-handle'] as const) test(`external ${mode} maintenance during a source round resumes its durable cursor`, async () => {
+  const env = await fixture();
+  const maintenanceStorage = mode === 'other-handle' ? await openAliasStorage(env.options) : env.storage;
+  const contexts: Parameters<ReplicaSourceAdapter['read']>[0][] = [];
+  let releaseRead!: () => void;
+  let elections = 0;
+  const coordinator = createReplicaDownstream({ storage: env.storage, source: source(async context => {
+    contexts.push(context);
+    if (contexts.length === 2) await new Promise<void>((resolve, reject) => {
+      releaseRead = resolve;
+      context.signal.addEventListener('abort', () => reject(context.signal.reason), { once: true });
+    });
+    return page(`c${contexts.length}`);
+  }) }, { ...immediate, leadership: () => ({ wait: async () => { elections++; }, close: async () => {} }) });
+  try {
+    await until(() => coordinator.snapshot.state === 'idle');
+    coordinator.refresh();
+    await until(() => contexts.length === 2);
+    expect((await compactAlias(maintenanceStorage)).status).toBe('compacted');
+    releaseRead();
+    await until(() => contexts.length === 3 && coordinator.snapshot.state === 'idle');
+    expect(contexts[2].checkpoint).toBe('c1');
+    expect(coordinator.snapshot).toMatchObject({ state: 'idle', leader: true, error: undefined });
+    expect(elections).toBe(1);
+  } finally {
+    releaseRead?.(); await coordinator.close();
+    if (maintenanceStorage !== env.storage) await maintenanceStorage.close();
+    await env.storage.close();
+  }
+});
+
+test('retired coordinator waits for maintenance drain before capturing replacement handles', async () => {
+  const env = await fixture(); let calls = 0, capturing = false, captured = false;
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const coordinator = createReplicaDownstream({ storage: env.storage, source: source(async () => { calls++; return page(`c${calls}`); }) }, immediate);
+  let maintenance: ReturnType<typeof compactAlias> | undefined;
+  let scopeSpy: ReturnType<typeof spyOn> | undefined;
+  let unregister = () => {};
+  try {
+    await until(() => coordinator.snapshot.state === 'idle');
+    unregister = env.storage.registerNative({ invalidate() {}, close: () => gate });
+    const capture = env.storage.captureScope;
+    scopeSpy = spyOn(env.storage, 'captureScope').mockImplementation(async requestId => {
+      capturing = true;
+      const result = await capture(requestId);
+      captured = true;
+      return result;
+    });
+    maintenance = compactAlias(env.storage);
+    coordinator.refresh();
+    await until(() => capturing);
+    expect(captured).toBe(false); expect(calls).toBe(1);
+    expect(coordinator.snapshot.state).toBe('syncing');
+    release();
+    expect((await maintenance).status).toBe('compacted');
+    await until(() => calls === 2 && coordinator.snapshot.state === 'idle');
+    expect(captured).toBe(true); expect(coordinator.snapshot.leader).toBe(true);
+  } finally {
+    release(); unregister(); scopeSpy?.mockRestore(); await maintenance;
+    await coordinator.close(); await env.storage.close();
+  }
+});
+
+test('maintenance between scope capture and handle acquisition recaptures the retired instance', async () => {
+  const env = await fixture();
+  const capture = env.storage.captureScope;
+  let captures = 0, reads = 0;
+  const spy = spyOn(env.storage, 'captureScope').mockImplementation(async requestId => {
+    const scope = await capture(requestId);
+    if (++captures === 1) expect((await compactAlias(env.storage)).status).toBe('not-clean');
+    return scope;
+  });
+  const coordinator = createReplicaDownstream({ storage: env.storage, source: source(async () => { reads++; return page(); }) }, immediate);
+  try {
+    await until(() => coordinator.snapshot.state === 'idle');
+    expect(captures).toBe(2); expect(reads).toBe(1);
+    expect(coordinator.snapshot.leader).toBe(true);
+  } finally { spy.mockRestore(); await coordinator.close(); await env.storage.close(); }
+});
+
+test('maintenance drain between scope capture and handle acquisition waits for a replacement', async () => {
+  const env = await fixture();
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const unregister = env.storage.registerNative({ invalidate() {}, close: () => gate });
+  const capture = env.storage.captureScope;
+  let captures = 0, reads = 0, elections = 0;
+  let maintenance: ReturnType<typeof compactAlias> | undefined;
+  const spy = spyOn(env.storage, 'captureScope').mockImplementation(async requestId => {
+    const attempt = ++captures;
+    const scope = await capture(requestId);
+    if (attempt === 1) maintenance = compactAlias(env.storage);
+    return scope;
+  });
+  const coordinator = createReplicaDownstream({ storage: env.storage, source: source(async () => { reads++; return page(); }) }, {
+    ...immediate, leadership: () => ({ wait: async () => { elections++; }, close: async () => {} }),
+  });
+  try {
+    await until(() => captures === 2 || coordinator.snapshot.state === 'blocked');
+    expect(coordinator.snapshot.state).toBe('syncing');
+    expect(captures).toBe(2); expect(reads).toBe(0);
+    release();
+    expect((await maintenance!).status).toBe('not-clean');
+    await until(() => coordinator.snapshot.state === 'idle');
+    expect(captures).toBe(2); expect(reads).toBe(1); expect(elections).toBe(1);
+  } finally {
+    release(); unregister(); spy.mockRestore(); await maintenance;
+    await coordinator.close(); await env.storage.close();
+  }
+});
+
+for (const code of ['ReplicaScopeChanged', 'ReplicaMaintenance']) test(`${code} without a retired instance blocks instead of retrying`, async () => {
+  const env = await fixture();
+  const failure = new ReplicaStorageError(code, 'Native instance admission was revoked');
+  const spy = spyOn(env.storage, 'native').mockRejectedValue(failure);
+  let reads = 0;
+  const coordinator = createReplicaDownstream({ storage: env.storage, source: source(async () => { reads++; return page(); }) }, immediate);
+  try {
+    await until(() => coordinator.snapshot.state === 'blocked');
+    expect(coordinator.snapshot.error).toBe(failure);
+    expect(spy).toHaveBeenCalledTimes(1); expect(reads).toBe(0);
+  } finally { spy.mockRestore(); await coordinator.close(); await env.storage.close(); }
+});
+
+test('a real storage failure during external retirement blocks and remains observable on drain', async () => {
+  const env = await fixture();
+  const database = await env.storage.withMaintenance(async access => access.backend.database);
+  const failure = new Error('durable metadata failed during retirement');
+  let entered = false, release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const native = env.storage.native;
+  const spy = spyOn(env.storage, 'native').mockImplementation(async scope => {
+    const handles = await native(scope);
+    return { ...handles, meta: new Proxy(handles.meta, { get(target, key) {
+      if (key === 'findDocumentsById') return async () => { entered = true; await gate; throw failure; };
+      const value = Reflect.get(target, key); return typeof value === 'function' ? value.bind(target) : value;
+    } }) };
+  });
+  const coordinator = createReplicaDownstream({ storage: env.storage, source: source(async () => page()) }, immediate);
+  try {
+    await until(() => entered);
+    const maintenance = compactAlias(env.storage).catch(error => error);
+    release();
+    expect(await maintenance).toBe(failure);
+    await until(() => coordinator.snapshot.state === 'blocked');
+    expect(coordinator.snapshot.error).toBe(failure);
+    await expect(coordinator.close()).rejects.toBe(failure);
+    await expect(env.storage.close()).rejects.toBe(failure);
+  } finally {
+    release(); spy.mockRestore(); await Promise.allSettled([coordinator.close(), env.storage.close()]); await database.close();
+  }
 });
 
 test('unexpected controlled upstream conflicts block without overwriting pending content', async () => {

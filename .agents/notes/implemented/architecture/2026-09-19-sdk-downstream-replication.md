@@ -42,6 +42,11 @@ generation 一致。窗口与新的空 cursor 初始化允许产生新 generatio
 不会阻止成员退出；控制记录冲突必须失败并重放。下载覆盖 clean d 时从实际 previous
 保留 editToken/pin，并继续使用原 revision CAS，不能覆盖后来编辑。
 
+get/query/watch 共用 pending 判定：下载来源 hash 与当前 revision 同时匹配的 d 不因
+assumed 缺失或滞后而成为本地 pending。因此 staged 新成员在激活前保持隐藏，metadata
+写入失败和重开也不泄漏成员。后续真实编辑推进 revision，恢复正常 pending 判定；
+active 成员、pin 与恢复保护仍独立保留可见性。
+
 ```text
 一个源响应 -> 完整校验与只读投影预检 -> 绑定/准备目标 generation
            -> 有界 d/m/c 批次 -> 原生 fork -> assumed -> checkpoint
@@ -96,6 +101,11 @@ metadata、checkpoint 都完成后才 CAS 激活新 generation。确认丢失时
 空闲边界根据已有存储建议触发整理，使用默认 30s 维护退避。整理成功、not-clean 或
 已验证回退完成的容量/超时失败后都重新捕获 scope/native；回退验证要求 active epoch
 不变、维护状态已清理且只剩原物理代。未知持久化结果保持阻塞，不能盲目恢复。
+
+同句柄或其他句柄发起维护时，协调器保留 leadership，识别旧 native owner 的取消并
+等待退出，再从所选持久化代重建 adapter/runtime。捕获 scope 等待同句柄维护结束；
+捕获与取得 native 之间的竞争仅在重新捕获证明同会话、同定义的实例已更换时重试。
+真实持久化或 drain 错误仍阻塞，alias/session 关闭不能触发重启。
 
 ## Alternatives
 

@@ -1,6 +1,6 @@
 import { defaultHashSha256, type RxReplicationWriteToMasterRow, type WithDeleted } from 'rxdb';
 import { BehaviorSubject, type Observable } from 'rxjs';
-import type { AliasStorage } from './storage.js';
+import type { AliasStorage, RequestScope } from './storage.js';
 import { ReplicaStorageError, type ReplicaRecord } from './storage-types.js';
 import type { ReplicaSourceAdapter } from './source-types.js';
 import { createDownstreamAdapter } from './downstream.js';
@@ -44,6 +44,16 @@ const environment: CoordinatorEnvironment = {
 class SourceReadFailure extends Error {
   constructor(readonly original: unknown) { super('Replica source read failed'); }
 }
+type NativeOwner = {
+  scope: RequestScope;
+  signal: AbortSignal;
+  adapter: ReturnType<typeof createDownstreamAdapter>;
+  runtime?: ReplicationRuntime;
+  unregister?: () => void;
+};
+class NativeRetired extends Error {
+  constructor(readonly owner: NativeOwner) { super('Replica native owner was retired'); }
+}
 const field = (error: unknown, key: string): unknown => typeof error === 'object' && error !== null ? Reflect.get(error, key) : undefined;
 const transientRead = (error: unknown): boolean => {
   if (['UNAUTHORIZED', 'FORBIDDEN', 'AUTH_SESSION_CHANGED', 'DATABASE_IDENTITY_MISMATCH',
@@ -77,9 +87,7 @@ export const createReplicaDownstream = (input: ReplicaDownstreamOptions, clock: 
   let reconcileTimer: ReturnType<typeof setTimeout> | undefined;
   let running: Promise<void> | undefined;
   let closing: Promise<void> | undefined;
-  let native: ReplicationRuntime | undefined;
-  let adapter: ReturnType<typeof createDownstreamAdapter> | undefined;
-  let unregisterNative: (() => void) | undefined;
+  let native: NativeOwner | undefined;
   let unregister = () => {};
   const publish = (patch: Partial<ReplicaDownstreamStatus>) => {
     if (closed && patch.state !== 'closed') return;
@@ -106,10 +114,16 @@ export const createReplicaDownstream = (input: ReplicaDownstreamOptions, clock: 
       if (error !== owned.error || !handled) throw error;
     }
   };
-  const drainNative = async () => {
-    if (native) await closeNative(native);
-    native = undefined; adapter = undefined;
-    unregisterNative?.(); unregisterNative = undefined;
+  const drainNative = async (owned = native) => {
+    if (!owned) return;
+    if (owned.runtime) await closeNative(owned.runtime);
+    owned.unregister?.();
+    if (native === owned) native = undefined;
+  };
+  const assertOwner = (owned: NativeOwner) => {
+    active();
+    if (owned.runtime?.error !== undefined) throw owned.runtime.error;
+    if (owned.signal.aborted) throw new NativeRetired(owned);
   };
   const block = (error: unknown) => {
     blocked = true; dirty = false;
@@ -134,7 +148,22 @@ export const createReplicaDownstream = (input: ReplicaDownstreamOptions, clock: 
   };
   const createNative = async () => {
     await reconcile();
-    const scope = await storage.captureScope();
+    let scope = await storage.captureScope();
+    let handles: Awaited<ReturnType<AliasStorage['native']>>;
+    while (true) {
+      active();
+      try { handles = await storage.native(scope); break; }
+      catch (error) {
+        active();
+        if (!['ReplicaScopeChanged', 'ReplicaMaintenance'].includes(String(field(error, 'code')))) throw error;
+        const current = await storage.captureScope();
+        // There is no captured owner signal until native() returns. Retry this
+        // handoff only when a fresh scope proves that its instance was retired.
+        if (current.subject !== scope.subject || current.sessionVersion !== scope.sessionVersion || current.definitionHash !== scope.definitionHash ||
+            current.physicalEpoch === scope.physicalEpoch && current.nativeInstanceId === scope.nativeInstanceId) throw error;
+        scope = current;
+      }
+    }
     active();
     const guardedSource: ReplicaSourceAdapter = { ...input.source, read: async context => {
       try { return await input.source.read(context); }
@@ -143,14 +172,18 @@ export const createReplicaDownstream = (input: ReplicaDownstreamOptions, clock: 
         throw new SourceReadFailure(error);
       }
     } };
-    adapter = createDownstreamAdapter({ storage, scope, source: guardedSource, requestRefresh: () => request(0) });
-    await adapter.recover(abort.signal);
-    await adapter.beginRound({ reset });
+    const owned: NativeOwner = {
+      scope, signal: handles.ownerSignal,
+      adapter: createDownstreamAdapter({ storage, scope, source: guardedSource, requestRefresh: () => request(0) }),
+    };
+    native = owned;
+    assertOwner(owned);
+    await owned.adapter.recover(AbortSignal.any([owned.signal, abort.signal]));
+    assertOwner(owned);
+    await owned.adapter.beginRound({ reset });
+    assertOwner(owned);
     reset = false;
-    const handles = await storage.native(scope);
-    active();
-    const currentAdapter = adapter;
-    native = createReplicationRuntime({
+    owned.runtime = createReplicationRuntime({
       identifier: handles.identifier, forkInstance: handles.fork, metaInstance: handles.meta,
       hashFunction: defaultHashSha256, conflictHandler: { isEqual: businessEqual, resolve: async () => {
         throw new ReplicaStorageError('ReplicaConflictUnresolved', 'Replica upstream conflicts require recovery before further replication');
@@ -158,26 +191,35 @@ export const createReplicaDownstream = (input: ReplicaDownstreamOptions, clock: 
       ownerSignal: AbortSignal.any([handles.ownerSignal, abort.signal]), pullBatchSize: 201,
       upstreamEnabled: input.writeRemote !== undefined, writeRemote: input.writeRemote,
       isControlDocument: row => row.kind !== 'd',
-      readSource: currentAdapter.readSource, onCheckpoint: currentAdapter.onCheckpoint,
-      onUpCheckpoint: currentAdapter.onUpCheckpoint,
+      readSource: owned.adapter.readSource, onCheckpoint: owned.adapter.onCheckpoint,
+      onUpCheckpoint: owned.adapter.onUpCheckpoint,
       onError: () => request(0),
     });
-    const owned = native;
-    unregisterNative = storage.registerNative({ invalidate() {}, close: () => closeNative(owned) });
+    owned.unregister = storage.registerNative({ invalidate() {}, close: () => closeNative(owned.runtime!) });
+    return owned;
   };
   const run = async () => {
+    let owned = native;
     try {
       dirty = false; dirtyAt = Infinity;
       publish({ state: 'syncing', error: undefined, retryAt: undefined });
-      if (!native) await createNative();
+      if (!owned) owned = await createNative();
       else {
-        await native.waitForIdle();
-        await adapter!.beginRound();
-        native.requestResync();
+        assertOwner(owned);
+        await owned.runtime!.waitForIdle();
+        assertOwner(owned);
+        // A different alias handle can replace the epoch without notifying this
+        // owner until its next guarded storage operation.
+        await storage.withReplicationAccess(owned.scope, async () => {});
+        assertOwner(owned);
+        await owned.adapter.beginRound();
+        assertOwner(owned);
+        owned.runtime!.requestResync();
       }
-      await native!.waitForIdle();
-      active();
+      await owned.runtime!.waitForIdle();
+      assertOwner(owned);
       await reconcile();
+      assertOwner(owned);
       retryAttempt = 0; retryAt = 0;
       publish({ state: 'idle' });
       if (!dirty && clock.now() >= maintenanceAt && (await storage.stats()).shouldCompact) {
@@ -200,9 +242,13 @@ export const createReplicaDownstream = (input: ReplicaDownstreamOptions, clock: 
       }
     } catch (error) {
       if (closed || abort.signal.aborted) return;
-      try { await drainNative(); }
+      owned ??= native;
+      const retired = owned?.signal.aborted && (error instanceof NativeRetired && error.owner === owned || error === owned.signal.reason);
+      try { await drainNative(owned); }
       catch (drainError) { block(drainError === error ? error : new ReplicaCleanupError([error, drainError])); return; }
-      if (error instanceof SourceReadFailure) {
+      if (retired) {
+        dirty = true; dirtyAt = clock.now();
+      } else if (error instanceof SourceReadFailure) {
         const sourceError = error.original;
         if (field(sourceError, 'code') === 'RESYNC_REQUIRED') {
           reset = true; dirty = true; retryAt = clock.now() + retryBase; dirtyAt = retryAt;

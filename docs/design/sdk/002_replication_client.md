@@ -193,6 +193,12 @@ document, and deleting a missing/deleted document is idempotent. Generated IDs a
 available alongside explicit logical IDs. Reserved metadata cannot be written as
 business fields.
 
+Pending visibility excludes a native download whose origin hash and revision match
+the current row, even if assumed metadata is missing or stale. This keeps staged
+new members hidden through partial persistence and reopen. A later local edit
+advances the revision and restores ordinary pending comparison; active membership,
+pins and recovery protections remain independent reasons for visibility.
+
 ```text
 alias shared lock -> current physical epoch -> view-write exclusive lock
   -> read d + m -> evaluate frozen ifMatch -> desired + edit token + pin
@@ -317,7 +323,7 @@ identity. The existing stricter write guard remains independent.
 | Pin settlement | Require matching current token/business state and durable native up frontier, then await a later completed source round before clearing protection |
 | Leadership | One coordinator owns source work per alias using the pinned native elector; followers derive readiness from durable manifest, and coordinator recreation uses fresh election ownership |
 | Scheduling | Default 10s polling and 200ms hint coalescing; retry transient reads with capped exponential delay/jitter and Retry-After; do not retry persistence failures as network faults |
-| Maintenance | Retain coordinator leadership while replacing native ownership; restart from the selected durable epoch after clean compaction or verified safe rollback |
+| Maintenance | Retain coordinator leadership when this or another handle retires native ownership; drain and recreate from the selected durable epoch, including not-clean compaction and verified safe rollback. Scope capture waits for local maintenance; a handoff race retries only after verifying a replacement owner in the same session and definition |
 | Shutdown | Abort and drain before releasing election; preserve genuine I/O and cleanup failures, while normal cancellation and handled source rejection close safely |
 
 Without an internal write adapter, upstream scanning is disabled and pending edits

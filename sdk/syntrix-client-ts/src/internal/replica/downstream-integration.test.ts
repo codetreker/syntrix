@@ -9,7 +9,7 @@ import { DefaultTokenProvider } from '../auth/provider.js';
 import { createReplicaDownstream, type CoordinatorEnvironment, type ReplicaDownstream } from './coordinator.js';
 import { createTestLockManager } from './lock-manager.test-fixture.js';
 import { createReplicaQueryClient } from './query.js';
-import { freezeSourceDefinition } from './records.js';
+import { freezeSourceDefinition, recordKey } from './records.js';
 import { createReplicaSession } from './session.js';
 import { createReplicaHttpSource } from './source.js';
 import { openAliasStorage } from './storage.js';
@@ -111,6 +111,104 @@ const watchResults = (query: ReturnType<typeof createReplicaQueryClient>) => {
 };
 
 describe('HTTP source through native Dexie replication and query views', () => {
+  for (const prior of ['missing', 'stale'] as const) test(`staged downloads stay hidden with ${prior} assumed state until activation, but local edits remain visible`, async () => {
+    const env = await fixture(10);
+    const entered = deferred(); const release = deferred();
+    const native = env.storage.native;
+    let pause = false;
+    env.storage.native = async scope => {
+      const opened = await native(scope);
+      return { ...opened, meta: new Proxy(opened.meta, { get(target, key) {
+        if (key === 'bulkWrite') return async (...args: Parameters<typeof target.bulkWrite>) => {
+          if (pause && args[0].some(row => row.document.docData?.kind === 'd' && row.document.docData.logicalId === 'b')) {
+            pause = false; entered.resolve(); await release.promise;
+          }
+          return target.bulkWrite(...args);
+        };
+        return Reflect.get(target, key, target);
+      } }) };
+    };
+    let watcher: ReturnType<typeof watchResults> | undefined;
+    try {
+      env.handlers.push(request => Response.json(window(request, prior === 'stale' ? ['b'] : ['a'])));
+      await waitState(env.start(), 'idle');
+      if (prior === 'stale') {
+        env.handlers.push(request => Response.json(window(request, ['a']))); await env.refresh();
+      }
+      watcher = watchResults(env.query); await watcher.wait(ids => ids.join() === 'a');
+      const before = (await env.storage.readManifest()).activeSourceGeneration;
+      pause = true;
+      env.handlers.push(request => Response.json(window(request, ['b'], { documents: [upsert('b', 'new', 2n).document] })));
+      const refreshing = env.refresh(); await entered.promise;
+      expect((await env.storage.readManifest()).activeSourceGeneration).toBe(before);
+      const scope = await env.storage.captureScope();
+      await env.storage.withReplicationAccess(scope, access => access.withDocument('b', async state => {
+        expect(state.data?.payload).toContain('new'); expect(state.data?.pin).toBeNull();
+        if (prior === 'missing') expect(state.assumed).toBeUndefined();
+        else expect(state.assumed?.payload).toContain('b');
+      }));
+      expect(await env.storage.get('b')).toBeNull();
+      expect((await env.query.get()).map(row => row.id)).toEqual(['a']);
+      expect(watcher.values.every(ids => ids.join() === 'a')).toBe(true);
+      await env.storage.set('b', { value: 'local' });
+      expect(await env.storage.get('b')).toMatchObject({ value: 'local' });
+      await watcher.wait(ids => ids.join() === 'a,b');
+      release.resolve(); await refreshing;
+      await watcher.wait(ids => ids.join() === 'b');
+      expect(await env.query.get()).toMatchObject([{ id: 'b', value: 'local' }]);
+      await env.storage.withReplicationAccess(scope, access => access.withDocument('b', async state => {
+        expect(state.data?.pin?.stage).toBe('await-settlement');
+      }));
+    } finally { release.resolve(); watcher?.stop(); await env.close(); }
+  }, 20_000);
+
+  test('failed assumed write stays hidden after reopen and replay exposes only the activated window', async () => {
+    const env = await fixture(10);
+    const failure = new Error('staged assumed persistence failed');
+    const native = env.storage.native;
+    env.storage.native = async scope => {
+      const opened = await native(scope);
+      return { ...opened, meta: new Proxy(opened.meta, { get(target, key) {
+        if (key === 'bulkWrite') return async (...args: Parameters<typeof target.bulkWrite>) => {
+          if (args[0].some(row => row.document.docData?.kind === 'd' && row.document.docData.logicalId === 'b')) throw failure;
+          return target.bulkWrite(...args);
+        };
+        return Reflect.get(target, key, target);
+      } }) };
+    };
+    let watcher: ReturnType<typeof watchResults> | undefined;
+    try {
+      env.handlers.push(request => Response.json(window(request, ['a'])));
+      const owner = env.start(); await waitState(owner, 'idle');
+      watcher = watchResults(env.query); await watcher.wait(ids => ids.join() === 'a');
+      const before = (await env.storage.readManifest()).activeSourceGeneration;
+      env.handlers.push(request => Response.json(window(request, ['b'])));
+      const blocked = waitState(owner, 'blocked'); owner.refresh(); await blocked;
+      expect(owner.snapshot.error).toBe(failure);
+      expect((await env.storage.readManifest()).activeSourceGeneration).toBe(before);
+      expect(await env.storage.get('b')).toBeNull();
+      expect((await env.query.get()).map(row => row.id)).toEqual(['a']);
+      expect(watcher.values.every(ids => ids.join() === 'a')).toBe(true);
+      await expect(owner.close()).rejects.toBe(failure);
+      const recovered = await openAliasStorage(env.options);
+      const query = createReplicaQueryClient(recovered);
+      const observed = watchResults(query);
+      let restarted: ReplicaDownstream | undefined;
+      try {
+        expect(await recovered.get('b')).toBeNull();
+        await observed.wait(ids => ids.join() === 'a');
+        const opened = await recovered.native(await recovered.captureScope());
+        expect(await opened.fork.findDocumentsById([await recordKey('d', 'b')], false)).toHaveLength(1);
+        env.handlers.push(request => Response.json(window(request, ['b'])));
+        restarted = createReplicaDownstream({ storage: recovered, source: env.source, options: { pollIntervalMs: 60_000 } }, immediate);
+        await waitState(restarted, 'idle'); await observed.wait(ids => ids.join() === 'b');
+        expect(observed.values.every(ids => ids.join() === 'a' || ids.join() === 'b')).toBe(true);
+        expect(await recovered.get('a')).toBeNull();
+        expect(await recovered.get('b')).toMatchObject({ id: 'b' });
+      } finally { observed.stop(); await restarted?.close(); await query.close(); await recovered.close(); }
+    } finally { watcher?.stop(); await env.close(failure); }
+  }, 20_000);
+
   test('empty progress, retry and reopen preserve cursor, ordered same-ID events and exact values', async () => {
     const env = await fixture();
     try {
