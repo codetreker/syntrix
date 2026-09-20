@@ -65,6 +65,204 @@ const seed = async (storage: AliasStorage, rows: { id: string; generation?: stri
 const ids = (documents: readonly ReplicaDocument[]) => documents.map(document => document.id);
 
 describe('replica query with durable Dexie storage', () => {
+  test('metadata churn during reads keeps one watch live across document edits without full rescans', async () => {
+    const env = await setup();
+    const writer = await openAliasStorage(env.options);
+    await writer.set('A', { value: 0 });
+    const scope = await writer.captureScope();
+    let churn = true, writes = 0, scans = 0;
+    const metadata = async () => {
+      if (!churn) return;
+      writes++;
+      await writer.withReplicationAccess(scope, access => access.writeManifest({ ...access.manifest,
+        sourceReady: writes % 2 === 0, partialDelivery: writes % 2 !== 0,
+        stagedSourceGeneration: `staged-${writes}`,
+      }));
+    };
+    const instrumented: AliasStorage = { ...env.storage, queryAccess: budget => {
+      const access = env.storage.queryAccess(budget);
+      return { ...access,
+        scan: async (after, view) => { scans++; await metadata(); return access.scan(after, view); },
+        withProjection: async (key, view, consume) => { await metadata(); return access.withProjection(key, view, consume); },
+      };
+    } };
+    const client = createReplicaQueryClient(instrumented);
+    const results: ReplicaDocument[][] = []; const errors: unknown[] = [];
+    const stop = client.watch({}, rows => results.push(rows), error => errors.push(error));
+    try {
+      await until(() => results.length > 0 || errors.length > 0, 'watch initialization under manifest churn');
+      expect(errors).toEqual([]);
+      const initialScans = scans;
+      for (let value = 1; value <= 12; value++) {
+        await writer.update('A', { value });
+        await until(() => results.some(rows => rows[0] && 'value' in rows[0] && rows[0].value === value) || errors.length > 0, `watch value ${value} under continuing churn`);
+        expect(errors).toEqual([]);
+      }
+      expect(writes).toBeGreaterThan(8);
+      expect(scans).toBe(initialScans);
+      expect(results[results.length - 1]).toMatchObject([{ id: 'A', value: 12 }]);
+      expect(client.debugStats()).toMatchObject({ queries: 1, nodes: 1, cacheEntries: 1 });
+    } finally { churn = false; stop(); await client.close(); await writer.close(); await env.storage.close(); }
+    expect(client.debugStats()).toMatchObject({ queries: 0, nodes: 0, cacheEntries: 0, payloadBytes: 0, keyBytes: 0 });
+  }, 20_000);
+
+  test('one durable watch survives more than eight real source-generation changes and resumes row updates', async () => {
+    const env = await setup();
+    const writer = await openAliasStorage(env.options);
+    await seed(writer, [{ id: 'A', generation: 'g1' }, { id: 'B', generation: 'g2' }]);
+    const scope = await writer.captureScope();
+    let remaining = 13, changes = 0;
+    const instrumented: AliasStorage = { ...env.storage, queryAccess: budget => {
+      const access = env.storage.queryAccess(budget);
+      return { ...access, scan: async (after, view) => {
+        if (remaining > 0) {
+          remaining--; changes++;
+          await writer.withReplicationAccess(scope, current => current.writeManifest({ ...current.manifest,
+            activeSourceGeneration: current.manifest.activeSourceGeneration === 'g1' ? 'g2' : 'g1',
+            stagedSourceGeneration: null,
+          }));
+        }
+        return access.scan(after, view);
+      } };
+    } };
+    const client = createReplicaQueryClient(instrumented);
+    const results: ReplicaDocument[][] = []; const errors: unknown[] = [];
+    const stop = client.watch({}, rows => results.push(rows), error => errors.push(error));
+    try {
+      await until(() => results.length > 0 || errors.length > 0, 'original observer recovers after generation contention');
+      expect(errors).toEqual([]);
+      expect(changes).toBe(13);
+      expect(results.map(ids)).toEqual([['B']]);
+      await writer.update('B', { name: 'updated after contention' });
+      await until(() => results.some(rows => rows[0] && 'name' in rows[0] && rows[0].name === 'updated after contention') || errors.length > 0, 'same observer receives later row');
+      expect(errors).toEqual([]);
+      expect(results[results.length - 1]).toMatchObject([{ id: 'B', name: 'updated after contention' }]);
+      expect(client.debugStats()).toMatchObject({ queries: 1, nodes: 1, cacheEntries: 1 });
+    } finally { remaining = 0; stop(); await client.close(); await writer.close(); await env.storage.close(); }
+    expect(client.debugStats()).toMatchObject({ queries: 0, nodes: 0, cacheEntries: 0, payloadBytes: 0 });
+  }, 20_000);
+
+  test('overlapping dirty and issue protection changes visibility only when their ID union changes', async () => {
+    const env = await setup();
+    const writer = await openAliasStorage(env.options);
+    await seed(writer, [{ id: 'protected' }]);
+    const scope = await writer.captureScope();
+    await writer.withReplicationAccess(scope, access => access.writeManifest({ ...access.manifest,
+      dirtyUpstream: { id: 'phase-one', session: 1, physicalEpoch: access.manifest.activePhysicalEpoch,
+        mayHaveDispatched: false, targets: [{ logicalId: 'protected', token: 'edit-one' }] },
+      issues: [{ id: 'issue-one', logicalId: 'protected', code: 'conflict', token: 'edit-one' }],
+    }));
+    let scans = 0;
+    const instrumented: AliasStorage = { ...env.storage, queryAccess: budget => {
+      const access = env.storage.queryAccess(budget);
+      return { ...access, scan: (...args) => { scans++; return access.scan(...args); } };
+    } };
+    const client = createReplicaQueryClient(instrumented);
+    const results: string[][] = []; const errors: unknown[] = [];
+    const stop = client.watch({}, rows => results.push(ids(rows)), error => errors.push(error));
+    try {
+      await until(() => results.length > 0 || errors.length > 0, 'overlapping protection becomes visible');
+      expect(results).toEqual([['protected']]);
+      const originalScans = scans;
+      await writer.withReplicationAccess(scope, access => access.writeManifest({ ...access.manifest,
+        dirtyUpstream: null,
+        issues: [{ id: 'issue-two', logicalId: 'protected', code: 'uncertain', token: 'edit-two' }],
+      }));
+      expect(ids(await client.get())).toEqual(['protected']);
+      expect(scans).toBe(originalScans);
+      await writer.withReplicationAccess(scope, access => access.writeManifest({ ...access.manifest,
+        dirtyUpstream: { id: 'phase-two', session: 9, physicalEpoch: access.manifest.activePhysicalEpoch,
+          mayHaveDispatched: true, targets: [{ logicalId: 'protected', token: 'edit-three' }] }, issues: [],
+      }));
+      expect(ids(await client.get())).toEqual(['protected']);
+      expect(scans).toBe(originalScans);
+      await writer.withReplicationAccess(scope, access => access.writeManifest({ ...access.manifest, dirtyUpstream: null }));
+      await until(() => results[results.length - 1]?.length === 0 || errors.length > 0, 'last protection is removed');
+      expect(errors).toEqual([]);
+      expect(results).toEqual([['protected'], []]);
+      expect(scans).toBeGreaterThan(originalScans);
+    } finally { stop(); await client.close(); await writer.close(); await env.storage.close(); }
+  }, 20_000);
+
+  test('a discarded near-limit scan yields and recovers, while a stable oversized view still fails', async () => {
+    const env = await setup();
+    const writer = await openAliasStorage(env.options);
+    await seed(writer, ['A', 'B', 'C', 'D'].map(id => ({ id, pending: true })));
+    const scope = await writer.captureScope();
+    let projections = 0, switched = false;
+    const activity: string[] = [];
+    const instrumented: AliasStorage = { ...env.storage, queryAccess: budget => {
+      const access = env.storage.queryAccess(budget);
+      return { ...access, withProjection: async (key, view, consume) => {
+        if (++projections === 4) {
+          switched = true;
+          await writer.withReplicationAccess(scope, current => current.writeManifest({ ...current.manifest,
+            activeSourceGeneration: 'g3', stagedSourceGeneration: null,
+          }));
+        }
+        return access.withProjection(key, view, consume);
+      } };
+    } };
+    const client = createReplicaQueryClient(instrumented, { limits: { scanCandidates: 4 }, onActivity: event => activity.push(event.phase) });
+    const results: string[][] = []; const errors: unknown[] = [];
+    const stop = client.watch({}, rows => results.push(ids(rows)), error => errors.push(error));
+    try {
+      await until(() => results.length > 0 || errors.length > 0, 'near-limit watch recovers discarded work');
+      expect(switched).toBe(true);
+      expect(errors).toEqual([]);
+      expect(results).toEqual([['A', 'B', 'C', 'D']]);
+      expect(activity).toEqual(['contended', 'recovered']);
+      stop(); await client.close();
+      expect(client.debugStats()).toMatchObject({ queries: 0, nodes: 0, payloadBytes: 0 });
+      await writer.set('E', { name: 'actual extra candidate' });
+      const bounded = createReplicaQueryClient(env.storage, { limits: { scanCandidates: 4 } });
+      try {
+        await expect(bounded.get()).rejects.toMatchObject({ code: 'QueryBudgetExceeded', kind: 'scanCandidates' });
+        expect(bounded.debugStats()).toMatchObject({ queries: 0, nodes: 0, cacheEntries: 0, payloadBytes: 0 });
+      } finally { await bounded.close(); }
+    } finally { stop(); await client.close(); await writer.close(); await env.storage.close(); }
+  }, 20_000);
+
+  test('account replacement drains a contended durable watch and releases its retained resources', async () => {
+    const env = await setup();
+    const writer = await openAliasStorage(env.options);
+    await seed(writer, [{ id: 'A', pending: true }]);
+    const scope = await writer.captureScope();
+    let scans = 0;
+    const instrumented: AliasStorage = { ...env.storage, queryAccess: budget => {
+      const access = env.storage.queryAccess(budget);
+      return { ...access, scan: async (after, view) => {
+        scans++;
+        await writer.withReplicationAccess(scope, current => current.writeManifest({ ...current.manifest,
+          activeSourceGeneration: current.manifest.activeSourceGeneration === 'g1' ? 'g2' : 'g1', stagedSourceGeneration: null,
+        }));
+        return access.scan(after, view);
+      } };
+    } };
+    const activity: string[] = []; const results: ReplicaDocument[][] = []; const errors: unknown[] = [];
+    const client = createReplicaQueryClient(instrumented, { onActivity: event => activity.push(event.phase) });
+    const stop = client.watch({}, rows => results.push(rows), error => errors.push(error));
+    try {
+      await until(() => activity.includes('contended') || errors.length > 0, 'watch enters contention backoff');
+      expect(errors).toEqual([]);
+      expect(activity).toEqual(['contended']);
+      env.provider.setToken(jwt('bob'));
+      expect(await env.provider.getToken()).toBe(jwt('bob'));
+      await client.close();
+      const stoppedScans = scans;
+      const session = await createReplicaSession(env.provider);
+      const current = await openAliasStorage({ ...env.options, session });
+      const next = createReplicaQueryClient(current);
+      try {
+        await current.set('B', { name: 'new account' });
+        expect(ids(await next.get())).toEqual(['B']);
+      } finally { await next.close(); await current.close(); }
+      expect(scans).toBe(stoppedScans);
+      expect(results).toEqual([]); expect(errors).toEqual([]); expect(activity).toEqual(['contended']);
+      expect(client.debugStats()).toMatchObject({ queries: 0, nodes: 0, cacheEntries: 0, payloadBytes: 0, keyBytes: 0, queuedKeys: 0, queuedBytes: 0 });
+    } finally { stop(); await client.close(); await writer.close(); await env.storage.close(); }
+  }, 20_000);
+
   test('manifest-only cross-handle generation activation finds staged members and retains pending edits', async () => {
     const env = await setup();
     const writer = await openAliasStorage(env.options);

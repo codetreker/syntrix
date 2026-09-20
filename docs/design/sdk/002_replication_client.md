@@ -300,16 +300,21 @@ accept a continuation cursor. Returned values are isolated from the internal cac
 |---|---|
 | Sharing | One resource manager per replica database in each execution context; identical canonical queries share a matcher and full candidate AVL |
 | Ordinary changes | Coalesce d/m/assumed changes to document keys and update candidates incrementally; retain candidates outside a limited window for refill |
-| Structural changes | Rebuild a shadow view after manifest revision or physical epoch changes; active and shadow resources share the same limits, and only a complete current view can publish |
+| Structural changes | 活动 physical epoch、source generation 或保护 ID 并集改变时重建；普通 manifest 控制字段只触发核对。活动和 shadow 共享资源上限，完整有效视图才能发布 |
 | Missed notifications | Verify the manifest before publication, every 10 seconds while queries are active, and when the page becomes visible |
 | Reads | Serialize query materialization across database handles; reserve the shared 64 MiB pool before indexed reads, including manifest reads, and decode only after cache admission |
 | Retained state | Bound payload/cache, query configuration, ordering keys, nodes, queued invalidations and output throughout the query lifetime; fail explicitly rather than truncate |
 | Ownership | A closing handle releases its observers; remaining handles rebind storage access. Managers retain budgets until owned work drains, including close/reopen overlap |
-| Failure | Terminate the affected canonical query and release its resources without altering records, pending edits or replication progress; isolate application callback errors |
+| Contention | 长 watch 在有界工作或重建尝试用尽后退让并保留订阅；单次读取仍有界失败。无关控制字段变化不打断当前语义视图 |
+| Failure | 稳定视图、保留内存或输出实际超限及存储错误仍终止对应查询；不修改记录、pending 或复制进度，隔离应用回调错误 |
 
 The [query decision](../../../.agents/notes/implemented/architecture/2026-09-18-sdk-replica-query-watch.md)
 owns default quotas, algorithms and trade-offs. Public replica query references
 delegate to this local view; they do not perform implicit remote reads.
+
+扫描预算区分单个视图的硬上限和多次废弃尝试的累计工作额度。累计工作用尽只让出执行权，
+不免除真实数据及持续保留对象的预算。查询视图身份从已有字段派生，不增加存储格式或
+checkpoint；详细取舍见[视图竞争决定](../../../.agents/notes/implemented/bug-fix/2026-09-20-replica-watch-contention.md)。
 
 ## Private Downstream Coordination
 

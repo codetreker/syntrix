@@ -1,6 +1,6 @@
 import { expect, test, spyOn } from 'bun:test';
 import { Subject } from 'rxjs';
-import { createReplicaQueryClient } from './query.js';
+import { createReplicaQueryClient, type ReplicaQueryActivity } from './query.js';
 import { QueryViewChangedError, type AliasQueryAccess, type QueryView } from './query-source.js';
 import type { AliasInvalidation, AliasStorage } from './storage.js';
 import type { ReplicaDocument } from './storage-types.js';
@@ -10,7 +10,7 @@ const wait = async (condition: () => boolean) => {
 };
 const fixture = () => {
   const namespace = crypto.randomUUID(); const events = new Subject<AliasInvalidation>(); const controller = new AbortController();
-  let view: QueryView = { physicalEpoch: 'p1', sourceGeneration: 'g1', manifestRevision: 'r1' };
+  let view: QueryView = { physicalEpoch: 'p1', sourceGeneration: 'g1', visibilityHash: 'r1' };
   const rows = new Map<string, { document: ReplicaDocument; revision: number; encodedBytes: number }>();
   const counts = { scans: 0, reads: 0, decodes: 0, views: 0 };
   let beforeView: (() => void) | undefined; let afterScan: (() => void) | undefined; let beforeDecode: (() => void) | undefined;
@@ -18,13 +18,13 @@ const fixture = () => {
     databaseNamespace: namespace, namespace, signal: controller.signal, changes: events,
     view: async () => { counts.views++; beforeView?.(); return { ...view }; },
     scan: async (after, expected) => {
-      counts.scans++; if (expected.manifestRevision !== view.manifestRevision) throw new QueryViewChangedError();
+      counts.scans++; if (expected.visibilityHash !== view.visibilityHash) throw new QueryViewChangedError();
       const keys = [...rows.keys()].sort().filter(key => !after || key > after); const chosen = keys.slice(0, 4);
       const page = { view, rows: chosen.map(key => ({ key, encodedBytes: rows.get(key)!.encodedBytes })),
         lastKey: chosen[chosen.length - 1], done: keys.length <= 4 }; afterScan?.(); return page;
     },
     withProjection: async (key, expected, callback) => {
-      counts.reads++; if (expected.manifestRevision !== view.manifestRevision) throw new QueryViewChangedError();
+      counts.reads++; if (expected.visibilityHash !== view.visibilityHash) throw new QueryViewChangedError();
       const physicalKey = 'key' in key ? key.key : `d:${key.id}`; const row = rows.get(physicalKey);
       return callback(row ? { id: row.document.id, key: physicalKey, revision: String(row.revision), encodedBytes: row.encodedBytes,
         visible: true, decode: () => { beforeDecode?.(); counts.decodes++; return structuredClone(row.document); } } : null);
@@ -38,7 +38,7 @@ const fixture = () => {
   return { storage, access, rows, counts, controller, events, set,
     setBeforeView: (hook?: () => void) => { beforeView = hook; }, setAfterScan: (hook?: () => void) => { afterScan = hook; },
     setBeforeDecode: (hook?: () => void) => { beforeDecode = hook; },
-    changeView: (notify = true) => { view = { ...view, manifestRevision: crypto.randomUUID() }; if (notify) events.next({ type: 'view', physicalEpoch: view.physicalEpoch, activeSourceGeneration: view.sourceGeneration }); }
+    changeView: (notify = true) => { view = { ...view, visibilityHash: crypto.randomUUID() }; if (notify) events.next({ type: 'view', physicalEpoch: view.physicalEpoch, activeSourceGeneration: view.sourceGeneration }); }
   };
 };
 
@@ -218,4 +218,203 @@ test('storage failures preserve the original error and release all query charges
   const env = fixture(); env.set('a', {}, false); const failure = new Error('disk failed');
   env.access.withProjection = async () => { throw failure; }; const client = createReplicaQueryClient(env.storage);
   await expect(client.get()).rejects.toBe(failure); await client.close(); expect(client.debugStats()).toMatchObject({ payloadBytes: 0, nodes: 0, keyBytes: 0 });
+});
+
+
+test('a watch survives repeated view contention with capped backoff and reports one recovery episode', async () => {
+  const env = fixture(); env.set('a', {}, false); let remaining = 80;
+  env.setBeforeView(() => { if (remaining-- > 0) env.changeView(false); });
+  const delays: number[] = []; const timeout = globalThis.setTimeout;
+  const timer = spyOn(globalThis, 'setTimeout').mockImplementation(((callback: (...args: any[]) => void, delay?: number, ...args: any[]) => {
+    if (delay !== undefined && delay >= 25 && delay <= 200) delays.push(delay);
+    return timeout(callback, delay, ...args);
+  }) as typeof setTimeout);
+  const activities: ReplicaQueryActivity[] = []; const outputs: ReplicaDocument[][] = []; const errors: unknown[] = [];
+  const client = createReplicaQueryClient(env.storage, { onActivity: event => activities.push(event) });
+  client.watch({}, docs => outputs.push(docs), error => errors.push(error));
+  try {
+    await wait(() => outputs.length === 1);
+    expect(delays).toEqual([25, 50, 100, 200, 200]); expect(errors).toEqual([]);
+    expect(activities.map(event => event.phase)).toEqual(['contended', 'recovered']);
+    expect(activities[0].operationId).toBe(activities[1].operationId);
+    expect(activities[0].code).toBe('ReplicaQueryViewContention');
+    expect(Object.keys(activities[0]).sort()).toEqual(['code', 'operationId', 'phase', 'startedAt']);
+    expect(client.debugStats().queries).toBe(1);
+  } finally { timer.mockRestore(); await client.close(); }
+  expect(client.debugStats()).toMatchObject({ payloadBytes: 0, keyBytes: 0, queuedKeys: 0, nodes: 0 });
+});
+
+test('control notifications with unchanged semantic identity do not rebuild or starve row updates', async () => {
+  const env = fixture(); env.set('a', { value: 1 }, false);
+  env.setBeforeView(() => env.events.next({ type: 'view', physicalEpoch: 'p1', activeSourceGeneration: 'g1' }));
+  const activities: ReplicaQueryActivity[] = []; const outputs: ReplicaDocument[][] = [];
+  const client = createReplicaQueryClient(env.storage, { onActivity: event => activities.push(event) }); client.watch({}, docs => outputs.push(docs));
+  try {
+    await wait(() => outputs.length === 1); const scans = env.counts.scans;
+    for (let value = 2; value <= 12; value++) { env.set('a', { value }); await wait(() => outputs.length === value); }
+    expect(env.counts.scans).toBe(scans); expect(activities).toEqual([]); expect(outputs[11][0]).toMatchObject({ value: 12 });
+  } finally { await client.close(); }
+});
+
+test('one-off reads fail finitely while the same canonical watch and another alias continue', async () => {
+  const env = fixture(); env.set('a', {}, false); env.setBeforeView(() => env.changeView(false));
+  const activities: ReplicaQueryActivity[] = []; const outputs: ReplicaDocument[][] = []; const errors: unknown[] = [];
+  const client = createReplicaQueryClient(env.storage, { onActivity: event => activities.push(event) });
+  client.watch({}, docs => outputs.push(docs), error => errors.push(error));
+  const once = client.get().then(value => ({ value }), error => ({ error }));
+  try {
+    await wait(() => activities.length > 0);
+    expect(await once).toMatchObject({ error: { code: 'QueryBudgetExceeded', kind: 'rebuildAttempts' } });
+    expect(client.debugStats().queries).toBe(1);
+    const other = fixture(); other.set('b', {}, false);
+    const independent = createReplicaQueryClient({ ...other.storage, databaseNamespace: env.storage.databaseNamespace } as AliasStorage);
+    try { expect((await independent.get())[0].id).toBe('b'); } finally { await independent.close(); }
+    env.setBeforeView(undefined); await wait(() => outputs.length === 1);
+    expect(errors).toEqual([]); expect(activities.map(event => event.phase)).toEqual(['contended', 'recovered']);
+  } finally { await client.close(); }
+});
+
+test('discarded scan work yields without converting a legal near-limit view into a terminal budget error', async () => {
+  for (const limits of [{ scanCandidates: 8 }, { scanBytes: 800 }]) {
+    const env = fixture(); for (let i = 0; i < 6; i++) env.set(String(i), {}, false);
+    const original = env.access.withProjection; let changed = false;
+    env.access.withProjection = async (key, expected, callback) => {
+      const value = await original(key, expected, callback);
+      if (!changed && env.counts.reads === 4) { changed = true; env.changeView(false); }
+      return value;
+    };
+    const activities: ReplicaQueryActivity[] = []; const outputs: ReplicaDocument[][] = []; const errors: unknown[] = [];
+    const client = createReplicaQueryClient(env.storage, { limits, onActivity: event => activities.push(event) });
+    client.watch({}, docs => outputs.push(docs), error => errors.push(error));
+    try {
+      await wait(() => outputs.length === 1 || errors.length > 0);
+      expect(errors).toEqual([]); expect(outputs[0]).toHaveLength(6);
+      expect(activities.map(event => event.phase)).toEqual(['contended', 'recovered']);
+      expect(activities[0].code).toBe('ReplicaQueryWorkContention');
+    } finally { await client.close(); }
+    expect(client.debugStats()).toMatchObject({ payloadBytes: 0, keyBytes: 0, nodes: 0 });
+  }
+});
+
+test('continuous incremental work yields with queued IDs and installed candidates intact', async () => {
+  const env = fixture(); env.set('a', { value: 0 }, false); env.set('b', { value: 1 }, false);
+  const activities: ReplicaQueryActivity[] = []; const outputs: ReplicaDocument[][] = []; const errors: unknown[] = [];
+  const client = createReplicaQueryClient(env.storage, { limits: { scanCandidates: 3 }, onActivity: event => activities.push(event) });
+  client.watch({}, docs => outputs.push(docs), error => errors.push(error));
+  try {
+    await wait(() => outputs.length === 1); const scans = env.counts.scans; let edits = 0;
+    env.setBeforeDecode(() => { if (++edits <= 10) env.set('a', { value: edits + 1 }); });
+    env.set('a', { value: 1 }); await wait(() => outputs.length === 2 || errors.length > 0);
+    expect(errors).toEqual([]); expect(outputs[1][0]).toMatchObject({ value: 11 }); expect(env.counts.scans).toBe(scans);
+    expect(activities.map(event => event.phase)).toEqual(['contended', 'recovered']);
+    expect(client.debugStats()).toMatchObject({ nodes: 2, queuedKeys: 0 });
+  } finally { await client.close(); }
+});
+
+test('a full scan at its work limit retains progress before reconciling initialization writes', async () => {
+  const env = fixture(); for (let i = 0; i < 4; i++) env.set(String(i), { value: 0 }, false);
+  let changed = false; env.setAfterScan(() => { if (!changed) { changed = true; env.set('0', { value: 1 }); } });
+  const outputs: ReplicaDocument[][] = []; const errors: unknown[] = []; const activities: ReplicaQueryActivity[] = [];
+  const client = createReplicaQueryClient(env.storage, { limits: { scanCandidates: 4 }, onActivity: event => activities.push(event) });
+  client.watch({}, docs => outputs.push(docs), error => errors.push(error));
+  try {
+    await wait(() => outputs.length === 1 || errors.length > 0); expect(errors).toEqual([]); expect(outputs[0][0]).toMatchObject({ value: 1 });
+    expect(env.counts.scans).toBe(1); expect(activities.map(event => event.phase)).toEqual(['contended', 'recovered']);
+  } finally { await client.close(); }
+});
+
+test('stable views exceeding actual scan or output limits still terminate a watch', async () => {
+  for (const limits of [{ scanCandidates: 2 }, { scanBytes: 200 }, { outputBytes: 10 }]) {
+    const env = fixture(); for (const id of ['a', 'b', 'c']) env.set(id, {}, false);
+    const activities: ReplicaQueryActivity[] = []; const errors: any[] = [];
+    const client = createReplicaQueryClient(env.storage, { limits, onActivity: event => activities.push(event) });
+    client.watch({}, () => { throw new Error('Oversized query must not publish'); }, error => errors.push(error));
+    try {
+      await wait(() => errors.length > 0); expect(errors[0].code).toBe('QueryBudgetExceeded'); expect(activities).toEqual([]);
+      expect(client.debugStats().queries).toBe(0);
+    } finally { await client.close(); }
+  }
+});
+
+test('unsubscribe, close and account cancellation during contention remove delayed work', async () => {
+  for (const cancel of ['unsubscribe', 'close', 'account'] as const) {
+    const env = fixture(); env.set('a', {}, false); env.setBeforeView(() => env.changeView(false));
+    const activities: ReplicaQueryActivity[] = []; const outputs: ReplicaDocument[][] = [];
+    const client = createReplicaQueryClient(env.storage, { onActivity: event => activities.push(event) });
+    const stop = client.watch({}, docs => outputs.push(docs)); await wait(() => activities.length === 1);
+    if (cancel === 'unsubscribe') stop();
+    else if (cancel === 'account') env.controller.abort(new Error('Session changed'));
+    else await client.close();
+    const reads = env.counts.views; env.setBeforeView(undefined); await Bun.sleep(60);
+    expect(env.counts.views).toBe(reads); expect(outputs).toEqual([]); expect(activities).toHaveLength(1);
+    await client.close(); expect(client.debugStats()).toMatchObject({ queries: 0, nodes: 0, payloadBytes: 0, keyBytes: 0 });
+  }
+});
+
+test('activity callbacks can synchronously close their owner without leaving retry work', async () => {
+  const env = fixture(); env.set('a', {}, false); env.setBeforeView(() => env.changeView(false));
+  let closing: Promise<void> | undefined; let activities = 0;
+  const client = createReplicaQueryClient(env.storage, { onActivity: () => { activities++; closing = client.close(); } });
+  client.watch({}, () => { throw new Error('Closed observer must not publish'); });
+  await wait(() => closing !== undefined); await closing; const reads = env.counts.views; await Bun.sleep(40);
+  expect(activities).toBe(1); expect(env.counts.views).toBe(reads); expect(client.debugStats().queries).toBe(0);
+});
+
+
+test('a view notification arriving after the final view snapshot schedules another identity check', async () => {
+  const env = fixture(); env.set('a', {}, false); const original = env.access.view; let reads = 0;
+  env.access.view = async () => {
+    const captured = await original();
+    if (++reads === 3) { env.rows.clear(); env.set('b', {}, false); env.changeView(); }
+    return captured;
+  };
+  const outputs: string[][] = []; const client = createReplicaQueryClient(env.storage); client.watch({}, docs => outputs.push(docs.map(doc => doc.id)));
+  try { await wait(() => outputs.some(ids => ids[0] === 'b')); expect(outputs[outputs.length - 1]).toEqual(['b']); }
+  finally { await client.close(); }
+});
+
+test('shared contention diagnostics follow each active client through source handoff', async () => {
+  const env = fixture(); env.set('a', {}, false); env.setBeforeView(() => env.changeView(false));
+  const firstEvents: ReplicaQueryActivity[] = [], secondEvents: ReplicaQueryActivity[] = []; const errors: unknown[] = [];
+  const first = createReplicaQueryClient(env.storage, { onActivity: event => firstEvents.push(event) });
+  const otherSignal = new AbortController();
+  const secondStorage = { ...env.storage, queryAccess: () => ({ ...env.access, signal: otherSignal.signal }) } as AliasStorage;
+  const second = createReplicaQueryClient(secondStorage, { onActivity: event => secondEvents.push(event) });
+  first.watch({}, () => undefined, error => errors.push(error)); const outputs: ReplicaDocument[][] = [];
+  second.watch({}, docs => outputs.push(docs), error => errors.push(error)); second.watch({ limit: 1 }, () => undefined, error => errors.push(error));
+  try {
+    await wait(() => firstEvents.length === 1 && secondEvents.length === 1);
+    expect(firstEvents[0].operationId).toBe(secondEvents[0].operationId);
+    env.setBeforeView(undefined); env.controller.abort(new Error('Retired source')); await first.close(); await wait(() => outputs.length === 1);
+    expect(firstEvents.map(event => event.phase)).toEqual(['contended']); expect(secondEvents.map(event => event.phase)).toEqual(['contended', 'recovered']);
+    expect(errors).toEqual([]); expect(outputs[0][0].id).toBe('a');
+  } finally { await first.close(); await second.close(); }
+});
+
+test('storage failure during a retry stays terminal and does not report a false recovery', async () => {
+  const env = fixture(); env.set('a', {}, false); env.setBeforeView(() => env.changeView(false)); const failure = new Error('storage failed');
+  const activities: ReplicaQueryActivity[] = []; const errors: unknown[] = [];
+  const client = createReplicaQueryClient(env.storage, { onActivity: event => {
+    activities.push(event); env.setBeforeView(() => { throw failure; }); throw new Error('diagnostic observer failed');
+  } });
+  client.watch({}, () => undefined, error => errors.push(error));
+  try { await wait(() => errors.length === 1); expect(errors).toEqual([failure]); expect(activities.map(event => event.phase)).toEqual(['contended']); }
+  finally { await client.close(); }
+  expect(client.debugStats()).toMatchObject({ queries: 0, nodes: 0, payloadBytes: 0, keyBytes: 0 });
+});
+
+
+test('an unrelated storage failure is not retried merely because its source closed concurrently', async () => {
+  const env = fixture(); env.set('a', {}, false); let release!: () => void; const gate = new Promise<void>(resolve => { release = resolve; });
+  const failure = new Error('storage corruption'); const originalView = env.access.view; let started = false;
+  env.access.view = async () => { started = true; await gate; throw failure; };
+  const first = createReplicaQueryClient(env.storage); first.watch({}, () => undefined);
+  const secondAccess = { ...env.access, signal: new AbortController().signal, view: originalView };
+  const second = createReplicaQueryClient({ ...env.storage, queryAccess: () => secondAccess } as AliasStorage);
+  const errors: unknown[] = []; const outputs: ReplicaDocument[][] = [];
+  second.watch({}, docs => outputs.push(docs), error => errors.push(error));
+  try {
+    await wait(() => started); env.controller.abort(new Error('Closed source')); release();
+    await wait(() => errors.length === 1); expect(errors).toEqual([failure]); expect(outputs).toEqual([]);
+  } finally { release(); await first.close(); await second.close(); }
 });

@@ -263,7 +263,39 @@ describe('bounded query storage access', () => {
     } finally { spy?.mockRestore(); await env.storage.close(); }
   });
 
-  test('view revisions detect generation and same-generation protection changes', async () => {
+  for (const corrupted of ['namespace', 'definition', 'lifecycle', 'protection-count'] as const) {
+    test(`cached query fingerprints never bypass ${corrupted} validation`, async () => {
+      let inject = false;
+      const delegate = getRxStorageDexie({ indexedDB, IDBKeyRange });
+      const native: RxStorage<any, any> = { ...delegate, createStorageInstance: async options => {
+        const raw = await delegate.createStorageInstance(options);
+        return new Proxy(raw, { get(target, property) {
+          if (property === 'findDocumentsById' && options.collectionName === 'manifest') return async (ids: string[], deleted: boolean) => {
+            const rows = await target.findDocumentsById(ids, deleted);
+            if (!inject) return rows;
+            return rows.map((row: any) => ({ ...row,
+              ...(corrupted === 'namespace' ? { namespace: { ...row.namespace, subject: 'other-account' } } : {}),
+              ...(corrupted === 'definition' ? { definition: { ...row.definition, collection: 'other-collection' } } : {}),
+              ...(corrupted === 'lifecycle' ? { lifecycleId: 'other-lifecycle' } : {}),
+              ...(corrupted === 'protection-count' ? { issues: Array.from({ length: 201 }, (_, index) => ({ id: `issue-${index}`, logicalId: 'alice', code: 'conflict' })) } : {}),
+            }));
+          };
+          const value = Reflect.get(target, property, target); return typeof value === 'function' ? value.bind(target) : value;
+        } });
+      } };
+      const { storage } = await setup({ storage: native });
+      try {
+        const budget = new ReadBudget(64 * 1024 * 1024);
+        const source = storage.queryAccess(budget);
+        const first = await source.view(); expect(first.visibilityHash).toHaveLength(64);
+        inject = true;
+        await expect(source.view()).rejects.toMatchObject({ code: corrupted === 'lifecycle' ? 'ReplicaRemoved' : 'ReplicaStorageCorruption' });
+        expect(budget.usedBytes).toBe(0);
+      } finally { inject = false; await storage.close(); }
+    });
+  }
+
+  test('visibility fingerprints detect generation and same-generation protection changes', async () => {
     const { storage } = await setup();
     try {
       const key = await recordKey('d', 'alice');
@@ -282,7 +314,7 @@ describe('bounded query storage access', () => {
       await storage.withMaintenance(async access => { await access.writeManifest({ ...access.manifest, issues: [{ id: 'issue', logicalId: 'alice', code: 'conflict' }] }); });
       await expect(source.scan(undefined, first)).rejects.toBeInstanceOf(QueryViewChangedError);
       const protectedView = await source.view(); expect(protectedView.sourceGeneration).toBe(first.sourceGeneration);
-      expect(protectedView.manifestRevision).not.toBe(first.manifestRevision);
+      expect(protectedView.visibilityHash).not.toBe(first.visibilityHash);
       expect(await source.withProjection({ key }, protectedView, async projection => projection?.decode())).toMatchObject({ id: 'alice', value: 1 });
       await storage.withMaintenance(async access => { await access.writeManifest({ ...access.manifest, issues: [], activeSourceGeneration: 'g2' }); });
       await expect(source.withProjection({ key }, protectedView, async () => undefined)).rejects.toBeInstanceOf(QueryViewChangedError);

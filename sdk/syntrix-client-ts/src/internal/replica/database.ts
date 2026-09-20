@@ -39,6 +39,7 @@ const code = (error: unknown): string => {
     'DATABASE_IDENTITY_MISMATCH', 'RATE_LIMITED', 'INTERNAL_ERROR', 'UNAVAILABLE', 'ReplicaWriteConflict', 'ReplicaUpstreamUncertain',
     'ReplicaRecoveryPending', 'ReplicaRecoveryRequired', 'ReplicaStorageLimit', 'ReplicaReadBudgetExceeded', 'ReplicaRecordTooLarge',
     'ReplicaSourceInvalid', 'ReplicaSourceMismatch', 'ReplicaIdentityMismatch', 'ReplicaScopeChanged', 'ReplicaAliasRemoved',
+    'ReplicaQueryViewContention', 'ReplicaQueryWorkContention',
     'ReplicaRecoveryStale', 'ReplicaRemovalBlocked', 'ReplicaAliasRemoving', 'QueryBudgetExceeded', 'ReplicaCoordinatorClosed', 'ReplicaDatabaseClosed']).has(value) ? value : 'ReplicaOperationFailed';
 };
 const projectedState = (collection: string, data: DataRecord | null): ReplicaDocumentState | null => {
@@ -97,7 +98,7 @@ export const openReplicaDatabase = async (input: OpenDatabaseOptions, environmen
     if (!alias) throw new ReplicaStorageError('ReplicaAliasUnknown', `Replica collection ${name} is not configured`);
     assertAlias(alias); return alias;
   };
-  const correlation = () => ({ operationId: crypto.randomUUID(), started: Date.now() });
+  const correlation = (): { operationId: string; started: number } => ({ operationId: crypto.randomUUID(), started: Date.now() });
   const diagnostic = (alias: string, operation: string, phase: string, error?: unknown,
     context = correlation(), details: { requestId?: string; count?: number; physicalEpoch?: string } = {}) => {
     if (closed || !onDiagnostic) return;
@@ -314,7 +315,15 @@ export const openReplicaDatabase = async (input: OpenDatabaseOptions, environmen
         limits: options.storageLimits, lockManager: environment.lockManager, storage: environment.storage });
       let queryClient: ReplicaQueryClient | undefined;
       try {
-        assert(); queryClient = createReplicaQueryClient(storage, { limits: options.queryLimits });
+        assert(); queryClient = createReplicaQueryClient(storage, { limits: options.queryLimits,
+          onActivity: activity => {
+            const alias = aliases.get(descriptor.name);
+            if (!alias) return;
+            try { assertAlias(alias); } catch { return; }
+            diagnostic(alias.name, 'query', activity.phase, { code: activity.code },
+              { operationId: activity.operationId, started: activity.startedAt });
+          },
+        });
         const durable = await storage.status();
         aliases.set(descriptor.name, { name: descriptor.name, definition: descriptor.frozen, storage, query: queryClient, durable,
           nativeStatus: { state: 'waiting', leader: false, ready: durable.sourceReady, generation: durable.generation },

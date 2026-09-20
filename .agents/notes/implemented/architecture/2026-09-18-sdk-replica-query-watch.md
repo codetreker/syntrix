@@ -51,7 +51,9 @@ cursor 仅描述逻辑位置，不绑定物理 epoch；整理存储不使有效�
 
 AVL 保存完整匹配候选，普通单 ID 维护为 O(log M)；输出构造仍为 O(result count)。
 行通知只排队有界物理键，不保留事件 payload。成员行与 assumed metadata 的变化也
-触发同 ID 重算；manifest revision 属于视图身份，覆盖同 generation 内保护状态变化。
+触发同 ID 重算。查询视图由活动 physical epoch、source generation 及 dirty target/issue
+保护 ID 并集派生，覆盖同 generation 内保护状态变化；无关 manifest 控制字段不要求重建。
+原始 revision 仅用于有界缓存派生结果，生命周期和身份校验仍独立执行。
 
 初始化前先订阅。source generation 或 physical epoch 变化时重建当前投影，覆盖旧、新
 成员及未解决本地修改；重建完成前不发布混合视图。发布前核对持久化 manifest；活动
@@ -69,7 +71,7 @@ AVL 保存完整匹配候选，普通单 ID 维护为 O(log M)；输出构造仍
 | 失效键集合 | 100,000 个、16 MiB |
 | 一次输出 | 16 MiB typed 编码 |
 | cursor | 16 KiB |
-| 视图重建尝试 | 最多 8 次，共享该次工作的扫描预算 |
+| 每轮视图重建尝试 | 最多 8 次；长 watch 遇到持续竞争会有界退让，单次读取仍有界失败 |
 
 物理主键 seek 先验证索引计划；扫描只返回键和大小描述，再逐条进行有界 d/m/assumed
 投影。业务 payload 在资源预留后才解码；查询读取不提前解码 manifest 的恢复 payload。
@@ -80,9 +82,14 @@ AVL 保存完整匹配候选，普通单 ID 维护为 O(log M)；输出构造仍
 重建临时放宽预算。窗口外匹配候选也受持续计费；释放最后引用后归还额度。在记录和
 输出项之间检查 8ms CPU 工作额度并让出执行权，逻辑分组不扩大底层物化批次。
 
-初始化、持续更新或重建超限，以 `QueryBudgetExceeded` 结束受影响的规范查询并释放
-其资源；其他查询和复制继续。查询错误不修改业务记录、pending、成员或 checkpoint。
+同一有效视图的扫描数量/字节硬上限，与包含废弃尝试的本轮工作额度分开。后者耗尽时，
+长 watch 让出队列并继续，不把重复扫描误判为更大的结果集。单个稳定视图、保留内存
+或输出实际超限时，仍以 `QueryBudgetExceeded` 结束受影响的查询并释放资源。
+其他查询和复制继续；查询错误不修改业务记录、pending、成员或 checkpoint。
 应用保留已交付历史结果的内存不属于 SDK 持有量。
+
+[视图竞争修复](../bug-fix/2026-09-20-replica-watch-contention.md)规定派生身份、25–200ms
+退让、单次读取隔离、诊断及取消边界；不新增持久化版本或改变复制协议。
 
 ## Alternatives
 
