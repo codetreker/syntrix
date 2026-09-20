@@ -5,7 +5,7 @@ import type { NativeUpCheckpoint } from './replication-access.js';
 import type { SourcePage } from './runtime.js';
 import type { ReplicaSourceAdapter, SourceDocument, SourceEvent, SourceEventsPage, SourceWindow } from './source-types.js';
 import type { AliasStorage, RequestScope } from './storage.js';
-import { ReplicaStorageError, type ControlRecord, type DataRecord, type JsonObject, type MemberRecord, type ReplicaRecord, type WireMetadata } from './storage-types.js';
+import { ReplicaStorageError, type ControlRecord, type DataRecord, type JsonObject, type MemberRecord, type ReplicaRecord, type UpstreamMarker, type WireMetadata } from './storage-types.js';
 
 export type DownstreamCheckpoint = JsonObject & {
   version: 1; mode: 'events' | 'replace'; sourceCursor: string | null;
@@ -15,6 +15,7 @@ export type DownstreamCheckpoint = JsonObject & {
 export type DownstreamOptions = {
   storage: AliasStorage; scope: RequestScope; source: ReplicaSourceAdapter;
   requestRefresh(): void;
+  ownsPhase?(marker: UpstreamMarker): boolean;
   onReady?(): void | Promise<void>;
 };
 const maxPageBytes = 16 * 1024 * 1024;
@@ -55,7 +56,8 @@ export const createDownstreamAdapter = (options: DownstreamOptions) => {
     const result = gate.then(operation); gate = result.then(() => undefined, () => undefined); return result;
   };
   const assert = async (signal: AbortSignal) => { signal.throwIfAborted(); await storage.guardSourceRead(scope); signal.throwIfAborted(); };
-  const allowed = (manifest: Awaited<ReturnType<AliasStorage['readManifest']>>) => !manifest.dirtyUpstream && !manifest.recoveryIntent && !manifest.issues.length;
+  const allowed = (manifest: Awaited<ReturnType<AliasStorage['readManifest']>>) =>
+    (!manifest.dirtyUpstream || options.ownsPhase?.(manifest.dirtyUpstream) === true) && !manifest.recoveryIntent && !manifest.issues.length;
 
   const scanPins = async (signal: AbortSignal, action: 'settle' | 'clear', frontier?: NativeUpCheckpoint, finishedRound?: string) => {
     let after: string | undefined;
@@ -98,7 +100,7 @@ export const createDownstreamAdapter = (options: DownstreamOptions) => {
       });
     } catch (error) {
       // A lost acknowledgement must not make a committed generation look absent.
-      const activated = await storage.withReplicationAccess(scope, async access => cp.complete &&
+      const activated = await storage.withReplicationAccess(scope, async access => allowed(access.manifest) && cp.complete &&
         access.manifest.activeSourceGeneration === cp.generation && access.manifest.sourceReady && !access.manifest.partialDelivery);
       await assert(signal);
       if (!activated) throw error;

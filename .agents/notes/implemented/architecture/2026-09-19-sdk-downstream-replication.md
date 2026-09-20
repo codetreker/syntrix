@@ -10,8 +10,9 @@ Status: implemented
 
 ## Decision
 
-私有下行协调器连接已有 HTTP 源、原生复制、alias 存储和查询视图。公开 `openReplica()`、
-真实上行 Push 与冲突恢复继续由[离线复制 proposal](../../proposed/feature/2026-09-07-sdk-offline-replication.md)
+私有下行协调器连接已有 HTTP 源、原生复制、alias 存储和查询视图。
+[私有上行与恢复](2026-09-20-sdk-upstream-replication.md)已接入同一协调器；公开
+`openReplica()` 继续由[离线复制 proposal](../../proposed/feature/2026-09-07-sdk-offline-replication.md)
 维护。未配置内部上行适配器时禁用上行扫描，不以虚假成功确认本地 pending。
 
 ### 源与身份
@@ -78,8 +79,9 @@ metadata、checkpoint 都完成后才 CAS 激活新 generation。确认丢失时
 | 重开/恢复 | 有界扫描 durable up frontier 与遗留 pin，恢复 checkpoint 成功而 pin 记账未完成的情况 |
 
 原生上行钩子等待 metadata/checkpoint 与队列完成，不使用 processed/ACK 事件充当持久化
-收据。纯 pin 记账不生成业务 token，也不触发业务刷新循环。PR 8 的真实上行适配器复用
-此边界，并拥有其 dirty phase、冲突及不确定结果处理。
+收据。纯 pin 记账不生成业务 token，也不触发业务刷新循环。真实上行适配器复用此边界，
+并拥有其 dirty phase、冲突及不确定结果处理；只有当前实例持有的活跃 phase 可以参与
+正常源应用与 pin 结算，遗留 marker 和 follower 不获得该许可。
 
 ### 所有权、调度与失败
 
@@ -123,7 +125,7 @@ metadata、checkpoint 都完成后才 CAS 激活新 generation。确认丢失时
 
 ## Consequences
 
-- 下行复制、成员、pin 与查询可组合使用；公开 facade、真实 Push 和显式恢复仍需后续 PR。
+- 下行复制、成员、pin、查询和私有上行/恢复可组合使用；公开 facade 仍需后续集成。
 - 一页响应和一个交付批次限制 backlog 内存；完整窗口仍需保留其有界响应。
 - 投影预检与 pin 恢复扫描增加本地读取成本，不给出未测量的吞吐或收敛时延承诺。
 - 仅收到网络成功、短页或空页不能认定就绪；只有持久化与源完成事实共同成立才激活。

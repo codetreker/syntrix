@@ -20,6 +20,7 @@ export type MaintenanceAccess = {
   limits: StorageLimits;
   budget: ReadBudget;
   assertActive(): void;
+  retainRows(bytes: number): () => void;
   readManifest(): Promise<NativeRow<AliasManifest>>;
   writeManifest(next: AliasManifest): Promise<NativeRow<AliasManifest>>;
 };
@@ -735,6 +736,7 @@ export const openAliasStorage = (options: OpenAliasStorageOptions): Promise<Alia
               });
               const access: MaintenanceAccess = {
                 backend: ownedBackend, manifest, limits: db.limits, budget, ownerSignal: lifetime.signal, assertActive: assertOwned,
+                retainRows: bytes => { assertOwned(); return budget.retain(bytes); },
                 readManifest: async () => { assertOwned(); return replaceManifest(await readManifest()); },
                 writeManifest: async next => { assertOwned(); return replaceManifest(await writeManifest(next, manifest)); }
               };

@@ -103,9 +103,10 @@ Decoded bigint values cannot be blindly passed to `JSON.stringify` or sent back 
 document `set`/`update`, whose current JSON serialization rejects them before HTTP
 transmission. Number conversion can lose precision. Local storage needs a lossless
 representation. HTTP Push accepts the same document typed-value representation
-inside its change envelope; the SDK outbound encoder and durable Pusher remain
-proposed. The complete Pull response is not a Push request, and ordinary CRUD
-still uses its existing JSON format.
+inside its change envelope. The SDK's [private upstream adapter](../design/sdk/002_replication_client.md#private-upstream-and-recovery)
+now supplies the encoder, native acknowledgement and recovery path; its public
+replica facade remains planned. The complete Pull response is not a Push request,
+and ordinary CRUD still uses its existing JSON format.
 
 A logical-delete event may return only `id`, `collection`, and `deleted: true`;
 version and timestamps are then absent. Do not require or manufacture them.

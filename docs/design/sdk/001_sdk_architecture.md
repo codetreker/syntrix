@@ -1,7 +1,7 @@
 # TypeScript Client SDK Architecture
 
 **Date:** December 27, 2025
-**Status:** Remote clients, private replica storage/query/watch and HTTP downstream coordination are implemented; the public replica database API and real upstream integration remain planned.
+**Status:** Remote clients, private replica storage/query/watch, HTTP replication and explicit upstream recovery are implemented; the public replica database API remains planned.
 
 **Related:** [003_authentication.md](003_authentication.md) defines the shared auth surface used by HTTP clients, replication, and realtime. Client specifics: [004_syntrix_client.md](004_syntrix_client.md), [005_trigger_client.md](005_trigger_client.md).
 
@@ -109,8 +109,11 @@ source/physical generation records, and clean compaction. Private queries use
 bounded storage projections, exact scalar semantics, shared AVL candidates and
 dynamic watch with manifest reconciliation. Private downstream connects matching-set
 and window HTTP sources with durable generation activation, pin protection, polling,
-and per-alias native leadership. Real Push and explicit upstream recovery remain
-planned. See
+and per-alias native leadership. Private upstream sends typed HTTP Push, retains
+native successful acknowledgements, and persists bounded phase/recovery state.
+Uncertain results pause automatic synchronization while local CRUD remains
+available; explicit recovery is guarded by the original database identity and
+current edit token. The public replica facade remains planned. See
 [002_replication_client.md](002_replication_client.md).
 
 ## 6. Primary Test Coverage (Planned/Implemented)
@@ -123,5 +126,6 @@ planned. See
 - Private runtime and storage: bounded scans, durable page/checkpoint ordering, identity and lifecycle fences, raw CAS CRUD, size admission, and compaction recovery. Public local replication and browser-to-server end-to-end coverage remain planned.
 - Private queries: exact filtering/order/cursors, window refill, generation and metadata invalidations, shared handle lifecycle, and continuous resource admission.
 - Private downstream: authenticated bounded HTTP sources, ordered member projection, durable pin boundaries, leader takeover and late-response cancellation.
+- Private upstream: typed request limits, conflict-driven CAS, whole-phase failure classification, durable recovery intent and paused local access.
 
 More error corners and perf cases will be added as features land.

@@ -31,6 +31,115 @@ const source = (read: ReplicaSourceAdapter['read']): ReplicaSourceAdapter => ({ 
 const immediate: CoordinatorEnvironment = { leadership: () => ({ wait: async signal => { signal.throwIfAborted(); }, close: async () => {} }),
   now: Date.now, random: () => 1, set: (callback, delay) => setTimeout(callback, delay), clear: clearTimeout };
 
+test('pause drains requests and preserves leadership and CRUD until explicit resume', async () => {
+  const env = await fixture(); let calls = 0, leaderCloses = 0;
+  let pendingSignal: AbortSignal | undefined;
+  const coordinator = createReplicaDownstream({ storage: env.storage, source: source(context => {
+    if (++calls === 1) return Promise.resolve(page());
+    if (calls > 2) return Promise.resolve(page(`c${calls}`));
+    pendingSignal = context.signal;
+    return new Promise((_resolve, reject) => context.signal.addEventListener('abort', () => reject(context.signal.reason), { once: true }));
+  }) }, { ...immediate, leadership: () => ({ wait: async () => {}, close: async () => { leaderCloses++; } }) });
+  try {
+    await until(() => coordinator.snapshot.state === 'idle');
+    coordinator.refresh(); await until(() => !!pendingSignal);
+    await coordinator.pause();
+    expect(pendingSignal!.aborted).toBe(true); expect(coordinator.snapshot.state).toBe('paused');
+    expect(coordinator.snapshot.leader).toBe(true); expect(leaderCloses).toBe(0);
+    await env.storage.set('offline', { value: 1 });
+    coordinator.refresh(); coordinator.hint(); await Bun.sleep(30); expect(calls).toBe(2);
+    const inspection = await coordinator.inspect({ logicalId: 'offline' });
+    expect(inspection.document?.desired?.logicalId).toBe('offline');
+    await coordinator.resume(); await until(() => calls === 3 && coordinator.snapshot.state === 'idle');
+    expect((await env.storage.get('offline'))?.id).toBe('offline');
+  } finally { await coordinator.close(); await env.storage.close(); }
+  expect(leaderCloses).toBe(1);
+});
+
+test('resume refuses unresolved durable markers and followers cannot authorize recovery', async () => {
+  const env = await fixture(); let reads = 0;
+  const scope = await env.storage.captureScope();
+  await env.storage.withReplicationAccess(scope, async access => { await access.writeManifest({ ...access.manifest,
+    dirtyUpstream: { id: 'crashed-phase', session: scope.sessionVersion, physicalEpoch: scope.physicalEpoch, mayHaveDispatched: true, targets: [] } }); });
+  const coordinator = createReplicaDownstream({ storage: env.storage, source: source(async () => { reads++; return page(); }) }, immediate);
+  try {
+    await until(() => coordinator.snapshot.state === 'blocked');
+    await coordinator.pause();
+    await expect(coordinator.resume()).rejects.toMatchObject({ code: 'ReplicaRecoveryPending' });
+    expect(reads).toBe(0); expect((await coordinator.inspect()).issueId).toBe('crashed-phase');
+  } finally { await coordinator.close(); await env.storage.close(); }
+  const followerEnv = await fixture();
+  const follower = createReplicaDownstream({ storage: followerEnv.storage, source: source(async () => page()) }, {
+    ...immediate, leadership: () => ({ wait: signal => new Promise((_resolve, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true })), close: async () => {} }),
+  });
+  try {
+    await follower.pause();
+    await expect(follower.resolve({ kind: 'retry-uncertain', issueId: 'anything', acknowledgeRepeatedEffects: true })).rejects.toMatchObject({ code: 'ReplicaNotLeader' });
+  } finally { await follower.close(); await followerEnv.storage.close(); }
+});
+
+test('explicit resume restarts a blocked read after authorization recovers', async () => {
+  const env = await fixture(); let allowed = false, calls = 0;
+  const coordinator = createReplicaDownstream({ storage: env.storage, source: source(async () => {
+    calls++;
+    if (!allowed) throw new SyntrixError('FORBIDDEN', 'Access revoked', 403);
+    return page();
+  }) }, immediate);
+  try {
+    await until(() => coordinator.snapshot.state === 'blocked');
+    expect(calls).toBe(1);
+    allowed = true;
+    await coordinator.resume();
+    await until(() => coordinator.snapshot.state === 'idle');
+    expect(calls).toBe(2); expect(coordinator.snapshot.ready).toBe(true);
+  } finally { await coordinator.close(); await env.storage.close(); }
+});
+
+test('paused authority inspection uses the lifetime signal and close drains its canceled read', async () => {
+  const env = await fixture(); let reads = 0, delay = false, pendingSignal: AbortSignal | undefined;
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const coordinator = createReplicaDownstream({ storage: env.storage, source: source(async () => page()), upstream: {
+    prepare: () => { throw new Error('Inspection must not prepare Push'); },
+    push: async () => { throw new Error('Inspection must not Push'); },
+    readCurrent: async (id, context) => {
+      reads++;
+      expect(context.expectedDatabaseIdentity).toBe('db1');
+      expect(context.signal.aborted).toBe(false);
+      if (delay) {
+        pendingSignal = context.signal;
+        await new Promise<void>((_resolve, reject) => context.signal.addEventListener('abort', () => {
+          void gate.then(() => reject(context.signal.reason));
+        }, { once: true }));
+      }
+      return { id, collection: 'users', value: 'server', version: 2n, createdAt: 1n, updatedAt: 2n };
+    },
+  } }, immediate);
+  try {
+    await until(() => coordinator.snapshot.state === 'idle');
+    await coordinator.pause();
+    await env.storage.set('alice', { value: 'offline' });
+    const before = await env.storage.captureScope();
+    const offline = await coordinator.inspect({ logicalId: 'alice' });
+    expect(reads).toBe(0); expect(offline.document?.current).toBeUndefined();
+    const current = await coordinator.inspect({ logicalId: 'alice', readCurrent: true });
+    expect(current.document?.current).toMatchObject({ source: 'authoritative-read', document: { value: 'server', version: 2n } });
+    expect((await env.storage.captureScope()).nativeInstanceId).toBe(before.nativeInstanceId);
+    expect(coordinator.snapshot.state).toBe('paused');
+    delay = true;
+    const inspecting = coordinator.inspect({ logicalId: 'alice', readCurrent: true }).catch(error => error);
+    await until(() => !!pendingSignal);
+    await env.storage.set('sibling', { value: 'still editable' });
+    let drained = false;
+    const closing = coordinator.close().then(() => { drained = true; });
+    await until(() => pendingSignal!.aborted);
+    await Bun.sleep(10); expect(drained).toBe(false);
+    release(); await closing;
+    expect(await inspecting).toMatchObject({ code: 'ReplicaCoordinatorClosed' });
+    expect(await env.storage.get('alice')).toMatchObject({ value: 'offline' });
+  } finally { release(); await coordinator.close(); await env.storage.close(); }
+});
+
 test('native downstream becomes durably ready, pending writes remain pending, and close permits recreation', async () => {
   const env = await fixture(); let coordinator: ReplicaDownstream | undefined;
   const contexts: Parameters<ReplicaSourceAdapter['read']>[0][] = [];

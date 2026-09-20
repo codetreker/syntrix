@@ -16,12 +16,14 @@ pending。逐 ID 清除原生历史又可能使旧状态重新上传。直接批
 local edit 等术语继续表示修改发生的位置。公开数据库入口命名为 openReplica。
 [复制设计](../../../../docs/design/sdk/002_replication_client.md#private-replica-alias-storage)
 维护内部契约；[SDK reference](../../../../docs/reference/typescript_sdk.md#replica-availability)
-维护公共可用性。公共 openReplica 与查询/watch facade、真实 HTTP 上行和恢复继续由
+维护公共可用性。公共 openReplica 与查询/watch facade 继续由
 [离线复制 proposal](../../proposed/feature/2026-09-07-sdk-offline-replication.md)负责。
 [私有查询层](2026-09-18-sdk-replica-query-watch.md)已实现查询求值与动态 watch；其读取
 适配在此层持有视图锁，接收共享预算并延后 payload 解码。
 [私有下行协调器](2026-09-19-sdk-downstream-replication.md)连接 HTTP 查询源、成员、pin
 及原生领导权，复用本层的有界复制访问与生命周期。
+[私有上行与恢复](2026-09-20-sdk-upstream-replication.md)使用本层的 phase marker、
+有界 recoveryIntent 和独占维护能力；普通编辑与 native metadata 继续持有 pending。
 
 ### 身份与所有权
 
@@ -144,7 +146,7 @@ reservation 限制单次物化，独立控制池避免 manifest 与业务记录�
 
 ## Consequences
 
-- 私有存储可以离线读写与重开，下行协调器已接入源成员；真实上行、恢复与公开 API 仍需集成。
+- 私有存储可以离线读写与重开，已接入下行源成员、真实 HTTP 上行和显式恢复；公开 API 仍需集成。
 - 条件写、quota 和维护会显式失败；close/drain 失败保留可见错误，不能宣称安全切换账号。
 - 取消等待不会解除凭据 drain 义务；正常 session 取消可完成关闭，真实 I/O 和清理故障仍阻止新凭据安装。
 - 完整字节容量核对、clean 检查和 seed 都有扫描成本；没有性能或总 heap 的额外承诺。

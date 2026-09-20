@@ -4,22 +4,24 @@
     "rxjs": "7.8.2",
     "dexie": "4.4.2"
   },
-  "patch": "9d8b21e921517b4e024495a3bae4c1b7b7b96214698d5b6fe97fbcef0edc8914",
+  "patch": "5a1fee95969e77ec1033854f0c0b19d887df60b4de7b095cf3f9c08db9afd3d1",
   "files": {
     "dist/cjs/replication-protocol/downstream.js": "8876c2bad47eee4b15f2989af7a57c479f8aa556590274ea277a997062982cc2",
     "dist/cjs/replication-protocol/fatal.js": "42260c0582ebded040360bae9f3e843d564a9bcabb76c4914f827401b6c0937a",
     "dist/cjs/replication-protocol/index.js": "9f25d17d60dfc096218e1f0c12483a2b113b6d09878c210607e040f91e9b1676",
-    "dist/cjs/replication-protocol/upstream.js": "f19c97f279e660f0bcd4c247fff92ab0f33874d6b1fb4c09f33c9983f3f70974",
+    "dist/cjs/replication-protocol/upstream.js": "771810956e2d85e2774193f2b745d9d437b0399035cde5e56f49c08ed06576a2",
     "dist/cjs/rx-storage-helper.js": "00dc6bfa8509d01b91cf6f284327f434988a84bcde2b35f7fc9056fade1499d7",
     "dist/esm/replication-protocol/downstream.js": "0e44be1d4d0765c0c80947b03fb902e1321ee86fcf4e15d95ec331da81813849",
     "dist/esm/replication-protocol/fatal.js": "f0829c7ab508ba67f98c9e12298406de191acb1a27cd2c19a92190c1a399f590",
     "dist/esm/replication-protocol/index.js": "97a6c878ce34a9dff7255103186f4e5142b71655b89afc6af346f7920171ee17",
-    "dist/esm/replication-protocol/upstream.js": "b1a76c4ef7533ee9ef4e12cb0068738bf6917dee96c23d6e2ff3cdb98fbfca17",
+    "dist/esm/replication-protocol/upstream.js": "5c207c26b998c9d39e46e1d415a28d80569243a9ff35c6d2e67951effc034050",
     "dist/esm/rx-storage-helper.js": "51748e36d5f13130cd3084e59970bbcd609b96a483e79032525046940eaa5525",
+    "dist/types/types/replication-protocol.d.ts": "686c8ca1feb5c6d1bc9f4ce92f169d00ffc42faf7bf5a9588e99fc71c009b530",
     "src/replication-protocol/downstream.ts": "365150dfe3fb2dfaf8a549117240679221ba6a5c841eccfd8a2ea66de9d072f2",
     "src/replication-protocol/fatal.ts": "9466168a646c20f5ce9da81c409bdcf969c699448bc48285162571fb33990e91",
     "src/replication-protocol/index.ts": "a8ae1d84fca8ad0bbf7c8c342a050bf6da071578f152adcd034ef63200b074f2",
-    "src/replication-protocol/upstream.ts": "126c1fd5e878b82dd12288e02a2f01d8b496497183afc507eb7680532b023807",
-    "src/rx-storage-helper.ts": "10064766dd5b01e9d89c67643da91cc72b6f08fc1174094dd8b05304082487f2"
+    "src/replication-protocol/upstream.ts": "d71ff5ab232cc20761bbe6636e7b35686c6f9d739fd5edc035783e673eb145f9",
+    "src/rx-storage-helper.ts": "10064766dd5b01e9d89c67643da91cc72b6f08fc1174094dd8b05304082487f2",
+    "src/types/replication-protocol.d.ts": "706bebdf434ddc1d2265c0ba2bb50c1a4500ae9e911f2f51884f30eda670630a"
   }
 }

@@ -48,7 +48,7 @@ export type ControlRecord = {
   partialDelivery: boolean;
 };
 export type ReplicaRecord = DataRecord | MemberRecord | ControlRecord;
-export type StorageIssue = { id: string; logicalId: string | null; code: string };
+export type StorageIssue = { id: string; logicalId: string | null; code: string; token?: string | null };
 export type UpstreamMarker = {
   id: string;
   session: number;
@@ -59,6 +59,9 @@ export type UpstreamMarker = {
 export type MaintenanceState = { id: string; oldEpoch: string; newEpoch: string; stage: 'staging' | 'flipped' };
 export type RecoveryIntent = {
   id: string;
+  issueId: string;
+  phaseId: string | null;
+  physicalEpoch: string;
   action: 'adopt' | 'merge';
   logicalId: string;
   protectedToken: string | null;

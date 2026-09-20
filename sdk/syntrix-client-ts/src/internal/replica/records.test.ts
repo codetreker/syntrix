@@ -227,10 +227,14 @@ describe('raw persistence validation', () => {
       { ...busy, dirtyUpstream: { ...busy.dirtyUpstream, physicalEpoch: 'other' } },
       { ...busy, dirtyUpstream: { ...busy.dirtyUpstream, targets: [{ logicalId: 'a/b', token: 'e' }] } },
       { ...busy, dirtyUpstream: { ...busy.dirtyUpstream, targets: [...busy.dirtyUpstream.targets, ...busy.dirtyUpstream.targets] } },
+      { ...busy, dirtyUpstream: { ...busy.dirtyUpstream, targets: Array.from({ length: 201 }, (_, i) => ({ logicalId: `id-${i}`, token: 'edit' })) } },
+      { ...busy, issues: Array.from({ length: 201 }, (_, i) => ({ id: `issue-${i}`, logicalId: null, code: 'uncertain' })) },
+      { ...busy, issues: [{ id: 'issue', logicalId: null, code: 'uncertain', token: 1 }] },
       { ...busy, issues: [...busy.issues, ...busy.issues] }, { ...busy, issues: [{ id: 'a', code: 'b', logicalId: 'a/b' }] },
       { ...base, issues: null }, { ...base, recoveryIntent: [] },
     ];
     for (const input of bad) expect(() => validateManifest(input)).toThrow();
+    validateManifest({ ...base, issues: [{ id: 'issue', logicalId: 'alice', code: 'conflict', token: null }] });
   });
 
   test('recovery intents preserve one validated target and two typed document states', async () => {
@@ -238,11 +242,12 @@ describe('raw persistence validation', () => {
     await validateManifestIdentity(base);
     const current = { ...await data(), existence: 'absent' as const, payload: '' };
     const desired = { ...await data(), editToken: 'new-token', pin: { token: 'new-token', stage: 'await-settlement' as const } };
-    const intent = { id: 'recovery-1', action: 'merge' as const, logicalId: 'alice', protectedToken: 'old-token', resultToken: 'new-token', current, desired };
+    const intent = { id: 'recovery-1', issueId: 'issue-1', phaseId: null, physicalEpoch: base.activePhysicalEpoch, action: 'merge' as const, logicalId: 'alice', protectedToken: 'old-token', resultToken: 'new-token', current, desired };
     await validateManifestIdentity({ ...base, recoveryIntent: intent });
     validateManifest({ ...base, recoveryIntent: { ...intent, action: 'adopt', protectedToken: null } });
     for (const invalid of [
       {}, { ...intent, logicalId: undefined }, { ...intent, logicalId: 'a/b' }, { ...intent, logicalId: 'bob' },
+      { ...intent, issueId: '' }, { ...intent, phaseId: 1 }, { ...intent, physicalEpoch: 'other' },
       { ...intent, extra: true }, { ...intent, action: 'reset' }, { ...intent, resultToken: '' },
       { ...intent, protectedToken: 1 }, { ...intent, desired: { ...desired, editToken: 'other-token' } },
       { ...intent, current: { ...current, logicalId: 'bob' } },

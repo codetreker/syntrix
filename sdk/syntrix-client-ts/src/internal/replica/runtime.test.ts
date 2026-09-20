@@ -81,6 +81,181 @@ const fixture = async () => {
   return { fork, meta, config, errors, committed, pushed, seed, start, close };
 };
 
+describe('native upstream persistence phases', () => {
+  test('each bounded unit finishes its durable settlement before the next unit begins', async () => {
+    const f = await fixture();
+    f.config.pushBatchSize = 1;
+    await f.seed(Array.from({ length: 9 }, (_, index) => `pending-${index}`));
+    const wireGate = deferred(), completionGate = deferred();
+    let firstWire = true, completing = false, phaseActive = false;
+    const phases: string[][] = [];
+    f.config.writeRemote = async rows => {
+      f.pushed.push(...rows.map(row => row.newDocumentState.id));
+      if (firstWire) { firstWire = false; await wireGate.promise; }
+      return [];
+    };
+    f.config.upstreamPersistence = {
+      begin: async documents => {
+        expect(phaseActive).toBe(false); phaseActive = true;
+        expect(documents.length).toBeLessThanOrEqual(4);
+        phases.push(documents.map(document => document.id));
+      },
+      complete: async checkpoint => {
+        expect((await f.meta.findDocumentsById(['up|1'], false))[0].checkpointData as unknown).toEqual(checkpoint);
+        if (!completing) { completing = true; await completionGate.promise; }
+        phaseActive = false;
+      },
+      failed: async error => { throw error; },
+    };
+    const runtime = f.start();
+    try {
+      await until(() => !firstWire);
+      await tick(); wireGate.resolve();
+      await until(() => completing);
+      const before = phases.length;
+      await tick(); expect(phases).toHaveLength(before);
+      expect(phaseActive).toBe(true);
+      completionGate.resolve(); await runtime.waitForIdle();
+      expect(phases.length).toBeGreaterThan(1);
+      expect(phaseActive).toBe(false);
+      expect(f.pushed).toHaveLength(9);
+      expect(f.errors).toEqual([]);
+    } finally { wireGate.resolve(); completionGate.resolve(); await f.close(); }
+  });
+
+  test('no-op desired states pass through phase completion without a wire callback', async () => {
+    const f = await fixture();
+    f.config.readSource = async checkpoint => ({ documents: checkpoint ? [] : [{ id: 'alice', value: 1, _deleted: false }], checkpoint: { sequence: 1 }, complete: true });
+    const first = f.start(); await first.waitForIdle(); await first.close();
+    let row = (await f.fork.findDocumentsById(['alice'], false))[0];
+    for (const value of [2, 1]) {
+      const next = { ...row, value, _meta: { lwt: now() }, _rev: `${Number(row._rev.split('-')[0]) + 1}-edit` };
+      expect((await f.fork.bulkWrite([{ previous: row, document: next }], 'local')).error).toEqual([]); row = next;
+    }
+    let completed = 0;
+    f.config.upstreamPersistence = {
+      begin: async () => {},
+      complete: async checkpoint => { expect(checkpoint.lwt).toBeGreaterThanOrEqual(row._meta.lwt); completed++; },
+      failed: async error => { throw error; },
+    };
+    try {
+      const runtime = f.start(); await runtime.waitForIdle();
+      expect(completed).toBeGreaterThan(0); expect(f.pushed).toEqual([]); expect(f.errors).toEqual([]);
+    } finally { await f.close(); }
+  });
+
+  for (const point of ['begin', 'wire', 'metadata', 'checkpoint', 'complete'] as const) {
+    test(`phase ${point} failure drains cleanup and retains the original error`, async () => {
+      const f = await fixture(); await f.seed(['pending']);
+      const fault = new Error(`phase-${point}`), gate = deferred();
+      const failed: unknown[] = [];
+      let completed = 0, cleanupEntered = false;
+      const original = f.meta.bulkWrite.bind(f.meta);
+      f.meta.bulkWrite = async (rows, context) => {
+        if ((point === 'metadata' && rows.some(row => row.document.itemId === 'pending')) ||
+          (point === 'checkpoint' && rows.some(row => row.document.id === 'up|1'))) throw fault;
+        return original(rows, context);
+      };
+      f.config.writeRemote = async () => { if (point === 'wire') throw fault; return []; };
+      f.config.upstreamPersistence = {
+        begin: async () => { if (point === 'begin') throw fault; },
+        complete: async () => { completed++; if (point === 'complete') throw fault; },
+        failed: async error => { failed.push(error); cleanupEntered = true; await gate.promise; },
+      };
+      const runtime = f.start();
+      try {
+        await until(() => cleanupEntered);
+        let drained = false;
+        const close = runtime.close().catch(error => { expect(error).toBe(fault); }).then(() => { drained = true; });
+        await tick(); expect(drained).toBe(false);
+        gate.resolve(); await close;
+        await expect(runtime.waitForIdle()).rejects.toBe(fault);
+        expect(failed).toEqual([fault]); expect(f.errors).toEqual([fault]);
+        expect(completed).toBe(point === 'complete' ? 1 : 0);
+      } finally { gate.resolve(); await f.close(); }
+    });
+  }
+
+  for (const distinctCleanup of [false, true]) {
+    test(`phase failure bookkeeping ${distinctCleanup ? 'retains a distinct cleanup error' : 'deduplicates the original failure'}`, async () => {
+      const f = await fixture(); await f.seed(['pending']);
+      const original = new Error('wire failed');
+      const cleanup = distinctCleanup ? new Error('failure bookkeeping failed') : original;
+      f.config.writeRemote = async () => { throw original; };
+      f.config.upstreamPersistence = {
+        begin: async () => {}, complete: async () => {},
+        failed: async error => { expect(error).toBe(original); throw cleanup; },
+      };
+      const runtime = f.start();
+      try {
+        await until(() => runtime.stopped);
+        const error = await runtime.waitForIdle().catch(error => error);
+        if (distinctCleanup) {
+          expect(error).toMatchObject({ cause: original, cleanupErrors: [cleanup] });
+          expect(f.errors).toEqual([original, error]);
+        } else {
+          expect(error).toBe(original); expect(f.errors).toEqual([original]);
+        }
+        expect(runtime.error).toBe(error);
+        await expect(runtime.close()).rejects.toBe(error);
+      } finally { await f.close(); }
+    });
+  }
+
+  test('a successful sibling followed by failure leaves the whole unit incomplete and stops queued dispatch', async () => {
+    const f = await fixture(); f.config.pushBatchSize = 1;
+    await f.seed(Array.from({ length: 8 }, (_, index) => `pending-${index}`));
+    const firstGate = deferred(); let calls = 0, phase = 0;
+    const fault = new Error('second unit sibling failed');
+    const dispatched: { phase: number; id: string }[] = [], failed: unknown[] = [], completed: number[] = [];
+    f.config.upstreamPersistence = {
+      begin: async () => { phase++; },
+      complete: async () => { completed.push(phase); },
+      failed: async error => { failed.push(error); },
+    };
+    f.config.writeRemote = async rows => {
+      calls++; dispatched.push({ phase, id: rows[0].newDocumentState.id });
+      if (calls === 1) await firstGate.promise;
+      if (calls === 3) throw fault;
+      return [];
+    };
+    const runtime = f.start();
+    try {
+      await until(() => calls === 1); await tick(); firstGate.resolve();
+      await until(() => runtime.stopped); await expect(runtime.waitForIdle()).rejects.toBe(fault);
+      expect(dispatched).toHaveLength(3);
+      expect(dispatched[1].phase).toBe(dispatched[2].phase);
+      expect(completed).not.toContain(dispatched[1].phase);
+      expect(await f.meta.findDocumentsById([`${dispatched[1].id}|0`], false)).toEqual([]);
+      expect(failed).toEqual([fault]); expect(f.errors).toEqual([fault]);
+    } finally { firstGate.resolve(); await f.close(); }
+  });
+
+  test('cancellation after dispatch drains failed bookkeeping without claiming a durable completion', async () => {
+    const f = await fixture(); await f.seed(['pending']);
+    const owner = new AbortController(), wireGate = deferred(), cleanupGate = deferred();
+    const canceled = new Error('owner retired'); f.config.ownerSignal = owner.signal;
+    let sent = false, cleanup = false, completed = 0;
+    const failures: unknown[] = [];
+    f.config.writeRemote = async () => { sent = true; await wireGate.promise; return []; };
+    f.config.upstreamPersistence = {
+      begin: async () => {}, complete: async () => { completed++; },
+      failed: async error => { cleanup = true; failures.push(error); await cleanupGate.promise; },
+    };
+    const runtime = f.start();
+    try {
+      await until(() => sent); owner.abort(canceled); wireGate.resolve();
+      await until(() => cleanup);
+      let closed = false; const close = runtime.close().then(() => { closed = true; });
+      await tick(); expect(closed).toBe(false);
+      cleanupGate.resolve(); await close;
+      expect(completed).toBe(0); expect(failures).toHaveLength(1);
+      expect(await f.meta.findDocumentsById(['up|1', 'pending|0'], false)).toEqual([]);
+      expect(f.errors).toEqual([]);
+    } finally { wireGate.resolve(); cleanupGate.resolve(); await f.close(); }
+  });
+});
+
 describe('private replication runtime', () => {
   test('downstream-only replication retains pending data and never advances the upstream checkpoint', async () => {
     const f = await fixture();

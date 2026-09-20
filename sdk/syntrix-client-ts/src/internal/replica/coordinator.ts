@@ -8,9 +8,12 @@ import { createReplicationRuntime, type ReplicationRuntime } from './runtime.js'
 import { businessEqual, canonicalJson } from './records.js';
 import { compactAlias } from './compaction.js';
 import { createReplicaLeadership, ReplicaCleanupError, throwCleanupFailures, type ReplicaLeadership } from './leadership.js';
+import type { UpstreamTransport } from './upstream-types.js';
+import { inspectReplica, resolveReplica, replayReplicaRecovery, type RecoveryDecision, type ReplicaInspection } from './recovery.js';
+import { createUpstreamAdapter, UpstreamFailure } from './upstream.js';
 
 export type ReplicaDownstreamStatus = Readonly<{
-  state: 'waiting' | 'syncing' | 'idle' | 'retrying' | 'blocked' | 'closed';
+  state: 'waiting' | 'syncing' | 'idle' | 'retrying' | 'paused' | 'blocked' | 'closed';
   leader: boolean;
   ready: boolean;
   generation: string | null;
@@ -22,11 +25,16 @@ export interface ReplicaDownstream {
   readonly status$: Observable<ReplicaDownstreamStatus>;
   refresh(): void;
   hint(): void;
+  pause(): Promise<void>;
+  resume(): Promise<void>;
+  inspect(options?: { logicalId?: string; readCurrent?: boolean }): Promise<ReplicaInspection>;
+  resolve(decision: RecoveryDecision): Promise<void>;
   close(): Promise<void>;
 }
 export type ReplicaDownstreamOptions = {
   storage: AliasStorage;
   source: ReplicaSourceAdapter;
+  upstream?: UpstreamTransport;
   writeRemote?(rows: RxReplicationWriteToMasterRow<ReplicaRecord>[], signal: AbortSignal): Promise<WithDeleted<ReplicaRecord>[]>;
   options?: { pollIntervalMs?: number; hintDelayMs?: number; retryBaseMs?: number; retryMaxMs?: number; maintenanceBackoffMs?: number };
 };
@@ -48,6 +56,7 @@ type NativeOwner = {
   scope: RequestScope;
   signal: AbortSignal;
   adapter: ReturnType<typeof createDownstreamAdapter>;
+  upstream?: ReturnType<typeof createUpstreamAdapter>;
   runtime?: ReplicationRuntime;
   unregister?: () => void;
 };
@@ -66,6 +75,7 @@ const transientRead = (error: unknown): boolean => {
 export const createReplicaDownstream = (input: ReplicaDownstreamOptions, clock: CoordinatorEnvironment = environment): ReplicaDownstream => {
   const { storage } = input;
   storage.signal.throwIfAborted();
+  if (input.upstream && input.writeRemote) throw new TypeError('Configure one upstream adapter');
   const poll = input.options?.pollIntervalMs ?? 10_000;
   const hintDelay = input.options?.hintDelayMs ?? 200;
   const retryBase = input.options?.retryBaseMs ?? 1_000;
@@ -76,10 +86,18 @@ export const createReplicaDownstream = (input: ReplicaDownstreamOptions, clock: 
   }
   if (retryBase > retryMax) throw new RangeError('Retry base exceeds maximum');
   const abort = new AbortController();
+  let activity = new AbortController();
   const closedReason = new ReplicaStorageError('ReplicaCoordinatorClosed', 'Replica coordinator is closed');
   const statuses = new BehaviorSubject<ReplicaDownstreamStatus>(Object.freeze({ state: 'waiting', leader: false, ready: false, generation: null }));
   const leadership = clock.leadership(storage.namespace);
-  let leader = false, closed = false, blocked = false, dirty = true, reset = false;
+  let leader = false, leaderReady = false, closed = false, paused = false, blocked = false, dirty = true, reset = false;
+  let controls = Promise.resolve();
+  const inspections = new Set<Promise<ReplicaInspection>>();
+  const control = <T>(operation: () => Promise<T>): Promise<T> => {
+    const result = controls.then(operation);
+    controls = result.then(() => undefined, () => undefined);
+    return result;
+  };
   let retryAttempt = 0, retryAt = 0, maintenanceAt = 0;
   let dirtyAt = 0;
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -94,7 +112,8 @@ export const createReplicaDownstream = (input: ReplicaDownstreamOptions, clock: 
     statuses.next(Object.freeze({ ...statuses.value, ...patch }));
   };
   const active = () => { abort.signal.throwIfAborted(); };
-  const reconcile = async () => {
+  const activeRun = () => { active(); activity.signal.throwIfAborted(); };
+  const reconcile = async (enforce?: boolean) => {
     const manifest = await storage.readManifest();
     active();
     if (canonicalJson(manifest.definition) !== canonicalJson(input.source.definition) ||
@@ -102,14 +121,18 @@ export const createReplicaDownstream = (input: ReplicaDownstreamOptions, clock: 
       throw new ReplicaStorageError('ReplicaSourceMismatch', 'Source adapter differs from the frozen alias definition');
     }
     publish({ ready: manifest.sourceReady && manifest.activeSourceGeneration !== null && !manifest.partialDelivery, generation: manifest.activeSourceGeneration });
-    if (manifest.dirtyUpstream || manifest.issues.length || manifest.recoveryIntent) {
-      throw new ReplicaStorageError('ReplicaRecoveryPending', 'Replica requires upstream recovery before applying source changes');
+    if ((manifest.dirtyUpstream && !native?.upstream?.ownsPhase(manifest.dirtyUpstream)) || manifest.issues.length || manifest.recoveryIntent) {
+      const error = new ReplicaStorageError('ReplicaRecoveryPending', 'Replica requires upstream recovery before applying source changes');
+      if (enforce ?? (leaderReady && native?.runtime?.stopped !== true)) throw error;
+      if (!paused) publish({ state: 'blocked', error });
+    } else if (!leader && !paused && statuses.value.state === 'blocked') {
+      publish({ state: 'waiting', error: undefined });
     }
   };
   const closeNative = async (owned: ReplicationRuntime) => {
     try { await owned.close(); }
     catch (error) {
-      const handled = error instanceof SourceReadFailure || ['ReplicaConflictUnresolved', 'ReplicaSourceInvalid',
+      const handled = error instanceof SourceReadFailure || error instanceof UpstreamFailure || ['ReplicaRecoveryRequired', 'ReplicaRecoveryPending', 'ReplicaConflictUnresolved', 'ReplicaSourceInvalid',
         'ReplicaSourceMismatch', 'ReplicaIdentityMismatch', 'ReplicaSourceResponseTooLarge'].includes(String(field(error, 'code')));
       if (error !== owned.error || !handled) throw error;
     }
@@ -121,19 +144,19 @@ export const createReplicaDownstream = (input: ReplicaDownstreamOptions, clock: 
     if (native === owned) native = undefined;
   };
   const assertOwner = (owned: NativeOwner) => {
-    active();
+    activeRun();
     if (owned.runtime?.error !== undefined) throw owned.runtime.error;
     if (owned.signal.aborted) throw new NativeRetired(owned);
   };
   const block = (error: unknown) => {
     blocked = true; dirty = false;
-    abort.abort(error);
+    activity.abort(error);
     if (timer !== undefined) clock.clear(timer);
     timer = undefined;
     publish({ state: 'blocked', error, retryAt: undefined });
   };
   const schedule = (delay: number) => {
-    if (closed || blocked || !leader || running) return;
+    if (closed || paused || blocked || !leader || !leaderReady || running) return;
     const at = Math.max(clock.now() + delay, retryAt);
     if (timer !== undefined && timerAt <= at) return;
     if (timer !== undefined) clock.clear(timer);
@@ -141,20 +164,21 @@ export const createReplicaDownstream = (input: ReplicaDownstreamOptions, clock: 
     timer = clock.set(() => { timer = undefined; timerAt = Infinity; launch(); }, Math.max(at - clock.now(), 0));
   };
   const request = (delay: number) => {
-    if (closed || blocked) return;
+    if (closed || paused || blocked) return;
     dirtyAt = dirty ? Math.min(dirtyAt, clock.now() + delay) : clock.now() + delay;
     dirty = true;
     schedule(Math.max(dirtyAt - clock.now(), 0));
   };
   const createNative = async () => {
-    await reconcile();
+    activeRun();
+    await reconcile(true);
     let scope = await storage.captureScope();
     let handles: Awaited<ReturnType<AliasStorage['native']>>;
     while (true) {
-      active();
+      activeRun();
       try { handles = await storage.native(scope); break; }
       catch (error) {
-        active();
+        activeRun();
         if (!['ReplicaScopeChanged', 'ReplicaMaintenance'].includes(String(field(error, 'code')))) throw error;
         const current = await storage.captureScope();
         // There is no captured owner signal until native() returns. Retry this
@@ -164,7 +188,7 @@ export const createReplicaDownstream = (input: ReplicaDownstreamOptions, clock: 
         scope = current;
       }
     }
-    active();
+    activeRun();
     const guardedSource: ReplicaSourceAdapter = { ...input.source, read: async context => {
       try { return await input.source.read(context); }
       catch (error) {
@@ -174,11 +198,14 @@ export const createReplicaDownstream = (input: ReplicaDownstreamOptions, clock: 
     } };
     const owned: NativeOwner = {
       scope, signal: handles.ownerSignal,
-      adapter: createDownstreamAdapter({ storage, scope, source: guardedSource, requestRefresh: () => request(0) }),
+      adapter: createDownstreamAdapter({ storage, scope, source: guardedSource, requestRefresh: () => request(0),
+        ownsPhase: marker => !activity.signal.aborted && owned.upstream?.ownsPhase(marker) === true }),
     };
+    if (input.upstream) owned.upstream = createUpstreamAdapter({ storage, scope, transport: input.upstream,
+      onSettlement: (checkpoint, signal) => owned.adapter.onUpCheckpoint(checkpoint, signal) });
     native = owned;
     assertOwner(owned);
-    await owned.adapter.recover(AbortSignal.any([owned.signal, abort.signal]));
+    await owned.adapter.recover(AbortSignal.any([owned.signal, abort.signal, activity.signal]));
     assertOwner(owned);
     await owned.adapter.beginRound({ reset });
     assertOwner(owned);
@@ -188,11 +215,13 @@ export const createReplicaDownstream = (input: ReplicaDownstreamOptions, clock: 
       hashFunction: defaultHashSha256, conflictHandler: { isEqual: businessEqual, resolve: async () => {
         throw new ReplicaStorageError('ReplicaConflictUnresolved', 'Replica upstream conflicts require recovery before further replication');
       } },
-      ownerSignal: AbortSignal.any([handles.ownerSignal, abort.signal]), pullBatchSize: 201,
-      upstreamEnabled: input.writeRemote !== undefined, writeRemote: input.writeRemote,
+      ownerSignal: AbortSignal.any([handles.ownerSignal, abort.signal, activity.signal]), pullBatchSize: 201,
+      upstreamEnabled: input.upstream !== undefined || input.writeRemote !== undefined,
+      writeRemote: owned.upstream?.writeRemote ?? input.writeRemote,
+      upstreamPersistence: owned.upstream?.upstreamPersistence,
       isControlDocument: row => row.kind !== 'd',
       readSource: owned.adapter.readSource, onCheckpoint: owned.adapter.onCheckpoint,
-      onUpCheckpoint: owned.adapter.onUpCheckpoint,
+      onUpCheckpoint: input.upstream ? undefined : owned.adapter.onUpCheckpoint,
       onError: () => request(0),
     });
     owned.unregister = storage.registerNative({ invalidate() {}, close: () => closeNative(owned.runtime!) });
@@ -218,7 +247,7 @@ export const createReplicaDownstream = (input: ReplicaDownstreamOptions, clock: 
       }
       await owned.runtime!.waitForIdle();
       assertOwner(owned);
-      await reconcile();
+      await reconcile(true);
       assertOwner(owned);
       retryAttempt = 0; retryAt = 0;
       publish({ state: 'idle' });
@@ -237,16 +266,30 @@ export const createReplicaDownstream = (input: ReplicaDownstreamOptions, clock: 
               afterMaintenance.physicalEpochs.length !== 1 || afterMaintenance.physicalEpochs[0] !== beforeMaintenance.activePhysicalEpoch) throw error;
           publish({ error });
         }
-        active();
+        activeRun();
         dirty = true; dirtyAt = clock.now();
       }
     } catch (error) {
-      if (closed || abort.signal.aborted) return;
+      if (closed || paused || blocked || abort.signal.aborted) return;
       owned ??= native;
       const retired = owned?.signal.aborted && (error instanceof NativeRetired && error.owner === owned || error === owned.signal.reason);
       try { await drainNative(owned); }
       catch (drainError) { block(drainError === error ? error : new ReplicaCleanupError([error, drainError])); return; }
-      if (retired) {
+      let outcome = owned?.upstream?.outcome;
+      if (outcome?.kind === 'blocked' && outcome.error === error && (error instanceof SourceReadFailure || retired)) {
+        try {
+          const manifest = await storage.readManifest();
+          if (!manifest.dirtyUpstream && !manifest.issues.length && !manifest.recoveryIntent) outcome = undefined;
+        } catch (readError) { block(readError); return; }
+      }
+      if (outcome && outcome.kind !== 'retry') {
+        block(outcome.error);
+      } else if (outcome?.kind === 'retry') {
+        const exponential = Math.min(retryMax, retryBase * 2 ** Math.min(retryAttempt++, 30));
+        retryAt = clock.now() + Math.max(exponential * (0.5 + clock.random() * 0.5), outcome.retryAfterMs ?? 0);
+        dirty = true; dirtyAt = retryAt;
+        publish({ state: 'retrying', error: outcome.error, retryAt });
+      } else if (retired) {
         dirty = true; dirtyAt = clock.now();
       } else if (error instanceof SourceReadFailure) {
         const sourceError = error.original;
@@ -265,24 +308,28 @@ export const createReplicaDownstream = (input: ReplicaDownstreamOptions, clock: 
     }
   };
   const launch = () => {
-    if (closed || blocked || !leader || running) return;
+    if (closed || paused || blocked || !leader || !leaderReady || running) return;
     running = run().finally(() => {
       running = undefined;
-      if (!closed && !blocked) schedule(dirty ? Math.max(dirtyAt - clock.now(), 0) : poll);
+      if (!closed && !paused && !blocked) schedule(dirty ? Math.max(dirtyAt - clock.now(), 0) : poll);
     });
   };
   let reconciling: Promise<void> | undefined;
   const reconcileTick = () => {
-    if (closed || blocked) return;
-    reconciling = reconcile().catch(error => { if (!closed) block(error); }).finally(() => {
+    if (closed || blocked || paused) return;
+    // The upstream owner classifies a failed phase only after every sibling
+    // drains. An observer must not turn that intermediate marker into a
+    // permanent block before the owner can prove a safe retry.
+    reconciling = reconcile(native?.upstream ? false : undefined).catch(error => { if (!closed && !paused) block(error); }).finally(() => {
       reconciling = undefined;
-      if (!closed && !blocked) reconcileTimer = clock.set(reconcileTick, poll);
+      if (!closed && !blocked && !paused) reconcileTimer = clock.set(reconcileTick, poll);
     });
   };
   const invalidate = () => {
     if (closed) return;
     closed = true;
     abort.abort(storage.signal.aborted ? storage.signal.reason : closedReason);
+    activity.abort(abort.signal.reason);
     if (timer !== undefined) clock.clear(timer);
     if (reconcileTimer !== undefined) clock.clear(reconcileTimer);
     publish({ state: 'closed', leader: false });
@@ -292,8 +339,11 @@ export const createReplicaDownstream = (input: ReplicaDownstreamOptions, clock: 
     subscription.unsubscribe();
     storage.signal.removeEventListener('abort', onStorageAbort);
     const failures: unknown[] = [];
-    const tasks = await Promise.allSettled([startup, running, reconciling]);
+    const tasks = await Promise.allSettled([startup, controls, running, reconciling]);
     for (const result of tasks) if (result.status === 'rejected') failures.push(result.reason);
+    // Inspection errors belong to their callers; closing still owns the read
+    // cancellation and must wait for its HTTP and storage work to exit.
+    await Promise.allSettled([...inspections]);
     try { await drainNative(); } catch (error) { failures.push(error); }
     try { await leadership.close(); } catch (error) { failures.push(error); }
     statuses.complete();
@@ -302,20 +352,91 @@ export const createReplicaDownstream = (input: ReplicaDownstreamOptions, clock: 
   })();
   const onStorageAbort = () => { invalidate(); void close().catch(() => {}); };
   const subscription = storage.changes.subscribe({ next: event => {
-    if (event.type === 'view' && !reconciling && !closed && !blocked) {
+    if (event.type === 'view' && !reconciling && !closed && !blocked && !paused) {
       if (reconcileTimer !== undefined) clock.clear(reconcileTimer);
       reconcileTick();
     }
   }, error: block });
   unregister = storage.registerResource({ invalidate, close });
   storage.signal.addEventListener('abort', onStorageAbort, { once: true });
+  const initializeLeader = async () => {
+    activeRun();
+    if ((await storage.readManifest()).recoveryIntent) await replayReplicaRecovery(storage);
+    activeRun();
+    await reconcile(true);
+    activeRun();
+    leaderReady = true;
+  };
   const startup = (async () => {
     try {
-      await reconcile();
+      await reconcile(false);
       await leadership.wait(abort.signal);
-      active(); leader = true; publish({ leader: true }); launch();
-    } catch (error) { if (!closed) block(error); }
+      active(); leader = true; publish({ leader: true });
+      await control(async () => {
+        if (paused || closed) return;
+        await initializeLeader();
+        launch();
+      });
+    } catch (error) { if (!closed && !paused) block(error); }
   })();
   reconcileTimer = clock.set(reconcileTick, poll);
-  return { get snapshot() { return statuses.value; }, status$: statuses.asObservable(), refresh: () => request(0), hint: () => request(hintDelay), close };
+  const stopAdmission = () => {
+    active();
+    paused = true;
+    activity.abort(new ReplicaStorageError('ReplicaPaused', 'Replica synchronization is paused'));
+    if (timer !== undefined) clock.clear(timer);
+    timer = undefined; timerAt = Infinity;
+    if (reconcileTimer !== undefined) clock.clear(reconcileTimer);
+  };
+  const drainPaused = async () => {
+    await Promise.all([running, reconciling]);
+    const owned = native;
+    await drainNative();
+    active();
+    const outcome = owned?.upstream?.outcome;
+    if (outcome && outcome.kind !== 'retry') blocked = true;
+    publish({ state: 'paused', retryAt: undefined, ...(outcome ? { error: outcome.error } : {}) });
+  };
+  const pause = (): Promise<void> => { stopAdmission(); return control(drainPaused); };
+  const resume = (): Promise<void> => control(async () => {
+    active();
+    if (!paused && !blocked) { await reconcile(true); return; }
+    await Promise.all([running, reconciling]);
+    await drainNative();
+    activity = new AbortController();
+    try {
+      if (leader) await initializeLeader();
+      else await reconcile(true);
+    } catch (error) { block(error); throw error; }
+    activeRun();
+    paused = false; blocked = false; dirty = true; dirtyAt = clock.now(); retryAt = 0; retryAttempt = 0;
+    publish({ state: leader ? 'syncing' : 'waiting', error: undefined, retryAt: undefined });
+    if (reconcileTimer !== undefined) clock.clear(reconcileTimer);
+    reconcileTimer = clock.set(reconcileTick, poll);
+    schedule(0);
+  });
+  const resolve = async (decision: RecoveryDecision): Promise<void> => {
+    active();
+    if (!leader) throw new ReplicaStorageError('ReplicaNotLeader', 'Recovery requires the elected coordinator');
+    if (!input.upstream) throw new ReplicaStorageError('ReplicaUpstreamUnavailable', 'Recovery requires the upstream transport');
+    stopAdmission();
+    await control(async () => {
+      await drainPaused();
+      active();
+      await resolveReplica(storage, input.upstream!, decision, { signal: abort.signal });
+      active();
+      blocked = false;
+      await reconcile(false);
+      publish({ state: 'paused', error: undefined });
+    });
+  };
+  const inspect = (options: { logicalId?: string; readCurrent?: boolean } = {}): Promise<ReplicaInspection> => {
+    active();
+    const operation = inspectReplica(storage, { ...options, signal: abort.signal }, input.upstream).then(result => { active(); return result; });
+    inspections.add(operation);
+    void operation.then(() => inspections.delete(operation), () => inspections.delete(operation));
+    return operation;
+  };
+  return { get snapshot() { return statuses.value; }, status$: statuses.asObservable(), refresh: () => request(0), hint: () => request(hintDelay),
+    pause, resume, inspect, resolve, close };
 };

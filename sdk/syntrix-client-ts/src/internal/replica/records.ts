@@ -340,7 +340,7 @@ export const validateManifest: (value: unknown) => asserts value is AliasManifes
     if (!object(marker) || Object.keys(marker).length !== 5 || !string(marker.id) ||
         !Number.isSafeInteger(marker.session) || (marker.session as number) < 0 || !string(marker.physicalEpoch) ||
         marker.physicalEpoch !== value.activePhysicalEpoch || typeof marker.mayHaveDispatched !== 'boolean' ||
-        !Array.isArray(marker.targets)) corruption('Invalid upstream marker');
+        !Array.isArray(marker.targets) || marker.targets.length > 200) corruption('Invalid upstream marker');
     const ids = new Set<string>();
     for (const target of marker.targets) {
       if (!object(target) || Object.keys(target).length !== 2 || !string(target.token) || !string(target.logicalId) || ids.has(target.logicalId)) corruption('Invalid upstream target');
@@ -348,10 +348,11 @@ export const validateManifest: (value: unknown) => asserts value is AliasManifes
       ids.add(target.logicalId);
     }
   }
-  if (!Array.isArray(value.issues)) corruption('Invalid storage issues');
+  if (!Array.isArray(value.issues) || value.issues.length > 200) corruption('Invalid storage issues');
   const issueIds = new Set<string>();
   for (const issue of value.issues) {
-    if (!object(issue) || Object.keys(issue).length !== 3 || !string(issue.id) || !string(issue.code) ||
+    if (!object(issue) || Object.keys(issue).some(key => !['id', 'logicalId', 'code', 'token'].includes(key)) || !string(issue.id) || !string(issue.code) ||
+        (own(issue, 'token') && !nullableString(issue.token)) ||
         !nullableString(issue.logicalId) || issueIds.has(issue.id)) corruption('Invalid storage issue');
     if (issue.logicalId !== null) {
       try { validateLogicalId(issue.logicalId); } catch { corruption('Invalid issue logical identity'); }
@@ -360,9 +361,10 @@ export const validateManifest: (value: unknown) => asserts value is AliasManifes
   }
   if (value.recoveryIntent !== null) {
     const intent = value.recoveryIntent;
-    const fields = ['id', 'action', 'logicalId', 'protectedToken', 'resultToken', 'current', 'desired'];
+    const fields = ['id', 'issueId', 'phaseId', 'physicalEpoch', 'action', 'logicalId', 'protectedToken', 'resultToken', 'current', 'desired'];
     if (!object(intent) || Object.keys(intent).length !== fields.length || fields.some(field => !own(intent, field)) ||
-        !string(intent.id) || !['adopt', 'merge'].includes(intent.action as string) ||
+        !string(intent.id) || !string(intent.issueId) || !nullableString(intent.phaseId) || intent.physicalEpoch !== value.activePhysicalEpoch ||
+        !['adopt', 'merge'].includes(intent.action as string) ||
         !nullableString(intent.protectedToken) || !string(intent.resultToken)) corruption('Invalid recovery intent');
     try { validateLogicalId(intent.logicalId); } catch { corruption('Invalid recovery target identity'); }
     validateRecord(intent.current);

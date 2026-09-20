@@ -32,11 +32,12 @@ checkpoint；稳定的外层键让整个源值替换前值，阶段变化时移�
 | 双向 metadata | 检查批量写入返回的错误，包括冲突 metadata；失败立即停止 |
 | checkpoint | 等待所有写入路径，包括空页、无变化、上行早返回 |
 | 上行完成 hook | 在原生 up frontier 与队列完成后调用，包含 no-op；适配器核对当前记录后结算 pin |
+| 上行 phase hook | begin/complete/failed 覆盖一个串行 persist 单元，最多四个扫描 batch；complete 等待 metadata/checkpoint 与结算，failed 停止新 dispatch 并 drain sibling |
 | fork 插入 | wrapper 保留输入 metadata 的下载来源；刷新 lwt 并保留 revision 生成和 hooks，文档先于 assumed 落盘时仍可安全恢复 |
 | fatal | 先取消实例，再发布一次错误诊断；启动读取和异步队列的 rejection 也进入此路径 |
 | 恢复 | 用已有可靠 metadata 创建新实例；失败实例的 promise 队列不复用 |
 
-固定版本的源码、ESM 和 CJS 产物同步修补，避免入口选择改变失败行为。
+固定版本的源码、ESM、CJS 和声明产物同步修补，17 个文件进入完整性清单，避免入口选择改变失败行为。
 上游基线为 npm gitHead `d88180e334512bf0097373ad62e9fbe6811010aa`；
 [下游循环](https://github.com/pubkey/rxdb/blob/d88180e334512bf0097373ad62e9fbe6811010aa/src/replication-protocol/downstream.ts)、
 [上游循环](https://github.com/pubkey/rxdb/blob/d88180e334512bf0097373ad62e9fbe6811010aa/src/replication-protocol/upstream.ts)、
@@ -82,6 +83,8 @@ checkpoint；稳定的外层键让整个源值替换前值，阶段变化时移�
 | 单行编码上限 | 16 MiB |
 | 一次底层读取条数 | 4 |
 | 实际远程写入适配器并发 | 1 |
+| 单个 persist 单元扫描 batch | 4 |
+| 默认上行 phase 业务目标 | 200 |
 
 合法大单行独立成页。块中只有部分记录能容纳时，从原块起点缩小 limit 重读并
 重新计算大小；禁止截断返回记录后保留整块 checkpoint。超限行使本次读取失败，
@@ -130,8 +133,9 @@ pnpm 补丁配置。将修补结果打入 SDK 后，消费者不必使用相同�
   脱离补丁单独升级。
 - 初始源完成前延迟首次上传，本地编辑仍可由上层持久化。源成员、generation 激活
   及 HTTP checkpoint 的含义由[下行适配器](2026-09-19-sdk-downstream-replication.md)维护，运行时不推断这些业务状态。
+- [私有上行](2026-09-20-sdk-upstream-replication.md)已连接 typed HTTP Push、phase 保护与显式恢复；公开 `openReplica` 仍未提供。
 - 协议、memory 或 fake IndexedDB 验证不能替代完整浏览器端到端、跨 tab 所有权
-  或断电持久性验证。当前没有公开 `openReplica`，也没有接通自动 HTTP Push。
+  或断电持久性验证。
 - [SDK 复制设计](../../../../docs/design/sdk/002_replication_client.md)拥有运行时职责；
   [SDK reference](../../../../docs/reference/typescript_sdk.md#replica-availability)
   标明当前公共能力。

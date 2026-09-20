@@ -54,6 +54,30 @@ const fixture = async (mode: 'events' | 'replace' = 'events', limits?: Partial<S
 };
 
 describe('durable source projection', () => {
+  test('only the live owned upstream phase permits source progress and activation', async () => {
+    const env = await fixture();
+    let runtime: ReplicationRuntime | undefined;
+    try {
+      const marker = { id: 'owned-phase', session: env.scope.sessionVersion, physicalEpoch: env.scope.physicalEpoch, mayHaveDispatched: true, targets: [] };
+      await env.storage.withReplicationAccess(env.scope, async access => { await access.writeManifest({ ...access.manifest, dirtyUpstream: marker }); });
+      env.pages.push(page([{ type: 'upsert', document: document('alice', 'remote') }]));
+      await expect(env.adapter.readSource(undefined, 201, new AbortController().signal)).rejects.toMatchObject({ code: 'ReplicaRecoveryRequired' });
+      expect(env.requests).toHaveLength(0);
+      const adapter = createDownstreamAdapter({ storage: env.storage, scope: env.scope, source: env.source, requestRefresh() {},
+        ownsPhase: current => current.id === marker.id && current.session === marker.session && current.physicalEpoch === marker.physicalEpoch });
+      runtime = createReplicationRuntime({ identifier: env.native.identifier, forkInstance: env.native.fork, metaInstance: env.native.meta,
+        ownerSignal: env.native.ownerSignal, upstreamEnabled: false, hashFunction: defaultHashSha256,
+        conflictHandler: { isEqual: businessEqual, resolve: async conflict => conflict.newDocumentState },
+        isControlDocument: row => row.kind !== 'd', readSource: adapter.readSource, onCheckpoint: adapter.onCheckpoint });
+      await runtime.waitForIdle();
+      expect((await env.storage.readManifest()).sourceReady).toBe(true);
+      expect(await env.storage.get('alice')).toMatchObject({ value: 'remote' });
+      await env.storage.withReplicationAccess(env.scope, async access => { await access.writeManifest({ ...access.manifest, dirtyUpstream: { ...marker, id: 'foreign-phase' } }); });
+      await adapter.beginRound();
+      await expect(adapter.readSource(undefined, 201, new AbortController().signal)).rejects.toMatchObject({ code: 'ReplicaRecoveryRequired' });
+      expect(env.requests).toHaveLength(1);
+    } finally { await runtime?.close(); await env.close(); }
+  });
   for (const kind of ['upsert', 'leave', 'delete', 'control'] as const) {
     test(`preflights ${kind} storage budgets before binding or staging a valid decoded response`, async () => {
       const env = await fixture('events', { maxRecordBytes: kind === 'control' ? 512 : 3000 });

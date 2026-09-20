@@ -1,6 +1,6 @@
 # Replication Client Design (RxDB + Syntrix replication/realtime)
 
-**Status:** Manual Pull, WebSocket lifecycle, a private native replication runtime, replica storage/query/watch, and private HTTP downstream coordination are implemented. The public replica database API, real HTTP Push and explicit upstream recovery remain planned.
+**Status:** Manual Pull, WebSocket lifecycle, a private native replication runtime, replica storage/query/watch, HTTP replication and explicit upstream recovery are implemented. The public replica database API remains planned.
 
 ## Context & Why
 - We need offline-first replication for web clients using RxDB as local store.
@@ -59,7 +59,8 @@ independent of the private runtime below.
 The SDK owns a pinned RxDB 17.5.0 replication protocol with caller-owned fork and
 metadata stores. A source adapter supplies normalized records, an opaque
 checkpoint, and a completion flag; a write adapter supplies remote acknowledgements
-or conflicts. The runtime does not yet connect these adapters to Syntrix HTTP.
+or conflicts. Private downstream and upstream adapters connect these contracts to
+Syntrix HTTP while keeping native metadata responsible for replication progress.
 
 | Responsibility | Contract and rationale |
 |---|---|
@@ -68,6 +69,7 @@ or conflicts. The runtime does not yet connect these adapters to Syntrix HTTP.
 | Opaque source checkpoint | Store the complete value under one stable `source` key so native shallow merging replaces it wholesale; adapter reads and completion hooks receive the unwrapped value, including after restart |
 | Durable completion hook | Run after native page persistence and checkpoint completion; the owning source layer can finish activation before readiness |
 | Durable upstream hook | Run after the native upstream metadata/checkpoint barrier, including no-op progress; pin settlement checks that frontier rather than treating an ACK as durable completion |
+| Upstream persistence phase | Bound one native persist unit to at most four scanned batches; begin/complete/failed hooks cover sibling writes, metadata, checkpoint and settlement |
 | Initial upload barrier | Every new instance waits for a fresh completed source round and its durable hook, including when saved metadata exists |
 | Empty source page | Advancing progress requires an identifiable control record; a terminal page may be empty when its checkpoint matches the already persisted position |
 | Failure | Cancel admission before the first diagnostic; recovery uses a new instance and retained durable metadata |
@@ -111,6 +113,8 @@ own pending work, so restarting does not depend on retaining in-memory events.
 | Maximum encoded record | 16 MiB |
 | Records per underlying read | 4 |
 | Concurrent remote write adapter calls | 1 |
+| Scanned batches per native persist unit | 4 |
+| Business targets per upstream phase | 200 |
 
 A legal record larger than the target travels alone. If only a prefix fits, the
 scanner rereads a smaller batch from the same starting checkpoint and recalculates
@@ -127,7 +131,8 @@ after the adapter returns cannot limit that earlier allocation.
 
 The private lazy bundle includes patched RxDB, Dexie, and RxJS plus third-party
 license notices. The remote client entry does not import it. Build validation
-checks pinned dependency versions, patch identity/application, and absence of
+checks pinned dependency versions, patch identity/application across 17 source,
+runtime and declaration files, and absence of
 external vendor imports. An isolated packed-package consumer exercises failure
 handling without workspace dependency resolution or consumer-installed patches.
 
@@ -327,14 +332,117 @@ identity. The existing stricter write guard remains independent.
 | Shutdown | Abort and drain before releasing election; preserve genuine I/O and cleanup failures, while normal cancellation and handled source rejection close safely |
 
 Without an internal write adapter, upstream scanning is disabled and pending edits
-remain unsent. No synthetic ACK is generated. The real Push adapter and recovery
-phase handling are separate work. Private hints are available, but automatic WS
+remain unsent. No synthetic ACK is generated. With the private upstream adapter,
+the same coordinator owns durable phase handling and explicit recovery. Private
+hints are available, but automatic WS
 source subscriptions remain unwired until their authorization matches the source;
 authorized polling supplies correctness in the meantime.
 
 The [downstream decision](../../../.agents/notes/implemented/architecture/2026-09-19-sdk-downstream-replication.md)
 owns source/delivery generation distinctions, pin transitions, retry classes and
 maintenance recovery conditions. The Store/Puller checkpoint mechanism is unchanged.
+
+## Private Upstream and Recovery
+
+The private adapter maps native assumed/desired pairs to typed HTTP Push. A
+successful write returns the real native `[]` result, so RxDB stores the submitted
+desired state as assumed without inventing a server version or timestamp. A newer
+local edit remains distinct from an earlier acknowledgement.
+
+| Assumed state | Desired state | Remote operation |
+|---|---|---|
+| Live with version | Changed live / deleted | Conditional update / delete |
+| Live without version | Changed live / deleted | Authoritative single-ID read, then conditional write only if current business state still equals assumed |
+| Absent or tombstone | Live | Create without version |
+| Absent or tombstone | Deleted | No remote mutation |
+| Possibly committed but unsettled | Any | Pause for explicit uncertain-result recovery |
+
+Each handler freezes assumed and desired. Business equality includes identity,
+existence and exact typed payload; it ignores server metadata and pins, so int64
+and float64 remain distinct. A conflict already equal to desired is satisfied.
+For update/delete only, a live current state equal to assumed supplies a new CAS
+version; at most three attempts are made. Known successful indices are not sent
+again within that handler. A changed or missing baseline becomes a durable issue;
+a stale update never becomes create.
+
+Missing-version preflight uses the authoritative ID Query with deleted records
+included and no source filter. It supplies only a CAS candidate: it does not
+advance membership or source progress, and ordinary read failure cannot authorize
+an unconditional mutation. Successful ACKs do not otherwise trigger ID reads.
+
+| Transport boundary | Contract |
+|---|---|
+| Identity | Every Push, retry, preflight and recovery read carries the original bound `X-Syntrix-Expected-Database-Identity`; preserve the configured URL namespace |
+| Dispatch | One upstream wire request per alias at a time; each request retains its captured session and binding through authentication waits and retries |
+| Request | At most 50 changes, split by the actual 10 MiB HTTP body and a conservative 20 MiB protobuf budget; preserve original change indices, including repeated IDs |
+| Response | Push has a 32 MiB client resource cap before decoding; oversized or malformed postdispatch results remain unknown, not proof of nonexecution |
+
+Database identity mismatch blocks new dispatch and retains the binding and any
+earlier uncertain work. It is never interpreted as authoritative absence.
+
+### Durable phase
+
+One phase is one native persist-to-master unit, bounded to four scanned batches
+and at most 200 business targets. A manifest marker records phase, session,
+physical epoch, target IDs/tokens and possible dispatch. Its persistence must be
+confirmed before wire admission. Sibling callbacks share it; it is not an ACK
+journal or a copy of native assumed/checkpoint data.
+
+```text
+persist marker -> serialized wire work -> native assumed/conflict metadata
+  -> native up checkpoint (including no-op) -> matching-token pin settlement
+  -> clear this phase's marker
+```
+
+A phase failure closes dispatch and drains siblings. Automatic retry is allowed
+only when the whole phase sent no mutation or every sent mutation is proven not
+executed. Any accepted, already-satisfied or possibly committed result without
+reliable settlement makes the whole phase uncertain. Native persistence failure
+stops the runtime; restart preserves the dirty marker and pauses automatic
+application. Pause/resume does not authorize replaying uncertain effects.
+
+### Explicit recovery
+
+Private `pause`, `resume`, `inspect` and `resolve` are coordinator controls.
+Pause drains replication while retaining leadership and local CRUD/watch.
+Resolve requires the elected owner and stays paused until explicit resume.
+Unresolved issues or markers prevent resume; a pending recovery intent blocks edits to its target,
+while other IDs remain locally editable outside the bounded persistence lock.
+
+Inspection is offline by default: it returns bounded issue/target metadata, with
+at most one requested ID's desired/assumed pair under the existing row budgets.
+Explicit `readCurrent: true` requires `logicalId`, a configured transport and a
+bound identity. It adds `current: {source: 'authoritative-read', document}`;
+omitted `current` means unknown, `document: null` means confirmed missing, and a
+tombstone remains distinct. The request retains the original bound database
+identity/session and runs outside the alias lock. After it returns, issue, edit
+token, physical epoch, binding and the desired/assumed pair are rechecked; a stale
+inspection fails. This observation is advisory: adopt/merge resolution
+independently rereads current. Inspection does not persist a payload journal or
+add automatic reads after ACKs.
+
+| Decision | Effect |
+|---|---|
+| Adopt server | Use an authoritative current state as both desired and assumed; missing maps to explicit absence |
+| Merge local | Use current as assumed and the chosen typed business content as new desired with a new edit token/pin |
+| Retry uncertain | Require explicit acknowledgement of potentially repeated effects before clearing the phase for native retry |
+| Reset alias | Require explicit pending-data discard and an unchanged inspection token; replace local physical state while retaining the original database binding |
+
+Adopt/merge stop normal replication, read current without holding an alias lock,
+then recheck issue, edit token and physical epoch under exclusive ownership. A
+stale decision fails. A confirmed, bounded recovery intent saves current
+(including absence), desired and the preallocated result token before fork or
+assumed metadata writes. Replay finishes that exact decision after a crash;
+it does not fetch a replacement current state. The two stores have no shared
+transaction, so verification precedes clearing the intent and corresponding
+issue/phase target. Other IDs and ordinary up/down checkpoints remain unchanged
+by adopt/merge; unresolved sibling targets keep the phase blocked.
+
+The [upstream decision](../../../.agents/notes/implemented/architecture/2026-09-20-sdk-upstream-replication.md)
+owns failure classification and recovery costs. Unknown create may have succeeded
+and then been deleted; automatic retry could recreate it. Explicit retry can
+permit that effect. Same-version ABA and repeated external side effects remain
+outside this contract; no outbox, idempotency service or source receipt is added.
 
 ## Remaining Replica Database Integration
 
@@ -348,8 +456,6 @@ owns these unimplemented capabilities:
   source adapters and downstream coordinator; authorized notification integration.
 - Public CRUD, query and dynamic watch facades over the delivered private storage
   and query clients.
-- Automatic typed HTTP Push, durable acknowledgement/conflict reconciliation,
-  cancellation, and recovery across restarts and reconnects.
 - Public lifecycle/status/recovery controls and complete browser-to-server
   end-to-end tests.
 
@@ -447,5 +553,7 @@ interface RealtimeClientOptions {
   refill, manifest-only changes, shared ownership and continuous resource limits.
 - Private downstream: ordered event projection, bounded window activation,
   durable pin settlement, read retries and native leader/follower lifecycle.
-- Public replica API and real HTTP Push/recovery integration require their own
-  implementation and validation.
+- Private upstream: real native success, CAS attempt limits, request identity,
+  accepted-prefix/whole-phase failures, explicit recovery and crash replay.
+- The public replica API, authorized notification wiring and complete
+  browser-to-server integration require their own implementation and validation.
