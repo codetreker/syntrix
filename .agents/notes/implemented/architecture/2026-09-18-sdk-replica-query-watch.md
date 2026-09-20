@@ -11,9 +11,11 @@ Status: implemented
 
 ## Decision
 
-私有副本运行时提供查询客户端，消费已有 alias 存储；公开 `openReplica()` 与自动网络
-同步仍由[离线复制 proposal](../../proposed/feature/2026-09-07-sdk-offline-replication.md)
+私有副本运行时提供查询客户端，消费已有 alias 存储；公开 `openReplica()`、真实上行
+与恢复仍由[离线复制 proposal](../../proposed/feature/2026-09-07-sdk-offline-replication.md)
 负责。查询不改变存储真相源、复制 checkpoint 或 pending 的持有方式。
+[私有下行协调器](2026-09-19-sdk-downstream-replication.md)已通过持久化成员和 manifest
+通知驱动这些查询视图。
 
 ### 查询契约
 
@@ -24,7 +26,7 @@ Status: implemented
 | 排序 | missing、null、false、true、numeric、string；array/object 排序明确失败；默认逻辑 ID 升序，显式排序补 ID tie-break |
 | 页读取 | get/getPage 默认 100、最大 1000；cursor 绑定 alias 与规范查询、携带 typed 排序位置，不承诺跨页快照 |
 | watch | 无 limit 时返回全部匹配，有 limit 时返回动态窗口；每次交付完整、与内部缓存隔离的数组；不接受 startAfter |
-| 删除 | showDeleted 可见业务 tombstone，absence 始终不可见；保留既有 pending/pin/保护状态可见性 |
+| 删除与成员可见性 | showDeleted 可见业务 tombstone，absence 始终不可见；保留既有 pending/pin/保护状态。来源 hash 与当前 revision 匹配的下载不因 assumed 缺失或滞后而成为 pending，staged 新成员等待激活 |
 | 配置 | 异步初始化前冻结；同义 AND/in 条件规范化，相同查询共享索引，窗口大小独立 |
 
 服务端 metadata 从成员观察取得，修改 metadata 可以影响过滤、排序及回调内容。
@@ -97,7 +99,7 @@ AVL 保存完整匹配候选，普通单 ID 维护为 O(log M)；输出构造仍
 
 ## Consequences
 
-- 公开 facade 与自动同步仍需后续集成；此处交付私有查询能力及存储读取边界。
+- 公开 facade、真实上行与恢复仍需后续集成；此处交付私有查询能力及存储读取边界。
 - 大结果、复杂排序或持续增长可以触发明确查询失败；limit 不豁免窗口外候选成本。
 - 完整初始化和切代需要有界扫描，读取次数随候选数增长；不沿用较大批次原型的性能结论。
 - 同一数据库的查询句柄使用一致的预算配置，不以新句柄扩大既有资源上限。

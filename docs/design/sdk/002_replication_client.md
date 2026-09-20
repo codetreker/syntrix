@@ -1,6 +1,6 @@
 # Replication Client Design (RxDB + Syntrix replication/realtime)
 
-**Status:** Manual Pull, WebSocket lifecycle, a private native replication runtime, replica alias storage, and bounded private query/watch are implemented. The server also supports matching-set query sources, complete result windows, and bound database identity checks. Their SDK adapters, the public replica database API, and automatic HTTP synchronization remain planned.
+**Status:** Manual Pull, WebSocket lifecycle, a private native replication runtime, replica storage/query/watch, and private HTTP downstream coordination are implemented. The public replica database API, real HTTP Push and explicit upstream recovery remain planned.
 
 ## Context & Why
 - We need offline-first replication for web clients using RxDB as local store.
@@ -67,6 +67,7 @@ or conflicts. The runtime does not yet connect these adapters to Syntrix HTTP.
 | Metadata and checkpoints | Returned storage errors and rejected promises stop replication; a failed write cannot acknowledge progress |
 | Opaque source checkpoint | Store the complete value under one stable `source` key so native shallow merging replaces it wholesale; adapter reads and completion hooks receive the unwrapped value, including after restart |
 | Durable completion hook | Run after native page persistence and checkpoint completion; the owning source layer can finish activation before readiness |
+| Durable upstream hook | Run after the native upstream metadata/checkpoint barrier, including no-op progress; pin settlement checks that frontier rather than treating an ACK as durable completion |
 | Initial upload barrier | Every new instance waits for a fresh completed source round and its durable hook, including when saved metadata exists |
 | Empty source page | Advancing progress requires an identifiable control record; a terminal page may be empty when its checkpoint matches the already persisted position |
 | Failure | Cancel admission before the first diagnostic; recovery uses a new instance and retained durable metadata |
@@ -192,6 +193,12 @@ document, and deleting a missing/deleted document is idempotent. Generated IDs a
 available alongside explicit logical IDs. Reserved metadata cannot be written as
 business fields.
 
+Pending visibility excludes a native download whose origin hash and revision match
+the current row, even if assumed metadata is missing or stale. This keeps staged
+new members hidden through partial persistence and reopen. A later local edit
+advances the revision and restores ordinary pending comparison; active membership,
+pins and recovery protections remain independent reasons for visibility.
+
 ```text
 alias shared lock -> current physical epoch -> view-write exclusive lock
   -> read d + m -> evaluate frozen ifMatch -> desired + edit token + pin
@@ -299,6 +306,36 @@ The [query decision](../../../.agents/notes/implemented/architecture/2026-09-18-
 owns default quotas, algorithms and trade-offs. Private query availability does
 not expose a public replica database or connect a network replication adapter.
 
+## Private Downstream Coordination
+
+The private source adapter connects authenticated matching-set and window requests
+to alias storage through the native runtime. Successful envelopes are bounded and
+validated before projection. Initial reads may be unbound; every later source
+request, including empty-cursor resync, carries the immutable expected database
+identity. The existing stricter write guard remains independent.
+
+| Mechanism | Contract |
+|---|---|
+| Projection | Fold repeated event IDs in source order into independent d/m/c records; leave affects membership, while logical delete supplies a tombstone without invented metadata |
+| Delivery | Fetch one source page at a time; each native chunk has at most 201 rows and 16 MiB, with c progress; advance the server cursor only on the last chunk |
+| Replacement | Keep old active membership through window/rebuild staging; activate after record, assumed metadata and checkpoint persistence; recover ambiguous manifest completion by rereading |
+| Pending protection | Preserve current edit token/pin on downloaded d writes under the original CAS; m still applies when native preserves pending d |
+| Pin settlement | Require matching current token/business state and durable native up frontier, then await a later completed source round before clearing protection |
+| Leadership | One coordinator owns source work per alias using the pinned native elector; followers derive readiness from durable manifest, and coordinator recreation uses fresh election ownership |
+| Scheduling | Default 10s polling and 200ms hint coalescing; retry transient reads with capped exponential delay/jitter and Retry-After; do not retry persistence failures as network faults |
+| Maintenance | Retain coordinator leadership when this or another handle retires native ownership; drain and recreate from the selected durable epoch, including not-clean compaction and verified safe rollback. Scope capture waits for local maintenance; a handoff race retries only after verifying a replacement owner in the same session and definition |
+| Shutdown | Abort and drain before releasing election; preserve genuine I/O and cleanup failures, while normal cancellation and handled source rejection close safely |
+
+Without an internal write adapter, upstream scanning is disabled and pending edits
+remain unsent. No synthetic ACK is generated. The real Push adapter and recovery
+phase handling are separate work. Private hints are available, but automatic WS
+source subscriptions remain unwired until their authorization matches the source;
+authorized polling supplies correctness in the meantime.
+
+The [downstream decision](../../../.agents/notes/implemented/architecture/2026-09-19-sdk-downstream-replication.md)
+owns source/delivery generation distinctions, pin transitions, retry classes and
+maintenance recovery conditions. The Store/Puller checkpoint mechanism is unchanged.
+
 ## Remaining Replica Database Integration
 
 The [offline replication proposal](../../../.agents/notes/proposed/feature/2026-09-07-sdk-offline-replication.md)
@@ -307,16 +344,14 @@ owns these unimplemented capabilities:
 - Public `openReplica()` creation over the implemented private alias storage,
   returning a `ReplicaDatabase` with `ReplicaCollection` handles; public types do
   not expose RxDB objects.
-- HTTP adapters for the server's matching-set and result-window sources and bound
-  database identity header; map sources to independent local aliases, schedule
-  window refreshes using realtime hints plus polling, and durably activate
-  membership generations.
+- Public source builders and alias creation over the delivered authenticated HTTP
+  source adapters and downstream coordinator; authorized notification integration.
 - Public CRUD, query and dynamic watch facades over the delivered private storage
   and query clients.
 - Automatic typed HTTP Push, durable acknowledgement/conflict reconciliation,
   cancellation, and recovery across restarts and reconnects.
-- Automatic synchronization ownership and scheduling across tabs, and complete
-  browser-to-server end-to-end tests.
+- Public lifecycle/status/recovery controls and complete browser-to-server
+  end-to-end tests.
 
 Direct reads and writes retain the REST API. Push is an internal replication
 operation; a public manual Push method is not part of the replica API. Native
@@ -324,8 +359,8 @@ replication metadata owns delivery progress; a separate SDK outbox is not requir
 Legacy coordinator helpers are not connected to the new runtime or exported as a
 supported replica API.
 
-Realtime notifications and registration `onReady` schedule authoritative source
-reads. Their events do not become checkpoints or replace source reconciliation.
+Authorized realtime notifications and registration `onReady` can schedule source
+reads through the hint interface. Their events do not become checkpoints or replace source reconciliation.
 Tombstones convey deletion, and the same logical path ID may be recreated. Since
 its version may reset, comparing document versions alone cannot order replication
 history.
@@ -410,5 +445,7 @@ interface RealtimeClientOptions {
   durability or complete browser-to-server synchronization.
 - Private queries: typed semantics, bounded materialization, incremental window
   refill, manifest-only changes, shared ownership and continuous resource limits.
-- Public replica API, query-source membership application, and real HTTP Push
-  integration require their own implementation and validation.
+- Private downstream: ordered event projection, bounded window activation,
+  durable pin settlement, read retries and native leader/follower lifecycle.
+- Public replica API and real HTTP Push/recovery integration require their own
+  implementation and validation.

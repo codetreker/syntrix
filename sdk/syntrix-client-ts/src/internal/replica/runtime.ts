@@ -13,6 +13,7 @@ import {
 } from 'rxdb';
 import { EMPTY, Subject, type Subscription } from 'rxjs';
 import { readBoundedChanges, validateBoundedReadOptions, type BoundedReadOptions } from './bounded-reader.js';
+import type { NativeUpCheckpoint } from './replication-access.js';
 
 export { getRxStorageDexie } from 'rxdb/plugins/storage-dexie';
 export { defaultConflictHandler, defaultHashSha256, fillWithDefaultSettings, getRxReplicationMetaInstanceSchema } from 'rxdb';
@@ -20,6 +21,8 @@ export { createReplicaSession } from './session.js';
 export { openAliasStorage } from './storage.js';
 export { compactAlias } from './compaction.js';
 export { createReplicaQueryClient } from './query.js';
+export { createReplicaHttpSource } from './source.js';
+export { createReplicaDownstream } from './coordinator.js';
 
 export interface SourcePage<T, C extends object> {
   documents: WithDeletedAndAttachments<T>[];
@@ -41,11 +44,13 @@ export interface ReplicationOptions<T, C extends object> {
   pullBatchSize?: number;
   pushBatchSize?: number;
   readBounds?: BoundedReadOptions;
+  upstreamEnabled?: boolean;
   readSource(checkpoint: C | undefined, limit: number, signal: AbortSignal): Promise<SourcePage<T, C>>;
-  writeRemote(rows: RxReplicationWriteToMasterRow<T>[], signal: AbortSignal): Promise<WithDeleted<T>[]>;
+  writeRemote?(rows: RxReplicationWriteToMasterRow<T>[], signal: AbortSignal): Promise<WithDeleted<T>[]>;
   createProgressDocument?(page: SourcePage<T, C>): WithDeletedAndAttachments<T>;
   isControlDocument?(document: WithDeleted<T>): boolean;
   onCheckpoint?(checkpoint: C, status: { complete: boolean }, signal: AbortSignal): Promise<void>;
+  onUpCheckpoint?(checkpoint: NativeUpCheckpoint, signal: AbortSignal): Promise<void>;
   onError?(error: unknown): void;
 }
 
@@ -63,6 +68,8 @@ export const createReplicationRuntime = <T, C extends object>(
   options: ReplicationOptions<T, C>,
 ): ReplicationRuntime => {
   options.ownerSignal?.throwIfAborted();
+  const upstreamEnabled = options.upstreamEnabled ?? true;
+  if (upstreamEnabled && !options.writeRemote) throw new TypeError('Enabled upstream replication requires a write adapter');
   const limits = validateBoundedReadOptions(options.readBounds);
   const pullBatchSize = options.pullBatchSize ?? 201;
   const pushBatchSize = options.pushBatchSize ?? 50;
@@ -89,6 +96,7 @@ export const createReplicationRuntime = <T, C extends object>(
   let scheduler: Promise<void> = Promise.resolve();
   let wire: Promise<unknown> = Promise.resolve();
   let pageToCommit: SourcePage<T, C> | undefined;
+  let upToCommit: NativeUpCheckpoint | undefined;
   let closing: Promise<void> | undefined;
   // Only this owner or runtime can authorize cancellation during drain;
   // another session's error and genuine storage failures remain observable.
@@ -156,6 +164,15 @@ export const createReplicationRuntime = <T, C extends object>(
       if (fork) {
         const controlConflict = result.error.find(error => error.status === 409 && options.isControlDocument?.(error.writeRow.document as unknown as WithDeleted<T>));
         if (controlConflict) throw controlConflict;
+      } else if (options.onUpCheckpoint) {
+        for (const row of rows) {
+          const document = row.document as unknown as RxStorageReplicationMeta<T, any>;
+          if (document.id !== 'up|1' || result.error.some(error => error.documentId === document.id)) continue;
+          const checkpoint = document.checkpointData;
+          if (!checkpoint || typeof checkpoint.id !== 'string' || !Number.isFinite(checkpoint.lwt)) throw new TypeError('Invalid durable upstream checkpoint');
+          upToCommit = { id: checkpoint.id, lwt: checkpoint.lwt };
+          schedule();
+        }
       }
       return result;
     }),
@@ -168,7 +185,7 @@ export const createReplicationRuntime = <T, C extends object>(
     close: () => track(() => storage.close()),
     remove: () => track(() => storage.remove()),
     getChangedDocumentsSince: (limit, checkpoint) => track(async () => {
-      if (fork && !ready) return { documents: [], checkpoint };
+      if (fork && (!ready || !upstreamEnabled)) return { documents: [], checkpoint };
       return readBoundedChanges(
         (count, cursor) => track(() => getChangedDocumentsSince(storage, count, cursor)),
         checkpoint,
@@ -207,6 +224,11 @@ export const createReplicationRuntime = <T, C extends object>(
       await Promise.all([state.streamQueue.down, state.streamQueue.up, state.checkpointQueue]);
       if (stopped || state.events.active.up.value || state.events.active.down.value) return;
       await commitPage();
+      if (upToCommit) {
+        const checkpoint = upToCommit;
+        await track(() => options.onUpCheckpoint!(checkpoint, abort.signal));
+        if (upToCommit === checkpoint) upToCommit = undefined;
+      }
       if (stopped || (!dirty && !sourceDirty && !continuation)) return;
       if (sourceDirty || continuation) sourceIdle = false;
       sourceDirty = false;
@@ -214,7 +236,7 @@ export const createReplicationRuntime = <T, C extends object>(
       invalidations.next('RESYNC');
     }).catch(fail).then(() => {
       scheduled = false;
-      if (!stopped && !state.events.active.up.value && !state.events.active.down.value && (dirty || sourceDirty || continuation || pageToCommit)) schedule();
+      if (!stopped && !state.events.active.up.value && !state.events.active.down.value && (dirty || sourceDirty || continuation || pageToCommit || upToCommit)) schedule();
     });
   };
 
@@ -257,10 +279,11 @@ export const createReplicationRuntime = <T, C extends object>(
         const task = track(async () => {
           await previous;
           assertOpen();
+          if (!upstreamEnabled) throw new Error('Upstream replication is disabled');
           if (!ready) throw new Error('Upstream write attempted before source readiness');
           const business = rows.filter(row => !options.isControlDocument?.(row.newDocumentState));
           if (business.length === 0) return [];
-          const conflicts = await options.writeRemote(business, abort.signal);
+          const conflicts = await options.writeRemote!(business, abort.signal);
           assertOpen();
           return conflicts;
         });
@@ -273,7 +296,7 @@ export const createReplicationRuntime = <T, C extends object>(
   subscriptions.push(state.events.active.up.subscribe(schedule), state.events.active.down.subscribe(schedule));
   subscriptions.push(options.forkInstance.changeStream().subscribe({
     next: event => {
-      if (event.context.startsWith('replication-downstream-')) return;
+      if (!upstreamEnabled || event.context.startsWith('replication-downstream-') || event.context === 'replica-pin') return;
       if (event.events.some(change => !options.isControlDocument?.(change.documentData))) {
         dirty = true;
         schedule();

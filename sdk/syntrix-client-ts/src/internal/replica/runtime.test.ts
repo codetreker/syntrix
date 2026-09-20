@@ -82,6 +82,74 @@ const fixture = async () => {
 };
 
 describe('private replication runtime', () => {
+  test('downstream-only replication retains pending data and never advances the upstream checkpoint', async () => {
+    const f = await fixture();
+    f.config.upstreamEnabled = false;
+    delete f.config.writeRemote;
+    await f.seed(['pending']);
+    let upHooks = 0;
+    f.config.onUpCheckpoint = async () => { upHooks++; };
+    const runtime = f.start();
+    try {
+      await until(() => runtime.ready || runtime.stopped); await runtime.waitForIdle();
+      expect(runtime.ready).toBe(true);
+      expect((await f.fork.findDocumentsById(['pending'], false))[0].value).toBe(1);
+      expect(await f.meta.findDocumentsById(['up|1', 'pending|0'], false)).toEqual([]);
+      expect(upHooks).toBe(0); expect(f.pushed).toEqual([]);
+      runtime.requestResync(); await runtime.waitForIdle();
+      expect(await f.meta.findDocumentsById(['up|1'], false)).toEqual([]);
+    } finally { await f.close(); }
+  });
+
+  test('durable upstream hook observes no-op A to B to A progress without a remote write', async () => {
+    const f = await fixture();
+    f.config.readSource = async checkpoint => ({ documents: checkpoint ? [] : [{ id: 'alice', value: 1, _deleted: false }], checkpoint: { sequence: 1 }, complete: true });
+    const observed: { id: string; lwt: number }[] = [];
+    f.config.onUpCheckpoint = async checkpoint => {
+      const stored = (await f.meta.findDocumentsById(['up|1'], false))[0];
+      expect(stored.checkpointData as unknown).toEqual(checkpoint);
+      observed.push(checkpoint);
+    };
+    try {
+      const first = f.start(); await until(() => first.ready || first.stopped); await first.waitForIdle(); await first.close();
+      const initialCount = observed.length;
+      let current = (await f.fork.findDocumentsById(['alice'], false))[0];
+      for (const value of [2, 1]) {
+        const document = { ...current, value, _meta: { lwt: now() }, _rev: `${Number(current._rev.split('-')[0]) + 1}-edit` };
+        expect((await f.fork.bulkWrite([{ previous: current, document }], 'local')).error).toEqual([]);
+        current = document;
+      }
+      const second = f.start(); await until(() => second.ready || second.stopped); await second.waitForIdle();
+      expect(observed.length).toBeGreaterThan(initialCount);
+      expect(observed[observed.length - 1].lwt).toBeGreaterThanOrEqual(current._meta.lwt);
+      expect(f.pushed).toEqual([]); expect(f.errors).toEqual([]);
+    } finally { await f.close(); }
+  });
+
+  for (const failurePoint of ['metadata', 'checkpoint', 'hook'] as const) {
+    test(`upstream ${failurePoint} failure cannot acknowledge settlement and preserves the original error`, async () => {
+      const f = await fixture(); const fault = new Error(`upstream ${failurePoint}`);
+      let hooks = 0;
+      await f.seed(['pending']);
+      const original = f.meta.bulkWrite.bind(f.meta);
+      f.meta.bulkWrite = async (rows, context) => {
+        if ((failurePoint === 'metadata' && rows.some(row => row.document.itemId === 'pending' && row.document.isCheckpoint === '0')) ||
+          (failurePoint === 'checkpoint' && rows.some(row => row.document.id === 'up|1'))) throw fault;
+        return original(rows, context);
+      };
+      f.config.onUpCheckpoint = async () => { hooks++; if (failurePoint === 'hook') throw fault; };
+      const runtime = f.start();
+      try {
+        await until(() => runtime.stopped);
+        await expect(runtime.waitForIdle()).rejects.toBe(fault);
+        await expect(runtime.close()).rejects.toBe(fault);
+        expect(hooks).toBe(failurePoint === 'hook' ? 1 : 0);
+        expect(f.errors).toEqual([fault]);
+        if (failurePoint !== 'hook') expect(await f.meta.findDocumentsById(['up|1'], false)).toEqual([]);
+      } finally { await f.close(); }
+    });
+  }
+
   for (const stopPoint of ['session', 'alias-close', 'maintenance', 'maintenance-then-close'] as const) {
     for (const outcome of ['success', 'storage-error', 'unrelated-session-error', 'cleanup-error'] as const) {
       if (stopPoint.startsWith('maintenance') && outcome === 'cleanup-error') continue;

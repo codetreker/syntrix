@@ -16,10 +16,12 @@ pending。逐 ID 清除原生历史又可能使旧状态重新上传。直接批
 local edit 等术语继续表示修改发生的位置。公开数据库入口命名为 openReplica。
 [复制设计](../../../../docs/design/sdk/002_replication_client.md#private-replica-alias-storage)
 维护内部契约；[SDK reference](../../../../docs/reference/typescript_sdk.md#replica-availability)
-维护公共可用性。公共 openReplica、查询/watch、自动 HTTP 下行/上行继续由
+维护公共可用性。公共 openReplica 与查询/watch facade、真实 HTTP 上行和恢复继续由
 [离线复制 proposal](../../proposed/feature/2026-09-07-sdk-offline-replication.md)负责。
 [私有查询层](2026-09-18-sdk-replica-query-watch.md)已实现查询求值与动态 watch；其读取
 适配在此层持有视图锁，接收共享预算并延后 payload 解码。
+[私有下行协调器](2026-09-19-sdk-downstream-replication.md)连接 HTTP 查询源、成员、pin
+及原生领导权，复用本层的有界复制访问与生命周期。
 
 ### 身份与所有权
 
@@ -33,7 +35,7 @@ local edit 等术语继续表示修改发生的位置。公开数据库入口命
 | HTTP 等待 | 请求构造时同步固定会话；凭据等待前和等待期间响应取消，避免旧请求等待正在 drain 自己的新凭据 |
 | bundle | 生命周期能力附在同一个 token provider 的版本化 Symbol hub 上，remote entry 与独立 lazy bundle 共享所有者 |
 | 数据库绑定 | 初始可 unbound 离线编辑；首次 CAS 绑定 databaseIdentity/sourceHash，之后不自动改绑 |
-| 请求准入 | 捕获 subject/session/source definition/physical epoch/native instance/request ID；就绪后提供预期数据库身份头 |
+| 请求准入 | 捕获 subject/session/source definition/physical epoch/native instance/request ID；源读取允许初次未绑定状态，绑定后总带身份头；写入仍要求 source ready |
 
 JWT 解析只用于本地命名空间，不是鉴权或抵抗同源恶意脚本的隔离机制。不同 slug/ID URL
 保留独立缓存；网络 guard 不发送 HTTP，也不能代替服务端权威身份检查。
@@ -56,6 +58,8 @@ payload，同 ID 可以立即重建。读出的业务内容来自 d，version/ti
 fork 插入保留原生下载来源 metadata，同时沿用 wrapper 的 revision、lwt、hooks 和
 实际写入准入。文档成功落盘而 assumed 写入失败时，重放用来源与 revision 的对应关系
 识别下载状态；后来的本地修改推进 revision，使旧来源标记失效，仍需正常上传。
+读取与查询同样核对来源 hash 和当前 revision，避免 assumed 缺失或滞后时把 staged
+下载误判为本地 pending；该判定不取消 active 成员、pin 或恢复保护的可见性。
 
 ```text
 alias shared -> 当前 epoch -> view exclusive -> d/m + 冻结条件
@@ -117,6 +121,10 @@ maintenance capability 在已有独占锁内完成 shadow 写入，不嵌套请�
 manifest CAS 结果不确定时先重读，无法读出选择就保留两代；成功 flip 后和重开时清理
 确认非 active 的 fork 及 paired metadata。清理完成前不建立第二个 shadow。
 
+捕获请求 scope 在进入存储访问队列前等待本句柄维护结束，避免阻塞旧 native 的 drain。
+等待者保留维护失败的原始错误，alias/session 取消可中止等待。源读取准入归属 native
+owner；发现其他句柄已切换 physical epoch 时取消该 owner，由协调器重新取得所选代。
+
 ## Alternatives
 
 **高层 incrementalModify：** 其异常队列不适合作为必须向调用者结算的写路径。raw storage
@@ -136,7 +144,7 @@ reservation 限制单次物化，独立控制池避免 manifest 与业务记录�
 
 ## Consequences
 
-- 私有存储可以离线读写与重开；自动网络同步、源成员协调和公开本地 API 仍需集成。
+- 私有存储可以离线读写与重开，下行协调器已接入源成员；真实上行、恢复与公开 API 仍需集成。
 - 条件写、quota 和维护会显式失败；close/drain 失败保留可见错误，不能宣称安全切换账号。
 - 取消等待不会解除凭据 drain 义务；正常 session 取消可完成关闭，真实 I/O 和清理故障仍阻止新凭据安装。
 - 完整字节容量核对、clean 检查和 seed 都有扫描成本；没有性能或总 heap 的额外承诺。

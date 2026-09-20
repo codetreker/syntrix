@@ -31,6 +31,7 @@ checkpoint；稳定的外层键让整个源值替换前值，阶段变化时移�
 | 下游页 | 等待当前页文档、metadata、checkpoint 持久化，再读取下一页 |
 | 双向 metadata | 检查批量写入返回的错误，包括冲突 metadata；失败立即停止 |
 | checkpoint | 等待所有写入路径，包括空页、无变化、上行早返回 |
+| 上行完成 hook | 在原生 up frontier 与队列完成后调用，包含 no-op；适配器核对当前记录后结算 pin |
 | fork 插入 | wrapper 保留输入 metadata 的下载来源；刷新 lwt 并保留 revision 生成和 hooks，文档先于 assumed 落盘时仍可安全恢复 |
 | fatal | 先取消实例，再发布一次错误诊断；启动读取和异步队列的 rejection 也进入此路径 |
 | 恢复 | 用已有可靠 metadata 创建新实例；失败实例的 promise 队列不复用 |
@@ -128,7 +129,7 @@ pnpm 补丁配置。将修补结果打入 SDK 后，消费者不必使用相同�
 - RxDB 升级需要重审补丁，重新执行原生故障回归和隔离消费者验证；依赖版本不能
   脱离补丁单独升级。
 - 初始源完成前延迟首次上传，本地编辑仍可由上层持久化。源成员、generation 激活
-  及 HTTP checkpoint 的含义由后续适配器实现，当前运行时不推断这些业务状态。
+  及 HTTP checkpoint 的含义由[下行适配器](2026-09-19-sdk-downstream-replication.md)维护，运行时不推断这些业务状态。
 - 协议、memory 或 fake IndexedDB 验证不能替代完整浏览器端到端、跨 tab 所有权
   或断电持久性验证。当前没有公开 `openReplica`，也没有接通自动 HTTP Push。
 - [SDK 复制设计](../../../../docs/design/sdk/002_replication_client.md)拥有运行时职责；
