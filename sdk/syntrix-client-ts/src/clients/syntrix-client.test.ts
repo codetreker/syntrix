@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, spyOn } from 'bun:test';
 import axios from 'axios';
+import { indexedDB, IDBKeyRange } from 'fake-indexeddb';
 import { SyntrixClient } from './syntrix-client.js';
 import { AuthSessionChangedError } from '../api/errors.js';
 import type { ReplicaDatabase, OpenReplicaOptions } from '../api/replica-types.js';
@@ -7,6 +8,7 @@ import type { ReplicaOptionsSnapshot } from '../api/replica-reference.js';
 import type { ReplicaSession } from '../internal/replica/session.js';
 import type { DefaultTokenProvider } from '../internal/auth/provider.js';
 import * as loader from '../internal/replica/loader.js';
+import { createTestLockManager } from '../internal/replica/lock-manager.test-fixture.js';
 
 const jwt = (subject: string) => `${btoa('{}')}.${btoa(JSON.stringify({ sub: subject, exp: 0 }))}.sig`.replace(/=/g, '');
 const deferred = () => {
@@ -181,4 +183,33 @@ describe('public replica bootstrap', () => {
     expect(removed).toEqual(['historical']);
     await replica.close();
   });
+
+  it('loads the real replica runtime and reopens durable public records without vendor injection', async () => {
+    setGlobal('window', {});
+    setGlobal('document', { visibilityState: 'visible', addEventListener() {}, removeEventListener() {} });
+    setGlobal('indexedDB', indexedDB); setGlobal('IDBKeyRange', IDBKeyRange);
+    setGlobal('navigator', { locks: createTestLockManager(), onLine: false });
+    const server = Bun.serve({ hostname: '127.0.0.1', port: 0, fetch: () =>
+      Response.json({ code: 'UNAVAILABLE', message: 'Offline bootstrap fixture' }, { status: 503 }) });
+    const value = new SyntrixClient(server.url.href, { database: 'app', auth: { token: jwt('alice') } });
+    const options = { name: crypto.randomUUID(), collections: { users: value.replicate('users') } };
+    let first: ReplicaDatabase | undefined, reopened: ReplicaDatabase | undefined;
+    try {
+      first = await value.openReplica(options);
+      await first.sync.pause();
+      const users = first.collection('users');
+      await users.doc('alice').set({ exact: 9007199254740993n });
+      expect(await users.get()).toEqual([expect.objectContaining({ id: 'alice', exact: 9007199254740993n })]);
+      await first.close();
+      expect(() => users.doc('alice')).toThrow('closed');
+      reopened = await value.openReplica(options);
+      await reopened.sync.pause();
+      expect(await reopened.collection('users').doc('alice').get()).toMatchObject({ exact: 9007199254740993n });
+      expect((await reopened.sync.inspect('users', { id: 'alice' })).document?.desired?.existence).toBe('live');
+    } finally {
+      const results = await Promise.allSettled([first?.close(), reopened?.close()]);
+      server.stop(true);
+      for (const result of results) if (result.status === 'rejected') throw result.reason;
+    }
+  }, 10_000);
 });
