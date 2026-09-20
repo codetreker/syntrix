@@ -8,6 +8,8 @@ assert.equal('createReplicationRuntime' in remote, false);
 assert.equal('createReplicaQueryClient' in remote, false);
 assert.equal('createReplicaDownstream' in remote, false);
 assert.equal('createReplicaHttpSource' in remote, false);
+assert.equal('createReplicaHttpUpstream' in remote, false);
+assert.equal('resolveReplica' in remote, false);
 await import('fake-indexeddb/auto');
 const sdkEntry = import.meta.resolve('@syntrix/client');
 const { loadReplicaRuntime } = await import(new URL('./internal/replica/loader.js', sdkEntry));
@@ -291,5 +293,88 @@ try {
 } finally {
   const cleanup = await Promise.allSettled([sourceQueries?.close(), downstream?.close(), sourceAlias?.close(), sourceSession?.close()]);
   sourceServer.stop(true);
+  for (const result of cleanup) if (result.status === 'rejected') throw result.reason;
+}
+
+const upstreamGeneration = crypto.randomUUID();
+const pushRequests = [];
+let currentRemote = null, upstreamReads = 0, currentReads = 0, losePushResponse = false;
+const upstreamServer = Bun.serve({ hostname: '127.0.0.1', port: 0, async fetch(request) {
+  const path = new URL(request.url).pathname;
+  const body = await request.json();
+  const identity = request.headers.get('X-Syntrix-Expected-Database-Identity');
+  if (path.endsWith('/pull')) {
+    assert.equal(identity, upstreamReads++ === 0 ? null : databaseIdentity);
+    return Response.json({ protocolVersion: 1, mode: 'events', databaseIdentity, sourceHash,
+      events: [], checkpoint: `upstream-source-${upstreamReads}`, generationId: upstreamGeneration,
+      phase: 'live', caughtUp: true, bootstrapComplete: true });
+  }
+  assert.equal(identity, databaseIdentity);
+  if (path.endsWith('/query')) {
+    currentReads++;
+    assert.deepEqual(body.filters, [{ field: 'id', op: '==', value: { type: 'string', value: 'alice' } }]);
+    assert.equal(body.orderBy, undefined);
+    assert.equal(body.showDeleted, true);
+    return Response.json({ documents: currentRemote ? [remote.encodeQueryValue(currentRemote)] : [],
+      nextCursor: null, effectiveOrder: [{ field: 'id', direction: 'asc' }] });
+  }
+  assert.ok(path.endsWith('/push'));
+  assert.equal(body.changes.length, 1);
+  const change = body.changes[0], desired = remote.decodeQueryValue(change.document);
+  pushRequests.push({ action: change.action, desired });
+  if (change.action === 'create') assert.equal(desired.version, undefined);
+  else assert.equal(desired.version, currentRemote.version);
+  currentRemote = { ...desired, collection: 'users', version: (currentRemote?.version ?? 0n) + 1n,
+    createdAt: 1n, updatedAt: 2n };
+  return losePushResponse ? Response.json({ code: 'INTERNAL', message: 'Reply lost after write' }, { status: 500 })
+    : Response.json({ conflicts: [] });
+} });
+let upstreamSession, upstreamAlias, synchronization;
+try {
+  const client = new remote.SyntrixClient(upstreamServer.url.href, { database: 'app', auth: { token: token('upstream-user') } });
+  upstreamSession = await replica.createReplicaSession(client.tokenProvider);
+  upstreamAlias = await replica.openAliasStorage({ session: upstreamSession, endpoint: upstreamServer.url.href,
+    database: 'app', name: crypto.randomUUID(), alias: 'users', source: { collection: 'users', filters: [] },
+    lockManager: createTestLockManager() });
+  await upstreamAlias.set('alice', { exact: 9007199254740993n });
+  const source = replica.createReplicaHttpSource({ axios: client.pullTransport.axios, provider: client.tokenProvider,
+    database: 'app', definition: (await upstreamAlias.readManifest()).definition });
+  const upstream = replica.createReplicaHttpUpstream({ axios: client.pullTransport.axios, provider: client.tokenProvider,
+    database: 'app', collection: 'users' });
+  synchronization = replica.createReplicaDownstream({ storage: upstreamAlias, source, upstream,
+    options: { pollIntervalMs: 60_000 } }, {
+    leadership: () => ({ wait: async signal => signal.throwIfAborted(), close: async () => {} }),
+    now: Date.now, random: () => 0.5, set: (callback, delay) => setTimeout(callback, delay), clear: timer => clearTimeout(timer),
+  });
+  await until(() => pushRequests.length === 1 && synchronization.snapshot.state === 'idle');
+  assert.equal(currentRemote.exact, 9007199254740993n);
+  assert.equal((await upstreamAlias.readManifest()).dirtyUpstream, null);
+  await synchronization.pause();
+  await upstreamAlias.set('alice', { exact: 9007199254740994n });
+  await synchronization.resume();
+  await until(() => pushRequests.length === 2 && synchronization.snapshot.state === 'idle');
+  assert.equal(pushRequests[1].action, 'update');
+  assert.equal(currentReads, 1);
+  await synchronization.pause();
+  losePushResponse = true;
+  await upstreamAlias.set('alice', { exact: 9007199254740995n });
+  await synchronization.resume();
+  await until(() => synchronization.snapshot.state === 'blocked');
+  assert.equal(pushRequests.length, 3);
+  assert.ok((await upstreamAlias.readManifest()).dirtyUpstream);
+  await assert.rejects(synchronization.resume());
+  const inspected = await synchronization.inspect({ logicalId: 'alice', readCurrent: true });
+  assert.equal(inspected.document.current.source, 'authoritative-read');
+  assert.equal(inspected.document.current.document.exact, 9007199254740995n);
+  await synchronization.resolve({ kind: 'adopt-server', issueId: inspected.issueId, logicalId: 'alice',
+    physicalEpoch: inspected.physicalEpoch, editToken: inspected.document.desired.editToken });
+  assert.equal((await upstreamAlias.readManifest()).dirtyUpstream, null);
+  await synchronization.resume();
+  await until(() => synchronization.snapshot.state === 'idle');
+  assert.equal(pushRequests.length, 3);
+  console.log('Packed upstream: typed create/update, preflight, uncertain response, authority inspection and explicit adopt passed');
+} finally {
+  const cleanup = await Promise.allSettled([synchronization?.close(), upstreamAlias?.close(), upstreamSession?.close()]);
+  upstreamServer.stop(true);
   for (const result of cleanup) if (result.status === 'rejected') throw result.reason;
 }

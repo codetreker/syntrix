@@ -200,7 +200,7 @@ describe('bounded query storage access', () => {
       const payload = encodeBusinessPayload({ exact: 9007199254740993n });
       await env.storage.withMaintenance(async access => {
         const current: DataRecord = { key: await recordKey('d', 'recovery'), kind: 'd', logicalId: 'recovery', existence: 'live', payload, editToken: null, pin: null, wire: {} };
-        await access.writeManifest({ ...access.manifest, recoveryIntent: { id: 'recover', action: 'merge', logicalId: 'recovery', protectedToken: null, resultToken: 'result', current, desired: { ...current, editToken: 'result' } } });
+        await access.writeManifest({ ...access.manifest, recoveryIntent: { id: 'recover', issueId: 'fixture-issue', phaseId: null, physicalEpoch: access.manifest.activePhysicalEpoch, action: 'merge', logicalId: 'recovery', protectedToken: null, resultToken: 'result', current, desired: { ...current, editToken: 'result' } } });
       });
       let decoded = 0;
       const parse = JSON.parse;
@@ -658,7 +658,7 @@ test('durable recovery intent blocks only its logical target while preserving or
       const physical = await access.backend.openPhysical(access.manifest.activePhysicalEpoch);
       const current = (await physical.fork.findDocumentsById([await recordKey('d', 'alice')], false))[0] as DataRecord;
       const desired: DataRecord = { ...current, payload: encodeBusinessPayload({ value: 'recovered' }), editToken: 'recovery-result', pin: { token: 'recovery-result', stage: 'await-settlement' } };
-      await access.writeManifest({ ...access.manifest, recoveryIntent: { id: 'intent-id', action: 'merge', logicalId: 'alice', protectedToken: current.editToken, resultToken: 'recovery-result', current, desired } });
+      await access.writeManifest({ ...access.manifest, recoveryIntent: { id: 'intent-id', issueId: 'fixture-issue', phaseId: null, physicalEpoch: access.manifest.activePhysicalEpoch, action: 'merge', logicalId: 'alice', protectedToken: current.editToken, resultToken: 'recovery-result', current, desired } });
     });
     await expect(storage.set('alice', { value: 'race' })).rejects.toMatchObject({ code: 'ReplicaRecoveryPending' });
     await expect(storage.delete('alice')).rejects.toMatchObject({ code: 'ReplicaRecoveryPending' });
@@ -693,7 +693,7 @@ test('ordinary concurrent reads retain only their compact manifest view', async 
     await env.storage.withMaintenance(async access => {
       const current: DataRecord = { key: await recordKey('d', 'recovery'), kind: 'd', logicalId: 'recovery', existence: 'live', payload: encodeBusinessPayload({ value: 'x'.repeat(100_000) }), editToken: null, pin: null, wire: {} };
       const desired: DataRecord = { ...current, editToken: 'result' };
-      await access.writeManifest({ ...access.manifest, recoveryIntent: { id: 'intent', action: 'merge', logicalId: 'recovery', protectedToken: null, resultToken: 'result', current, desired } });
+      await access.writeManifest({ ...access.manifest, recoveryIntent: { id: 'intent', issueId: 'fixture-issue', phaseId: null, physicalEpoch: access.manifest.activePhysicalEpoch, action: 'merge', logicalId: 'recovery', protectedToken: null, resultToken: 'result', current, desired } });
     });
     observe = true;
     const reads = Array.from({ length: 10 }, () => env.storage.get('alice'));

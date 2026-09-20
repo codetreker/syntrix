@@ -66,10 +66,10 @@ Plain JSON serialization rejects bigint, including values in decoded Pull and
 Query documents. Existing SDK document `set`/`update` therefore cannot blindly
 round-trip such documents. Converting to Number can lose precision. Use a lossless
 local persistence representation. The server's
-[HTTP Push](replication.md#push-changes) accepts typed document objects, but the SDK
-outbound encoder and internal Pusher remain unimplemented and tracked by the
-[offline replication proposal](../../.agents/notes/proposed/feature/2026-09-07-sdk-offline-replication.md).
-Ordinary CRUD formats remain unchanged.
+[HTTP Push](replication.md#push-changes) accepts typed document objects, and the
+SDK's private upstream adapter preserves this representation. It is available
+only to internal replication; ordinary CRUD formats remain unchanged and a
+complete Pull response is not a Push request.
 
 Pull binds the session before scheduling the request. Login, signup, or logout
 invalidates a successful old-session response with `AuthSessionChangedError`;
@@ -93,8 +93,12 @@ and clean physical compaction. Private query/watch adds exact typed filtering an
 ordering, keyset pages, dynamic complete results, manifest reconciliation, and
 shared resource limits. A private downstream coordinator now connects matching-set
 and window HTTP sources, maintains membership and pins, and owns polling and native
-leadership. These internal APIs are not exported for application use. Real HTTP
-Push, explicit upstream recovery and the public replica facade remain unimplemented.
+leadership. Private upstream adds typed HTTP Push, bounded conflict-driven CAS,
+durable phase tracking, and explicit adopt/merge/retry/reset recovery. Pausing
+synchronization preserves local CRUD and watch; an active recovery intent protects
+its target from concurrent edits. These internal APIs are not exported for
+application use. The public replica facade, authorized notification integration
+and complete browser-to-server validation remain outstanding.
 
 There is no public `openReplica` API yet. The private runtime and storage do not
 make `pull()` persist data or add a public Push method.

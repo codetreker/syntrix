@@ -12,8 +12,8 @@ API with lossless values, crash recovery, and dynamic local query results.
 
 The [private native runtime](../../implemented/architecture/2026-09-18-sdk-native-replication-runtime.md)
 provides bounded replication inputs, durable completion hooks, failure isolation,
-and a bundled patched dependency. The public replica database API and real Push
-integration remain outstanding; the runtime note owns the delivered mechanism. The
+and a bundled patched dependency. The public replica database API remains
+outstanding; the runtime note owns the delivered mechanism. The
 [query-source contract](../../implemented/feature/2026-09-18-query-replication-source.md)
 now supplies matching-set events, complete result windows, generation identity,
 and authoritative bound database checks. The [private downstream coordinator](../../implemented/architecture/2026-09-19-sdk-downstream-replication.md)
@@ -22,8 +22,11 @@ native leadership. The
 [private alias storage](../../implemented/architecture/2026-09-18-sdk-replica-storage.md)
 now owns local identity, typed records, CAS CRUD, bounded storage access, and clean
 physical compaction. The [private query client](../../implemented/architecture/2026-09-18-sdk-replica-query-watch.md)
-owns exact local query/watch, bounded shared indexes and generation reconciliation;
-this proposal retains the public API, real upstream transport and recovery integration.
+owns exact local query/watch, bounded shared indexes and generation reconciliation.
+[Private upstream and recovery](../../implemented/architecture/2026-09-20-sdk-upstream-replication.md)
+now provide typed HTTP Push, whole-phase failure protection and explicit recovery.
+This proposal retains the public facade, notifications with matching source
+authorization, and complete browser-to-server validation.
 
 ## Proposal
 
@@ -36,11 +39,8 @@ to replication; no public manual Push method is required.
 |---|---|
 | Remote sources | Expose source builders and alias creation over delivered HTTP downstream; connect notifications only with matching source authorization |
 | Local operations | Expose delivered private CRUD and query/watch through the public replica API |
-| Identity | Apply the delivered immutable database/session guard to real Push, preflight and recovery reads |
-| Initialization | Preserve delivered fresh-source and pin boundaries when enabling the real upstream adapter |
-| Upstream | Use native durable changed-document scanning and acknowledgement metadata; keep newer local edits when an earlier write is acknowledged |
-| Recovery | Restart from reliable metadata, reconcile uncertain outcomes, and retain pending edits during source rebuild |
-| Lifecycle | Expose pause/resume, diagnostics and recovery over delivered native ownership and maintenance coordination |
+| Lifecycle | Expose delivered pause/resume, inspection and recovery with their identity/token and explicit-authorization requirements |
+| End-to-end integration | Validate the public composition against the real server across browser reload, reconnect, multiple tabs and recovery |
 
 Local document identity is the logical document segment of its collection path.
 Tombstones communicate deletion and must permit recreation with the same ID.
@@ -52,13 +52,14 @@ or a permanent document-lifecycle identity.
 Manual Pull and Query decode int64 values as bigint. Ordinary SDK document
 `set`/`update` still use JSON serialization, which rejects bigint. Converting to
 Number loses precision and numeric type. Private alias storage preserves these
-values as typed JSON strings. The remaining internal Push adapter must retain
-that representation across retry and conflicts.
+values as typed JSON strings. The implemented private upstream adapter retains
+that representation across retry and conflicts; the public facade must preserve it.
 
 The [typed HTTP Push transport](../../implemented/bug-fix/2026-09-18-http-push-typed-values.md)
-already accepts the recursive typed representation used by Pull. The SDK's
-outbound encoder and HTTP replication adapter remain unimplemented. Ordinary CRUD
-retains its JSON format; a complete Pull response is not a Push request.
+accepts the recursive typed representation used by Pull. The private SDK adapter
+now encodes and bounds those requests, with native success and explicit recovery
+owned by the upstream decision. Ordinary CRUD retains its JSON format; a complete
+Pull response is not a Push request.
 
 Conflicts correlate by zero-based request position, including repeated IDs.
 Preserve the reason and nullable current state; authoritative absence must not be
@@ -98,6 +99,9 @@ persistence, wire encoding, and conflict application.
 
 ## Acceptance Criteria
 
+The public facade and complete browser-to-server path must demonstrate these
+delivered private guarantees together:
+
 - Local writes and replication progress survive reload, including crashes around
   local persistence and remote acknowledgement; newer edits remain pending.
 - Query sources maintain membership and local aliases; generation activation
@@ -121,6 +125,9 @@ persistence, wire encoding, and conflict application.
 - [Private alias storage](../../implemented/architecture/2026-09-18-sdk-replica-storage.md)
   owns namespace/session isolation, typed records, raw CAS, bounded persistence,
   and clean physical compaction.
+- [Private upstream and recovery](../../implemented/architecture/2026-09-20-sdk-upstream-replication.md)
+  owns typed requests, true native acknowledgements, conditional retries, durable
+  phase protection and explicit recovery intents.
 - [Push version checks](../../implemented/bug-fix/2026-09-07-replication-push-version-checks.md),
   [create conflicts](../../implemented/bug-fix/2026-09-18-replication-push-create-conflict.md),
   and [typed HTTP Push](../../implemented/bug-fix/2026-09-18-http-push-typed-values.md)
@@ -129,8 +136,8 @@ persistence, wire encoding, and conflict application.
   owns the existing source cursor and manual transport. The
   [query-source contract](../../implemented/feature/2026-09-18-query-replication-source.md)
   owns matching-set projection, complete result windows, and request identity
-  checks; local membership, window refresh scheduling, and automatic SDK adapters
-  remain additional work.
+  checks. The [private downstream coordinator](../../implemented/architecture/2026-09-19-sdk-downstream-replication.md)
+  supplies local membership, window refresh scheduling and HTTP source integration.
 - [Realtime resume](2026-09-07-realtime-client-resume.md) owns transport recovery;
   notifications do not replace authoritative source reads.
 

@@ -326,7 +326,8 @@ describe('alias physical storage', () => {
       const manifest = await manifestRow();
       await backend.writeManifest(manifest, undefined, 'manifest');
       await expect(backend.writeManifest({ ...manifest, recoveryIntent: {
-        id: 'intent', action: 'merge', logicalId: oversized.logicalId, protectedToken: null, resultToken: 'result',
+        id: 'intent', issueId: 'fixture-issue', phaseId: null, physicalEpoch: manifest.activePhysicalEpoch,
+        action: 'merge', logicalId: oversized.logicalId, protectedToken: null, resultToken: 'result',
         current: oversized, desired: { ...oversized, editToken: 'result', pin: { token: 'result', stage: 'await-settlement' } },
       } }, undefined, 'large-manifest')).rejects.toThrow('budget');
       await expect(backend.writeManifest({ ...manifest, namespace: { ...manifest.namespace, name: 'x'.repeat(1500) } }, undefined, 'large-envelope')).rejects.toThrow('budget');

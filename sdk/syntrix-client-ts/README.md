@@ -172,9 +172,9 @@ Decoded bigint values need a lossless local storage representation. Plain
 bigint, so a pulled document cannot be blindly saved as JSON or sent back through
 those methods. Converting to `Number` can lose precision.
 [HTTP Push](../../docs/reference/replication.md#push-changes) accepts typed document
-objects, but the SDK outbound encoder and internal Pusher remain unimplemented.
-The complete Pull response is not a Push request; ordinary CRUD formats remain
-unchanged. Durable synchronization remains part of the offline replication work.
+objects. The SDK's private upstream replication adapter preserves this encoding;
+the complete Pull response is not a Push request. Ordinary CRUD formats remain
+unchanged.
 
 The caller must atomically apply the entire page and persist its checkpoint.
 An empty page can advance progress while `caughtUp` remains false; continue using
@@ -202,8 +202,12 @@ local CAS operations, view invalidations, and clean physical compaction. Private
 query/watch provides exact filtering and ordering, keyset pages, dynamic windows,
 and bounded shared resources. Private downstream connects authenticated query
 sources with member generations, pin protection, polling and native leadership.
+Private upstream adds typed HTTP Push, bounded CAS retries and durable
+conflict/uncertain-result recovery. Pausing synchronization preserves local CRUD
+and watch; explicit recovery rechecks database identity and current edit tokens.
 These internal capabilities are not exported as application APIs. Public replica
-database creation, real HTTP Push and upstream recovery remain in development.
+database creation, authorized notification integration and complete
+browser-to-server validation remain in development.
 Manual Pull continues to supply pages for an
 application-owned consumer. Direct writes use the existing document REST methods;
 the SDK has no public manual Push API. See the

@@ -23,6 +23,8 @@ export { compactAlias } from './compaction.js';
 export { createReplicaQueryClient } from './query.js';
 export { createReplicaHttpSource } from './source.js';
 export { createReplicaDownstream } from './coordinator.js';
+export { createReplicaHttpUpstream } from './upstream-transport.js';
+export { inspectReplica, resolveReplica, replayReplicaRecovery } from './recovery.js';
 
 export interface SourcePage<T, C extends object> {
   documents: WithDeletedAndAttachments<T>[];
@@ -51,6 +53,11 @@ export interface ReplicationOptions<T, C extends object> {
   isControlDocument?(document: WithDeleted<T>): boolean;
   onCheckpoint?(checkpoint: C, status: { complete: boolean }, signal: AbortSignal): Promise<void>;
   onUpCheckpoint?(checkpoint: NativeUpCheckpoint, signal: AbortSignal): Promise<void>;
+  upstreamPersistence?: {
+    begin(documents: WithDeletedAndAttachments<T>[], checkpoint: NativeUpCheckpoint, signal: AbortSignal): Promise<void>;
+    complete(checkpoint: NativeUpCheckpoint, signal: AbortSignal): Promise<void>;
+    failed(error: unknown): Promise<void>;
+  };
   onError?(error: unknown): void;
 }
 
@@ -88,6 +95,7 @@ export const createReplicationRuntime = <T, C extends object>(
   let ready = false;
   let failed = false;
   let failure: unknown;
+  const reportedFailures = new Set<unknown>();
   let dirty = false;
   let sourceDirty = false;
   let continuation = false;
@@ -117,33 +125,45 @@ export const createReplicationRuntime = <T, C extends object>(
     subscriptions.forEach(subscription => subscription.unsubscribe());
     invalidations.complete();
   };
+  const reportFailure = (error: unknown) => {
+    reportedFailures.add(error);
+    try {
+      options.onError?.(error);
+    } catch (observerError) {
+      reportedFailures.add(observerError);
+      failure = Object.assign(new Error('Replication error observer failed'), { cause: error, observerError });
+      reportedFailures.add(failure);
+    }
+  };
   const fail = (error: unknown) => {
     if (stopped) return;
     failed = true;
     failure = error;
     stop();
-    try {
-      options.onError?.(error);
-    } catch (observerError) {
-      failure = Object.assign(new Error('Replication error observer failed'), { cause: error, observerError });
-    }
+    reportFailure(error);
+  };
+  const recordDrainFailure = (error: unknown) => {
+    if (isCancellation(error) || reportedFailures.has(error)) return;
+    reportedFailures.add(error);
+    failure = failed
+      ? Object.assign(new Error('Replication failure cleanup failed'), { cause: failure, cleanupErrors: [error] })
+      : error;
+    failed = true;
+    reportFailure(failure);
   };
   const assertOpen = () => {
     if (stopped) throw failed ? failure : closedError;
   };
-  const track = <R>(operation: () => Promise<R>): Promise<R> => {
+  const track = <R>(operation: () => Promise<R>, duringDrain = false): Promise<R> => {
     const task = (async () => {
-      assertOpen();
+      if (!duringDrain) assertOpen();
       return operation();
     })();
     pending.add(task);
     void task.then(() => pending.delete(task), error => {
       pending.delete(task);
       if (stopped) {
-        if (!failed && !isCancellation(error)) {
-          failed = true;
-          failure = error;
-        }
+        recordDrainFailure(error);
       } else {
         fail(error);
       }
@@ -240,6 +260,15 @@ export const createReplicationRuntime = <T, C extends object>(
     });
   };
 
+  const upstreamPersistence = options.upstreamPersistence;
+  const phaseCheckpoint = (value: unknown): NativeUpCheckpoint => {
+    if (!value || typeof value !== 'object' || !('id' in value) || typeof value.id !== 'string' ||
+        !('lwt' in value) || typeof value.lwt !== 'number' || !Number.isFinite(value.lwt)) {
+      throw new TypeError('Invalid native phase checkpoint');
+    }
+    return { id: value.id, lwt: value.lwt };
+  };
+
   state = replicateRxStorageInstance({
     identifier: options.identifier,
     hashFunction: input => track(() => options.hashFunction(input)),
@@ -249,6 +278,13 @@ export const createReplicationRuntime = <T, C extends object>(
     pullBatchSize,
     pushBatchSize,
     skipStoringPullMeta: false,
+    upstreamPersistence: upstreamPersistence && {
+      begin: (documents, checkpoint) => track(() => upstreamPersistence.begin(documents, phaseCheckpoint(checkpoint), abort.signal)),
+      complete: checkpoint => track(() => upstreamPersistence.complete(phaseCheckpoint(checkpoint), abort.signal)),
+      // Failure recording must drain after runtime cancellation. Storage keeps
+      // its own session/epoch fence; cancellation cannot erase a durable marker.
+      failed: error => track(() => upstreamPersistence.failed(error === undefined && abort.signal.aborted ? abort.signal.reason : error), true),
+    },
     replicationHandler: {
       masterChangeStream$: invalidations,
       masterChangesSince: (nativeCheckpoint: NativeSourceCheckpoint<C> | undefined, limit) => track(async () => {

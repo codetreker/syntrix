@@ -73,8 +73,8 @@ DATABASE_IDENTITY_MISMATCH，Push 不转换为逐条 conflict；带绑定头的�
 
 ## Consequences
 
-- 服务端交付完整匹配集合、有限结果窗口和跨路由身份检查；公共 SDK API、HTTP 自动同步、客户端成员持久化
-  仍由[离线复制 proposal](../../proposed/feature/2026-09-07-sdk-offline-replication.md)负责。
+- 服务端交付完整匹配集合、有限结果窗口和跨路由身份检查；[私有下行](../architecture/2026-09-19-sdk-downstream-replication.md)维护客户端成员，
+  [私有上行](../architecture/2026-09-20-sdk-upstream-replication.md)已接入 HTTP Push 与恢复。公共 SDK API 仍由[离线复制 proposal](../../proposed/feature/2026-09-07-sdk-offline-replication.md)负责。
 - source.limit 表示结果窗口大小，窗口禁止顶层传输 limit 和 checkpoint，包括显式空值/零值。
   窗口刷新与持久成员替换由 SDK 集成负责；服务端错误不能触发本地空集合替换。
 - 新协议启用前 Gateway 与 Query 必须协调升级；旧节点可能忽略身份头，不能仅靠发送头声明绑定安全。
