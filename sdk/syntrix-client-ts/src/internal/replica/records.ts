@@ -297,10 +297,11 @@ export const businessEqual = (a: ReplicaRecord, b: ReplicaRecord): boolean => {
 
 export const validateManifest: (value: unknown) => asserts value is AliasManifest = (value) => {
   if (!object(value)) corruption('Manifest must be an object');
-  exactFields(value, ['key', 'formatVersion', 'namespace', 'definition', 'definitionHash', 'boundDatabaseId', 'sourceHash', 'state',
+  exactFields(value, ['key', 'formatVersion', 'lifecycleId', 'namespace', 'definition', 'definitionHash', 'boundDatabaseId', 'sourceHash', 'state',
     'activePhysicalEpoch', 'physicalEpochs', 'maintenance', 'activeSourceGeneration', 'stagedSourceGeneration', 'sourceReady',
-    'partialDelivery', 'dirtyUpstream', 'issues', 'recoveryIntent']);
+    'lastCompleteRound', 'partialDelivery', 'dirtyUpstream', 'issues', 'recoveryIntent']);
   if (value.key !== 'manifest' || value.formatVersion !== 1) corruption('Unsupported manifest format');
+  if (!string(value.lifecycleId) || !nullableString(value.lastCompleteRound)) corruption('Invalid alias lifecycle or completed round');
   const namespace = value.namespace;
   if (!object(namespace) || Object.keys(namespace).length !== 5 ||
       !['endpoint', 'subject', 'database', 'name', 'alias'].every(key => string(namespace[key]))) corruption('Invalid namespace');
@@ -321,7 +322,7 @@ export const validateManifest: (value: unknown) => asserts value is AliasManifes
   if (typeof value.definitionHash !== 'string' || !/^[0-9a-f]{64}$/.test(value.definitionHash)) corruption('Invalid definition hash');
   if (!nullableString(value.boundDatabaseId) || !nullableString(value.sourceHash) ||
       (value.boundDatabaseId === null) !== (value.sourceHash === null)) corruption('Invalid source binding');
-  if (!['creating', 'ready'].includes(value.state as string) || !string(value.activePhysicalEpoch) ||
+  if (!['creating', 'ready', 'removed'].includes(value.state as string) || !string(value.activePhysicalEpoch) ||
       !Array.isArray(value.physicalEpochs) || value.physicalEpochs.length < 1 || value.physicalEpochs.length > 2 ||
       !value.physicalEpochs.every(string) || new Set(value.physicalEpochs).size !== value.physicalEpochs.length ||
       !value.physicalEpochs.includes(value.activePhysicalEpoch)) corruption('Invalid physical epochs');

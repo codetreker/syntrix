@@ -495,8 +495,10 @@ describe('private replication runtime', () => {
       const manager = createTestLockManager();
       const queued = deferred();
       let observing = false;
+      let aliasLockName: string | undefined;
       const locks = new Proxy(manager, { get(target, property) {
         if (property === 'request') return (...args: any[]) => {
+          if (args[0].endsWith(':alias')) aliasLockName = args[0];
           if (observing && args[0].endsWith(':alias') && args[1].mode === 'shared') queued.resolve();
           return (target.request as any)(...args);
         };
@@ -508,7 +510,8 @@ describe('private replication runtime', () => {
       const native = await alias.native(await alias.captureScope());
       const gate = deferred();
       const acquired = deferred();
-      const held = manager.request(`syntrix:${alias.namespace}:alias`, { mode: 'exclusive' }, async () => {
+      expect(aliasLockName).toBeDefined();
+      const held = manager.request(aliasLockName!, { mode: 'exclusive' }, async () => {
         acquired.resolve(); await gate.promise;
       });
       await acquired.promise;

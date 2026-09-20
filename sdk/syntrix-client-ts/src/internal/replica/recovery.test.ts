@@ -81,6 +81,45 @@ const assertPreserved = async (storage: AliasStorage) => {
 };
 
 describe('explicit replica recovery', () => {
+  test('inspection exposes durable phase facts and explicit action issue identities without hiding content conflicts', async () => {
+    const env = await setup();
+    try {
+      expect(await inspectReplica(env.storage)).toMatchObject({ phase: null, recovering: false, availableActions: [] });
+      await prepare(env.storage);
+      expect(await inspectReplica(env.storage)).toMatchObject({ phase: { id: 'phase', state: 'dispatched' }, recovering: false,
+        availableActions: [{ kind: 'retry-uncertain', issueId: 'phase' }, { kind: 'reset-alias', issueId: 'phase' }] });
+      await env.storage.withMaintenance(async access => { await access.writeManifest({ ...access.manifest,
+        dirtyUpstream: { ...access.manifest.dirtyUpstream!, mayHaveDispatched: false } }); });
+      expect(await inspectReplica(env.storage, { logicalId: 'a' })).toMatchObject({ phase: { id: 'phase', state: 'prepared' },
+        availableActions: [{ kind: 'adopt-server', issueId: 'phase' }, { kind: 'merge-local', issueId: 'phase' },
+          { kind: 'retry-uncertain', issueId: 'phase' }, { kind: 'reset-alias', issueId: 'phase' }] });
+      await env.storage.withMaintenance(async access => { await access.writeManifest({ ...access.manifest,
+        issues: [{ id: 'conflict-a', logicalId: 'a', code: 'ReplicaWriteConflict' }] }); });
+      const conflict = await inspectReplica(env.storage, { logicalId: 'a' });
+      expect(conflict.availableActions).toEqual([{ kind: 'adopt-server', issueId: 'conflict-a' }, { kind: 'merge-local', issueId: 'conflict-a' },
+        { kind: 'reset-alias', issueId: 'conflict-a' }]);
+      expect((await inspectReplica(env.storage, { logicalId: 'b' })).availableActions.some(action => action.kind === 'retry-uncertain')).toBe(false);
+      await env.storage.withMaintenance(async access => { await access.writeManifest({ ...access.manifest, boundDatabaseId: null, sourceHash: null }); });
+      expect((await inspectReplica(env.storage, { logicalId: 'a' })).availableActions).toEqual([{ kind: 'reset-alias', issueId: 'conflict-a' }]);
+    } finally { await env.close(); }
+  });
+
+  test('an interrupted recovery offers only the guarded reset action', async () => {
+    const env = await setup();
+    try {
+      await prepare(env.storage);
+      const selected = await decision(env.storage);
+      const failure = new Error('interrupt recovery');
+      env.setFault(async (_rows, context, commit) => { if (context === 'replica-recovery-meta') throw failure; return commit(); });
+      await expect(resolveReplica(env.storage, transport(), selected)).rejects.toBe(failure);
+      env.setFault();
+      expect(await inspectReplica(env.storage, { logicalId: 'a' })).toMatchObject({ recovering: true, phase: { id: 'phase', state: 'dispatched' },
+        availableActions: [{ kind: 'reset-alias', issueId: 'phase' }] });
+      await replayReplicaRecovery(env.storage);
+      expect((await inspectReplica(env.storage)).recovering).toBe(false);
+    } finally { env.setFault(); await env.close(); }
+  });
+
   test('optional authority inspection distinguishes unknown, missing, live and tombstoned current without persisting observations', async () => {
     const env = await setup(); let reads = 0;
     try {

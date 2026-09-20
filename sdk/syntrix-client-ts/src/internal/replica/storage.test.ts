@@ -34,6 +34,37 @@ const seedMember = async (storage: AliasStorage, id: string, version: string) =>
 });
 
 describe('downstream storage ownership', () => {
+  test('status counts actual pending and pins, reports only durable checkpoint, and retains the last complete round across reopen', async () => {
+    const env = await setup(); let storage = env.storage;
+    try {
+      expect(await storage.status()).toMatchObject({ mode: 'events', sourceReady: false, checkpoint: null, lastCompleteRound: null, pending: 0, pins: 0 });
+      await storage.set('alice', { value: 1 });
+      expect(await storage.status()).toMatchObject({ pending: 1, pins: 1 });
+      await storage.withMaintenance(async access => {
+        const physical = await access.backend.openPhysical(access.manifest.activePhysicalEpoch);
+        const data = (await physical.fork.findDocumentsById([await recordKey('d', 'alice')], false))[0] as any;
+        const clean = { ...data, pin: null };
+        await access.backend.writeRecord(physical, clean, data, 'fixture');
+        expect((await physical.meta.bulkWrite([{ document: { id: `${data.key}|0`, itemId: data.key, isCheckpoint: '0',
+          docData: clean, _deleted: false, _attachments: {}, _meta: { lwt: Date.now() }, _rev: '1-fixture' } as any },
+          { document: { id: 'down|1', itemId: 'down', isCheckpoint: '1', checkpointData: { source: { sourceCursor: 'committed', roundId: 'round-2', complete: false } },
+            _deleted: false, _attachments: {}, _meta: { lwt: Date.now() }, _rev: '1-fixture' } as any }], 'fixture')).error).toEqual([]);
+        await access.backend.writeRecord(physical, { key: 'c:progress', kind: 'c', checkpoint: { sourceCursor: 'not-yet-committed' },
+          generation: 'g1', phase: 'live', bootstrapComplete: true, partialDelivery: true }, undefined, 'fixture');
+        await access.writeManifest({ ...access.manifest, boundDatabaseId: 'D1', sourceHash: 'hash', sourceReady: true,
+          activeSourceGeneration: 'g1', partialDelivery: true, lastCompleteRound: 'round-1' });
+      });
+      const result = await storage.status();
+      expect(result).toMatchObject({ pending: 0, pins: 0, sourceReady: false, generation: 'g1', lastCompleteRound: 'round-1', checkpoint: { sourceCursor: 'committed' } });
+      result.checkpoint!.sourceCursor = 'consumer-change';
+      const lifecycle = storage.lifecycleId;
+      await storage.close(); storage = await openAliasStorage(env.options);
+      expect(storage.lifecycleId).toBe(lifecycle);
+      expect(await storage.status()).toMatchObject({ lastCompleteRound: 'round-1', checkpoint: { sourceCursor: 'committed' } });
+      await storage.set('bob', { value: 2 }); expect(await storage.status()).toMatchObject({ pending: 1, pins: 1 });
+    } finally { await storage.close(); await env.session.close(); }
+  });
+
   test('source reads admit initial binding and always carry the persisted identity before readiness', async () => {
     const { storage } = await setup();
     try {
@@ -170,6 +201,7 @@ describe('bounded query storage access', () => {
         });
         const expected = mode === 'current' || mode === 'historical-token' ? null : expect.objectContaining({ id: 'alice', value: 'downloaded' });
         expect(await storage.get('alice')).toEqual(expected);
+        expect(await storage.status()).toMatchObject({ pending: mode === 'foreign' || mode === 'stale-revision' ? 1 : 0, pins: mode === 'pin' ? 1 : 0 });
         const budget = new ReadBudget(64 * 1024 * 1024);
         const source = storage.queryAccess(budget);
         expect(await source.withProjection({ id: 'alice' }, await source.view(), async projection => projection?.decode())).toEqual(expected);

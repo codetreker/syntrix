@@ -71,6 +71,9 @@ describe('durable source projection', () => {
         isControlDocument: row => row.kind !== 'd', readSource: adapter.readSource, onCheckpoint: adapter.onCheckpoint });
       await runtime.waitForIdle();
       expect((await env.storage.readManifest()).sourceReady).toBe(true);
+      const status = await env.storage.status();
+      expect(typeof status.checkpoint!.roundId).toBe('string');
+      expect(status.lastCompleteRound).toBe(status.checkpoint!.roundId as string);
       expect(await env.storage.get('alice')).toMatchObject({ value: 'remote' });
       await env.storage.withReplicationAccess(env.scope, async access => { await access.writeManifest({ ...access.manifest, dirtyUpstream: { ...marker, id: 'foreign-phase' } }); });
       await adapter.beginRound();

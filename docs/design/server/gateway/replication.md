@@ -304,8 +304,8 @@ precedes protected-field stripping; storage assigns resulting metadata.
 Local and gRPC calls retain action and an optional int64 precondition, with no
 negative sentinel or unspecified-action fallback. Ordinary CRUD formats remain
 unchanged. The SDK's [private upstream adapter](../../sdk/002_replication_client.md#private-upstream-and-recovery)
-now supplies typed encoding and native acknowledgement/recovery; the public
-replica facade remains separate work.
+supplies typed encoding and native acknowledgement/recovery through the public
+[replica database API](../../../reference/typescript_sdk.md#replica-availability).
 
 Create checks for a live target before version comparison, so a create cannot
 become an update even when content and version match. A supplied valid create

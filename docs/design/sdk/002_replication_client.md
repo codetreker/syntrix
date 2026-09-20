@@ -1,6 +1,6 @@
 # Replication Client Design (RxDB + Syntrix replication/realtime)
 
-**Status:** Manual Pull, WebSocket lifecycle, a private native replication runtime, replica storage/query/watch, HTTP replication and explicit upstream recovery are implemented. The public replica database API remains planned.
+**Status:** Manual Pull, WebSocket lifecycle, the public replica database API, local storage/query/watch, HTTP replication and explicit recovery are implemented. Replica synchronization uses authorized polling; automatic WebSocket hints remain conditional on matching source authorization.
 
 ## Context & Why
 - We need offline-first replication for web clients using RxDB as local store.
@@ -28,7 +28,7 @@
 
 ## Data Model (flattened)
 - Decoded fields: `id`, `collection`, optional deletion flag and server metadata, plus business fields. HTTP uses recursive typed values; int64 values decode to bigint.
-- The private runtime accepts storage records and source adapters. Private alias storage supplies a lossless typed-value schema, local CRUD, identity fences, and clean compaction. Private query indexes evaluate this stored view; public replica types remain part of the replica API integration.
+- The private runtime accepts storage records and source adapters. Private alias storage supplies a lossless typed-value schema, local CRUD, identity fences, and clean compaction. Private query indexes evaluate this stored view; public replica types project business documents and synchronization controls without exposing RxDB objects.
 - Tombstones clear former business fields. Minimal logical deletions contain only identity and `deleted: true`; timestamps and version can be absent. Physical cleanup is not another business deletion. See [deletion semantics](../server/core/storage/03.stores.md#document-deletion-and-physical-cleanup).
 
 ## Implemented Manual Pull
@@ -144,8 +144,8 @@ power-loss guarantees.
 ## Private Replica Alias Storage
 
 The lazy bundle owns Dexie-backed alias storage with raw revision CAS. These are
-internal building blocks; they do not expose `openReplica` or perform HTTP
-synchronization. The [replica-storage decision](../../../.agents/notes/implemented/architecture/2026-09-18-sdk-replica-storage.md)
+internal building blocks composed by the public replica facade and HTTP
+coordinator. The [replica-storage decision](../../../.agents/notes/implemented/architecture/2026-09-18-sdk-replica-storage.md)
 owns the persistence choices and their costs.
 
 ### Identity and lifetime
@@ -308,8 +308,8 @@ accept a continuation cursor. Returned values are isolated from the internal cac
 | Failure | Terminate the affected canonical query and release its resources without altering records, pending edits or replication progress; isolate application callback errors |
 
 The [query decision](../../../.agents/notes/implemented/architecture/2026-09-18-sdk-replica-query-watch.md)
-owns default quotas, algorithms and trade-offs. Private query availability does
-not expose a public replica database or connect a network replication adapter.
+owns default quotas, algorithms and trade-offs. Public replica query references
+delegate to this local view; they do not perform implicit remote reads.
 
 ## Private Downstream Coordination
 
@@ -444,32 +444,66 @@ and then been deleted; automatic retry could recreate it. Explicit retry can
 permit that effect. Same-version ABA and repeated external side effects remain
 outside this contract; no outbox, idempotency service or source receipt is added.
 
-## Remaining Replica Database Integration
+## Public Replica Database
 
-The [offline replication proposal](../../../.agents/notes/proposed/feature/2026-09-07-sdk-offline-replication.md)
-owns these unimplemented capabilities:
+`replicate(path)` constructs an immutable, client-owned source without opening
+storage or sending requests. `openReplica` freezes the complete configuration,
+opens all requested aliases locally, then starts their HTTP coordinators. It
+returns before network convergence so existing and new local state remain usable
+offline. The [public reference](../../reference/typescript_sdk.md#replica-availability)
+owns signatures, runnable examples, defaults, errors and browser requirements.
 
-- Public `openReplica()` creation over the implemented private alias storage,
-  returning a `ReplicaDatabase` with `ReplicaCollection` handles; public types do
-  not expose RxDB objects.
-- Public source builders and alias creation over the delivered authenticated HTTP
-  source adapters and downstream coordinator; authorized notification integration.
-- Public CRUD, query and dynamic watch facades over the delivered private storage
-  and query clients.
-- Public lifecycle/status/recovery controls and complete browser-to-server
-  end-to-end tests.
+| Public responsibility | Contract and reason |
+|---|---|
+| Access distinction | REST references operate remotely; replica references operate locally without fallback or child-collection discovery |
+| Source and alias | Same-client immutable builders define matching sets or complete windows; each alias has independent state, even for identical sources |
+| Reopen | The frozen definition must match; omitted aliases remain stored but unopened. A new source needs a new alias or clean remove/recreate; reset preserves the current definition/binding |
+| Local values | Preserve exact typed values and logical IDs; source metadata is optional and does not describe an unsent edit. Tombstones permit same-ID recreation |
+| Query/watch | Reuse bounded exact queries and complete local result publication; callbacks stop with their owning handle |
+| Status | Combine durable source readiness/generation/round/pending/pins with current leader and lifecycle state; native idle is not a source watermark |
+| Recovery | Project private issues, durable phase/intent facts and advisory actions with bounded document inspection, including explicit authoritative current; preserve nullable edit tokens and physical-epoch guards |
+| Ownership | Browser capability checks precede lazy open; account changes invalidate old handles and pending opens, and close drains all owned work while retaining failures |
+| Diagnostics | Correlate facade lifetime, operation, session and available request/epoch/count/duration fields; exclude payloads, filter values, credentials and raw errors, without claiming distributed server tracing |
 
-Direct reads and writes retain the REST API. Push is an internal replication
-operation; a public manual Push method is not part of the replica API. Native
-replication metadata owns delivery progress; a separate SDK outbox is not required.
-Legacy coordinator helpers are not connected to the new runtime or exported as a
-supported replica API.
+One elected coordinator per alias owns network work; followers use durable
+manifest state for readiness and all tabs retain local CRUD/watch. Query managers
+share budgets within the replica database, while each public handle retains its
+own close responsibility. Open requires window/document, IndexedDB, Web Locks and
+Web Crypto; the remote-only API does not inherit these requirements.
 
-Authorized realtime notifications and registration `onReady` can schedule source
-reads through the hint interface. Their events do not become checkpoints or replace source reconciliation.
-Tombstones convey deletion, and the same logical path ID may be recreated. Since
-its version may reset, comparing document versions alone cannot order replication
-history.
+### Alias removal and recreation
+
+Removal cancels/drains the caller's coordinator and takes exclusive alias
+ownership. It checks actual pending differences, pins, issues and unfinished
+phases/intents before persisting terminal removal. It can address an omitted
+historical alias from its namespace without reopening its source. It removes
+local physical stores, not remote documents.
+An empty `collections` configuration creates no source coordinator and supports
+this historical-only removal path.
+
+A small terminal manifest retains the lifetime fence through cleanup failure.
+Reopen completes owned cleanup before allocating a new lifecycle ID and physical
+epoch. Old handles reject the new lifetime even after missed notifications;
+stable alias locks serialize the transition, while election/query ownership is
+scoped to the lifetime. Compaction preserves that lifetime. These boundaries
+prevent a delayed old close or write from operating on a recreated alias.
+
+### Conditional notification optimization
+
+Authorized HTTP polling provides source convergence, including missed events and
+window refill. Existing WebSocket authorization does not yet match query-source
+authorization, so the public facade does not wire automatic notifications. Local
+`watch` observes persisted replica state and is available independently.
+
+This costs periodic source reads and polling/backoff latency. Notifications may
+later use the existing hint interface only after authorization matches; they
+remain scheduling hints and cannot replace source progress or reconciliation.
+The [offline replication decision](../../../.agents/notes/implemented/feature/2026-09-07-sdk-offline-replication.md)
+records why this condition does not prevent delivery of the polling-based API.
+
+Push remains internal to replication, native metadata owns progress, and no
+separate outbox or public manual Push method is introduced. Document version
+reset after recreation still prevents treating versions as global source order.
 
 ## Connection Health & Keepalive
 
@@ -555,5 +589,8 @@ interface RealtimeClientOptions {
   durable pin settlement, read retries and native leader/follower lifecycle.
 - Private upstream: real native success, CAS attempt limits, request identity,
   accepted-prefix/whole-phase failures, explicit recovery and crash replay.
-- The public replica API, authorized notification wiring and complete
-  browser-to-server integration require their own implementation and validation.
+- Public replica integration covers source freezing, offline local readiness,
+  typed query/CRUD and recovery projection, lifecycle removal and package exports.
+  Browser/server tests and packed-package checks validate their respective paths;
+  none establish browser power-loss durability. Automatic WS hints remain subject
+  to the authorization condition above.

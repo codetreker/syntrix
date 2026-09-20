@@ -203,7 +203,11 @@ completion cannot define consumer checkpoint validity.
 | Multi-source discovery and aggregation in Puller, and [dedicated read/write routing](../../proposed/architecture/2026-09-07-dedicated-backend-read-write-routing.md) | Requires source inventory, ownership, and progress aggregation; one Store watch remains explicitly scoped, and separate source checkpoints must not be compared or combined as a scalar |
 | [Indexer rebuild](../../proposed/architecture/2026-09-07-indexer-recovery-lifecycle.md) and [filtered subscription snapshots](../../proposed/bug-fix/2026-09-07-realtime-filtered-snapshots.md) | Requires consumer recovery integration; the scan-boundary extension supplies overlap, but neither an ordinary current checkpoint nor C0 creates a snapshot or performs a rebuild |
 | [Trigger before-images](../../proposed/feature/2026-09-07-trigger-before-images.md) and [delivery idempotency](../../proposed/architecture/2026-09-07-trigger-delivery-idempotency.md) | Requires retained payloads, transport changes, durable delivery/outbox decisions, and consumer state; optional Store images and ChangeID do not provide those guarantees |
-| [Streamer durable progress](../../proposed/architecture/2026-09-07-streamer-durable-progress.md) and [SDK offline replication](../../proposed/feature/2026-09-07-sdk-offline-replication.md) | Requires progress persistence and delivery/acknowledgment policy in those consumers; receiving or closing a Store frame is not an end-client acknowledgment |
+| [Streamer durable progress](../../proposed/architecture/2026-09-07-streamer-durable-progress.md) | Requires progress persistence and delivery/acknowledgment policy; receiving or closing a Store frame is not an end-client acknowledgment |
+
+The [SDK replica API](../feature/2026-09-07-sdk-offline-replication.md) now owns its
+local progress and recovery policy. A Store frame still does not acknowledge
+application processing or an external side effect.
 
 These gaps can still expose current Puller consumers to the failures described
 by their proposal owners. Their statuses remain proposed; this implementation

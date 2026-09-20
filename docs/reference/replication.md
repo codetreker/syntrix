@@ -104,8 +104,8 @@ document `set`/`update`, whose current JSON serialization rejects them before HT
 transmission. Number conversion can lose precision. Local storage needs a lossless
 representation. HTTP Push accepts the same document typed-value representation
 inside its change envelope. The SDK's [private upstream adapter](../design/sdk/002_replication_client.md#private-upstream-and-recovery)
-now supplies the encoder, native acknowledgement and recovery path; its public
-replica facade remains planned. The complete Pull response is not a Push request,
+supplies the encoder, native acknowledgement and recovery path through the public
+[replica database API](typescript_sdk.md#replica-availability). The complete Pull response is not a Push request,
 and ordinary CRUD still uses its existing JSON format.
 
 A logical-delete event may return only `id`, `collection`, and `deleted: true`;

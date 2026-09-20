@@ -62,9 +62,9 @@ The server accepts lossless typed HTTP Push values. The SDK's
 [private upstream adapter](../architecture/2026-09-20-sdk-upstream-replication.md)
 now provides the encoder, native acknowledgement and recovery path over
 [typed alias storage](../architecture/2026-09-18-sdk-replica-storage.md).
-The [offline replication proposal](../../proposed/feature/2026-09-07-sdk-offline-replication.md)
-retains the public facade, authorized notifications and complete end-to-end
-validation. This server transport decision owns the wire representation.
+The [offline replication decision](../feature/2026-09-07-sdk-offline-replication.md)
+owns the public facade and its composition; automatic notification wiring remains
+conditional on matching source authorization. This server transport decision owns the wire representation.
 Ordinary document CRUD and Trigger write formats remain unchanged. The later
 [create-conflict decision](2026-09-18-replication-push-create-conflict.md) changes
 live-target create handling while preserving the typed transport.

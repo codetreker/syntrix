@@ -12,8 +12,8 @@ Status: implemented
 
 私有下行协调器连接已有 HTTP 源、原生复制、alias 存储和查询视图。
 [私有上行与恢复](2026-09-20-sdk-upstream-replication.md)已接入同一协调器；公开
-`openReplica()` 继续由[离线复制 proposal](../../proposed/feature/2026-09-07-sdk-offline-replication.md)
-维护。未配置内部上行适配器时禁用上行扫描，不以虚假成功确认本地 pending。
+`openReplica()` 已由[离线复制决定](../feature/2026-09-07-sdk-offline-replication.md)
+交付。未配置内部上行适配器时禁用上行扫描，不以虚假成功确认本地 pending。
 
 ### 源与身份
 
@@ -125,7 +125,7 @@ metadata、checkpoint 都完成后才 CAS 激活新 generation。确认丢失时
 
 ## Consequences
 
-- 下行复制、成员、pin、查询和私有上行/恢复可组合使用；公开 facade 仍需后续集成。
+- 公开 facade 已组合下行复制、成员、pin、查询和上行/恢复；自动 WS 提示仍要求与查询源匹配的授权，轮询继续承担收敛。
 - 一页响应和一个交付批次限制 backlog 内存；完整窗口仍需保留其有界响应。
 - 投影预检与 pin 恢复扫描增加本地读取成本，不给出未测量的吞吐或收敛时延承诺。
 - 仅收到网络成功、短页或空页不能认定就绪；只有持久化与源完成事实共同成立才激活。

@@ -16,8 +16,8 @@ pending。逐 ID 清除原生历史又可能使旧状态重新上传。直接批
 local edit 等术语继续表示修改发生的位置。公开数据库入口命名为 openReplica。
 [复制设计](../../../../docs/design/sdk/002_replication_client.md#private-replica-alias-storage)
 维护内部契约；[SDK reference](../../../../docs/reference/typescript_sdk.md#replica-availability)
-维护公共可用性。公共 openReplica 与查询/watch facade 继续由
-[离线复制 proposal](../../proposed/feature/2026-09-07-sdk-offline-replication.md)负责。
+维护公共可用性。已交付的公共 openReplica 与查询/watch facade 由
+[离线复制决定](../feature/2026-09-07-sdk-offline-replication.md)负责。
 [私有查询层](2026-09-18-sdk-replica-query-watch.md)已实现查询求值与动态 watch；其读取
 适配在此层持有视图锁，接收共享预算并延后 payload 解码。
 [私有下行协调器](2026-09-19-sdk-downstream-replication.md)连接 HTTP 查询源、成员、pin
@@ -30,6 +30,7 @@ local edit 等术语继续表示修改发生的位置。公开数据库入口命
 | 事实 | 决策 |
 |---|---|
 | 物理 namespace | 规范 endpoint、JWT sub、精确配置 database、本地库名、alias 的 SHA-256；manifest 保存原 tuple 校验 |
+| Alias lifetime | manifest 保存 lifecycleId；removed 先于物理清理持久化，重建使用新 lifetime，旧句柄即使漏通知也拒绝访问；普通整理保留 lifetime |
 | 离线身份 | sub 非空，oid 存在时必须相同；允许过期 token 离线打开，拒绝缺失/畸形 token，不引入默认账号 |
 | 凭据变化 | 同 subject refresh 保留库；subject 改变先失效再 drain，覆盖尚未完成的 open；失败的 drain 不解除所有权义务 |
 | 正常取消 | alias 生命周期关联 session；每代 native 实例另有取消所有权，覆盖 alias 关闭和维护轮换。先取消再撤销旧 scope，排队操作使用同一原因；运行时仅接受所属 signal 的原因或以其为 cause 的 Axios 取消，真实存储错误仍传播 |
@@ -49,7 +50,7 @@ JWT 解析只用于本地命名空间，不是鉴权或抵抗同源恶意脚本�
 | d | 本地 desired、live/deleted/absent、editToken、pin 和已知 wire metadata |
 | m | 至多两个 source-generation slot 与最后源观察 metadata |
 | c | 源进度、generation、bootstrap 完成及 partial 状态 |
-| manifest | 原身份/源定义、绑定、active physical epoch、成员代次、issue/dirty marker/recoveryIntent |
+| manifest | 原身份/源定义、绑定、lifecycleId/removed、active physical epoch、成员代次、issue/dirty marker/recoveryIntent |
 | native metadata | assumed 与复制进度，继续由[原生运行时](2026-09-18-sdk-native-replication-runtime.md)维护 |
 
 业务数据用 recursive typed JSON 字符串持久化，int64 不转 Number。逻辑 ID 保存于 hashed
@@ -146,7 +147,7 @@ reservation 限制单次物化，独立控制池避免 manifest 与业务记录�
 
 ## Consequences
 
-- 私有存储可以离线读写与重开，已接入下行源成员、真实 HTTP 上行和显式恢复；公开 API 仍需集成。
+- 私有存储可以离线读写与重开，已由公开 API 组合下行源成员、真实 HTTP 上行和显式恢复；终态移除与重建沿用独占锁及 lifetime 校验。
 - 条件写、quota 和维护会显式失败；close/drain 失败保留可见错误，不能宣称安全切换账号。
 - 取消等待不会解除凭据 drain 义务；正常 session 取消可完成关闭，真实 I/O 和清理故障仍阻止新凭据安装。
 - 完整字节容量核对、clean 检查和 seed 都有扫描成本；没有性能或总 heap 的额外承诺。

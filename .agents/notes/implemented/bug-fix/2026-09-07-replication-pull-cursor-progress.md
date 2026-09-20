@@ -53,8 +53,8 @@ to the caller. A local transaction must commit both together; account changes mu
 invalidate pending application. The SDK's private native runtime does not change
 this manual API. [Private downstream](../architecture/2026-09-19-sdk-downstream-replication.md)
 and [upstream/recovery](../architecture/2026-09-20-sdk-upstream-replication.md) now
-provide HTTP synchronization; the public replica facade remains owned by the
-[offline replication proposal](../../proposed/feature/2026-09-07-sdk-offline-replication.md).
+provide HTTP synchronization; the delivered public replica facade is owned by the
+[offline replication decision](../feature/2026-09-07-sdk-offline-replication.md).
 
 | Limit | Bound |
 |---|---:|
@@ -180,7 +180,7 @@ writes, routing and existing data.
 - Manual Pull does not deliver local durability automatically. Applications preserve
   unsent changes when resetting and separate state by account and scope.
 - Pull's bigint results cannot blindly round-trip through existing JSON-based SDK
-  writes. The offline replication proposal owns lossless persistence and outbound
+  writes. The offline replication decision owns lossless persistence and outbound
   encoding; conversion to Number would corrupt supported int64 values.
 - Required server and SDK CI applies to stacked PR bases as well as mainline bases;
   existing path filters, jobs and thresholds remain intact.

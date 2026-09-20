@@ -153,7 +153,7 @@ the accepted cost is discovering the need to restart after a long scan.
 | Owner | Remaining work and constraint |
 |---|---|
 | [Replication Pull](../bug-fix/2026-09-07-replication-pull-cursor-progress.md) | Query connects the two phases, public opaque checkpoint, bounded responses, HTTP/gRPC and manual SDK. It retains C0 through scanning and never advances beyond accepted frames. |
-| [SDK offline replication](../../proposed/feature/2026-09-07-sdk-offline-replication.md) | Add durable local application/checkpoint transactions and an automatic coordinator; manual transport cannot claim offline durability. |
+| [SDK offline replication](../feature/2026-09-07-sdk-offline-replication.md) | The public replica API owns durable local application and automatic coordination; manual Pull remains application-managed. |
 | Pull authorization | The permission profile remains unresolved in the Pull proposal; source scope validation does not grant access or handle per-document membership changes. |
 
 The public integration is delivery sequencing, not removal of its accepted

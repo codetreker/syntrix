@@ -137,7 +137,7 @@ because retained tombstones must allow same-ID recreation.
   coordinated upgrade; there is no legacy-message fallback.
 - Exact precondition presence remains separate from stored document metadata.
   The durable SDK Pusher and its lossless outbound bigint encoder remain owned by
-  [SDK offline replication](../../proposed/feature/2026-09-07-sdk-offline-replication.md).
+  [SDK offline replication](../feature/2026-09-07-sdk-offline-replication.md).
 - A lost success response may produce a conflict on retry. Version equality
   does not provide exactly-once execution or document-generation identity.
 

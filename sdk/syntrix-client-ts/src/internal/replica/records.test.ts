@@ -18,7 +18,7 @@ const member = async (id = 'alice'): Promise<MemberRecord> => ({
 const manifest = async (): Promise<AliasManifest> => {
   const definition = freezeSourceDefinition({ collection: 'users', filters: [] });
   return {
-    key: 'manifest', formatVersion: 1,
+    key: 'manifest', formatVersion: 1, lifecycleId: 'lifecycle-1', lastCompleteRound: null,
     namespace: { endpoint: 'https://example.test/prefix', subject: 'user', database: 'db', name: 'local', alias: 'users' },
     definition, definitionHash: await definitionHash(definition), boundDatabaseId: null, sourceHash: null,
     state: 'ready', activePhysicalEpoch: 'p1', physicalEpochs: ['p1'], maintenance: null,
@@ -217,7 +217,8 @@ describe('raw persistence validation', () => {
     };
     validateManifest(busy);
     validateManifest({ ...busy, activePhysicalEpoch: 'p2', maintenance: { ...busy.maintenance, stage: 'flipped' }, dirtyUpstream: null });
-    const bad = [null, { ...base, formatVersion: 2 }, { ...base, namespace: { ...base.namespace, subject: '' } },
+    const bad = [null, { ...base, formatVersion: 2 }, { ...base, lifecycleId: '' }, { ...base, lifecycleId: undefined },
+      { ...base, lastCompleteRound: undefined }, { ...base, lastCompleteRound: '' }, { ...base, namespace: { ...base.namespace, subject: '' } },
       { ...base, definition: null }, { ...base, definition: { ...base.definition, orderBy: [] } },
       { ...base, definition: { ...base.definition, filters: [{ field: 'x', op: '==', value: { type: 'bad' } }] } },
       { ...base, definitionHash: 'x' }, { ...base, boundDatabaseId: 'id' },
@@ -235,6 +236,7 @@ describe('raw persistence validation', () => {
     ];
     for (const input of bad) expect(() => validateManifest(input)).toThrow();
     validateManifest({ ...base, issues: [{ id: 'issue', logicalId: 'alice', code: 'conflict', token: null }] });
+    validateManifest({ ...base, state: 'removed' });
   });
 
   test('recovery intents preserve one validated target and two typed document states', async () => {

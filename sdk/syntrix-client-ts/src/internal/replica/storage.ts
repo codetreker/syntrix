@@ -5,7 +5,7 @@ import { createNamespace } from './identity.js';
 import { createAliasLocks, type AliasLockOwner, type ViewLockOwner } from './locks.js';
 import { businessEqual, canonicalJson, decodeBusinessPayload, definitionHash, encodeBusinessPayload, freezeSourceDefinition, frozenConditions, matchesConditions, projectDocument, recordKey, validateLogicalId, validateManifestIdentity, validateRecordEnvelope, validateRecordIdentity } from './records.js';
 import type { ReplicaResource, ReplicaSession } from './session.js';
-import { ReplicaStorageError, type AliasManifest, type ControlRecord, type DataRecord, type ReplicaCondition, type ReplicaDocument, type ReplicaRecord, type ReplicaSourceDefinition, type MemberRecord, type StorageLimits } from './storage-types.js';
+import { ReplicaStorageError, type AliasManifest, type ControlRecord, type DataRecord, type ReplicaCondition, type ReplicaDocument, type ReplicaRecord, type ReplicaSourceDefinition, type MemberRecord, type StorageLimits, type StorageIssue, type JsonObject } from './storage-types.js';
 import { QueryViewChangedError, type AliasQueryAccess, type QueryProjection, type QueryView } from './query-source.js';
 import type { NativeUpCheckpoint, ReplicationAccess } from './replication-access.js';
 
@@ -13,6 +13,8 @@ export type RequestScope = Readonly<{ subject: string; sessionVersion: number; d
 export type AliasInvalidation = { type: 'row'; physicalEpoch: string; keys: string[]; } | { type: 'view'; physicalEpoch: string; activeSourceGeneration: string | null; };
 export type MutationOptions = { ifMatch?: readonly ReplicaCondition[]; };
 export type AliasStats = { knownIds: number; rows: number; bytes: number; retired: number; quota?: number; usage?: number; shouldCompact: boolean; };
+export type AliasStatus = { mode: 'events' | 'replace'; physicalEpoch: string; generation: string | null; sourceReady: boolean;
+  checkpoint: JsonObject | null; lastCompleteRound: string | null; pending: number; pins: number; issues: StorageIssue[] };
 export type MaintenanceAccess = {
   ownerSignal: AbortSignal;
   backend: AliasBackend;
@@ -32,6 +34,7 @@ export type AliasStorage = {
   readonly signal: AbortSignal;
   readonly changes: Observable<AliasInvalidation>;
   readonly namespace: string;
+  readonly lifecycleId: string;
   readonly databaseNamespace: string;
   readonly limits: StorageLimits;
   queryAccess(sharedReadBudget: ReadBudget): AliasQueryAccess;
@@ -54,6 +57,7 @@ export type AliasStorage = {
   readManifest(): Promise<AliasManifest>;
   withMaintenance<T>(callback: (access: MaintenanceAccess) => Promise<T>): Promise<T>;
   stats(): Promise<AliasStats>;
+  status(): Promise<AliasStatus>;
   close(): Promise<void>;
 };
 
@@ -61,7 +65,7 @@ const fail = (code: string, message: string): never => { throw new ReplicaStorag
 const isConflict = (error: unknown) => typeof error === 'object' && error !== null && 'status' in error && error.status === 409;
 const checkpointRows = 3;
 
-type ManifestView = Pick<AliasManifest, 'activePhysicalEpoch' | 'physicalEpochs' | 'activeSourceGeneration' | 'stagedSourceGeneration' | 'boundDatabaseId' | 'sourceHash' | 'sourceReady' | 'state'> & {
+type ManifestView = Pick<AliasManifest, 'lifecycleId' | 'activePhysicalEpoch' | 'physicalEpochs' | 'activeSourceGeneration' | 'stagedSourceGeneration' | 'boundDatabaseId' | 'sourceHash' | 'sourceReady' | 'state'> & {
   protected: boolean;
   recovering: boolean;
 };
@@ -173,6 +177,7 @@ export const openAliasStorage = (options: OpenAliasStorageOptions): Promise<Alia
     const locks = createAliasLocks(identity.hash, options.lockManager);
     const budget = new QueuedReadBudget(64 * 1024 * 1024);
     const controlBudget = new QueuedReadBudget(2 * validateStorageLimits(options.limits).maxManifestBytes);
+    let lifecycleId: string | undefined;
     let nativeInstanceId = crypto.randomUUID();
     const renewNativeLifetime = () => { nativeInstanceId = crypto.randomUUID(); nativeLifetime = new AbortController(); };
     let lease: { alias: AliasLockOwner; view: ViewLockOwner; } | undefined;
@@ -255,8 +260,17 @@ export const openAliasStorage = (options: OpenAliasStorageOptions): Promise<Alia
     assertActive();
     const db = backend;
     registerAccount('manifest', db.manifestStorage, db.limits.maxManifestBytes);
+    const assertLifecycle = (row: Pick<AliasManifest, 'lifecycleId' | 'state'>) => {
+      if (lifecycleId !== undefined && (row.lifecycleId !== lifecycleId || row.state === 'removed')) {
+        const reason = new ReplicaStorageError('ReplicaRemoved', 'Alias was removed or recreated');
+        lifetime.abort(reason); invalidate();
+        void close().catch(error => { cleanupFailure = error; });
+        throw reason;
+      }
+    };
     const assertManifest = async (row: AliasManifest) => {
       await validateManifestIdentity(row);
+      assertLifecycle(row);
       if (canonicalJson(row.namespace) !== canonicalJson(identity.tuple) || row.definitionHash !== hash || canonicalJson(row.definition) !== canonicalJson(definition)) {
         fail('ReplicaScopeChanged', 'Alias namespace or source definition differs from its durable binding');
       }
@@ -269,6 +283,7 @@ export const openAliasStorage = (options: OpenAliasStorageOptions): Promise<Alia
       if (!rows.length) return fail('ReplicaStorageCorruption', 'Alias manifest is missing');
       const row = rows[0]; await assertManifest(row);
       return {
+        lifecycleId: row.lifecycleId,
         activePhysicalEpoch: row.activePhysicalEpoch, physicalEpochs: row.physicalEpochs,
         activeSourceGeneration: row.activeSourceGeneration, stagedSourceGeneration: row.stagedSourceGeneration, boundDatabaseId: row.boundDatabaseId, sourceHash: row.sourceHash,
         sourceReady: row.sourceReady, state: row.state,
@@ -333,15 +348,24 @@ export const openAliasStorage = (options: OpenAliasStorageOptions): Promise<Alia
       return saved;
     };
     await locks.withAlias('exclusive', alias => owned(alias, 'exclusive', async () => {
-      let manifest = await withRows(db.manifestStorage, ['manifest'], db.limits.maxManifestBytes, controlBudget, async rows => { if (rows[0]) await assertManifest(rows[0]); return rows[0]; });
-      if (!manifest) {
+      let manifest = await withRows(db.manifestStorage, ['manifest'], db.limits.maxManifestBytes, controlBudget, async rows => {
+        if (rows[0]) {
+          await validateManifestIdentity(rows[0]);
+          if (canonicalJson(rows[0].namespace) !== canonicalJson(identity.tuple)) fail('ReplicaScopeChanged', 'Alias namespace differs from its durable binding');
+          if (rows[0].state !== 'removed') await assertManifest(rows[0]);
+        }
+        return rows[0];
+      });
+      if (!manifest || manifest.state === 'removed') {
+        if (manifest) for (const epoch of manifest.physicalEpochs) await db.removePhysical(epoch);
         const epoch = crypto.randomUUID();
         manifest = await db.writeManifest({
-          key: 'manifest', formatVersion: 1, namespace: identity.tuple, definition, definitionHash: hash,
+          key: 'manifest', formatVersion: 1, lifecycleId: crypto.randomUUID(), lastCompleteRound: null, namespace: identity.tuple, definition, definitionHash: hash,
           boundDatabaseId: null, sourceHash: null, state: 'creating', activePhysicalEpoch: epoch, physicalEpochs: [epoch], maintenance: null,
           activeSourceGeneration: null, stagedSourceGeneration: null, sourceReady: false, partialDelivery: false, dirtyUpstream: null, issues: [], recoveryIntent: null
-        }, undefined, 'alias-create');
+        }, manifest, 'alias-create');
       }
+      lifecycleId = manifest.lifecycleId;
       await assertManifest(manifest);
       const releaseInitialManifest = controlBudget.retain(encodedRowBytes(manifest));
       try {
@@ -354,7 +378,13 @@ export const openAliasStorage = (options: OpenAliasStorageOptions): Promise<Alia
       } finally { releaseInitialManifest(); }
     }), lifetime.signal);
     subscriptions.push(db.manifestStorage.changeStream().subscribe(event => {
-      for (const item of event.events) if (item.documentData) changes.next({ type: 'view', physicalEpoch: item.documentData.activePhysicalEpoch, activeSourceGeneration: item.documentData.activeSourceGeneration });
+      for (const item of event.events) if (item.documentData) {
+        if (item.documentData.lifecycleId !== lifecycleId || item.documentData.state === 'removed') {
+          try { assertLifecycle(item.documentData); } catch { /* close() owns the observable cleanup result. */ }
+          return;
+        }
+        changes.next({ type: 'view', physicalEpoch: item.documentData.activePhysicalEpoch, activeSourceGeneration: item.documentData.activeSourceGeneration });
+      }
     }));
     const rowsFor = async (opened: PhysicalStorage, id: string) => {
       const dk = await recordKey('d', id), mk = await recordKey('m', id);
@@ -431,6 +461,7 @@ export const openAliasStorage = (options: OpenAliasStorageOptions): Promise<Alia
       };
       const queryManifest = (id?: string) => withRows(db.manifestStorage, ['manifest'], db.limits.maxManifestBytes, queryBudget, async rows => {
         const row = rows[0];
+        if (row) assertLifecycle(row);
         // Persisted writes validate the complete record. Query reads inspect only
         // their control fields, so recovery payloads never decode before admission.
         if (!row || canonicalJson(row.namespace) !== canonicalJson(identity.tuple) || row.definitionHash !== hash ||
@@ -462,7 +493,7 @@ export const openAliasStorage = (options: OpenAliasStorageOptions): Promise<Alia
       };
       return {
         databaseNamespace,
-        namespace: identity.hash, signal: lifetime.signal, changes: changes.asObservable(),
+        namespace: `${identity.hash}:${lifecycleId}`, signal: lifetime.signal, changes: changes.asObservable(),
         view: () => queryOperation(async view => view),
         scan: (after, expected) => queryOperation(async (view, opened) => {
           if (after !== undefined && !/^d:[0-9a-f]{64}$/.test(after)) throw new TypeError('Invalid query scan continuation');
@@ -549,7 +580,7 @@ export const openAliasStorage = (options: OpenAliasStorageOptions): Promise<Alia
       };
     };
     const storage: AliasStorage = {
-      signal: lifetime.signal, changes: changes.asObservable(), namespace: identity.hash, databaseNamespace, limits: db.limits,
+      signal: lifetime.signal, changes: changes.asObservable(), namespace: `${identity.hash}:${lifecycleId}`, lifecycleId: lifecycleId!, databaseNamespace, limits: db.limits,
       queryAccess,
       read, get: read, set: (id, value, mutation) => mutate(id, 'set', value, mutation),
       update: (id, value, mutation) => mutate(id, 'update', value, mutation), delete: (id, mutation) => mutate(id, 'delete', undefined, mutation),
@@ -812,6 +843,40 @@ export const openAliasStorage = (options: OpenAliasStorageOptions): Promise<Alia
         });
         return { fork: wrap(opened.fork, db.limits.maxRecordBytes), meta: wrap(opened.meta, db.limits.maxMetadataBytes), identifier: opened.identifier, ownerSignal: owner.signal };
       }, scope),
+      status: () => access('shared', async (_view, opened) => {
+        const manifest = await readManifest();
+        const releaseManifest = controlBudget.retain(encodedRowBytes(manifest));
+        try {
+          let count = 0, pins = 0, after = 'd:';
+          while (true) {
+            const row = await withScanPage(opened.fork, after, 1, db.limits.maxRecordBytes, budget, async rows => rows[0]);
+            if (!row || row.kind !== 'd') break;
+            await validateRecordIdentity(row); after = row.key;
+            const releaseRow = budget.retain(encodedRowBytes(row));
+            try {
+              if (row.pin) pins++;
+              if (await pending(opened, row, differs => withRows(opened.meta, [`${row.key}|0`], db.limits.maxMetadataBytes, budget, async rows => {
+                const assumed = rows[0]?.docData;
+                if (assumed) {
+                  await validateRecordIdentity(assumed);
+                  if (assumed.kind !== 'd' || assumed.key !== row.key || assumed.logicalId !== row.logicalId) fail('ReplicaStorageCorruption', 'Status assumed identity differs');
+                }
+                return differs(assumed as DataRecord | undefined);
+              }))) count++;
+            } finally { releaseRow(); }
+          }
+          const checkpoint = await withRows(opened.meta, ['down|1'], db.limits.maxMetadataBytes, budget, async rows => {
+            if (!rows[0]) return null;
+            const cp = rows[0].checkpointData?.source;
+            if (!cp || typeof cp !== 'object' || Array.isArray(cp)) fail('ReplicaStorageCorruption', 'Invalid durable source checkpoint');
+            return structuredClone(cp) as JsonObject;
+          });
+          return { mode: manifest.definition.limit === null ? 'events' as const : 'replace' as const,
+            physicalEpoch: manifest.activePhysicalEpoch, generation: manifest.activeSourceGeneration,
+            sourceReady: manifest.sourceReady && !manifest.partialDelivery, checkpoint, lastCompleteRound: manifest.lastCompleteRound,
+            pending: count, pins, issues: manifest.issues.map(issue => ({ ...issue })) };
+        } finally { releaseManifest(); }
+      }),
       stats: () => access('exclusive', async (manifest, opened) => {
         await refreshAccounts(true);
         const total = totals(); let retired = 0; let after: string | undefined;

@@ -15,8 +15,8 @@ ACK 伪造成冲突，或猜测下一版本，会改变原生基准；把旧 upd
 
 ## Decision
 
-私有上行适配器把 typed HTTP Push 接入已有原生协议及协调器。公开 facade 仍由
-[离线复制 proposal](../../proposed/feature/2026-09-07-sdk-offline-replication.md)拥有；
+私有上行适配器把 typed HTTP Push 接入已有原生协议及协调器。已交付的公开 facade 由
+[离线复制决定](../feature/2026-09-07-sdk-offline-replication.md)拥有；
 [下行决策](2026-09-19-sdk-downstream-replication.md)继续拥有源成员、generation 和 pin，
 [原生运行时](2026-09-18-sdk-native-replication-runtime.md)继续拥有扫描与 metadata/checkpoint。
 不增加普通编辑 Outbox、accepted journal 或新的源 checkpoint。
@@ -146,8 +146,8 @@ native metadata/checkpoint 失败窗口。marker 必须覆盖整个有界原生�
 
 ## Consequences
 
-- 私有 HTTP 上行与显式恢复已接通；公开 replica facade、匹配源授权的通知接入和完整
-  browser-to-server 端到端验收仍由原 proposal 持有，不提供 public 手动 Push。
+- 私有 HTTP 上行与显式恢复已通过公开 replica facade 交付；其组合与验收由离线复制
+  决定持有。自动通知仍受源授权一致的条件约束，不提供 public 手动 Push。
 - 暂停同步不冻结全部本地编辑；恢复 intent 的目标锁与 token 校验防止旧决策覆盖新编辑。
 - marker、preflight、恢复检查与 pin 结算增加持久化和读取成本。资源限额约束对应编码
   与记录集合，不承诺整个 JavaScript heap 或浏览器断电持久性。
