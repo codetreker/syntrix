@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - 'sdk/syntrix-client-ts/**'
+      - 'example/realtime-demo/**'
       - '.github/workflows/sdk.yml'
 
 jobs:
@@ -39,3 +40,9 @@ jobs:
 
       - name: Verify isolated package consumer
         run: bun run test:package
+
+      - name: Build replica demo
+        working-directory: ./example/realtime-demo
+        run: |
+          bun install --frozen-lockfile --force
+          bun run build

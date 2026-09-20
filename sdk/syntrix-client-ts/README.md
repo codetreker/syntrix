@@ -196,6 +196,8 @@ apply operation. See the [replication reference](../../docs/reference/replicatio
 Use `openReplica` for local persisted CRUD/query/watch with automatic HTTP
 replication. Existing `client.collection()` references keep direct REST behavior.
 Open returns when local storage is ready, without waiting for network convergence.
+The [replica demo](../../example/realtime-demo/README.md) runs two independent
+browser replicas with local query watch, offline writes and synchronization controls.
 
 ```typescript
 import { SyntrixClient } from '@syntrix/client';

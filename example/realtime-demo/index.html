@@ -1,213 +1,114 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Syntrix Realtime Chat Demo</title>
-    <style>
-        * { box-sizing: border-box; }
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; margin: 0; padding: 15px; background: #f0f2f5; }
-        .container { max-width: 1400px; margin: 0 auto; }
-        h1 { text-align: center; color: #333; margin: 10px 0 20px; font-size: 1.5rem; }
-        .sdk-badge { display: inline-block; background: #6f42c1; color: white; padding: 2px 8px; border-radius: 4px; font-size: 12px; margin-left: 10px; }
-        
-        /* Control Bar - Status Row */
-        .control-bar { background: white; border-radius: 8px; padding: 15px; margin-bottom: 15px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
-        .control-row { display: flex; gap: 20px; align-items: center; flex-wrap: wrap; justify-content: center; }
-        .control-group { display: flex; align-items: center; gap: 8px; }
-        .control-group label { font-weight: 500; color: #666; font-size: 13px; white-space: nowrap; }
-        .control-group input { padding: 8px 12px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px; width: 120px; }
-        .control-group input.wide { width: 200px; }
-        
-        /* Buttons */
-        button { background: #007bff; color: white; border: none; padding: 8px 16px; border-radius: 4px; cursor: pointer; font-size: 13px; transition: all 0.2s; }
-        button:hover { background: #0056b3; transform: translateY(-1px); }
-        button.success { background: #28a745; }
-        button.success:hover { background: #1e7e34; }
-        button.danger { background: #dc3545; }
-        button.danger:hover { background: #c82333; }
-        button:disabled { background: #ccc; cursor: not-allowed; transform: none; }
-        button.small { padding: 5px 10px; font-size: 12px; }
-        
-        /* Status */
-        .status-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; margin-right: 5px; }
-        .status-dot.connected { background: #28a745; }
-        .status-dot.disconnected { background: #dc3545; }
-        .status-dot.connecting { background: #ffc107; }
-        .status-text { font-size: 12px; color: #666; }
-        
-        /* Server Status */
-        .server-status { display: flex; align-items: center; gap: 6px; padding: 6px 12px; background: #f8f9fa; border-radius: 4px; border: 1px solid #e9ecef; }
-        .server-status .status-dot { margin-right: 0; }
-        .server-status-text { font-size: 11px; color: #666; white-space: nowrap; }
-        
-        /* Two Column Layout */
-        .columns-container { display: flex; gap: 15px; }
-        .client-column { flex: 1; display: flex; flex-direction: column; gap: 15px; }
-        .client-column.client1 { border-right: 2px dashed #e0e0e0; padding-right: 15px; }
-        .client-column.client2 { padding-left: 0; }
-        
-        /* Client Panel */
-        .client-panel { background: white; border-radius: 8px; padding: 15px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
-        .client-panel h3 { margin: 0 0 12px; font-size: 14px; border-bottom: 2px solid #007bff; padding-bottom: 8px; display: flex; align-items: center; gap: 8px; }
-        .client-panel h3.client2 { border-bottom-color: #28a745; }
-        .client-panel h3 .status-indicator { margin-left: auto; }
-        
-        /* Settings Section */
-        .settings-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
-        .settings-row .control-group { margin-bottom: 0; }
-        
-        /* Message Input */
-        .message-input { display: flex; gap: 10px; align-items: flex-end; }
-        .message-input .input-wrapper { flex: 1; }
-        .message-input label { display: block; font-size: 12px; color: #666; margin-bottom: 4px; }
-        .message-input input { width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px; }
-        
-        /* Received Documents */
-        .data-list { max-height: 300px; overflow-y: auto; min-height: 150px; }
-        .data-item { background: #f8f9fa; padding: 8px 12px; margin-bottom: 8px; border-radius: 4px; border-left: 3px solid #007bff; font-size: 13px; }
-        .data-item.client2 { border-left-color: #28a745; }
-        .data-item .sender { font-weight: 600; color: #333; }
-        .data-item .text { color: #555; }
-        .data-item .time { font-size: 11px; color: #999; float: right; }
-        .data-item .type-icon { margin-right: 5px; }
-        
-        /* Event Logs */
-        .log { background: #f8f9fa; border: 1px solid #eee; border-radius: 4px; padding: 8px; max-height: 120px; overflow-y: auto; font-family: monospace; font-size: 11px; min-height: 80px; }
-        .log-entry { margin-bottom: 3px; padding: 3px 5px; border-radius: 2px; }
-        .log-entry.info { background: #e7f3ff; }
-        .log-entry.event { background: #d4edda; }
-        .log-entry.error { background: #f8d7da; }
-        .log-entry.send { background: #fff3cd; }
-        
-        /* Empty State */
-        .empty-state { text-align: center; color: #999; padding: 30px 10px; font-size: 13px; }
-        
-        /* Section Title */
-        .section-title { font-size: 12px; color: #666; font-weight: 600; margin: 0 0 8px; text-transform: uppercase; letter-spacing: 0.5px; }
-    </style>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Syntrix Replica Demo</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; padding: 20px; background: #f0f2f5; color: #243244; font: 14px/1.5 system-ui, sans-serif; }
+    .container { max-width: 1400px; margin: auto; }
+    h1 { margin: 0 0 8px; text-align: center; font-size: 25px; }
+    h2 { margin: 0; font-size: 19px; } h3 { margin: 0 0 12px; font-size: 15px; }
+    .intro { text-align: center; margin: 0 0 20px; color: #526173; }
+    .control-bar, .client-panel { background: white; border: 1px solid #dce2e9; border-radius: 9px; padding: 18px; box-shadow: 0 2px 7px #23324809; }
+    .control-bar { margin-bottom: 18px; }
+    .scope { display: grid; grid-template-columns: 2fr 1fr 1fr; gap: 14px; }
+    label { display: block; font-weight: 600; font-size: 12px; color: #526173; }
+    input { display: block; width: 100%; padding: 10px; border: 1px solid #c5cfdb; border-radius: 5px; margin-top: 5px; font: inherit; background: white; color: #243244; }
+    input:disabled { background: #f3f5f8; color: #697786; }
+    .actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 13px; }
+    button { border: 0; border-radius: 5px; padding: 9px 13px; cursor: pointer; background: #1769c2; color: white; font: inherit; font-size: 13px; }
+    button:hover { background: #125599; } button:focus-visible, input:focus-visible { outline: 3px solid #79b7fb; outline-offset: 2px; }
+    button.secondary { color: #304b68; background: #e7eef6; } button.danger { background: #9e3142; }
+    button:disabled { cursor: not-allowed; background: #e3e7ed; color: #84909d; }
+    .columns-container { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+    .client-column { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+    .client-panel.heading { border-top: 4px solid #1769c2; } .client2 .heading { border-top-color: #188263; }
+    .panel-title { display: flex; justify-content: space-between; gap: 8px; align-items: center; }
+    .status { color: #526173; font-size: 12px; margin: 6px 0 15px; }
+    .status-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; background: #97a3b0; }
+    .status-dot.open { background: #188263; } .status-dot.working { background: #c48b12; } .status-dot.blocked { background: #b63c45; }
+    .credentials { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .hint { color: #607082; font-size: 12px; margin: 12px 0 0; }
+    .error { color: #9d2737; font-size: 12px; margin-top: 12px; overflow-wrap: anywhere; }
+    .error:empty { display: none; }
+    dl { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 0; }
+    dl div { background: #f4f7fb; border-radius: 5px; padding: 9px 11px; }
+    dt { color: #617183; font-size: 11px; } dd { margin: 2px 0 0; font-size: 13px; font-weight: 600; }
+    .message-input { display: flex; align-items: end; gap: 10px; } .message-input label { flex: 1; }
+    .data-list { min-height: 180px; max-height: 400px; overflow-y: auto; }
+    .data-item { padding: 11px; border-left: 3px solid #1769c2; border-radius: 4px; background: #f5f7fa; margin-bottom: 10px; overflow-wrap: anywhere; }
+    .client2 .data-item { border-left-color: #188263; }
+    .data-item p { margin: 4px 0 8px; white-space: pre-wrap; } .data-item small { color: #647487; font-size: 10px; }
+    .empty-state { text-align: center; color: #69798b; padding: 30px 10px; }
+    .query-status { color: #607082; font-size: 12px; margin: 0 0 12px; }
+    .query-status.stopped { color: #9d2737; }
+    .log { max-height: 165px; min-height: 75px; overflow: auto; font: 11px/1.6 ui-monospace, monospace; }
+    .log-entry { padding: 3px 5px; overflow-wrap: anywhere; } .log-entry.error { margin: 0; background: #fff0f1; } .log-entry.event { background: #edf8f2; }
+    .footer { margin: 18px 0; color: #607082; font-size: 12px; }
+    @media (max-width: 800px) { body { padding: 12px; } .columns-container, .scope { grid-template-columns: 1fr; } }
+    @media (max-width: 420px) { .credentials { grid-template-columns: 1fr; } .message-input { flex-wrap: wrap; } }
+  </style>
 </head>
 <body>
-    <div class="container">
-        <h1>🔄 Syntrix Realtime Chat <span class="sdk-badge">SDK Demo</span></h1>
-        
-        <!-- Global Status Bar -->
-        <div class="control-bar">
-            <div class="control-row">
-                <div class="control-group">
-                    <label>Collection:</label>
-                    <input type="text" id="collection" value="messages">
-                </div>
-                <div class="control-group">
-                    <span class="status-dot disconnected" id="status1Dot"></span>
-                    <span class="status-text" id="status1Text">Client 1: Offline</span>
-                </div>
-                <div class="control-group">
-                    <span class="status-dot disconnected" id="status2Dot"></span>
-                    <span class="status-text" id="status2Text">Client 2: Offline</span>
-                </div>
-                <button onclick="quickConnect()" id="quickConnectBtn" class="success">⚡ Quick Connect Both</button>
-                <div class="server-status" id="serverStatus" title="Syntrix Server Status">
-                    <span class="status-dot disconnected" id="serverStatusDot"></span>
-                    <span class="server-status-text" id="serverStatusText">Server: Checking...</span>
-                </div>
-            </div>
+  <main class="container">
+    <h1>Syntrix Replica Demo</h1>
+    <p class="intro">Two independent local replicas of the same collection. Write locally, watch the result, and let synchronization connect them.</p>
+    <section class="control-bar" aria-label="Database scope">
+      <div class="scope">
+        <label>API endpoint<input id="endpoint" type="url" spellcheck="false" placeholder="http://localhost:8080"></label>
+        <label>Database<input id="database" value="default" spellcheck="false"></label>
+        <label>Collection<input id="collection" value="messages" spellcheck="false"></label>
+      </div>
+      <div class="actions"><button id="openBothBtn">Open both replicas</button><button id="closeBothBtn" class="secondary" disabled>Close both</button></div>
+      <p id="environmentNotice" class="hint"></p>
+      <p id="connectivity" class="hint" aria-live="polite"></p>
+    </section>
+    <div class="columns-container">
+      <section class="client-column client1" aria-labelledby="panel1Title">
+        <div class="client-panel heading">
+          <div class="panel-title"><h2 id="panel1Title">Panel 1</h2><span class="status-dot closed" id="panel1StatusDot" aria-hidden="true"></span></div>
+          <p class="status" id="status1Text" aria-live="polite">Closed</p>
+          <div class="credentials">
+            <label>Username<input id="username1" autocomplete="username" placeholder="Existing owner or db_admin"></label>
+            <label>Password<input id="password1" type="password" autocomplete="current-password" placeholder="Required for a new login"></label>
+          </div>
+          <div class="actions"><button id="openBtn1">Log in / Open</button><button id="closeBtn1" class="secondary" disabled>Close</button><button id="signoutBtn1" class="danger" disabled>Sign out</button></div>
+          <p id="session1" class="hint"></p><p id="error1" class="error" role="alert"></p>
         </div>
-
-        <!-- Two Column Layout -->
-        <div class="columns-container">
-            <!-- Client 1 Column -->
-            <div class="client-column client1">
-                <!-- Client 1 Settings -->
-                <div class="client-panel">
-                    <h3>👤 Client 1
-                        <span class="status-indicator">
-                            <span class="status-dot disconnected" id="panel1StatusDot"></span>
-                        </span>
-                    </h3>
-                    <div class="settings-row">
-                        <div class="control-group">
-                            <label>Username:</label>
-                            <input type="text" id="username1" value="client1">
-                        </div>
-                        <button onclick="connectRealtime(1)" id="connectBtn1">Connect</button>
-                        <button onclick="disconnectRealtime(1)" id="disconnectBtn1" disabled class="danger small">Disconnect</button>
-                    </div>
-                </div>
-                
-                <!-- Client 1 Send Message -->
-                <div class="client-panel">
-                    <p class="section-title">📤 Send Message</p>
-                    <div class="message-input">
-                        <div class="input-wrapper">
-                            <input type="text" id="messageText1" value="Hello from Client 1!" placeholder="Type message...">
-                        </div>
-                        <button onclick="sendMessage(1)" class="success">Send</button>
-                    </div>
-                </div>
-                
-                <!-- Client 1 Received -->
-                <div class="client-panel">
-                    <h3>📥 Received Messages</h3>
-                    <div class="data-list" id="data1">
-                        <div class="empty-state">No messages yet. Connect to see realtime updates.</div>
-                    </div>
-                </div>
-                
-                <!-- Client 1 Logs -->
-                <div class="client-panel">
-                    <p class="section-title">📋 Event Logs</p>
-                    <div class="log" id="log1"></div>
-                </div>
-            </div>
-            
-            <!-- Client 2 Column -->
-            <div class="client-column client2">
-                <!-- Client 2 Settings -->
-                <div class="client-panel">
-                    <h3 class="client2">👤 Client 2
-                        <span class="status-indicator">
-                            <span class="status-dot disconnected" id="panel2StatusDot"></span>
-                        </span>
-                    </h3>
-                    <div class="settings-row">
-                        <div class="control-group">
-                            <label>Username:</label>
-                            <input type="text" id="username2" value="client2">
-                        </div>
-                        <button onclick="connectRealtime(2)" id="connectBtn2">Connect</button>
-                        <button onclick="disconnectRealtime(2)" id="disconnectBtn2" disabled class="danger small">Disconnect</button>
-                    </div>
-                </div>
-                
-                <!-- Client 2 Send Message -->
-                <div class="client-panel">
-                    <p class="section-title">📤 Send Message</p>
-                    <div class="message-input">
-                        <div class="input-wrapper">
-                            <input type="text" id="messageText2" value="Hello from Client 2!" placeholder="Type message...">
-                        </div>
-                        <button onclick="sendMessage(2)" class="success">Send</button>
-                    </div>
-                </div>
-                
-                <!-- Client 2 Received -->
-                <div class="client-panel">
-                    <h3 class="client2">📥 Received Messages</h3>
-                    <div class="data-list" id="data2">
-                        <div class="empty-state">No messages yet. Connect to see realtime updates.</div>
-                    </div>
-                </div>
-                
-                <!-- Client 2 Logs -->
-                <div class="client-panel">
-                    <p class="section-title">📋 Event Logs</p>
-                    <div class="log" id="log2"></div>
-                </div>
-            </div>
+        <div class="client-panel">
+          <h3>Synchronization</h3>
+          <dl><div><dt>Pending local changes</dt><dd id="pending1">—</dd></div><div><dt>Protected edits (pins)</dt><dd id="pins1">—</dd></div><div><dt>Source initialization</dt><dd id="sourceReady1">Not open</dd></div><div><dt>Network ownership</dt><dd id="leader1">—</dd></div></dl>
+          <div class="actions"><button id="pauseBtn1" class="secondary" disabled>Pause sync</button><button id="resumeBtn1" class="secondary" disabled>Resume sync</button><button id="inspectBtn1" class="secondary" disabled>Inspect</button></div>
         </div>
+        <div class="client-panel"><div class="message-input"><label>Message<input id="messageText1" placeholder="Write to Panel 1's local replica" disabled></label><button id="sendBtn1" disabled>Save locally</button></div></div>
+        <div class="client-panel"><h3>Local snapshot · latest 20 messages</h3><p id="queryStatus1" class="query-status" role="status">Local query closed</p><div id="data1" class="data-list" aria-live="polite"></div></div>
+        <div class="client-panel"><h3>Activity</h3><div id="log1" class="log" aria-live="polite"></div></div>
+      </section>
+      <section class="client-column client2" aria-labelledby="panel2Title">
+        <div class="client-panel heading">
+          <div class="panel-title"><h2 id="panel2Title">Panel 2</h2><span class="status-dot closed" id="panel2StatusDot" aria-hidden="true"></span></div>
+          <p class="status" id="status2Text" aria-live="polite">Closed</p>
+          <div class="credentials">
+            <label>Username<input id="username2" autocomplete="username" placeholder="Same account is allowed"></label>
+            <label>Password<input id="password2" type="password" autocomplete="current-password" placeholder="Required for a new login"></label>
+          </div>
+          <div class="actions"><button id="openBtn2">Log in / Open</button><button id="closeBtn2" class="secondary" disabled>Close</button><button id="signoutBtn2" class="danger" disabled>Sign out</button></div>
+          <p id="session2" class="hint"></p><p id="error2" class="error" role="alert"></p>
+        </div>
+        <div class="client-panel">
+          <h3>Synchronization</h3>
+          <dl><div><dt>Pending local changes</dt><dd id="pending2">—</dd></div><div><dt>Protected edits (pins)</dt><dd id="pins2">—</dd></div><div><dt>Source initialization</dt><dd id="sourceReady2">Not open</dd></div><div><dt>Network ownership</dt><dd id="leader2">—</dd></div></dl>
+          <div class="actions"><button id="pauseBtn2" class="secondary" disabled>Pause sync</button><button id="resumeBtn2" class="secondary" disabled>Resume sync</button><button id="inspectBtn2" class="secondary" disabled>Inspect</button></div>
+        </div>
+        <div class="client-panel"><div class="message-input"><label>Message<input id="messageText2" placeholder="Write to Panel 2's local replica" disabled></label><button id="sendBtn2" disabled>Save locally</button></div></div>
+        <div class="client-panel"><h3>Local snapshot · latest 20 messages</h3><p id="queryStatus2" class="query-status" role="status">Local query closed</p><div id="data2" class="data-list" aria-live="polite"></div></div>
+        <div class="client-panel"><h3>Activity</h3><div id="log2" class="log" aria-live="polite"></div></div>
+      </section>
     </div>
-
-    <script type="module" src="dist/main.js"></script>
+    <p class="footer">Close retains local data. Sign out also forgets this tab's saved access token. Offline reopening after reload requires a previously opened replica and its JavaScript runtime still in the browser cache. Conflicts and uncertain writes require explicit recovery; see the <a href="https://github.com/codetreker/syntrix/blob/main/docs/reference/typescript_sdk.md#synchronization-status-and-recovery" target="_blank" rel="noreferrer">SDK recovery guide</a>.</p>
+  </main>
+  <script type="module" src="dist/main.js"></script>
 </body>
 </html>

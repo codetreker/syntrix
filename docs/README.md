@@ -83,6 +83,7 @@ describes those services. SDK and console build scripts live in their own
 - [Filter Syntax](reference/filters.md)
 - [Trigger Rules](reference/trigger_rules.md)
 - [TypeScript SDK](reference/typescript_sdk.md)
+- [Browser Replica Demo](../example/realtime-demo/README.md)
 - [Replication](reference/replication.md)
 
 Design documents include proposals as well as implemented mechanisms; read their
