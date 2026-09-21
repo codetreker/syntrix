@@ -242,6 +242,7 @@ Streamer collection 变化 -> dirty / 200ms 合并 -> replica_changed
 | 完整性 | caughtUp 仍来自源水位；窗口只发送完整 replace；ACK、heartbeat 和空数组不补造这些结论 |
 | 流控 | 单订阅一个未 ACK 页；页确认不持久化，也不是 checkpoint。客户端完成本地整页持久化后才 ACK |
 | 资源 | Query/编码 worker、帧 buffer、未确认 credit 各按实际结束点归还；旧 Stream 退休不清零仍被占用的额度 |
+| 普通事件过载 | 普通 WS/SSE 共享分发队列最多保留 16 条事件；溢出时关闭本次事件匹配的普通连接，使消费者重新订阅并恢复状态。replica 提示独立处理，其他普通连接不受本次溢出影响 |
 | 错误 | 源容量/授权退避与运输不可用分开，不能通过立即切 HTTP 绕过 REPLICATION_SOURCE_BUSY |
 
 Gateway 的连接、注册、源字节、读取、页面字节及授权工作使用有界账本；配置归属

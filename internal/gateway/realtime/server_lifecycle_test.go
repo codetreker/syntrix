@@ -133,6 +133,80 @@ func TestLegacyControlFailureClosesSocketWhenHubIsAlreadyStopped(t *testing.T) {
 	}
 }
 
+func TestLegacyOverflowClosesOnlyAffectedHealthyWebSocket(t *testing.T) {
+	hub := NewHub()
+	stream := newLifecycleStream()
+	hub.SetStream(stream)
+	ready := make(chan *Client, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := (&websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}).Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		client := &Client{hub: hub, conn: conn, send: make(chan BaseMessage, 256), subscriptions: map[string]Subscription{"affected": {}}}
+		hub.mu.Lock()
+		hub.clients[client] = true
+		hub.mu.Unlock()
+		ready <- client
+	}))
+	t.Cleanup(server.Close)
+	peer, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http"), nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = peer.Close() })
+	client := <-ready
+	t.Cleanup(client.closeOutbound)
+	affected, err := hub.SubscribeToStream("db", "users", nil)
+	require.NoError(t, err)
+	require.True(t, hub.RegisterSubscription(affected, client, "affected"))
+	t.Cleanup(func() { hub.ReleaseSubscription(affected) })
+	unaffected := &Client{hub: hub, send: make(chan BaseMessage, 256), subscriptions: map[string]Subscription{"unaffected": {}}}
+	hub.mu.Lock()
+	hub.clients[unaffected] = true
+	hub.mu.Unlock()
+	t.Cleanup(unaffected.closeOutbound)
+	other, err := hub.SubscribeToStream("db", "other", nil)
+	require.NoError(t, err)
+	require.True(t, hub.RegisterSubscription(other, unaffected, "unaffected"))
+	t.Cleanup(func() { hub.ReleaseSubscription(other) })
+	var wakes atomic.Int32
+	release, err := hub.SubscribeReplica(context.Background(), "db", "users", func() { wakes.Add(1) }, func(error) { t.Error("legacy overflow invalidated replica") })
+	require.NoError(t, err)
+	t.Cleanup(release)
+	hub.replicaMu.Lock()
+	var replicaID string
+	for id := range hub.replicaSubscriptions {
+		replicaID = id
+	}
+	hub.replicaMu.Unlock()
+	delivery := &streamer.EventDelivery{SubscriptionIDs: []string{affected.ID, affected.ID, replicaID}, Event: &streamer.Event{Operation: streamer.OperationUpdate}}
+	for i := 0; i < cap(hub.broadcast); i++ {
+		hub.BroadcastStreamDelivery(stream, delivery)
+	}
+	require.Empty(t, client.send, "the per-client queue is healthy; only the shared queue is saturated")
+	hub.BroadcastStreamDelivery(stream, delivery)
+	require.EqualValues(t, cap(hub.broadcast)+1, wakes.Load())
+	require.NoError(t, peer.SetReadDeadline(time.Now().Add(300*time.Millisecond)))
+	_, _, err = peer.ReadMessage()
+	require.Error(t, err)
+	var timeout net.Error
+	if errors.As(err, &timeout) {
+		require.False(t, timeout.Timeout(), "a missed legacy delivery must retire the real socket")
+	}
+	select {
+	case <-unaffected.outboundDone():
+		t.Fatal("unrelated legacy client was closed")
+	default:
+	}
+	hub.mu.RLock()
+	_, present := hub.clients[client]
+	otherPresent := hub.clients[unaffected]
+	hub.mu.RUnlock()
+	require.False(t, present)
+	require.True(t, otherPresent)
+	hub.BroadcastStreamDelivery(stream, &streamer.EventDelivery{SubscriptionIDs: []string{replicaID}})
+	require.EqualValues(t, cap(hub.broadcast)+2, wakes.Load())
+}
+
 func TestRetiredLegacyWebSocketDiscardsQueuedFrames(t *testing.T) {
 	hub := NewHub()
 	hub.SetStream(newLifecycleStream())
@@ -241,6 +315,80 @@ func TestRetiredLegacySSEInterruptsBlockedWrite(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("SSE write was not interrupted by retirement")
 	}
+}
+
+func TestLegacyOverflowInterruptsSSEWriteAndDrainsItsLease(t *testing.T) {
+	hub := NewHub()
+	stream := newLifecycleStream()
+	var cleaned atomic.Int32
+	stream.unsubscribe = func(string) error { cleaned.Add(1); return nil }
+	hub.SetStream(stream)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go hub.Run(ctx)
+	writer := &blockedSSEWriter{header: make(http.Header), entered: make(chan struct{}), interrupted: make(chan struct{})}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		request := httptest.NewRequest(http.MethodGet, "/realtime/sse?database=app&collection=users", nil).WithContext(ctx)
+		ServeSSE(hub, &stubQuery{}, nil, gatewayconfig.RealtimeConfig{}, writer, request)
+	}()
+	var registration string
+	var client *Client
+	require.Eventually(t, func() bool {
+		hub.subscriptionsMu.RLock()
+		defer hub.subscriptionsMu.RUnlock()
+		for id, info := range hub.subscriptions {
+			registration, client = id, info.Client
+			return true
+		}
+		return false
+	}, time.Second, time.Millisecond)
+	delivery := &streamer.EventDelivery{SubscriptionIDs: []string{registration}, Event: &streamer.Event{Database: "app", Collection: "users", DocumentID: "alice", Operation: streamer.OperationUpdate}}
+	hub.BroadcastStreamDelivery(stream, delivery)
+	select {
+	case <-writer.entered:
+	case <-time.After(time.Second):
+		t.Fatal("SSE write did not start")
+	}
+	blocker := &Client{hub: hub, send: make(chan BaseMessage, 256), subscriptions: map[string]Subscription{"blocker": {}}}
+	require.True(t, hub.Register(blocker))
+	lease, err := hub.SubscribeToStream("db", "other", nil)
+	require.NoError(t, err)
+	require.True(t, hub.RegisterSubscription(lease, blocker, "blocker"))
+	t.Cleanup(func() { hub.ReleaseSubscription(lease) })
+	blocker.mu.Lock()
+	var unblock sync.Once
+	unlock := func() { unblock.Do(blocker.mu.Unlock) }
+	t.Cleanup(unlock)
+	hub.BroadcastStreamDelivery(stream, &streamer.EventDelivery{SubscriptionIDs: []string{lease.ID}, Event: &streamer.Event{Operation: streamer.OperationUpdate}})
+	require.Eventually(t, func() bool { return len(hub.broadcast) == 0 }, time.Second, time.Millisecond)
+	for i := 0; i < cap(hub.broadcast); i++ {
+		hub.BroadcastStreamDelivery(stream, delivery)
+	}
+	require.Empty(t, client.send)
+	hub.BroadcastStreamDelivery(stream, delivery)
+	select {
+	case <-writer.interrupted:
+	case <-time.After(time.Second):
+		t.Fatal("overflow did not interrupt the SSE transport write")
+	}
+	select {
+	case <-blocker.outboundDone():
+		t.Fatal("unaffected blocking client was retired")
+	default:
+	}
+	unlock()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("SSE pump did not release its lease after overflow")
+	}
+	require.Eventually(t, func() bool { return cleaned.Load() == 1 }, time.Second, time.Millisecond)
+	hub.subscriptionsMu.RLock()
+	_, exists := hub.subscriptions[registration]
+	hub.subscriptionsMu.RUnlock()
+	require.False(t, exists)
 }
 
 func TestReplicaModeSelectionRejectsAmbiguousModeBeforeUpgrade(t *testing.T) {

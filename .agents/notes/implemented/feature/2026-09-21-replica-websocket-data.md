@@ -110,6 +110,7 @@ ACK 丢失不撤销客户端已提交的页，也不改变并行 Push 的不确�
 | 同一 Stream 对象内重连 | 普通注册恢复原 ID，等待恢复 ACK 后才 Connected |
 | backend 不再 Connected 或 generation 改变 | 退休相关 replica owner/连接，取消 Query、未发送页和注册 |
 | 实际 Stream 终止或替换 | 关闭依赖旧对象的普通 WS、SSE 与 replica 连接，清映射并有界建立新对象 |
+| 普通事件共享队列满载 | 关闭溢出事件匹配的普通连接，使消费者重连并恢复状态；按原 Stream owner 定位，避免影响新 owner 复用的订阅 ID；replica 提示继续独立处理 |
 | 取消后晚 ACK | 不能完成新 owner；有界清理孤立注册，无法清理则退休旧 Stream |
 
 generation 只围定注册所有权，不是 Store 数据位置。此扩展不增加通知持久化、普通
@@ -137,6 +138,9 @@ settlement 轮次的完成证明。请求/整页 ACK 保留明确的轮次与背
 
 **另建 source-stream RPC 或 checkpoint。** 会重复 Query/Store 已有规范化、历史、
 窗口和错误责任。直接调用既有 Query 服务同时覆盖进程内和远程 gRPC 部署。
+
+**普通事件队列满时阻塞共享接收线程。** 会同时延迟后续 replica 变化提示。共享
+队列保持有界，无法接纳事件时显式断开受影响的普通连接，避免静默遗漏更新。
 
 ## Consequences
 

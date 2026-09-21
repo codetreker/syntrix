@@ -230,24 +230,47 @@ func (h *Hub) BroadcastStreamDelivery(stream streamer.Stream, delivery *streamer
 	owner := h.streamOwner
 	h.streamMu.Unlock()
 	h.deliverReplicaFor(owner, delivery)
+	h.streamMu.Lock()
+	if h.streamOwner != owner {
+		h.streamMu.Unlock()
+		return
+	}
 	h.subscriptionsMu.RLock()
-	ordinary := false
+	affected := make(map[*Client]struct{})
 	for _, id := range delivery.SubscriptionIDs {
-		if h.subscriptions[id] != nil {
-			ordinary = true
-			break
+		if info := h.subscriptions[id]; info != nil {
+			affected[info.Client] = struct{}{}
 		}
 	}
 	h.subscriptionsMu.RUnlock()
-	if !ordinary {
+	h.streamMu.Unlock()
+	if len(affected) == 0 {
 		return
 	}
-	// Ordinary realtime delivery remains best effort. A full bounded queue drops
-	// an event rather than blocking independent replica invalidations.
+	// Queue overload must be visible to the affected legacy consumers. Retiring
+	// their transports preserves independent replica wakes without a silent gap.
 	select {
 	case h.broadcast <- hubDelivery{delivery: delivery, owner: owner}:
 	case <-h.Done():
 	default:
+		h.retireLegacyOverflow(owner, affected)
+	}
+}
+
+func (h *Hub) retireLegacyOverflow(owner *hubStreamOwner, clients map[*Client]struct{}) {
+	h.streamMu.Lock()
+	if h.streamOwner != owner {
+		h.streamMu.Unlock()
+		return
+	}
+	h.mu.Lock()
+	for client := range clients {
+		delete(h.clients, client)
+	}
+	h.mu.Unlock()
+	h.streamMu.Unlock()
+	for client := range clients {
+		client.closeOutbound()
 	}
 }
 

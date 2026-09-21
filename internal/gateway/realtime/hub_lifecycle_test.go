@@ -290,6 +290,42 @@ func TestHubLegacyCleanupUsesItsLeaseWhenReplacementReusesID(t *testing.T) {
 	require.Eventually(t, func() bool { return newUnsubscribed.Load() == 1 }, time.Second, time.Millisecond)
 }
 
+func TestLegacyOverflowRetirementDoesNotFollowReusedSubscriptionIDs(t *testing.T) {
+	hub := NewHub()
+	oldStream, newStream := newLifecycleStream(), newLifecycleStream()
+	for _, stream := range []*lifecycleStream{oldStream, newStream} {
+		stream.subscribe = func(context.Context) (streamer.Registration, error) {
+			return streamer.Registration{ID: "reused", Generation: 1}, nil
+		}
+	}
+	hub.SetStream(oldStream)
+	oldRegistration, err := hub.SubscribeToStream("db", "users", nil)
+	require.NoError(t, err)
+	oldClient := &Client{hub: hub, send: make(chan BaseMessage, 256), subscriptions: map[string]Subscription{"old": {}}}
+	hub.clients[oldClient] = true
+	require.True(t, hub.RegisterSubscription(oldRegistration, oldClient, "old"))
+	captured := map[*Client]struct{}{oldClient: {}}
+	hub.SetStream(newStream)
+	newRegistration, err := hub.SubscribeToStream("db", "users", nil)
+	require.NoError(t, err)
+	newClient := &Client{hub: hub, send: make(chan BaseMessage, 256), subscriptions: map[string]Subscription{"new": {}}}
+	hub.clients[newClient] = true
+	t.Cleanup(newClient.closeOutbound)
+	t.Cleanup(func() { hub.ReleaseSubscription(newRegistration); hub.ReleaseSubscription(oldRegistration) })
+	require.True(t, hub.RegisterSubscription(newRegistration, newClient, "new"))
+	hub.retireLegacyOverflow(oldRegistration.owner, captured)
+	select {
+	case <-newClient.outboundDone():
+		t.Fatal("stale overflow retired a replacement client")
+	default:
+	}
+	require.True(t, hub.clients[newClient])
+	hub.deliverLegacy(hubDelivery{owner: newRegistration.owner, delivery: &streamer.EventDelivery{
+		SubscriptionIDs: []string{newRegistration.ID}, Event: &streamer.Event{Operation: streamer.OperationUpdate},
+	}})
+	require.Len(t, newClient.send, 1)
+}
+
 type closeFailureStream struct {
 	*lifecycleStream
 	closeReturned chan struct{}
