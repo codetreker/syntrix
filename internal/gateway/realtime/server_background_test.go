@@ -31,8 +31,15 @@ func (m *mockStreamerStream) Stream(ctx context.Context) (streamer.Stream, error
 	return m, nil
 }
 
-func (m *mockStreamerStream) Subscribe(database, collection string, filters []model.Filter) (string, error) {
-	return "sub-id", nil
+func (m *mockStreamerStream) Subscribe(ctx context.Context, database, collection string, filters []model.Filter) (streamer.Registration, error) {
+	if err := ctx.Err(); err != nil {
+		return streamer.Registration{}, err
+	}
+	return streamer.Registration{ID: "sub-id", Generation: 1}, nil
+}
+
+func (m *mockStreamerStream) Status() streamer.StreamStatus {
+	return streamer.StreamStatus{State: streamer.StateConnected, Generation: 1}
 }
 
 func (m *mockStreamerStream) Unsubscribe(subscriptionID string) error {

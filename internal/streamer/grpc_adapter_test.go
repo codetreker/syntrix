@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -64,6 +65,83 @@ func (m *mockBidiStream) SendHeader(metadata.MD) error { return nil }
 func (m *mockBidiStream) SetTrailer(metadata.MD)       {}
 func (m *mockBidiStream) SendMsg(interface{}) error    { return nil }
 func (m *mockBidiStream) RecvMsg(interface{}) error    { return nil }
+
+type concurrentSendStream struct {
+	*mockBidiStream
+	active     atomic.Int32
+	overlapped atomic.Bool
+	entered    chan struct{}
+	release    chan struct{}
+}
+
+func (m *concurrentSendStream) Send(msg *pb.StreamerMessage) error {
+	if m.active.Add(1) != 1 {
+		m.overlapped.Store(true)
+	}
+	defer m.active.Add(-1)
+	m.entered <- struct{}{}
+	<-m.release
+	return m.mockBidiStream.Send(msg)
+}
+
+func TestGRPCAdapter_SerializesDataAndControl(t *testing.T) {
+	s, err := NewService(ServerConfig{}, slog.Default())
+	require.NoError(t, err)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	wire := &concurrentSendStream{
+		mockBidiStream: &mockBidiStream{ctx: ctx},
+		entered:        make(chan struct{}, 3),
+		release:        make(chan struct{}),
+	}
+	adapter := newGRPCStreamAdapter(ctx, "gateway", wire, getInternalService(s))
+	defer adapter.localStream.Close()
+	done := make(chan error, 3)
+	go func() {
+		done <- adapter.send(&pb.StreamerMessage{Payload: &pb.StreamerMessage_Delivery{Delivery: &pb.EventDelivery{}}})
+	}()
+	select {
+	case <-wire.entered:
+	case <-ctx.Done():
+		t.Fatal("data send did not start")
+	}
+	go func() {
+		done <- adapter.handleProtoMessage(&pb.GatewayMessage{Payload: &pb.GatewayMessage_Heartbeat{Heartbeat: &pb.Heartbeat{Timestamp: 1}}})
+	}()
+	go func() {
+		done <- adapter.handleProtoMessage(&pb.GatewayMessage{Payload: &pb.GatewayMessage_Subscribe{Subscribe: &pb.SubscribeRequest{Database: "db", Collection: "items"}}})
+	}()
+	select {
+	case <-wire.entered:
+		t.Error("control send overlapped the blocked data send")
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(wire.release)
+	for range 3 {
+		select {
+		case err := <-done:
+			require.NoError(t, err)
+		case <-ctx.Done():
+			t.Fatal("send did not drain")
+		}
+	}
+	require.False(t, wire.overlapped.Load())
+	require.Len(t, wire.sentMsgs, 3)
+}
+
+func TestGRPCAdapter_RetiredRegistrationRejected(t *testing.T) {
+	s, err := NewService(ServerConfig{}, slog.Default())
+	require.NoError(t, err)
+	service := getInternalService(s)
+	wire := &mockBidiStream{ctx: context.Background()}
+	adapter := newGRPCStreamAdapter(context.Background(), "retired", wire, service)
+	defer adapter.localStream.Close()
+	require.NoError(t, s.Stop(context.Background()))
+	err = adapter.handleProtoMessage(&pb.GatewayMessage{Payload: &pb.GatewayMessage_Subscribe{Subscribe: &pb.SubscribeRequest{SubscriptionId: "late", Database: "db", Collection: "items"}}})
+	require.ErrorIs(t, err, context.Canceled)
+	require.Empty(t, wire.sentMsgs)
+	require.Error(t, service.manager.Unsubscribe("late"))
+}
 
 // --- GRPCStream Tests ---
 
@@ -176,7 +254,8 @@ func TestGRPCStream_ServiceStopped(t *testing.T) {
 	require.NoError(t, err)
 	internal := getInternalService(s)
 
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	mockStream := &mockBidiStream{ctx: ctx}
 
 	done := make(chan error, 1)

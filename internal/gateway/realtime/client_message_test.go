@@ -21,7 +21,7 @@ import (
 )
 
 func TestClientHandleMessage_AuthAck(t *testing.T) {
-	c := &Client{hub: NewTestHub(), queryService: &MockQueryService{}, send: make(chan BaseMessage, 1), subscriptions: make(map[string]Subscription), streamerSubIDs: make(map[string]string), auth: &mockAuthService{}}
+	c := &Client{hub: NewTestHub(), queryService: &MockQueryService{}, send: make(chan BaseMessage, 1), subscriptions: make(map[string]Subscription), streamerSubIDs: make(map[string]hubRegistration), auth: &mockAuthService{}}
 	payload, _ := json.Marshal(AuthPayload{Token: "good", Database: "default"})
 	c.handleMessage(BaseMessage{Type: TypeAuth, ID: "req", Payload: payload})
 
@@ -137,7 +137,7 @@ func TestClientHandleMessage_AuthSystemRole(t *testing.T) {
 
 func TestClientHandleMessage_SubscribeSnapshot(t *testing.T) {
 	queryService := setupMockQuery()
-	c := &Client{hub: NewTestHub(), queryService: queryService, send: make(chan BaseMessage, 2), subscriptions: make(map[string]Subscription), streamerSubIDs: make(map[string]string), authenticated: true}
+	c := &Client{hub: NewTestHub(), queryService: queryService, send: make(chan BaseMessage, 2), subscriptions: make(map[string]Subscription), streamerSubIDs: make(map[string]hubRegistration), authenticated: true}
 	payload := SubscribePayload{Query: model.Query{Collection: "users"}, IncludeData: true, SendSnapshot: true}
 	b, _ := json.Marshal(payload)
 
@@ -242,7 +242,7 @@ func TestHandleMessage_SubscribeCompileError(t *testing.T) {
 	ms.On("Unsubscribe", mock.Anything).Return(nil).Maybe()
 	hub.SetStream(ms)
 
-	c := &Client{hub: hub, queryService: setupMockQuery(), send: make(chan BaseMessage, 1), subscriptions: make(map[string]Subscription), streamerSubIDs: make(map[string]string), authenticated: true}
+	c := &Client{hub: hub, queryService: setupMockQuery(), send: make(chan BaseMessage, 1), subscriptions: make(map[string]Subscription), streamerSubIDs: make(map[string]hubRegistration), authenticated: true}
 	payload := SubscribePayload{Query: model.Query{Filters: []model.Filter{{Field: "age", Op: "!", Value: 1}}}}
 	b, _ := json.Marshal(payload)
 
@@ -257,7 +257,7 @@ func TestHandleMessage_SubscribeCompileError(t *testing.T) {
 }
 
 func TestHandleMessage_SubscribeBadJSON(t *testing.T) {
-	c := &Client{hub: NewTestHub(), queryService: setupMockQuery(), send: make(chan BaseMessage, 1), subscriptions: make(map[string]Subscription), streamerSubIDs: make(map[string]string), authenticated: true}
+	c := &Client{hub: NewTestHub(), queryService: setupMockQuery(), send: make(chan BaseMessage, 1), subscriptions: make(map[string]Subscription), streamerSubIDs: make(map[string]hubRegistration), authenticated: true}
 
 	c.handleMessage(BaseMessage{Type: TypeSubscribe, ID: "sub-bad", Payload: []byte("{bad")})
 

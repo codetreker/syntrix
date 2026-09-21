@@ -22,7 +22,7 @@ func TestHub_DatabaseIsolation(t *testing.T) {
 		hub:            hub,
 		send:           make(chan BaseMessage, 10),
 		subscriptions:  make(map[string]Subscription),
-		streamerSubIDs: make(map[string]string),
+		streamerSubIDs: make(map[string]hubRegistration),
 		database:       "databaseA",
 	}
 	clientA.subscriptions["subA"] = Subscription{
@@ -31,14 +31,14 @@ func TestHub_DatabaseIsolation(t *testing.T) {
 	}
 	// Simulate Streamer subscription mapping
 	hub.Register(clientA)
-	hub.RegisterSubscription("stream-sub-A", clientA, "subA")
+	hub.RegisterSubscription(hubRegistration{ID: "stream-sub-A", owner: hub.streamOwner, generation: hub.stream.Status().Generation}, clientA, "subA")
 
 	// Client B: Database B
 	clientB := &Client{
 		hub:            hub,
 		send:           make(chan BaseMessage, 10),
 		subscriptions:  make(map[string]Subscription),
-		streamerSubIDs: make(map[string]string),
+		streamerSubIDs: make(map[string]hubRegistration),
 		database:       "databaseB",
 	}
 	clientB.subscriptions["subB"] = Subscription{
@@ -46,14 +46,14 @@ func TestHub_DatabaseIsolation(t *testing.T) {
 		IncludeData: true,
 	}
 	hub.Register(clientB)
-	hub.RegisterSubscription("stream-sub-B", clientB, "subB")
+	hub.RegisterSubscription(hubRegistration{ID: "stream-sub-B", owner: hub.streamOwner, generation: hub.stream.Status().Generation}, clientB, "subB")
 
 	// Client C: Database A (Another client in Database A)
 	clientC := &Client{
 		hub:            hub,
 		send:           make(chan BaseMessage, 10),
 		subscriptions:  make(map[string]Subscription),
-		streamerSubIDs: make(map[string]string),
+		streamerSubIDs: make(map[string]hubRegistration),
 		database:       "databaseA",
 	}
 	clientC.subscriptions["subC"] = Subscription{
@@ -61,7 +61,7 @@ func TestHub_DatabaseIsolation(t *testing.T) {
 		IncludeData: true,
 	}
 	hub.Register(clientC)
-	hub.RegisterSubscription("stream-sub-C", clientC, "subC")
+	hub.RegisterSubscription(hubRegistration{ID: "stream-sub-C", owner: hub.streamOwner, generation: hub.stream.Status().Generation}, clientC, "subC")
 
 	// Wait for registration
 	time.Sleep(5 * time.Millisecond)
@@ -157,7 +157,7 @@ func TestHub_SystemRole_CrossDatabaseAccess(t *testing.T) {
 		hub:               hub,
 		send:              make(chan BaseMessage, 10),
 		subscriptions:     make(map[string]Subscription),
-		streamerSubIDs:    make(map[string]string),
+		streamerSubIDs:    make(map[string]hubRegistration),
 		database:          "default", // Primary database
 		allowAllDatabases: true,      // Can see all databases
 	}
@@ -166,7 +166,7 @@ func TestHub_SystemRole_CrossDatabaseAccess(t *testing.T) {
 		IncludeData: true,
 	}
 	hub.Register(sysClient)
-	hub.RegisterSubscription("stream-sub-Sys", sysClient, "subSys")
+	hub.RegisterSubscription(hubRegistration{ID: "stream-sub-Sys", owner: hub.streamOwner, generation: hub.stream.Status().Generation}, sysClient, "subSys")
 
 	time.Sleep(5 * time.Millisecond)
 

@@ -1,9 +1,8 @@
 # Replication API Reference
 
-Replication endpoints use an explicit database URL namespace. Pull returns
-typed document states or query-membership events with an opaque continuation,
-or a complete query window. Push accepts typed document objects and returns
-conflicts with typed current state.
+HTTP 复制端点显式使用 database URL namespace；replica-data WS 从 auth.database
+固定同一用途的 namespace。Pull 返回 typed 文档状态、带 opaque continuation 的
+查询成员事件，或完整查询窗口。Push 接受 typed 文档并返回带 typed current 的冲突。
 
 ## Bound Database Identity
 
@@ -339,12 +338,200 @@ exit is not a stored-document deletion.
 
 The authoritative database identity and owner/`db_admin` gate run before window
 Query execution, including first binding. Identity failure must not be interpreted
-as an empty replacement. The SDK's automatic window adapter, member replacement,
-and refresh scheduling remain unimplemented. Their contract treats realtime as a
-refresh hint and requires polling so missed notifications do not freeze a window.
+as an empty replacement. 公开 SDK 已通过 HTTP 实现窗口 adapter、成员替换和定时刷新；
+新增 WS 服务端数据通道尚未自动接入 SDK。通知不能替代周期性核对。
 
 The [query-source decision](../../.agents/notes/implemented/feature/2026-09-18-query-replication-source.md)
 records source projection, identity checking, and their guarantees.
+
+## Replica WebSocket Data
+
+**端点：** `/realtime/ws?mode=replica-data`。这是已实现的服务端数据通道；
+公开 TypeScript replica SDK 当前仍通过 HTTP 同步，尚未自动使用该模式。
+
+| 模式 | 当前用途 |
+|---|---|
+| 普通 `/realtime/ws` 与 `/realtime/sse` | 保留普通 realtime 订阅与事件协议 |
+| `mode=replica-data` | 注册查询源，以有限 read 请求取得真实 typed Query/Pull 页；不接收普通事件协议消息 |
+
+Upgrade 前校验模式与现有 Origin 规则；token 不得放在 URL。连接随后以 auth 帧
+提供 token、原配置 database namespace 和相同模式标记。数据库必须有效，调用者
+须为 owner 或具有匹配 ID/slug 的 `db_admin` grant。权限判断先于绑定 ID 比较，
+管理存储失败不降级为缓存结果。
+
+### Envelope and correlation
+
+沿用 `{id, type, payload}` JSON 文本帧。客户端请求的外层 `id` 非空、最多
+128 UTF-8 字节且不能含控制字符；结构字段重复、未知字段和无效 Unicode 被拒绝。
+
+| 方向 / type | payload 与关联 |
+|---|---|
+| 客户端 `auth` | `{token, database, mode: "replica-data"}` |
+| 服务端 `auth_ack` | `{mode: "replica-data"}`；外层 id 对应 auth |
+| 客户端 `subscribe` | `{collection, source, expectedDatabaseIdentity?}`；外层 id 就是本次 subId |
+| 服务端 `subscribe_ack` | `{subId, databaseIdentity}`；外层 id 与 subId 一致 |
+| 服务端 `replica_changed` | `{subId}`；外层 id 为 subId，仅提示开启一轮源读取 |
+| 客户端 `replica_read` | `{subId, requestId, request, expectedDatabaseIdentity?, expectedSourceHash?}`；外层 id 等于 requestId |
+| 服务端 `replica_page` | `{subId, requestId, page}`；外层 id 等于 requestId，page 是既有完整 typed 响应 |
+| 客户端 `replica_ack` | `{subId, requestId}`；外层 id 等于 requestId |
+| 客户端 `unsubscribe` | `{subId}`；外层 id 等于 subId，可取消尚未完成的注册 |
+| 服务端 `unsubscribe_ack` | `{subId}`；外层 id 等于 subId |
+| 服务端 `error` | `{subId?, requestId?, code, message, retryAfter?}`；保留相应关联，retryAfter 单位为秒 |
+
+subId 标识连接内的一次注册尝试，取消或失败后不能复用。连接、认证代、实际 Stream
+对象及其 generation 共同约束服务端 owner；迟到结果不能完成另一 owner 的请求。
+重新认证会退休该连接已有的源注册，token 到期会关闭连接。
+
+`subscribe.source` 使用上面的查询源结构。注册后 collection 与规范化 source hash
+保持不变；等价定义按同一规范化规则比较。整个 concrete collection 的 Streamer
+注册不携带源 filter/order/limit，避免遗漏离开集合及窗口边界变化。
+
+```json
+{
+  "id": "source-attempt-1",
+  "type": "subscribe",
+  "payload": {
+    "collection": "users",
+    "source": {"version": 1, "filters": []},
+    "expectedDatabaseIdentity": "0123456789abcdef"
+  }
+}
+```
+
+尚未绑定的客户端可以省略 expected ID。服务端固定注册时权威解析的 ID，用它约束
+后续读取；`subscribe_ack` 只确认该代注册，不建立客户端持久绑定。客户端须校验
+第一份数据页的 databaseIdentity/sourceHash 后才保存绑定。已绑定客户端在注册和
+读取中保留原 expected ID；身份变化不是空页，也不能清理 pending 或不确定写入。
+
+### Read and data pages
+
+`request` 严格复用 HTTP Pull 请求 JSON。**expectedDatabaseIdentity 与
+expectedSourceHash 位于运输 payload，不能塞进 request 对象。** 后者没有这些字段，
+共享 decoder 会拒绝它们。以下示例使用此前已验证数据页保存的绑定；冷启动首读可以
+省略 expected 字段，不能从 subscribe ACK 建立绑定。matching-set request 不包含 requestId：
+
+```json
+{
+  "id": "read-1",
+  "type": "replica_read",
+  "payload": {
+    "subId": "source-attempt-1",
+    "requestId": "read-1",
+    "expectedDatabaseIdentity": "0123456789abcdef",
+    "request": {
+      "collection": "users",
+      "source": {"version": 1, "filters": []},
+      "checkpoint": null,
+      "limit": 100
+    }
+  }
+}
+```
+
+| 源模式 | request 与 page |
+|---|---|
+| Matching set | request 的 requestId 禁止出现；运输 requestId 仍必需。返回既有 events/checkpoint/generationId/phase/caughtUp/bootstrapComplete |
+| 有限窗口 | request.requestId 必须与运输和外层 id 一致；禁止 request.checkpoint 和顶层传输 limit。返回完整 replace、requestId、generationId、effectiveOrder、complete 和 typed documents |
+
+每次 read 只调用一次既有 Query.Pull，支持进程内与远程 gRPC Query；不通过浏览器
+HTTP 中转，也不缓存旧页冒充新轮次。响应 scope、完整 JSON 页和 typed 值编码沿用
+HTTP 契约，int64 不经过普通 realtime 的 JSON 数值扁平化。
+
+空页、changed、heartbeat、订阅 ACK 和页面 ACK 都不能制造 caughtUp。
+Matching-set 的同 ID 多次事件保持源顺序；窗口只交付一个完整结果，错误不产生部分
+replacement。窗口仍有既有索引一致性限制，需要后续刷新补位。源 checkpoint 继续
+属于 Query/Store，连接 generation 和 ACK 都不是数据位置。
+
+```text
+注册 / changed / 客户端定时核对
+             |
+       replica_read
+             |
+    授权 -> Query.Pull -> typed replica_page
+             |
+    客户端完成整页本地应用 -> replica_ack
+             |
+    未追上则下一页；完成后等待下一轮
+```
+
+Gateway 每 200ms 合并 collection 变化提示；持续变化不滑动已安排的发送时点。
+没有 read 就不会无限推页。客户端仍须周期性核对，不能只依赖通知；WS 客户端接入
+后，这些请求可以继续走 WS，但本次服务端交付没有切换公开 SDK 的 HTTP 路径。
+
+### ACK and owner retirement
+
+同一订阅最多一个未 ACK 页。ACK 只归还运输额度，服务端不持久化它，也不验证
+客户端磁盘提交。客户端应在整页所有分块、文档/assumed/checkpoint 和必要的
+manifest/pin 处理完成后发送 ACK，再按同一连接的顺序发送下一次 read。
+
+重复最近一次成功 ACK 幂等；未知请求、尚未发送的页或另一个订阅的 ACK 返回协议
+错误。ACK 丢失不撤销已完成的本地提交；重连沿用客户端最后持久化的源 cursor。
+
+取消、unsubscribe、重新认证或 backend 失效先退休 owner，再取消 Query 和未发结果。
+排队及实际写出前再次核对 owner、认证代和 token 有效期。socket Close 中断阻塞写入；
+网络分区中的只读 Query 可能持续到取消被观察或原有 deadline，不允许提前重用其额度。
+
+| 资源 | 实际归还边界 |
+|---|---|
+| 源读取 worker | Query、校验、编码及 worker 本身退出后 |
+| 编码页 buffer | 帧写完或明确丢弃时清除；仅退休 owner 不代表 buffer 已释放 |
+| 最大帧字节预留、连接页 credit | ACK 或退休已成立，且 worker 已退出、编码 buffer 已释放，三者都满足后 |
+| 订阅/source 字节 | 订阅退休且注册 worker 已退出后 |
+| backend 清理 worker | Unsubscribe 实际返回后；超时可退休 Stream，但 permit 保留至 worker 退出 |
+| 连接额度 | 连接所有拥有的 pump/worker 退出后 |
+
+账本属于 Gateway realtime server，不随 backend generation 替换而清零。
+ACK 最长等待 60 秒；超时退休订阅并返回运输不可用。auth/注册期限为 10 秒，
+Query read 为 30 秒，单帧写 deadline 为 10 秒；这些超时不撤销客户端已提交的数据。
+
+### Errors and capacity
+
+源错误复用 HTTP Pull 分类，包括 `RESYNC_REQUIRED`、身份/权限错误、索引错误、
+`QUERY_WORK_LIMIT` 和 `REPLICATION_BUDGET_EXCEEDED`。错误不携带部分成功页。
+
+| 分类 | 处理 |
+|---|---|
+| `REPLICATION_SOURCE_BUSY` + retryAfter | 源读取、授权或有界控制工作额度不足；保持源退避，不立即改 HTTP 绕过本次拒绝 |
+| `REPLICATION_TRANSPORT_BUSY` | 连接页额度、订阅/保留定义或 wire 字节容量不足；运输不可用，可选择既有 HTTP 路径 |
+| `REPLICATION_TRANSPORT_UNAVAILABLE` | 注册/Stream owner 失效、ACK 超时或运输故障；重新建立运输归属 |
+| `REPLICATION_PROTOCOL_ERROR` | 消息、关联或 ACK 状态错误，修正客户端协议 |
+| `UNAUTHORIZED`、`FORBIDDEN`、`DATABASE_IDENTITY_MISMATCH` | 停止受影响的认证/绑定，不将其伪装成可绕过的普通连接失败 |
+
+连接额度不足在 Upgrade 前返回 HTTP 503 和 `Retry-After: 1`。
+以下配置位于 `gateway.realtime.replica`，约束 replica-data 模式；普通 WS/SSE
+保留原队列和协议。值为 0 使用默认值，负值启动失败。
+
+| 配置字段 | 默认值 / 单位 |
+|---|---|
+| `connections` | 1,024 个 replica-data 连接 |
+| `subscriptions` | Gateway 合计 4,096 个订阅；也限制每连接保留的注册尝试 ID 数，耗尽时关闭连接 |
+| `subscriptions_per_connection` | 256 个活动/待注册源 |
+| `pending_registrations` | 256 个控制/注册/清理工作额度；授权等待队列也以此为上限 |
+| `source_bytes` / `source_bytes_per_connection` | 64 MiB / 4 MiB 注册 payload 的编码字节 |
+| `read_concurrency` | 同时执行 8 个源读取 worker |
+| `page_bytes` | 256 MiB 最大数据帧字节预留 |
+| `page_credits_per_connection` | 4；有效上限不超过 4 |
+| `auth_concurrency` | 8 个并发授权检查 |
+| `auth_rate` / `auth_burst` | 每秒 100 次 / 突发 100 次 |
+
+授权使用有界 FIFO 与单个补充 timer。auth、subscribe、read 和 changed flush 共享
+这组并发/速率额度。配置是运行容量，不扩大 Query 原有候选、扫描或执行预算。
+
+| 帧/队列 | 固定边界 |
+|---|---|
+| 原始 Pull request / cursor | 1 MiB / 256 KiB |
+| replica_read 的额外包络 | 1 KiB；总入站帧最多 1 MiB + 1 KiB |
+| auth 帧 | 64 KiB |
+| ACK / unsubscribe payload | 1 KiB |
+| 完整 typed 页 / protobuf 页 | 16 MiB / 20 MiB |
+| WS 数据帧 | 16 MiB + 1 KiB |
+| 出站控制帧 / 控制队列 | 1 KiB / 32 帧 |
+| 独立数据队列 | 4 帧，仍受连接 credit 和 Gateway 字节预留约束 |
+
+这些数值约束编码运输数据及任务数量，不代表总进程或浏览器 RSS。日志使用
+connection、subId、requestId、身份及固定错误分类，不记录 token、文档、filter
+或 opaque checkpoint 内容。完整决策见
+[WebSocket 复制数据决定](../../.agents/notes/implemented/feature/2026-09-21-replica-websocket-data.md)。
 
 ## Push Changes
 

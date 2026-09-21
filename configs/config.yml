@@ -66,6 +66,19 @@ gateway:
   realtime:
     transport: "both"
     per_message_deflate: true
+    replica:
+      connections: 1024
+      subscriptions: 4096
+      subscriptions_per_connection: 256
+      pending_registrations: 256
+      source_bytes: 67108864
+      source_bytes_per_connection: 4194304
+      read_concurrency: 8
+      page_bytes: 268435456
+      page_credits_per_connection: 4
+      auth_concurrency: 8
+      auth_rate: 100
+      auth_burst: 100
 
 query:
   indexer_addr: "localhost:9000"

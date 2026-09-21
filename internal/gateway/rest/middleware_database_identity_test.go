@@ -254,11 +254,13 @@ func TestReplicationAuthorizationRequiresAuthenticatedValidatedDatabase(t *testi
 		t.Run(tc.name, func(t *testing.T) {
 			r := httptest.NewRequest(http.MethodGet, "/", nil)
 			ctx := context.WithValue(r.Context(), identity.ContextKeyUserID, tc.uid)
-			if tc.db != nil {
-				ctx = database.WithDatabase(ctx, tc.db)
-			}
+			r.SetPathValue("database", "friendly-name")
+			handler := &Handler{database: &mockDatabaseService{resolveFunc: func(context.Context, string) (*database.Database, error) {
+				return tc.db, nil
+			}}}
 			w := httptest.NewRecorder()
-			require.False(t, (&Handler{}).replicationAuthorized(w, r.WithContext(ctx)))
+			_, allowed := handler.resolveReplicationDatabase(w, r.WithContext(ctx), true)
+			require.False(t, allowed)
 			require.Equal(t, tc.status, w.Code)
 		})
 	}

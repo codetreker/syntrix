@@ -5,1326 +5,499 @@ import (
 	"errors"
 	"io"
 	"log/slog"
-	"sync"
+	"net"
+	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	pb "github.com/syntrixbase/syntrix/api/gen/streamer/v1"
-	"github.com/syntrixbase/syntrix/pkg/model"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
+	"google.golang.org/grpc/test/bufconn"
 )
 
-func TestRemoteStream_Unsubscribe_SendError(t *testing.T) {
-	mockStream := &mockGRPCStreamClient{
-		sendErr: errors.New("send failed"),
-	}
-	rs := &remoteStream{
-		ctx:        context.Background(),
-		grpcStream: mockStream,
-		logger:     slog.Default(),
-	}
-
-	err := rs.Unsubscribe("sub123")
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "send failed")
-}
-
-func TestRemoteStream_Recv_EventDelivery(t *testing.T) {
-	mockStream := &mockGRPCStreamClient{
-		recvMsgs: []*pb.StreamerMessage{
-			{
-				Payload: &pb.StreamerMessage_Delivery{
-					Delivery: &pb.EventDelivery{
-						SubscriptionIds: []string{"sub1"},
-						Event: &pb.StreamerEvent{
-							EventId:    "evt1",
-							Database:   "database1",
-							Collection: "users",
-							Operation:  pb.OperationType_OPERATION_TYPE_INSERT,
-						},
-					},
-				},
-			},
-		},
-	}
-	rs := &remoteStream{
-		ctx:        context.Background(),
-		grpcStream: mockStream,
-		logger:     slog.Default(),
-	}
-
-	delivery, err := rs.Recv()
+func TestRemoteStream_RegistrationAndDelivery(t *testing.T) {
+	_, stream, _, wire := openContractStream(t, nil, nil)
+	initial := stream.Status()
+	require.Equal(t, StateConnected, initial.State)
+	require.Equal(t, uint64(1), initial.Generation)
+	require.False(t, initial.Terminal)
+	registration := registerContract(t, stream, wire)
+	require.NotEmpty(t, registration.ID)
+	require.Equal(t, initial.Generation, registration.Generation)
+	wire.incoming <- streamReceive{message: &pb.StreamerMessage{Payload: &pb.StreamerMessage_HeartbeatAck{HeartbeatAck: &pb.HeartbeatAck{}}}}
+	ackRegistration(wire, "unknown", true)
+	wire.incoming <- streamReceive{message: &pb.StreamerMessage{Payload: &pb.StreamerMessage_Delivery{Delivery: &pb.EventDelivery{SubscriptionIds: []string{registration.ID}, Event: &pb.StreamerEvent{EventId: "event", Database: "db", Collection: "items", Operation: pb.OperationType_OPERATION_TYPE_INSERT}}}}}
+	delivery, err := stream.Recv()
 	require.NoError(t, err)
-	require.NotNil(t, delivery)
-	assert.Equal(t, []string{"sub1"}, delivery.SubscriptionIDs)
-	assert.Equal(t, "evt1", delivery.Event.EventID)
+	require.Equal(t, "event", delivery.Event.EventID)
+	require.Equal(t, []string{registration.ID}, delivery.SubscriptionIDs)
+	require.NoError(t, stream.Unsubscribe(registration.ID))
+	require.Equal(t, registration.ID, takeWithin(t, wire.sent).GetUnsubscribe().SubscriptionId)
 }
 
-func TestRemoteStream_Recv_SkipsHeartbeatAck(t *testing.T) {
-	mockStream := &mockGRPCStreamClient{
-		recvMsgs: []*pb.StreamerMessage{
-			{
-				Payload: &pb.StreamerMessage_HeartbeatAck{
-					HeartbeatAck: &pb.HeartbeatAck{},
-				},
-			},
-			{
-				Payload: &pb.StreamerMessage_Delivery{
-					Delivery: &pb.EventDelivery{
-						SubscriptionIds: []string{"sub1"},
-						Event: &pb.StreamerEvent{
-							EventId: "evt1",
-						},
-					},
-				},
-			},
-		},
-	}
-	rs := &remoteStream{
-		ctx:        context.Background(),
-		grpcStream: mockStream,
-		logger:     slog.Default(),
-	}
-
-	// Should skip heartbeat and return delivery
-	delivery, err := rs.Recv()
-	require.NoError(t, err)
-	require.NotNil(t, delivery)
-	assert.Equal(t, "evt1", delivery.Event.EventID)
-}
-
-func TestRemoteStream_Recv_EOF(t *testing.T) {
-	mockStream := &mockGRPCStreamClient{
-		recvMsgs: []*pb.StreamerMessage{},
-	}
-	rs := &remoteStream{
-		ctx:        context.Background(),
-		grpcStream: mockStream,
-		logger:     slog.Default(),
-	}
-
-	_, err := rs.Recv()
-	require.Error(t, err)
-	assert.ErrorIs(t, err, io.EOF)
-}
-
-func TestRemoteStream_Recv_Error(t *testing.T) {
-	mockStream := &mockGRPCStreamClient{
-		recvErr: errors.New("recv failed"),
-	}
-	rs := &remoteStream{
-		ctx:        context.Background(),
-		grpcStream: mockStream,
-		logger:     slog.Default(),
-	}
-
-	_, err := rs.Recv()
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "recv failed")
-}
-
-func TestRemoteStream_Close(t *testing.T) {
-	mockStream := &mockGRPCStreamClient{}
-	rs := &remoteStream{
-		ctx:        context.Background(),
-		grpcStream: mockStream,
-		logger:     slog.Default(),
-	}
-
-	// First close should work
-	err := rs.Close()
-	require.NoError(t, err)
-	assert.True(t, mockStream.closedSend)
-
-	// Second close should be no-op (idempotent)
-	err = rs.Close()
-	require.NoError(t, err)
-}
-
-func TestRemoteStream_HandleSubscribeResponse(t *testing.T) {
-	rs := &remoteStream{
-		ctx:               context.Background(),
-		logger:            slog.Default(),
-		pendingSubscribes: make(map[string]chan *pb.SubscribeResponse),
-	}
-
-	// Create a pending subscribe
-	respChan := make(chan *pb.SubscribeResponse, 1)
-	rs.pendingSubscribes["sub1"] = respChan
-
-	// Handle response
-	rs.handleSubscribeResponse(&pb.SubscribeResponse{
-		SubscriptionId: "sub1",
-		Success:        true,
-	})
-
-	// Verify response was routed
+func TestRemoteStream_RestorationWaitsForACK(t *testing.T) {
+	_, stream, factory, first := openContractStream(t, nil, nil)
+	registration := registerContract(t, stream, first)
+	before := stream.Status()
+	first.incoming <- streamReceive{err: io.EOF}
+	second := takeWithin(t, factory.attempts)
+	request := takeWithin(t, second.sent).GetSubscribe()
+	require.NotNil(t, request)
+	require.Equal(t, registration.ID, request.SubscriptionId)
+	status := stream.Status()
+	require.NotEqual(t, StateConnected, status.State)
+	require.Greater(t, status.Generation, before.Generation)
+	require.False(t, status.Terminal)
 	select {
-	case resp := <-respChan:
-		assert.True(t, resp.Success)
-		assert.Equal(t, "sub1", resp.SubscriptionId)
-	case <-time.After(time.Second):
-		t.Fatal("expected response")
+	case <-before.Changed:
+	default:
+		t.Fatal("generation retirement did not notify observers")
 	}
+	ackRegistration(second, registration.ID, true)
+	status = waitStreamStatus(t, stream, func(s StreamStatus) bool { return s.State == StateConnected })
+	require.Greater(t, status.Generation, registration.Generation)
+	require.NoError(t, stream.Unsubscribe(registration.ID))
+	require.Equal(t, registration.ID, takeWithin(t, second.sent).GetUnsubscribe().SubscriptionId)
 }
 
-func TestRemoteStream_HandleSubscribeResponse_NoPending(t *testing.T) {
-	rs := &remoteStream{
-		ctx:               context.Background(),
-		logger:            slog.Default(),
-		pendingSubscribes: make(map[string]chan *pb.SubscribeResponse),
+func TestRemoteStream_DropsBufferedRetiredGeneration(t *testing.T) {
+	_, stream, factory, first := openContractStream(t, nil, nil)
+	registration := registerContract(t, stream, first)
+	delivery := func(id string) streamReceive {
+		return streamReceive{message: &pb.StreamerMessage{Payload: &pb.StreamerMessage_Delivery{Delivery: &pb.EventDelivery{SubscriptionIds: []string{registration.ID}, Event: &pb.StreamerEvent{EventId: id, Database: "db", Collection: "items"}}}}}
 	}
-
-	// Should not panic with no pending
-	rs.handleSubscribeResponse(&pb.SubscribeResponse{
-		SubscriptionId: "unknown",
-		Success:        true,
-	})
-}
-
-// --- NewClient and Stream Tests ---
-
-func TestNewClient_Success(t *testing.T) {
-	config := ClientConfig{
-		StreamerAddr: "localhost:50099", // doesn't need to be running
-	}
-
-	client, err := NewClient(config, nil)
+	first.incoming <- delivery("retired-generation-event")
+	first.incoming <- streamReceive{err: io.EOF}
+	second := takeWithin(t, factory.attempts)
+	takeWithin(t, second.sent)
+	ackRegistration(second, registration.ID, true)
+	waitStreamStatus(t, stream, func(s StreamStatus) bool { return s.State == StateConnected })
+	second.incoming <- delivery("current-generation-event")
+	event, err := stream.Recv()
 	require.NoError(t, err)
-	require.NotNil(t, client)
-
-	// Cleanup
-	err = client.(*streamerClient).Close()
-	assert.NoError(t, err)
+	require.Equal(t, "current-generation-event", event.Event.EventID)
 }
 
-func TestNewClient_DefaultValues(t *testing.T) {
-	config := ClientConfig{
-		StreamerAddr: "localhost:50099",
-		// Leave intervals at zero to test defaults
-	}
-
-	client, err := NewClient(config, slog.Default())
-	require.NoError(t, err)
-	require.NotNil(t, client)
-
-	c := client.(*streamerClient)
-	assert.Equal(t, 1*time.Second, c.config.InitialBackoff)
-	assert.Equal(t, 30*time.Second, c.config.MaxBackoff)
-	assert.Equal(t, 30*time.Second, c.config.HeartbeatInterval)
-	assert.Equal(t, 90*time.Second, c.config.ActivityTimeout)
-
-	c.Close()
+func TestRemoteStream_RestorationRejectionRetriesWithSameID(t *testing.T) {
+	_, stream, factory, first := openContractStream(t, nil, nil)
+	registration := registerContract(t, stream, first)
+	first.incoming <- streamReceive{err: io.EOF}
+	second := takeWithin(t, factory.attempts)
+	request := takeWithin(t, second.sent).GetSubscribe()
+	require.Equal(t, registration.ID, request.SubscriptionId)
+	ackRegistration(second, registration.ID, false)
+	third := takeWithin(t, factory.attempts)
+	request = takeWithin(t, third.sent).GetSubscribe()
+	require.Equal(t, registration.ID, request.SubscriptionId)
+	require.NotEqual(t, StateConnected, stream.Status().State)
+	ackRegistration(third, registration.ID, true)
+	waitStreamStatus(t, stream, func(s StreamStatus) bool { return s.State == StateConnected })
 }
 
-func TestStreamerClient_Close(t *testing.T) {
-	config := ClientConfig{
-		StreamerAddr: "localhost:50099",
-	}
-
-	client, err := NewClient(config, nil)
-	require.NoError(t, err)
-
-	c := client.(*streamerClient)
-
-	// Close should work
-	err = c.Close()
-	assert.NoError(t, err)
-
-	// Close again should also work (conn already closed)
-	err = c.Close()
-	assert.Error(t, err) // Already closed
-}
-
-func TestStreamerClient_Close_NilConn(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	c := &streamerClient{
-		ctx:    ctx,
-		cancel: cancel,
-		conn:   nil, // No connection
-	}
-
-	// Close should return nil when conn is nil
-	err := c.Close()
-	assert.NoError(t, err)
-}
-
-func TestStreamerClient_Stream_NoServer(t *testing.T) {
-	config := ClientConfig{
-		StreamerAddr: "localhost:50099", // no server running
-	}
-
-	client, err := NewClient(config, nil)
-	require.NoError(t, err)
-	defer client.(*streamerClient).Close()
-
-	// Stream should fail because no server is listening
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-	defer cancel()
-
-	_, err = client.Stream(ctx)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "failed to establish stream")
-}
-
-func TestRemoteStream_Recv_SkipsSubscribeResponse(t *testing.T) {
-	// Send a SubscribeResponse followed by a Delivery
-	mockStream := &mockGRPCStreamClient{
-		recvMsgs: []*pb.StreamerMessage{
-			{
-				Payload: &pb.StreamerMessage_SubscribeResponse{
-					SubscribeResponse: &pb.SubscribeResponse{
-						SubscriptionId: "sub1",
-						Success:        true,
-					},
-				},
-			},
-			{
-				Payload: &pb.StreamerMessage_Delivery{
-					Delivery: &pb.EventDelivery{
-						SubscriptionIds: []string{"sub1"},
-						Event:           &pb.StreamerEvent{Collection: "orders"},
-					},
-				},
-			},
-		},
-	}
-
-	rs := &remoteStream{
-		ctx:               context.Background(),
-		grpcStream:        mockStream,
-		logger:            slog.Default(),
-		pendingSubscribes: make(map[string]chan *pb.SubscribeResponse),
-	}
-
-	// Recv should skip SubscribeResponse and return the delivery
-	delivery, err := rs.Recv()
-	require.NoError(t, err)
-	assert.Equal(t, "orders", delivery.Event.Collection)
-}
-
-// TestRemoteStream_Recv_ChannelClosedNoError tests Recv when channel closes without error (EOF).
-func TestRemoteStream_Recv_ChannelClosedNoError(t *testing.T) {
-	rs := &remoteStream{
-		ctx:               context.Background(),
-		grpcStream:        &mockGRPCStreamClient{},
-		logger:            slog.Default(),
-		recvChan:          make(chan *EventDelivery),
-		pendingSubscribes: make(map[string]chan *pb.SubscribeResponse),
-		recvErr:           nil, // No prior error
-	}
-
-	// Close the channel
-	close(rs.recvChan)
-
-	// Should return io.EOF
-	_, err := rs.Recv()
-	require.Error(t, err)
-	assert.ErrorIs(t, err, io.EOF)
-}
-
-// TestRemoteStream_Subscribe_FailedResponse tests Subscribe when server returns failure.
-func TestRemoteStream_Subscribe_FailedResponse(t *testing.T) {
-	mockStream := &mockGRPCStreamClient{
-		recvMsgs: []*pb.StreamerMessage{
-			// Server will respond with failure
-		},
-	}
-
+func TestRemoteStream_SuccessfulRegistrationOutlivesCaller(t *testing.T) {
+	_, stream, factory, first := openContractStream(t, nil, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-
-	rs := &remoteStream{
-		ctx:               ctx,
-		grpcStream:        mockStream,
-		logger:            slog.Default(),
-		pendingSubscribes: make(map[string]chan *pb.SubscribeResponse),
-	}
-
-	// Start a goroutine to inject the failure response
-	go func() {
-		time.Sleep(20 * time.Millisecond)
-		// Find the pending subscription and send a failure response
-		rs.pendingSubscribesMu.Lock()
-		for subID, ch := range rs.pendingSubscribes {
-			select {
-			case ch <- &pb.SubscribeResponse{
-				SubscriptionId: subID,
-				Success:        false,
-				Error:          "subscription denied",
-			}:
-			default:
-			}
-		}
-		rs.pendingSubscribesMu.Unlock()
-	}()
-
-	_, err := rs.Subscribe("database1", "denied-collection", nil)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "subscribe failed")
-}
-
-// TestRemoteStream_RecvLoop_DeliveryContextDone tests recv loop exits on context done.
-func TestRemoteStream_RecvLoop_DeliveryContextDone(t *testing.T) {
-	// Create a mock that blocks on recv
-	mockStream := &mockGRPCStreamClient{
-		recvMsgs: []*pb.StreamerMessage{
-			{
-				Payload: &pb.StreamerMessage_Delivery{
-					Delivery: &pb.EventDelivery{
-						SubscriptionIds: []string{"sub1"},
-						Event:           &pb.StreamerEvent{Collection: "blocking"},
-					},
-				},
-			},
-		},
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	rs := &remoteStream{
-		ctx:               ctx,
-		grpcStream:        mockStream,
-		logger:            slog.Default(),
-		pendingSubscribes: make(map[string]chan *pb.SubscribeResponse),
-		recvChan:          make(chan *EventDelivery), // Unbuffered - will block
-	}
-
-	// Start recv loop
-	go rs.recvLoop()
-
-	// Give it time to start
-	time.Sleep(10 * time.Millisecond)
-
-	// Cancel context while delivery is blocked
-	cancel()
-
-	// Give recv loop time to exit
-	time.Sleep(30 * time.Millisecond)
-}
-
-// blockingMockGRPCStreamClient blocks until context is cancelled
-type blockingMockGRPCStreamClient struct {
-	mockGRPCStreamClient
-	ctx context.Context
-}
-
-func (m *blockingMockGRPCStreamClient) Recv() (*pb.StreamerMessage, error) {
-	// Block until context is done
-	<-m.ctx.Done()
-	return nil, m.ctx.Err()
-}
-
-// TestRemoteStream_Recv_ContextDoneAfterLoop tests Recv when context is cancelled after recv loop starts.
-func TestRemoteStream_Recv_ContextDoneAfterLoop(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-
-	// Use a blocking mock that won't return until context is cancelled
-	blockingMock := &blockingMockGRPCStreamClient{ctx: ctx}
-
-	rs := &remoteStream{
-		ctx:        ctx,
-		grpcStream: blockingMock,
-		logger:     slog.Default(),
-	}
-
 	done := make(chan error, 1)
-	go func() {
-		_, err := rs.Recv()
-		done <- err
-	}()
+	go func() { _, err := stream.Subscribe(ctx, "db", "items", nil); done <- err }()
+	request := takeWithin(t, first.sent).GetSubscribe()
+	ackRegistration(first, request.SubscriptionId, true)
+	require.NoError(t, takeWithin(t, done))
+	cancel()
+	first.incoming <- streamReceive{err: io.EOF}
+	second := takeWithin(t, factory.attempts)
+	restored := takeWithin(t, second.sent).GetSubscribe()
+	require.Equal(t, request.SubscriptionId, restored.SubscriptionId)
+	ackRegistration(second, restored.SubscriptionId, true)
+	waitStreamStatus(t, stream, func(s StreamStatus) bool { return s.State == StateConnected })
+}
 
-	// Give recv loop time to start
+func TestRemoteStream_CanceledRegistrationDoesNotRestore(t *testing.T) {
+	_, stream, factory, first := openContractStream(t, nil, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { _, err := stream.Subscribe(ctx, "db", "items", nil); done <- err }()
+	request := takeWithin(t, first.sent).GetSubscribe()
+	require.NotNil(t, request)
+	cancel()
+	require.ErrorIs(t, takeWithin(t, done), context.Canceled)
+	cleanup := takeWithin(t, first.sent).GetUnsubscribe()
+	require.NotNil(t, cleanup)
+	require.Equal(t, request.SubscriptionId, cleanup.SubscriptionId)
+	ackRegistration(first, request.SubscriptionId, true)
+	first.incoming <- streamReceive{err: io.EOF}
+	second := takeWithin(t, factory.attempts)
+	waitStreamStatus(t, stream, func(s StreamStatus) bool { return s.State == StateConnected })
+	select {
+	case msg := <-second.sent:
+		t.Fatalf("canceled registration restored: %v", msg)
+	case <-time.After(20 * time.Millisecond):
+	}
+}
+
+func TestRemoteStream_UnsubscribeReleasesPendingRestoration(t *testing.T) {
+	_, stream, factory, first := openContractStream(t, nil, nil)
+	a := registerContract(t, stream, first)
+	b := registerContract(t, stream, first)
+	first.incoming <- streamReceive{err: io.EOF}
+	second := takeWithin(t, factory.attempts)
+	restoring := takeWithin(t, second.sent).GetSubscribe()
+	require.NotNil(t, restoring)
+	remaining := a.ID
+	if restoring.SubscriptionId == a.ID {
+		remaining = b.ID
+	}
+	require.NoError(t, stream.Unsubscribe(restoring.SubscriptionId))
+	var next *pb.SubscribeRequest
+	var removed string
+	for next == nil || removed == "" {
+		message := takeWithin(t, second.sent)
+		if request := message.GetSubscribe(); request != nil {
+			next = request
+		}
+		if request := message.GetUnsubscribe(); request != nil {
+			removed = request.SubscriptionId
+		}
+	}
+	require.Equal(t, restoring.SubscriptionId, removed)
+	require.Equal(t, remaining, next.SubscriptionId)
+	ackRegistration(second, remaining, true)
+	waitStreamStatus(t, stream, func(s StreamStatus) bool { return s.State == StateConnected })
+}
+
+func TestRemoteStream_ForeignLateACKCannotCompleteNewRegistration(t *testing.T) {
+	_, stream, factory, first := openContractStream(t, nil, nil)
+	oldDone := make(chan error, 1)
+	go func() { _, err := stream.Subscribe(context.Background(), "db", "old", nil); oldDone <- err }()
+	oldRequest := takeWithin(t, first.sent).GetSubscribe()
+	first.incoming <- streamReceive{err: io.EOF}
+	require.Error(t, takeWithin(t, oldDone))
+	second := takeWithin(t, factory.attempts)
+	waitStreamStatus(t, stream, func(s StreamStatus) bool { return s.State == StateConnected })
+	type result struct {
+		registration Registration
+		err          error
+	}
+	newDone := make(chan result, 1)
+	go func() { r, err := stream.Subscribe(context.Background(), "db", "new", nil); newDone <- result{r, err} }()
+	newRequest := takeWithin(t, second.sent).GetSubscribe()
+	require.NotEqual(t, oldRequest.SubscriptionId, newRequest.SubscriptionId)
+	ackRegistration(second, oldRequest.SubscriptionId, true)
+	select {
+	case <-newDone:
+		t.Fatal("foreign ACK completed new registration")
+	case <-time.After(20 * time.Millisecond):
+	}
+	ackRegistration(second, newRequest.SubscriptionId, true)
+	value := takeWithin(t, newDone)
+	require.NoError(t, value.err)
+	require.Equal(t, newRequest.SubscriptionId, value.registration.ID)
+	require.Equal(t, stream.Status().Generation, value.registration.Generation)
+}
+
+func TestRemoteStream_RegistrationFailureAndCanceledAdmission(t *testing.T) {
+	_, stream, _, wire := openContractStream(t, nil, nil)
+	done := make(chan error, 1)
+	go func() { _, err := stream.Subscribe(context.Background(), "db", "items", nil); done <- err }()
+	request := takeWithin(t, wire.sent).GetSubscribe()
+	ackRegistration(wire, request.SubscriptionId, false)
+	require.ErrorContains(t, takeWithin(t, done), "rejected")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := stream.Subscribe(ctx, "db", "items", nil)
+	require.ErrorIs(t, err, context.Canceled)
+	select {
+	case msg := <-wire.sent:
+		t.Fatalf("canceled caller dispatched %v", msg)
+	default:
+	}
+}
+
+func TestRemoteStream_PendingRegistrationBound(t *testing.T) {
+	_, stream, _, wire := openContractStream(t, nil, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 256)
+	for range 256 {
+		go func() { _, err := stream.Subscribe(ctx, "db", "items", nil); done <- err }()
+	}
+	for range 256 {
+		require.NotNil(t, takeWithin(t, wire.sent).GetSubscribe())
+	}
+	admission, cancelAdmission := context.WithTimeout(context.Background(), time.Second)
+	defer cancelAdmission()
+	_, err := stream.Subscribe(admission, "db", "items", nil)
+	require.Error(t, err)
+	require.NotErrorIs(t, err, context.DeadlineExceeded)
+	require.NoError(t, stream.Close())
+	cancel()
+	for range 256 {
+		require.Error(t, takeWithin(t, done))
+	}
+}
+
+func TestRemoteStream_CloseInterruptsBlockedIO(t *testing.T) {
+	gate := make(chan struct{})
+	_, stream, _, wire := openContractStream(t, func(_ int, w *contractWire) error { w.sendGate = gate; return nil }, nil)
+	subscribeDone := make(chan error, 1)
+	recvDone := make(chan error, 1)
+	go func() { _, err := stream.Subscribe(context.Background(), "db", "items", nil); subscribeDone <- err }()
+	takeWithin(t, wire.sent)
+	go func() { _, err := stream.Recv(); recvDone <- err }()
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- stream.Close() }()
+	require.NoError(t, takeWithin(t, closeDone))
+	require.Error(t, takeWithin(t, subscribeDone))
+	require.Error(t, takeWithin(t, recvDone))
+	require.ErrorIs(t, wire.ctx.Err(), context.Canceled)
+	require.True(t, stream.Status().Terminal)
+	require.NoError(t, stream.Close())
+	_, err := stream.Subscribe(context.Background(), "db", "items", nil)
+	require.Error(t, err)
+	require.Error(t, stream.Unsubscribe("old"))
+}
+
+func TestRemoteStream_CallerCancellationInterruptsBlockedSendAndReleasesRegistration(t *testing.T) {
+	gate := make(chan struct{})
+	_, stream, factory, first := openContractStream(t, func(attempt int, wire *contractWire) error {
+		if attempt == 1 {
+			wire.sendGate = gate
+		}
+		return nil
+	}, nil)
+	initial := stream.Status()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { _, err := stream.Subscribe(ctx, "db", "items", nil); done <- err }()
+	canceled := takeWithin(t, first.sent).GetSubscribe()
+	require.NotNil(t, canceled)
+	cancel()
+	require.ErrorIs(t, takeWithin(t, done), context.Canceled)
+	second := takeWithin(t, factory.attempts)
+	current := waitStreamStatus(t, stream, func(status StreamStatus) bool { return status.State == StateConnected })
+	require.Greater(t, current.Generation, initial.Generation)
+	require.False(t, current.Terminal)
+	require.ErrorIs(t, first.ctx.Err(), context.Canceled)
+	select {
+	case request := <-second.sent:
+		t.Fatalf("canceled registration restored: %v", request)
+	default:
+	}
+	owner := stream.(*remoteStream)
+	owner.mu.Lock()
+	pending, active := len(owner.pending), len(owner.active)
+	owner.mu.Unlock()
+	require.Zero(t, pending)
+	require.Zero(t, active)
+	registration := registerContract(t, stream, second)
+	require.NotEqual(t, canceled.SubscriptionId, registration.ID)
+	require.Equal(t, current.Generation, registration.Generation)
+}
+
+func TestRemoteStream_IndividualCloseAndClientClose(t *testing.T) {
+	client, first, factory, _ := openContractStream(t, nil, nil)
+	second, err := client.Stream(context.Background())
+	require.NoError(t, err)
+	defer second.Close()
+	secondWire := takeWithin(t, factory.attempts)
+	require.NoError(t, first.Close())
+	require.True(t, first.Status().Terminal)
+	require.False(t, second.Status().Terminal)
+	require.NoError(t, client.Close())
+	waitStreamStatus(t, second, func(s StreamStatus) bool { return s.Terminal })
+	require.ErrorIs(t, secondWire.ctx.Err(), context.Canceled)
+	_, err = client.Stream(context.Background())
+	require.Error(t, err)
+}
+
+func TestRemoteStream_RetryLimit(t *testing.T) {
+	failure := errors.New("backend offline")
+	_, stream, factory, wire := openContractStream(t, func(n int, _ *contractWire) error {
+		if n > 1 {
+			return failure
+		}
+		return nil
+	}, func(cfg *ClientConfig) { cfg.MaxRetries = 2 })
+	wire.incoming <- streamReceive{err: io.EOF}
+	status := waitStreamStatus(t, stream, func(s StreamStatus) bool { return s.Terminal })
+	require.Equal(t, StateDisconnected, status.State)
+	require.Error(t, status.Err)
+	require.Equal(t, int32(3), factory.calls.Load())
+	_, err := stream.Recv()
+	require.Error(t, err)
+}
+
+func TestRemoteStream_RestorationFailureCountsTowardRetryLimit(t *testing.T) {
+	_, stream, factory, first := openContractStream(t, nil, func(cfg *ClientConfig) { cfg.MaxRetries = 2 })
+	registration := registerContract(t, stream, first)
+	first.incoming <- streamReceive{err: io.EOF}
+	for range 2 {
+		wire := takeWithin(t, factory.attempts)
+		request := takeWithin(t, wire.sent).GetSubscribe()
+		require.Equal(t, registration.ID, request.SubscriptionId)
+		ackRegistration(wire, registration.ID, false)
+	}
+	waitStreamStatus(t, stream, func(s StreamStatus) bool { return s.Terminal })
+	require.Equal(t, int32(3), factory.calls.Load())
+}
+
+func TestRemoteStream_HeartbeatAndSendsSerialized(t *testing.T) {
+	gate := make(chan struct{})
+	_, stream, _, wire := openContractStream(t, func(_ int, w *contractWire) error { w.sendGate = gate; return nil }, func(cfg *ClientConfig) { cfg.HeartbeatInterval = 5 * time.Millisecond })
+	done := make(chan error, 1)
+	go func() { _, err := stream.Subscribe(context.Background(), "db", "items", nil); done <- err }()
+	first := takeWithin(t, wire.sent)
+	require.NotNil(t, first.GetSubscribe())
 	time.Sleep(20 * time.Millisecond)
-
-	// Cancel context - this should cause Recv to return via ctx.Done() case
-	cancel()
-
-	select {
-	case err := <-done:
-		require.Error(t, err)
-		assert.ErrorIs(t, err, context.Canceled)
-	case <-time.After(time.Second):
-		t.Fatal("Recv should have returned after context cancellation")
-	}
+	require.False(t, wire.overlap.Load())
+	close(gate)
+	heartbeat := takeWithin(t, wire.sent)
+	require.NotNil(t, heartbeat.GetHeartbeat())
+	require.False(t, wire.overlap.Load())
+	ackRegistration(wire, first.GetSubscribe().SubscriptionId, true)
+	require.NoError(t, takeWithin(t, done))
 }
 
-// Note: Full client tests require a running gRPC server.
-// Integration tests are in tests/integration/
-
-// TestConnectionState_String tests the String() method of ConnectionState.
-func TestConnectionState_String(t *testing.T) {
-	tests := []struct {
-		state    ConnectionState
-		expected string
-	}{
-		{StateDisconnected, "disconnected"},
-		{StateConnecting, "connecting"},
-		{StateConnected, "connected"},
-		{StateReconnecting, "reconnecting"},
-		{ConnectionState(99), "unknown"},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.expected, func(t *testing.T) {
-			assert.Equal(t, tc.expected, tc.state.String())
-		})
-	}
-}
-
-// TestRemoteStream_State tests the State() method.
-func TestRemoteStream_State(t *testing.T) {
-	rs := &remoteStream{
-		state:  StateConnected,
-		logger: slog.Default(),
-	}
-
-	assert.Equal(t, StateConnected, rs.State())
-}
-
-// TestRemoteStream_GetLastMessageTime tests activity time tracking.
-func TestRemoteStream_GetLastMessageTime(t *testing.T) {
-	rs := &remoteStream{
-		logger: slog.Default(),
-	}
-
-	// Initially zero
-	assert.True(t, rs.getLastMessageTime().IsZero())
-
-	// Update
-	rs.updateLastMessageTime()
-	now := time.Now()
-
-	lastTime := rs.getLastMessageTime()
-	assert.WithinDuration(t, now, lastTime, 10*time.Millisecond)
-}
-
-// TestRemoteStream_SetState tests setState and notifyStateWithError.
-func TestRemoteStream_SetState(t *testing.T) {
-	rs := &remoteStream{
-		state:  StateConnected,
-		logger: slog.Default(),
-	}
-
-	// Test setState
-	rs.setState(StateReconnecting)
-	assert.Equal(t, StateReconnecting, rs.State())
-
-	// Test same state (no change)
-	rs.setState(StateReconnecting)
-	assert.Equal(t, StateReconnecting, rs.State())
-
-	// Test notifyStateWithError
-	rs.notifyStateWithError(StateDisconnected, io.EOF)
-	assert.Equal(t, StateDisconnected, rs.State())
-}
-
-// TestRemoteStream_SetState_WithCallback tests state change callback.
-func TestRemoteStream_SetState_WithCallback(t *testing.T) {
-	var calledState ConnectionState
-	var calledErr error
-	callback := func(state ConnectionState, err error) {
-		calledState = state
-		calledErr = err
-	}
-
-	client := &streamerClient{
-		config: ClientConfig{
-			OnStateChange: callback,
-		},
-	}
-
-	rs := &remoteStream{
-		state:  StateConnected,
-		logger: slog.Default(),
-		client: client,
-	}
-
-	// Test setState triggers callback
-	rs.setState(StateReconnecting)
-	assert.Equal(t, StateReconnecting, calledState)
-	assert.Nil(t, calledErr)
-
-	// Test notifyStateWithError triggers callback with error
-	testErr := errors.New("test error")
-	rs.notifyStateWithError(StateDisconnected, testErr)
-	assert.Equal(t, StateDisconnected, calledState)
-	assert.Equal(t, testErr, calledErr)
-}
-
-// TestRemoteStream_NoClient tests functions exit immediately when client is nil.
-func TestRemoteStream_NoClient(t *testing.T) {
-	t.Parallel()
-
-	t.Run("reconnect", func(t *testing.T) {
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-
-		rs := &remoteStream{
-			ctx:    ctx,
-			logger: slog.Default(),
-			client: nil,
+func TestRemoteStream_SendFailureRetiresGeneration(t *testing.T) {
+	failure := errors.New("wire send failed")
+	_, stream, factory, first := openContractStream(t, func(n int, w *contractWire) error {
+		if n == 1 {
+			w.sendErr = failure
 		}
-		assert.False(t, rs.reconnect())
-	})
-
-	t.Run("heartbeatLoop", func(t *testing.T) {
-		rs := &remoteStream{
-			logger: slog.Default(),
-			client: nil,
-		}
-
-		done := make(chan struct{})
-		go func() {
-			rs.heartbeatLoop()
-			close(done)
-		}()
-
-		select {
-		case <-done:
-		case <-time.After(100 * time.Millisecond):
-			t.Fatal("heartbeatLoop should have exited immediately when client is nil")
-		}
-	})
-
-	t.Run("activityMonitor", func(t *testing.T) {
-		rs := &remoteStream{
-			logger: slog.Default(),
-			client: nil,
-		}
-
-		done := make(chan struct{})
-		go func() {
-			rs.activityMonitor()
-			close(done)
-		}()
-
-		select {
-		case <-done:
-		case <-time.After(100 * time.Millisecond):
-			t.Fatal("activityMonitor should have exited immediately when client is nil")
-		}
-	})
+		return nil
+	}, nil)
+	original := stream.Status().Generation
+	_, err := stream.Subscribe(context.Background(), "db", "items", nil)
+	require.Error(t, err)
+	require.NotNil(t, takeWithin(t, first.sent).GetSubscribe())
+	second := takeWithin(t, factory.attempts)
+	status := waitStreamStatus(t, stream, func(s StreamStatus) bool { return s.State == StateConnected && s.Generation > original })
+	require.False(t, status.Terminal)
+	registerContract(t, stream, second)
 }
 
-// TestRemoteStream_Reconnect_ContextCanceled tests reconnect exits when context is canceled.
-func TestRemoteStream_Reconnect_ContextCanceled(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel() // Cancel immediately
-
-	client := &streamerClient{
-		config: ClientConfig{
-			InitialBackoff:    10 * time.Millisecond,
-			MaxBackoff:        100 * time.Millisecond,
-			BackoffMultiplier: 2.0,
-			MaxRetries:        0,
-		},
-	}
-
-	rs := &remoteStream{
-		ctx:    ctx,
-		logger: slog.Default(),
-		client: client,
-	}
-
-	// reconnect should return false immediately due to canceled context
-	assert.False(t, rs.reconnect())
+func TestRemoteStream_ActivityTimeoutReplacesAttempt(t *testing.T) {
+	_, stream, factory, first := openContractStream(t, nil, func(cfg *ClientConfig) { cfg.ActivityTimeout = 20 * time.Millisecond })
+	original := stream.Status().Generation
+	second := takeWithin(t, factory.attempts)
+	require.NotSame(t, first, second)
+	require.ErrorIs(t, first.ctx.Err(), context.Canceled)
+	waitStreamStatus(t, stream, func(s StreamStatus) bool { return s.Generation > original })
 }
 
-// TestRemoteStream_Reconnect_MaxRetries tests reconnect gives up after max retries.
-func TestRemoteStream_Reconnect_MaxRetries(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	attempts := 0
-	mockServiceClient := &mockStreamerServiceClient{
-		streamErr: errors.New("connection refused"),
-	}
-
-	client := &streamerClient{
-		config: ClientConfig{
-			InitialBackoff:    1 * time.Millisecond,
-			MaxBackoff:        5 * time.Millisecond,
-			BackoffMultiplier: 1.5,
-			MaxRetries:        3, // Max 3 attempts
-		},
-		client: mockServiceClient,
-	}
-
-	rs := &remoteStream{
-		ctx:    ctx,
-		logger: slog.Default(),
-		client: client,
-	}
-
-	start := time.Now()
-	result := rs.reconnect()
-	elapsed := time.Since(start)
-
-	assert.False(t, result)
-	// Should have tried and given up relatively quickly
-	assert.Less(t, elapsed, 500*time.Millisecond)
-	_ = attempts // Used to verify attempts if needed
-}
-
-// TestRemoteStream_Reconnect_Success tests successful reconnection.
-func TestRemoteStream_Reconnect_Success(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	newMockStream := &mockGRPCStreamClient{}
-	mockServiceClient := &mockStreamerServiceClient{
-		streamClient: newMockStream,
-	}
-
-	client := &streamerClient{
-		config: ClientConfig{
-			InitialBackoff:    1 * time.Millisecond,
-			MaxBackoff:        10 * time.Millisecond,
-			BackoffMultiplier: 2.0,
-			MaxRetries:        0,
-		},
-		client: mockServiceClient,
-	}
-
-	rs := &remoteStream{
-		ctx:                 ctx,
-		logger:              slog.Default(),
-		client:              client,
-		activeSubscriptions: make(map[string]*subscriptionInfo),
-	}
-
-	result := rs.reconnect()
-
-	assert.True(t, result)
-	assert.Equal(t, StateConnected, rs.State())
-}
-
-// TestRemoteStream_Reconnect_WithSubscriptions tests reconnection with subscription recovery.
-func TestRemoteStream_Reconnect_WithSubscriptions(t *testing.T) {
-	t.Parallel()
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	newMockStream := &mockGRPCStreamClient{}
-	mockServiceClient := &mockStreamerServiceClient{
-		streamClient: newMockStream,
-	}
-
-	client := &streamerClient{
-		config: ClientConfig{
-			InitialBackoff:    1 * time.Millisecond,
-			MaxBackoff:        10 * time.Millisecond,
-			BackoffMultiplier: 2.0,
-			MaxRetries:        0,
-		},
-		client: mockServiceClient,
-	}
-
-	rs := &remoteStream{
-		ctx:    ctx,
-		logger: slog.Default(),
-		client: client,
-		activeSubscriptions: map[string]*subscriptionInfo{
-			"sub1": {database: "database1", collection: "users", filters: nil},
-			"sub2": {database: "database1", collection: "orders", filters: nil},
-		},
-	}
-
-	result := rs.reconnect()
-
-	assert.True(t, result)
-	// Verify subscriptions were sent
-	assert.Len(t, newMockStream.sentMsgs, 2)
-}
-
-// TestRemoteStream_ResubscribeAll_Empty tests resubscribeAll with no subscriptions.
-func TestRemoteStream_ResubscribeAll_Empty(t *testing.T) {
-	rs := &remoteStream{
-		logger:              slog.Default(),
-		activeSubscriptions: make(map[string]*subscriptionInfo),
-	}
-
-	err := rs.resubscribeAll()
-	assert.NoError(t, err)
-}
-
-// TestRemoteStream_ResubscribeAll_Success tests resubscribeAll with subscriptions.
-func TestRemoteStream_ResubscribeAll_Success(t *testing.T) {
-	t.Parallel()
-	mockStream := &mockGRPCStreamClient{}
-
-	rs := &remoteStream{
-		grpcStream: mockStream,
-		logger:     slog.Default(),
-		activeSubscriptions: map[string]*subscriptionInfo{
-			"sub1": {database: "database1", collection: "users", filters: nil},
-		},
-	}
-
-	err := rs.resubscribeAll()
-	assert.NoError(t, err)
-	assert.Len(t, mockStream.sentMsgs, 1)
-
-	// Verify the sent message
-	msg := mockStream.sentMsgs[0]
-	subscribe := msg.GetSubscribe()
-	require.NotNil(t, subscribe)
-	assert.Equal(t, "sub1", subscribe.SubscriptionId)
-	assert.Equal(t, "database1", subscribe.Database)
-	assert.Equal(t, "users", subscribe.Collection)
-}
-
-// TestRemoteStream_ResubscribeAll_SendError tests resubscribeAll when send fails.
-func TestRemoteStream_ResubscribeAll_SendError(t *testing.T) {
-	mockStream := &mockGRPCStreamClient{
-		sendErr: errors.New("send failed"),
-	}
-
-	rs := &remoteStream{
-		grpcStream: mockStream,
-		logger:     slog.Default(),
-		activeSubscriptions: map[string]*subscriptionInfo{
-			"sub1": {database: "database1", collection: "users", filters: nil},
-		},
-	}
-
-	err := rs.resubscribeAll()
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "failed to resubscribe")
-}
-
-// TestRemoteStream_HeartbeatLoop_Exit tests heartbeat loop exits under various conditions.
-func TestRemoteStream_HeartbeatLoop_Exit(t *testing.T) {
-	t.Parallel()
-
-	t.Run("ContextDone", func(t *testing.T) {
-		t.Parallel()
-		ctx, cancel := context.WithCancel(context.Background())
-
-		client := &streamerClient{
-			config: ClientConfig{HeartbeatInterval: 10 * time.Millisecond},
-		}
-
-		rs := &remoteStream{
-			ctx:           ctx,
-			logger:        slog.Default(),
-			client:        client,
-			heartbeatStop: make(chan struct{}),
-		}
-
-		done := make(chan struct{})
-		go func() {
-			rs.heartbeatLoop()
-			close(done)
-		}()
-
-		cancel()
-
-		select {
-		case <-done:
-		case <-time.After(100 * time.Millisecond):
-			t.Fatal("heartbeatLoop should have exited on context cancel")
-		}
-	})
-
-	t.Run("StopChannel", func(t *testing.T) {
-		t.Parallel()
-		client := &streamerClient{
-			config: ClientConfig{HeartbeatInterval: 10 * time.Millisecond},
-		}
-
-		stopChan := make(chan struct{})
-		rs := &remoteStream{
-			ctx:           context.Background(),
-			logger:        slog.Default(),
-			client:        client,
-			heartbeatStop: stopChan,
-		}
-
-		done := make(chan struct{})
-		go func() {
-			rs.heartbeatLoop()
-			close(done)
-		}()
-
-		close(stopChan)
-
-		select {
-		case <-done:
-		case <-time.After(100 * time.Millisecond):
-			t.Fatal("heartbeatLoop should have exited on stop channel close")
-		}
-	})
-
-	t.Run("Closed", func(t *testing.T) {
-		t.Parallel()
-		client := &streamerClient{
-			config: ClientConfig{HeartbeatInterval: 10 * time.Millisecond},
-		}
-
-		rs := &remoteStream{
-			ctx:           context.Background(),
-			grpcStream:    &mockGRPCStreamClient{},
-			logger:        slog.Default(),
-			client:        client,
-			state:         StateConnected,
-			closed:        true,
-			heartbeatStop: make(chan struct{}),
-		}
-
-		done := make(chan struct{})
-		go func() {
-			rs.heartbeatLoop()
-			close(done)
-		}()
-
-		select {
-		case <-done:
-		case <-time.After(50 * time.Millisecond):
-			t.Fatal("heartbeatLoop should have exited when closed")
-		}
-	})
-}
-
-// TestRemoteStream_HeartbeatLoop_SendsHeartbeat tests heartbeat is sent when connected.
-func TestRemoteStream_HeartbeatLoop_SendsHeartbeat(t *testing.T) {
-	t.Parallel()
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	mockStream := &mockGRPCStreamClient{}
-
-	client := &streamerClient{
-		config: ClientConfig{
-			HeartbeatInterval: 10 * time.Millisecond,
-		},
-	}
-
-	rs := &remoteStream{
-		ctx:           ctx,
-		grpcStream:    mockStream,
-		logger:        slog.Default(),
-		client:        client,
-		state:         StateConnected,
-		heartbeatStop: make(chan struct{}),
-	}
-
-	done := make(chan struct{})
-	go func() {
-		rs.heartbeatLoop()
-		close(done)
-	}()
-
-	// Wait for at least one heartbeat
-	time.Sleep(25 * time.Millisecond)
-	cancel()
-
-	<-done
-
-	// Should have sent at least one heartbeat
-	mockStream.mu.Lock()
-	sentCount := len(mockStream.sentMsgs)
-	mockStream.mu.Unlock()
-
-	assert.GreaterOrEqual(t, sentCount, 1)
-}
-
-// TestRemoteStream_HeartbeatLoop_SkipsWhenNotConnected tests heartbeat is skipped when not connected.
-func TestRemoteStream_HeartbeatLoop_SkipsWhenNotConnected(t *testing.T) {
-	t.Parallel()
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	mockStream := &mockGRPCStreamClient{}
-
-	client := &streamerClient{
-		config: ClientConfig{
-			HeartbeatInterval: 10 * time.Millisecond,
-		},
-	}
-
-	rs := &remoteStream{
-		ctx:           ctx,
-		grpcStream:    mockStream,
-		logger:        slog.Default(),
-		client:        client,
-		state:         StateReconnecting, // Not connected
-		heartbeatStop: make(chan struct{}),
-	}
-
-	done := make(chan struct{})
-	go func() {
-		rs.heartbeatLoop()
-		close(done)
-	}()
-
-	// Wait a bit
-	time.Sleep(25 * time.Millisecond)
-	cancel()
-
-	<-done
-
-	// Should not have sent any heartbeats
-	mockStream.mu.Lock()
-	sentCount := len(mockStream.sentMsgs)
-	mockStream.mu.Unlock()
-
-	assert.Equal(t, 0, sentCount)
-}
-
-// TestRemoteStream_ActivityMonitor_Exit tests activity monitor exits under various conditions.
-func TestRemoteStream_ActivityMonitor_Exit(t *testing.T) {
-	t.Parallel()
-
-	t.Run("ContextDone", func(t *testing.T) {
-		t.Parallel()
-		ctx, cancel := context.WithCancel(context.Background())
-
-		client := &streamerClient{
-			config: ClientConfig{ActivityTimeout: 30 * time.Millisecond},
-		}
-
-		rs := &remoteStream{
-			ctx:           ctx,
-			logger:        slog.Default(),
-			client:        client,
-			heartbeatStop: make(chan struct{}),
-		}
-
-		done := make(chan struct{})
-		go func() {
-			rs.activityMonitor()
-			close(done)
-		}()
-
-		cancel()
-
-		select {
-		case <-done:
-		case <-time.After(100 * time.Millisecond):
-			t.Fatal("activityMonitor should have exited on context cancel")
-		}
-	})
-
-	t.Run("StopChannel", func(t *testing.T) {
-		t.Parallel()
-		client := &streamerClient{
-			config: ClientConfig{ActivityTimeout: 30 * time.Millisecond},
-		}
-
-		stopChan := make(chan struct{})
-		rs := &remoteStream{
-			ctx:           context.Background(),
-			logger:        slog.Default(),
-			client:        client,
-			heartbeatStop: stopChan,
-		}
-
-		done := make(chan struct{})
-		go func() {
-			rs.activityMonitor()
-			close(done)
-		}()
-
-		close(stopChan)
-
-		select {
-		case <-done:
-		case <-time.After(100 * time.Millisecond):
-			t.Fatal("activityMonitor should have exited on stop channel close")
-		}
-	})
-}
-
-// TestRemoteStream_ActivityMonitor_DetectsStale tests activity monitor detects stale connection.
-func TestRemoteStream_ActivityMonitor_DetectsStale(t *testing.T) {
-	t.Parallel()
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	mockStream := &mockGRPCStreamClient{}
-
-	// Use 200 milliseconds timeout -> checkInterval = 200ms (the minimum)
-	client := &streamerClient{
-		config: ClientConfig{
-			ActivityTimeout: 200 * time.Millisecond,
-		},
-	}
-
-	rs := &remoteStream{
-		ctx:             ctx,
-		grpcStream:      mockStream,
-		logger:          slog.Default(),
-		client:          client,
-		state:           StateConnected,
-		lastMessageTime: time.Now().Add(-10 * time.Second), // Well past timeout
-		heartbeatStop:   make(chan struct{}),
-	}
-
-	done := make(chan struct{})
-	go func() {
-		rs.activityMonitor()
-		close(done)
-	}()
-
-	// Wait for activity monitor to detect staleness and close stream
-	// checkInterval is 70ms, so wait ~100ms for at least one check
-	time.Sleep(100 * time.Millisecond)
-	cancel()
-
-	<-done
-
-	// Should have closed the stream
-	mockStream.mu.Lock()
-	closed := mockStream.closedSend
-	mockStream.mu.Unlock()
-
-	assert.True(t, closed)
-}
-
-// TestRemoteStream_ActivityMonitor_SkipsWhenNotConnected tests activity monitor skips when not connected.
-func TestRemoteStream_ActivityMonitor_SkipsWhenNotConnected(t *testing.T) {
-	t.Parallel()
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	mockStream := &mockGRPCStreamClient{}
-
-	client := &streamerClient{
-		config: ClientConfig{
-			ActivityTimeout: 10 * time.Millisecond,
-		},
-	}
-
-	rs := &remoteStream{
-		ctx:             ctx,
-		grpcStream:      mockStream,
-		logger:          slog.Default(),
-		client:          client,
-		state:           StateReconnecting, // Not connected
-		lastMessageTime: time.Now().Add(-1 * time.Second),
-		heartbeatStop:   make(chan struct{}),
-	}
-
-	done := make(chan struct{})
-	go func() {
-		rs.activityMonitor()
-		close(done)
-	}()
-
-	// Wait a bit
-	time.Sleep(30 * time.Millisecond)
-	cancel()
-
-	<-done
-
-	// Should NOT have closed the stream because not connected
-	mockStream.mu.Lock()
-	closed := mockStream.closedSend
-	mockStream.mu.Unlock()
-
-	assert.False(t, closed)
-}
-
-// TestRemoteStream_HeartbeatLoop_SendError tests heartbeat loop handles send error gracefully.
-func TestRemoteStream_HeartbeatLoop_SendError(t *testing.T) {
-	t.Parallel()
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	mockStream := &mockGRPCStreamClient{
-		sendErr: errors.New("send failed"),
-	}
-
-	client := &streamerClient{
-		config: ClientConfig{
-			HeartbeatInterval: 10 * time.Millisecond,
-		},
-	}
-
-	rs := &remoteStream{
-		ctx:           ctx,
-		grpcStream:    mockStream,
-		logger:        slog.Default(),
-		client:        client,
-		state:         StateConnected,
-		heartbeatStop: make(chan struct{}),
-	}
-
-	done := make(chan struct{})
-	go func() {
-		rs.heartbeatLoop()
-		close(done)
-	}()
-
-	// Wait for heartbeat attempt
-	time.Sleep(25 * time.Millisecond)
-	cancel()
-
-	select {
-	case <-done:
-		// Success - loop continued despite error
-	case <-time.After(100 * time.Millisecond):
-		t.Fatal("heartbeatLoop should have exited")
-	}
-}
-
-// TestRemoteStream_Subscribe_StoresSubscriptionInfo tests that successful subscribe stores subscription info.
-func TestRemoteStream_Subscribe_StoresSubscriptionInfo(t *testing.T) {
-	t.Parallel()
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-
-	// Create a mock that will respond to any subscribe request
-	mockStream := &mockAutoRespondStream{}
-
-	rs := &remoteStream{
-		ctx:                 ctx,
-		grpcStream:          mockStream,
-		logger:              slog.Default(),
-		client:              nil,
-		pendingSubscribes:   make(map[string]chan *pb.SubscribeResponse),
-		activeSubscriptions: make(map[string]*subscriptionInfo),
-	}
-
-	// Start a goroutine that watches for pending subscribes and responds
-	go func() {
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(5 * time.Millisecond):
-				rs.pendingSubscribesMu.Lock()
-				for subID, ch := range rs.pendingSubscribes {
-					select {
-					case ch <- &pb.SubscribeResponse{
-						SubscriptionId: subID,
-						Success:        true,
-					}:
-					default:
-					}
-				}
-				rs.pendingSubscribesMu.Unlock()
+func TestRemoteStream_StateCallbackCanCloseStream(t *testing.T) {
+	states := make(chan ConnectionState, 8)
+	closed := make(chan error, 1)
+	var stream Stream
+	_, stream, _, wire := openContractStream(t, nil, func(cfg *ClientConfig) {
+		cfg.InitialBackoff = 50 * time.Millisecond
+		cfg.OnStateChange = func(state ConnectionState, _ error) {
+			states <- state
+			if state == StateReconnecting {
+				closed <- stream.Close()
 			}
 		}
-	}()
+	})
+	wire.incoming <- streamReceive{err: io.EOF}
+	require.NoError(t, takeWithin(t, closed))
+	for takeWithin(t, states) != StateDisconnected {
+	}
+	require.True(t, stream.Status().Terminal)
+}
 
-	filters := []model.Filter{{Field: "status", Op: model.OpEq, Value: "active"}}
-	subID, err := rs.Subscribe("database1", "users", filters)
+type wireRegistration struct {
+	id       string
+	allowACK chan struct{}
+}
+type restorationServer struct {
+	pb.UnimplementedStreamerServiceServer
+	registrations chan wireRegistration
+	disconnect    chan struct{}
+	attempts      atomic.Int32
+	exits         chan int32
+}
 
-	require.NoError(t, err)
-	assert.NotEmpty(t, subID)
-
-	// Verify subscription info was stored
-	rs.activeSubscriptionsMu.Lock()
-	info, exists := rs.activeSubscriptions[subID]
-	rs.activeSubscriptionsMu.Unlock()
-
-	assert.True(t, exists, "subscription info should be stored")
-	if exists {
-		assert.Equal(t, "database1", info.database)
-		assert.Equal(t, "users", info.collection)
-		assert.Len(t, info.filters, 1)
+func (s *restorationServer) Stream(wire grpc.BidiStreamingServer[pb.GatewayMessage, pb.StreamerMessage]) error {
+	attempt := s.attempts.Add(1)
+	defer func() { s.exits <- attempt }()
+	for {
+		message, err := wire.Recv()
+		if err != nil {
+			return err
+		}
+		request := message.GetSubscribe()
+		if request == nil {
+			continue
+		}
+		registration := wireRegistration{id: request.SubscriptionId, allowACK: make(chan struct{})}
+		select {
+		case s.registrations <- registration:
+		case <-wire.Context().Done():
+			return wire.Context().Err()
+		}
+		select {
+		case <-registration.allowACK:
+		case <-wire.Context().Done():
+			return wire.Context().Err()
+		}
+		if err := wire.Send(&pb.StreamerMessage{Payload: &pb.StreamerMessage_SubscribeResponse{SubscribeResponse: &pb.SubscribeResponse{SubscriptionId: registration.id, Success: true}}}); err != nil {
+			return err
+		}
+		if attempt == 1 {
+			select {
+			case <-s.disconnect:
+				return status.Error(codes.Unavailable, "retire transport")
+			case <-wire.Context().Done():
+				return wire.Context().Err()
+			}
+		}
 	}
 }
 
-// mockAutoRespondStream is a mock that doesn't block on Recv (returns EOF immediately)
-type mockAutoRespondStream struct {
-	sentMsgs   []*pb.GatewayMessage
-	mu         sync.Mutex
-	closedSend bool
-}
-
-func (m *mockAutoRespondStream) Send(msg *pb.GatewayMessage) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.sentMsgs = append(m.sentMsgs, msg)
-	return nil
-}
-
-func (m *mockAutoRespondStream) Recv() (*pb.StreamerMessage, error) {
-	// Block forever to prevent recv loop from running
-	select {}
-}
-
-func (m *mockAutoRespondStream) CloseSend() error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.closedSend = true
-	return nil
-}
-
-func (m *mockAutoRespondStream) Header() (metadata.MD, error) { return nil, nil }
-func (m *mockAutoRespondStream) Trailer() metadata.MD         { return nil }
-func (m *mockAutoRespondStream) Context() context.Context     { return context.Background() }
-func (m *mockAutoRespondStream) SendMsg(interface{}) error    { return nil }
-func (m *mockAutoRespondStream) RecvMsg(interface{}) error    { return nil }
-
-// mockDynamicServiceClient allows dynamic Stream behavior for testing reconnect scenarios.
-type mockDynamicServiceClient struct {
-	pb.StreamerServiceClient
-	streamFn func() (pb.StreamerService_StreamClient, error)
-}
-
-func (m *mockDynamicServiceClient) Stream(ctx context.Context, opts ...grpc.CallOption) (pb.StreamerService_StreamClient, error) {
-	return m.streamFn()
-}
-
-// TestRemoteStream_Reconnect_ResubscribeFails tests reconnect handles resubscribe failure.
-func TestRemoteStream_Reconnect_ResubscribeFails(t *testing.T) {
-	t.Parallel()
+func TestRemoteStream_RealGRPCRestorationAndCancellation(t *testing.T) {
+	listener := bufconn.Listen(1024 * 1024)
+	server := grpc.NewServer()
+	backend := &restorationServer{registrations: make(chan wireRegistration, 2), disconnect: make(chan struct{}), exits: make(chan int32, 2)}
+	pb.RegisterStreamerServiceServer(server, backend)
+	go func() { _ = server.Serve(listener) }()
+	t.Cleanup(func() { server.Stop(); _ = listener.Close() })
+	connection, err := grpc.NewClient("passthrough:///streamer-test", grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) { return listener.DialContext(ctx) }))
+	require.NoError(t, err)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-
-	attemptCount := 0
-	var mu sync.Mutex
-
-	// First stream will fail resubscribe, second will succeed
-	mockServiceClient := &mockDynamicServiceClient{
-		streamFn: func() (pb.StreamerService_StreamClient, error) {
-			mu.Lock()
-			attemptCount++
-			count := attemptCount
-			mu.Unlock()
-
-			if count == 1 {
-				// First attempt: return a stream that will fail on Send (for resubscribe)
-				return &mockGRPCStreamClient{
-					sendErr: errors.New("resubscribe send failed"),
-				}, nil
-			}
-			// Second attempt: return a working stream
-			return &mockGRPCStreamClient{}, nil
-		},
+	config := DefaultClientConfig()
+	config.InitialBackoff = time.Millisecond
+	config.MaxBackoff = time.Millisecond
+	client := &streamerClient{ctx: ctx, cancel: cancel, conn: connection, client: pb.NewStreamerServiceClient(connection), config: config, logger: slog.Default()}
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+	stream, err := client.Stream(ctx)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, stream.Close()) })
+	type registrationResult struct {
+		registration Registration
+		err          error
 	}
-
-	client := &streamerClient{
-		config: ClientConfig{
-			InitialBackoff:    1 * time.Millisecond,
-			MaxBackoff:        5 * time.Millisecond,
-			BackoffMultiplier: 1.5,
-			MaxRetries:        0,
-		},
-		client: mockServiceClient,
-	}
-
-	rs := &remoteStream{
-		ctx:    ctx,
-		logger: slog.Default(),
-		client: client,
-		activeSubscriptions: map[string]*subscriptionInfo{
-			"sub1": {database: "database1", collection: "users", filters: nil},
-		},
-	}
-
-	result := rs.reconnect()
-
-	assert.True(t, result)
-	mu.Lock()
-	finalCount := attemptCount
-	mu.Unlock()
-	assert.Equal(t, 2, finalCount) // Should have tried twice
+	done := make(chan registrationResult, 1)
+	go func() { r, err := stream.Subscribe(ctx, "db", "items", nil); done <- registrationResult{r, err} }()
+	first := takeWithin(t, backend.registrations)
+	close(first.allowACK)
+	result := takeWithin(t, done)
+	require.NoError(t, result.err)
+	require.Equal(t, first.id, result.registration.ID)
+	close(backend.disconnect)
+	require.Equal(t, int32(1), takeWithin(t, backend.exits))
+	second := takeWithin(t, backend.registrations)
+	require.Equal(t, first.id, second.id)
+	require.NotEqual(t, StateConnected, stream.Status().State)
+	close(second.allowACK)
+	waitStreamStatus(t, stream, func(s StreamStatus) bool { return s.State == StateConnected })
+	require.NoError(t, stream.Close())
+	require.Equal(t, int32(2), takeWithin(t, backend.exits))
+	require.True(t, stream.Status().Terminal)
 }

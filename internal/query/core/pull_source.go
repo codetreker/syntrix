@@ -20,6 +20,19 @@ type pullSource struct {
 	query   model.Query
 }
 
+// ReplicationSourceHash binds a validated query definition to its resolved
+// database identity without reading documents or establishing source progress.
+func ReplicationSourceHash(req types.ReplicationPullRequest) (string, error) {
+	source, err := normalizePullSource(req)
+	if err != nil {
+		return "", err
+	}
+	if source == nil {
+		return "", types.ErrInvalidReplicationSource
+	}
+	return source.hash, nil
+}
+
 func normalizePullSource(req types.ReplicationPullRequest) (*pullSource, error) {
 	invalid := func(message string) (*pullSource, error) {
 		return nil, fmt.Errorf("%w: %s", types.ErrInvalidReplicationSource, message)

@@ -21,6 +21,24 @@ type Service interface {
 	Stream(ctx context.Context) (Stream, error)
 }
 
+// Registration belongs to one transport generation of the actual Stream object.
+// Generation is an ownership fence, not a replication checkpoint.
+type Registration struct {
+	ID         string
+	Generation uint64
+}
+
+// StreamStatus atomically captures the current state and its next-change signal.
+// Callers must obtain a fresh snapshot after Changed closes. Terminal streams
+// never reconnect; a replacement Stream has an independent ownership lifetime.
+type StreamStatus struct {
+	State      ConnectionState
+	Generation uint64
+	Terminal   bool
+	Err        error
+	Changed    <-chan struct{}
+}
+
 // Stream is a bidirectional stream for Gateway <-> Streamer communication.
 // This interface abstracts the underlying transport (local or gRPC).
 //
@@ -28,7 +46,7 @@ type Service interface {
 //
 //	stream, _ := service.Stream(ctx)
 //	defer stream.Close()
-//	subID, _ := stream.Subscribe("database1", "users", []Filter{{Field: "status", Op: "==", Value: "active"}})
+//	registration, _ := stream.Subscribe(ctx, "database1", "users", []Filter{{Field: "status", Op: "==", Value: "active"}})
 //	for {
 //	    delivery, err := stream.Recv()
 //	    if err != nil { break }
@@ -36,9 +54,12 @@ type Service interface {
 //	}
 type Stream interface {
 	// Subscribe creates a new subscription for the specified database and collection.
-	// Returns the subscription ID on success.
+	// Returns a registration acknowledged by the current generation. Context
+	// cancellation applies to setup; successful registrations require Unsubscribe.
 	// For document ID match, use Filter{Field: "id", Op: model.OpEq, Value: docID}.
-	Subscribe(database, collection string, filters []model.Filter) (subscriptionID string, err error)
+	Subscribe(ctx context.Context, database, collection string, filters []model.Filter) (Registration, error)
+
+	Status() StreamStatus
 
 	// Unsubscribe removes a subscription by ID.
 	Unsubscribe(subscriptionID string) error

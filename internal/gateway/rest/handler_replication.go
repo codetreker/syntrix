@@ -1,20 +1,17 @@
 package rest
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
-	"io"
 	"log/slog"
 	"net/http"
 	"time"
 
 	databasecore "github.com/syntrixbase/syntrix/internal/core/database"
 	"github.com/syntrixbase/syntrix/internal/core/storage"
-	storagetypes "github.com/syntrixbase/syntrix/internal/core/storage/types"
+	"github.com/syntrixbase/syntrix/internal/gateway/replication"
 	"github.com/syntrixbase/syntrix/internal/helper"
-	"github.com/syntrixbase/syntrix/internal/indexer"
 	querycore "github.com/syntrixbase/syntrix/internal/query/core"
 	"github.com/syntrixbase/syntrix/internal/query/wire"
 	"github.com/syntrixbase/syntrix/pkg/model"
@@ -24,180 +21,8 @@ var validateReplicationPushFn = validateReplicationPush
 
 const pullResponseWriteTimeout = 10 * time.Second
 
-func decodePullRequest(body io.Reader) (request storage.ReplicationPullRequest, failure error) {
-	data, err := io.ReadAll(body)
-	if err != nil {
-		return storage.ReplicationPullRequest{}, err
-	}
-	var fields map[string]json.RawMessage
-	_ = json.Unmarshal(data, &fields)
-	_, queryMode := fields["source"]
-	if queryMode {
-		if err := wire.ValidatePullSourceJSON(data); err != nil {
-			return request, err
-		}
-		defer func() {
-			var watchError *storagetypes.WatchError
-			var tooLarge *http.MaxBytesError
-			if failure != nil && !errors.As(failure, &watchError) && !errors.As(failure, &tooLarge) {
-				failure = storagetypes.ErrInvalidReplicationSource
-			}
-		}()
-	}
-	if err := model.ValidateJSONUnicode(data); err != nil {
-		return storage.ReplicationPullRequest{}, err
-	}
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	token, err := decoder.Token()
-	if err != nil || token != json.Delim('{') {
-		return storage.ReplicationPullRequest{}, errors.New("pull request must be an object")
-	}
-	var req storage.ReplicationPullRequest
-	var semanticErr error
-	seen := make(map[string]bool)
-	for decoder.More() {
-		token, err := decoder.Token()
-		if err != nil {
-			return req, err
-		}
-		key, ok := token.(string)
-		if !ok || seen[key] {
-			return req, errors.New("duplicate pull request field")
-		}
-		seen[key] = true
-		var raw json.RawMessage
-		if err := decoder.Decode(&raw); err != nil {
-			return req, err
-		}
-		switch key {
-		case "source":
-			req.Source, err = wire.DecodeJSONPullSource(raw)
-			if err != nil {
-				return req, err
-			}
-		case "requestId":
-			var id string
-			if bytes.Equal(raw, []byte("null")) || json.Unmarshal(raw, &id) != nil || id == "" || len(id) > querycore.MaxPullRequestBytes {
-				return req, storagetypes.ErrInvalidReplicationSource
-			}
-			req.RequestID = &id
-		case "collection":
-			if bytes.Equal(raw, []byte("null")) {
-				return req, errors.New("collection must be a string")
-			}
-			if err := json.Unmarshal(raw, &req.Collection); err != nil {
-				return req, err
-			}
-		case "checkpoint":
-			if bytes.Equal(raw, []byte("null")) {
-				continue
-			}
-			if len(raw) > 0 && (raw[0] == '-' || (raw[0] >= '0' && raw[0] <= '9')) {
-				semanticErr = &storagetypes.WatchError{Code: storagetypes.WatchHistoryUnavailable}
-				continue
-			}
-			if err := json.Unmarshal(raw, &req.Checkpoint); err != nil {
-				return req, err
-			}
-			if len(req.Checkpoint) > querycore.MaxPullCursorBytes {
-				semanticErr = &http.MaxBytesError{Limit: querycore.MaxPullCursorBytes}
-			}
-		case "limit":
-			if bytes.Equal(raw, []byte("null")) {
-				return req, errors.New("limit must be an integer")
-			}
-			if err := json.Unmarshal(raw, &req.Limit); err != nil {
-				return req, err
-			}
-		default:
-			return req, errors.New("unknown pull request field")
-		}
-	}
-	if _, err := decoder.Token(); err != nil {
-		return req, err
-	}
-	if err := decoder.Decode(new(any)); err != io.EOF {
-		return req, errors.New("pull request must contain one object")
-	}
-	if req.Source != nil {
-		if req.Source.Limit != nil {
-			if req.RequestID == nil || seen["checkpoint"] || seen["limit"] {
-				return req, storagetypes.ErrInvalidReplicationSource
-			}
-		} else if req.RequestID != nil {
-			return req, storagetypes.ErrInvalidReplicationSource
-		}
-		if req.Limit < 0 || req.Limit > wire.MaxPullLimit {
-			return req, storagetypes.ErrInvalidReplicationSource
-		}
-	} else if req.RequestID != nil {
-		return req, storagetypes.ErrInvalidReplicationSource
-	}
-	return req, semanticErr
-}
-
 func writePullRequestError(w http.ResponseWriter, req storage.ReplicationPullRequest, err error) {
-	if req.Source != nil && req.Source.Limit != nil && errors.Is(err, model.ErrQueryWorkLimit) {
-		writeError(w, http.StatusUnprocessableEntity, "QUERY_WORK_LIMIT", "Query exceeds work or size limits")
-		return
-	}
-	writePullError(w, err)
-}
-
-func writePullError(w http.ResponseWriter, err error) {
-	if errors.Is(err, storagetypes.ErrReplicationWindowIncomplete) {
-		writeError(w, http.StatusServiceUnavailable, "REPLICATION_WINDOW_INCOMPLETE", "Query did not produce a complete replication window")
-		return
-	}
-	if errors.Is(err, indexer.ErrNoMatchingIndex) {
-		writeError(w, http.StatusBadRequest, "NO_MATCHING_INDEX", "No matching index")
-		return
-	}
-	if errors.Is(err, indexer.ErrIndexNotReady) || errors.Is(err, indexer.ErrIndexRebuilding) {
-		writeError(w, http.StatusServiceUnavailable, "INDEX_UNAVAILABLE", "Query index is unavailable")
-		return
-	}
-
-	if errors.Is(err, storagetypes.ErrInvalidReplicationSource) {
-		writeError(w, http.StatusBadRequest, "INVALID_REPLICATION_SOURCE", "Invalid replication source")
-		return
-	}
-	if errors.Is(err, context.Canceled) {
-		w.WriteHeader(499)
-		return
-	}
-	if errors.Is(err, context.DeadlineExceeded) {
-		writeError(w, http.StatusGatewayTimeout, "DEADLINE_EXCEEDED", "Pull deadline exceeded")
-		return
-	}
-	var tooLarge *http.MaxBytesError
-	if errors.As(err, &tooLarge) {
-		writeError(w, http.StatusRequestEntityTooLarge, ErrCodeRequestTooLarge, "Pull request exceeds size limit")
-		return
-	}
-	if errors.Is(err, model.ErrQueryWorkLimit) {
-		writeError(w, http.StatusUnprocessableEntity, "REPLICATION_BUDGET_EXCEEDED", "Replication page exceeds work or size limits")
-		return
-	}
-	var failure *storagetypes.WatchError
-	if errors.As(err, &failure) {
-		switch failure.Code {
-		case storagetypes.WatchInvalidScope, storagetypes.WatchInvalidCheckpoint, storagetypes.WatchScopeMismatch:
-			writeError(w, http.StatusBadRequest, ErrCodeBadRequest, "Invalid replication parameters")
-		case storagetypes.WatchSourceMismatch, storagetypes.WatchHistoryUnavailable, storagetypes.WatchPayloadUnavailable:
-			writeError(w, http.StatusConflict, "RESYNC_REQUIRED", "Restart replication with an empty checkpoint")
-		case storagetypes.WatchUnsupported:
-			writeError(w, http.StatusNotImplemented, "REPLICATION_UNSUPPORTED", "Replication is unsupported by this source")
-		case storagetypes.WatchSourceUnavailable:
-			writeError(w, http.StatusServiceUnavailable, "REPLICATION_UNAVAILABLE", "Replication source is unavailable")
-		case storagetypes.WatchPermissionDenied:
-			writeError(w, http.StatusForbidden, ErrCodeForbidden, "Replication permission denied")
-		default:
-			writeError(w, http.StatusInternalServerError, ErrCodeInternalError, "Failed to pull changes")
-		}
-		return
-	}
-	writeError(w, http.StatusInternalServerError, ErrCodeInternalError, "Failed to pull changes")
+	writeReplicationFailure(w, replication.ClassifyPullError(req, err))
 }
 
 func (h *Handler) handlePull(w http.ResponseWriter, r *http.Request) {
@@ -211,15 +36,9 @@ func (h *Handler) handlePull(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, ErrCodeInternalError, "Cannot establish replication response deadline")
 		return
 	}
-	req, err := decodePullRequest(http.MaxBytesReader(w, r.Body, querycore.MaxPullRequestBytes))
+	req, err := replication.DecodePullRequest(http.MaxBytesReader(w, r.Body, querycore.MaxPullRequestBytes))
 	if err != nil {
-		var tooLarge *http.MaxBytesError
-		var failure *storagetypes.WatchError
-		if errors.As(err, &tooLarge) || errors.As(err, &failure) || errors.Is(err, storagetypes.ErrInvalidReplicationSource) {
-			writePullRequestError(w, req, err)
-		} else {
-			writeError(w, http.StatusBadRequest, ErrCodeBadRequest, "Invalid pull request body")
-		}
+		writePullRequestError(w, req, err)
 		return
 	}
 	r, ok := h.resolveReplicationDatabase(w, r.WithContext(ctx), req.Source != nil)

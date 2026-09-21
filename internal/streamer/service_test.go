@@ -83,9 +83,9 @@ func TestService_Stream_Subscribe(t *testing.T) {
 	require.NoError(t, err)
 	defer stream.Close()
 
-	subID, err := stream.Subscribe("database1", "users", nil)
+	subID, err := stream.Subscribe(context.Background(), "database1", "users", nil)
 	require.NoError(t, err)
-	assert.NotEmpty(t, subID)
+	assert.NotEmpty(t, subID.ID)
 }
 
 func TestService_Stream_SubscribeWithFilters(t *testing.T) {
@@ -96,11 +96,11 @@ func TestService_Stream_SubscribeWithFilters(t *testing.T) {
 	require.NoError(t, err)
 	defer stream.Close()
 
-	subID, err := stream.Subscribe("database1", "users", []model.Filter{
+	subID, err := stream.Subscribe(context.Background(), "database1", "users", []model.Filter{
 		{Field: "status", Op: model.OpEq, Value: "active"},
 	})
 	require.NoError(t, err)
-	assert.NotEmpty(t, subID)
+	assert.NotEmpty(t, subID.ID)
 }
 
 func TestService_ProcessEvent_NoSubscriptions(t *testing.T) {
@@ -121,7 +121,7 @@ func TestService_ProcessEvent_WithSubscription(t *testing.T) {
 	require.NoError(t, err)
 	defer stream.Close()
 
-	subID, err := stream.Subscribe("database1", "users", nil)
+	subID, err := stream.Subscribe(context.Background(), "database1", "users", nil)
 	require.NoError(t, err)
 
 	err = internal.ProcessEvent(testSyntrixEvent("evt1", "database1", "users", "doc1", events.EventCreate, map[string]interface{}{"name": "Alice"}))
@@ -130,7 +130,7 @@ func TestService_ProcessEvent_WithSubscription(t *testing.T) {
 	delivery, err := stream.Recv()
 	require.NoError(t, err)
 	require.NotNil(t, delivery)
-	assert.Equal(t, []string{subID}, delivery.SubscriptionIDs)
+	assert.Equal(t, []string{subID.ID}, delivery.SubscriptionIDs)
 	assert.Equal(t, "evt1", delivery.Event.EventID)
 	assert.Equal(t, "database1", delivery.Event.Database)
 	assert.Equal(t, "users", delivery.Event.Collection)
@@ -148,18 +148,18 @@ func TestService_ProcessEvent_MultipleStreams(t *testing.T) {
 	defer stream1.Close()
 	defer stream2.Close()
 
-	subID1, _ := stream1.Subscribe("database1", "users", nil)
-	subID2, _ := stream2.Subscribe("database1", "users", nil)
+	subID1, _ := stream1.Subscribe(context.Background(), "database1", "users", nil)
+	subID2, _ := stream2.Subscribe(context.Background(), "database1", "users", nil)
 
 	internal.ProcessEvent(testSyntrixEvent("evt1", "database1", "users", "doc1", events.EventCreate, map[string]interface{}{"name": "Alice"}))
 
 	msg1, err := stream1.Recv()
 	require.NoError(t, err)
-	assert.Equal(t, []string{subID1}, msg1.SubscriptionIDs)
+	assert.Equal(t, []string{subID1.ID}, msg1.SubscriptionIDs)
 
 	msg2, err := stream2.Recv()
 	require.NoError(t, err)
-	assert.Equal(t, []string{subID2}, msg2.SubscriptionIDs)
+	assert.Equal(t, []string{subID2.ID}, msg2.SubscriptionIDs)
 }
 
 func TestService_Stop(t *testing.T) {
@@ -168,9 +168,30 @@ func TestService_Stop(t *testing.T) {
 
 	stream, _ := s.Stream(context.Background())
 	require.NotNil(t, stream)
+	status := stream.Status()
+	require.False(t, status.Terminal)
 
 	err = s.Stop(context.Background())
 	require.NoError(t, err)
+	select {
+	case <-status.Changed:
+	case <-time.After(time.Second):
+		t.Fatal("service stop did not invalidate stream ownership")
+	}
+	require.True(t, stream.Status().Terminal)
+	_, err = s.Stream(context.Background())
+	require.ErrorIs(t, err, context.Canceled)
+}
+
+func TestService_Stream_CanceledAdmission(t *testing.T) {
+	s, err := NewService(ServerConfig{}, slog.Default())
+	require.NoError(t, err)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	stream, err := s.Stream(ctx)
+	require.ErrorIs(t, err, context.Canceled)
+	require.Nil(t, stream)
+	require.Empty(t, getInternalService(s).streams)
 }
 
 func TestService_SubscribeWithManager(t *testing.T) {
@@ -181,7 +202,7 @@ func TestService_SubscribeWithManager(t *testing.T) {
 	stream, _ := s.Stream(context.Background())
 	defer stream.Close()
 
-	_, err = stream.Subscribe("database1", "users", nil)
+	_, err = stream.Subscribe(context.Background(), "database1", "users", nil)
 	require.NoError(t, err)
 
 	resp, err := internal.manager.Subscribe("test-gw", &pb.SubscribeRequest{
@@ -209,10 +230,10 @@ func TestService_Stream_Unsubscribe(t *testing.T) {
 	require.NoError(t, err)
 	defer stream.Close()
 
-	subID, err := stream.Subscribe("database1", "users", nil)
+	subID, err := stream.Subscribe(context.Background(), "database1", "users", nil)
 	require.NoError(t, err)
 
-	err = stream.Unsubscribe(subID)
+	err = stream.Unsubscribe(subID.ID)
 	require.NoError(t, err)
 }
 
@@ -227,7 +248,7 @@ func TestService_Stream_ContextCancel(t *testing.T) {
 	cancel()
 	time.Sleep(10 * time.Millisecond)
 
-	_, err = stream.Subscribe("database1", "users", nil)
+	_, err = stream.Subscribe(context.Background(), "database1", "users", nil)
 	require.Error(t, err)
 }
 
@@ -254,7 +275,7 @@ func TestService_ProcessEventJSON(t *testing.T) {
 	require.NoError(t, err)
 	defer stream.Close()
 
-	subID, err := stream.Subscribe("database1", "users", nil)
+	subID, err := stream.Subscribe(context.Background(), "database1", "users", nil)
 	require.NoError(t, err)
 
 	// ProcessEventJSON expects PullerEvent format (wrapper with change_event and progress)
@@ -282,7 +303,7 @@ func TestService_ProcessEventJSON(t *testing.T) {
 	delivery, err := stream.Recv()
 	require.NoError(t, err)
 	require.NotNil(t, delivery)
-	assert.Contains(t, delivery.SubscriptionIDs, subID)
+	assert.Contains(t, delivery.SubscriptionIDs, subID.ID)
 }
 
 func TestService_ProcessEventJSON_InvalidJSON(t *testing.T) {
@@ -352,7 +373,7 @@ func TestService_Stream_ClosedOperations(t *testing.T) {
 		err = stream.Close()
 		require.NoError(t, err)
 
-		_, err = stream.Subscribe("database1", "users", nil)
+		_, err = stream.Subscribe(context.Background(), "database1", "users", nil)
 		require.Error(t, err)
 	})
 
@@ -393,7 +414,7 @@ func TestService_ProcessEvent_Timeout(t *testing.T) {
 	require.NoError(t, err)
 	defer stream.Close()
 
-	_, err = stream.Subscribe("database1", "users", nil)
+	_, err = stream.Subscribe(context.Background(), "database1", "users", nil)
 	require.NoError(t, err)
 
 	// Fill up the outgoing channel to cause timeout
@@ -426,9 +447,9 @@ func TestService_Subscribe_Error(t *testing.T) {
 	defer stream.Close()
 
 	// Subscribe without filters - should succeed
-	subID, err := stream.Subscribe("database1", "users", nil)
+	subID, err := stream.Subscribe(context.Background(), "database1", "users", nil)
 	require.NoError(t, err)
-	assert.NotEmpty(t, subID)
+	assert.NotEmpty(t, subID.ID)
 }
 
 func TestService_MultipleSubscriptions(t *testing.T) {
@@ -441,10 +462,10 @@ func TestService_MultipleSubscriptions(t *testing.T) {
 	defer stream.Close()
 
 	// Create multiple subscriptions
-	subID1, err := stream.Subscribe("database1", "users", nil)
+	subID1, err := stream.Subscribe(context.Background(), "database1", "users", nil)
 	require.NoError(t, err)
 
-	subID2, err := stream.Subscribe("database1", "orders", nil)
+	subID2, err := stream.Subscribe(context.Background(), "database1", "orders", nil)
 	require.NoError(t, err)
 
 	assert.NotEqual(t, subID1, subID2)
@@ -455,7 +476,7 @@ func TestService_MultipleSubscriptions(t *testing.T) {
 
 	delivery, err := stream.Recv()
 	require.NoError(t, err)
-	assert.Contains(t, delivery.SubscriptionIDs, subID1)
+	assert.Contains(t, delivery.SubscriptionIDs, subID1.ID)
 }
 
 func TestService_RecvNoMatch(t *testing.T) {
@@ -468,7 +489,7 @@ func TestService_RecvNoMatch(t *testing.T) {
 	defer stream.Close()
 
 	// Subscribe to a different collection - should not match
-	_, err = stream.Subscribe("database1", "orders", nil)
+	_, err = stream.Subscribe(context.Background(), "database1", "orders", nil)
 	require.NoError(t, err)
 
 	// Send event to users collection (not orders)
@@ -501,7 +522,7 @@ func TestService_Close_CancelsContext(t *testing.T) {
 	require.NoError(t, err)
 
 	// Subscribe first
-	_, err = stream.Subscribe("database1", "users", nil)
+	_, err = stream.Subscribe(context.Background(), "database1", "users", nil)
 	require.NoError(t, err)
 
 	// Close should work
@@ -509,7 +530,7 @@ func TestService_Close_CancelsContext(t *testing.T) {
 	require.NoError(t, err)
 
 	// Subsequent operations should fail
-	_, err = stream.Subscribe("database2", "orders", nil)
+	_, err = stream.Subscribe(context.Background(), "database2", "orders", nil)
 	require.Error(t, err)
 }
 
@@ -523,7 +544,7 @@ func TestService_ProcessEvent_DeleteOperation(t *testing.T) {
 	require.NoError(t, err)
 	defer stream.Close()
 
-	_, err = stream.Subscribe("database1", "users", nil)
+	_, err = stream.Subscribe(context.Background(), "database1", "users", nil)
 	require.NoError(t, err)
 
 	// Delete event: SyntrixChangeEvent with EventDelete type
@@ -732,7 +753,7 @@ func TestService_Subscribe_FilterCompileError(t *testing.T) {
 	defer stream.Close()
 
 	// Subscribe with an invalid operator that will fail filter compilation
-	_, err = stream.Subscribe("database1", "users", []model.Filter{
+	_, err = stream.Subscribe(context.Background(), "database1", "users", []model.Filter{
 		{Field: "status", Op: model.FilterOp("invalid_operator"), Value: "active"},
 	})
 

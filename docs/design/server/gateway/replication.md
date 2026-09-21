@@ -13,16 +13,16 @@ response, typed-value, and error contracts.
 |---|---|
 | `POST /replication/v1/databases/{database}/pull` | Current document states or membership events with continuation; complete bounded query windows |
 | `POST /replication/v1/databases/{database}/push` | Apply requested changes and return conflicts |
-| Gateway | Authenticate, resolve and authorize the database, enforce optional bound identity, validate and encode HTTP |
+| `/realtime/ws?mode=replica-data` | 以有限 read 请求交付相同 typed 查询源页；ACK 只控制运输额度 |
+| Gateway | 认证并权威解析数据库，核对绑定身份，校验并编码 HTTP 或 replica-data WS 响应 |
 | Query | Bind source/cursor scope, sequence scan/replay or execute a complete window, and enforce response budgets |
 | Store | Establish committed scan overlap, ordered Watch frames, source identity, and explicit failures |
 | Client | Durably apply a page and its checkpoint, or activate a complete replacement window |
 
-The request's database URL value remains the storage namespace used by ordinary
-CRUD. The resolved database identity is additionally bound into the public cursor;
-an alias resolving to a different database cannot reuse it. A canonical ID and its
-slug are not interchangeable continuations. This change does not migrate existing
-document namespaces or redefine CRUD database selection.
+HTTP 请求沿用 URL 中的 database namespace；replica-data WS 固定使用 auth.database，
+两者都不将 namespace 改写为解析后的 ID。公共 cursor 另行绑定权威数据库身份，
+alias 解析到另一数据库后不能继续使用。ID 地址与 slug 地址的 continuation 不能互换；
+现有文档 namespace 与 CRUD 的数据库选择保持不变。
 
 ### Authorization Profile
 
@@ -46,6 +46,7 @@ Query and return a complete replacement, under the same database identity gate.
 | Request | Gate before data access |
 |---|---|
 | Query-source Pull, including initial binding | Resolve the database directly from management storage; check active status and owner/`db_admin` authorization on that same object |
+| replica-data WS | auth、注册、每次 read 与 changed flush 使用同一权威检查；注册固定 source/数据库身份，读取及发送受当前 owner 约束 |
 | Pull, Push, ordinary Query, or document GET with `X-Syntrix-Expected-Database-Identity` | Apply the same fresh resolution and full-scope authorization, then compare the expected ID |
 | Existing unbound request | Keep existing resolution and authorization |
 

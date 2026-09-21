@@ -215,39 +215,46 @@ All messages follow a standard JSON envelope:
 }
 ```
 
-### 4.5 Replication Stream (RxDB)
+### 4.5 Replica WebSocket Data
 
-**Client -> Server (Start Stream):**
+当前服务端在 `/realtime/ws?mode=replica-data` 提供独立复制数据模式；普通 WS/SSE
+保留既有协议。这里不使用上面的 seq/滑动窗口草图，也不实现另一套源 checkpoint。
+精确消息与容量由[复制参考](../../../reference/replication.md#replica-websocket-data)维护。
 
-```json
-{
-  "id": "stream-1",
-  "type": "stream",
-  "payload": {
-    "collection": "rooms/room-1/messages",
-    "checkpoint": {
-      "updatedAt": 1678888888000,
-      "id": "last-doc-id"
-    }
-  }
-}
+```text
+Streamer collection 变化 -> dirty / 200ms 合并 -> replica_changed
+                                                    |
+客户端新轮次 -> replica_read -> Gateway 授权 -> Query.Pull
+                                                    |
+               原有 typed 源页 <- replica_page <-----+
+                       |
+          完成整页本地应用 -> replica_ack -> 下一页 / idle
 ```
 
-**Server -> Client (Stream Event):**
+| 边界 | 契约与原因 |
+|---|---|
+| 数据来源 | Gateway 直接调用现有 Query.Pull，本地与 gRPC Query 共用源、typed 编码、窗口与预算；不把普通事件 map 当复制数据 |
+| 变化注册 | 覆盖完整 concrete collection，忽略源 filter/order/limit，使 leave、删除和窗口边界变化都能唤醒读取 |
+| 轮次 | 客户端每次 read 只取一页；没有 read 不持续推页，不缓存旧页充当新的源完成证明 |
+| 身份 | 复用 HTTP 的权威数据库与 owner/db_admin 判断；Origin、token、原 namespace、固定数据库 ID 和认证代都参与准入 |
+| 初始绑定 | subscribe ACK 仅确认当前代注册；客户端绑定必须来自经过共同 scope 校验的数据页 |
+| 关联 | subscribe 外层 id 即 subId；read/page/ACK 使用同一外层 requestId。expected identity/hash 位于运输 payload，原 Pull request JSON 保持原样 |
+| 完整性 | caughtUp 仍来自源水位；窗口只发送完整 replace；ACK、heartbeat 和空数组不补造这些结论 |
+| 流控 | 单订阅一个未 ACK 页；页确认不持久化，也不是 checkpoint。客户端完成本地整页持久化后才 ACK |
+| 资源 | Query/编码 worker、帧 buffer、未确认 credit 各按实际结束点归还；旧 Stream 退休不清零仍被占用的额度 |
+| 错误 | 源容量/授权退避与运输不可用分开，不能通过立即切 HTTP 绕过 REPLICATION_SOURCE_BUSY |
 
-```json
-{
-  "type": "stream-event",
-  "payload": {
-    "streamId": "stream-1",
-    "documents": [ ... ],
-    "checkpoint": {
-      "updatedAt": 1678889999000,
-      "id": "new-last-doc-id"
-    }
-  }
-}
-```
+Gateway 的连接、注册、源字节、读取、页面字节及授权工作使用有界账本；配置归属
+`gateway.realtime.replica`，不扩大普通 WS/SSE 的交付保证。每次 read 和 changed
+发送前重新权威检查数据库；排队及写出前拒绝旧 owner、已取消订阅和过期认证。
+
+同一 Stream 对象内部重连保留普通订阅恢复；replica owner 在断开或 generation 变化时
+失效并重新建立。实际 Stream 对象终止或替换时，关闭依赖旧对象的普通 WS、SSE 和
+replica 连接，清除映射，再有界重建 backend；心跳不代表源注册仍有效。
+
+变化提示不能覆盖索引滞后与通知遗漏，客户端仍需周期性源核对。当前公开 SDK 仍使用
+HTTP replica adapter；本次只交付服务端通道。选择及代价见
+[WebSocket 复制数据决定](../../../../.agents/notes/implemented/feature/2026-09-21-replica-websocket-data.md)。
 
 ### 4.6 Unsubscription
 

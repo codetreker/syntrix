@@ -115,7 +115,7 @@ func TestHub_Broadcast_ClientBlocked_Coverage(t *testing.T) {
 		client.subscriptions["csub1"] = Subscription{}
 
 		// Register subscription manually
-		h.RegisterSubscription("ssub1", client, "csub1")
+		h.RegisterSubscription(hubRegistration{ID: "ssub1"}, client, "csub1")
 
 		// Fill buffer
 		client.send <- BaseMessage{Type: "dummy"}

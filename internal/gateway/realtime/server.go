@@ -2,9 +2,13 @@ package realtime
 
 import (
 	"context"
-	"log"
+	"fmt"
+	"io"
+	"log/slog"
 	"net/http"
+	"time"
 
+	"github.com/syntrixbase/syntrix/internal/core/database"
 	"github.com/syntrixbase/syntrix/internal/core/identity"
 	"github.com/syntrixbase/syntrix/internal/gateway/config"
 	"github.com/syntrixbase/syntrix/internal/query"
@@ -18,10 +22,15 @@ type Server struct {
 	dataCollection string
 	auth           identity.AuthN
 	cfg            config.RealtimeConfig
+	database       database.Service
+	replicaBudget  *replicaBudget
 }
 
 func NewServer(qs query.Service, str streamer.Service, dataCollection string, auth identity.AuthN, cfg config.RealtimeConfig) *Server {
+	cfg.Replica.ApplyDefaults()
 	h := NewHub()
+	budget := newReplicaBudget(cfg.Replica)
+	h.setReplicaCleanupAdmission(budget.tryPending)
 	s := &Server{
 		hub:            h,
 		dataCollection: dataCollection,
@@ -29,9 +38,13 @@ func NewServer(qs query.Service, str streamer.Service, dataCollection string, au
 		streamer:       str,
 		auth:           auth,
 		cfg:            cfg,
+		replicaBudget:  budget,
 	}
 	return s
 }
+
+// SetDatabaseService supplies the shared authority before the server starts.
+func (s *Server) SetDatabaseService(service database.Service) { s.database = service }
 
 func (s *Server) HandleWS(w http.ResponseWriter, r *http.Request) {
 	s.wrapWS(w, r)
@@ -44,6 +57,18 @@ func (s *Server) HandleSSE(w http.ResponseWriter, r *http.Request) {
 func (s *Server) wrapWS(w http.ResponseWriter, r *http.Request) {
 	if tokenFromQueryParam(r) != "" {
 		http.Error(w, "Query token not allowed", http.StatusUnauthorized)
+		return
+	}
+	if modes, present := r.URL.Query()["mode"]; present {
+		if len(modes) != 1 || modes[0] != ReplicaDataMode {
+			http.Error(w, "Invalid realtime mode", http.StatusBadRequest)
+			return
+		}
+		if err := s.cfg.Replica.Validate(); err != nil {
+			http.Error(w, "Invalid replica capacity configuration", http.StatusInternalServerError)
+			return
+		}
+		s.serveReplica(w, r)
 		return
 	}
 
@@ -76,35 +101,101 @@ func tokenFromQueryParam(r *http.Request) string {
 // It returns an error if watching fails to start.
 // The background tasks run until ctx is cancelled.
 func (s *Server) StartBackgroundTasks(ctx context.Context) error {
-	go s.hub.Run(ctx)
-
-	// Stream from Streamer service
+	if err := s.cfg.Replica.Validate(); err != nil {
+		return err
+	}
 	stream, err := s.streamer.Stream(ctx)
 	if err != nil {
 		return err
 	}
 
-	// Set the stream on the hub so subscriptions can be sent
+	s.hub.setRunCtx(ctx)
 	s.hub.SetStream(stream)
+	go s.hub.Run(ctx)
+	go s.superviseStream(ctx, stream)
+	return nil
+}
 
-	go func() {
-		log.Println("[Realtime] Started watching change stream")
+func (s *Server) superviseStream(ctx context.Context, stream streamer.Stream) {
+	delay := time.Second
+	for {
+		started := time.Now()
+		err := s.receiveStream(ctx, stream)
+		s.hub.SetStream(nil)
+		if ctx.Err() != nil {
+			return
+		}
+		if time.Since(started) >= 30*time.Second {
+			delay = time.Second
+		}
+		slog.Warn("Realtime backend stream ended", "component", "realtime", "phase", "backend-retired", "error", err)
 		for {
-			delivery, err := stream.Recv()
-			if err != nil {
-				// If context is done, we exit gracefully
-				select {
-				case <-ctx.Done():
-					log.Println("[Realtime] Context cancelled, stopping background tasks")
-				default:
-					log.Printf("[Realtime] Stream error: %v", err)
+			timer := time.NewTimer(delay)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return
+			case <-timer.C:
+			}
+			delay = min(delay*2, 30*time.Second)
+			stream, err = s.streamer.Stream(ctx)
+			if err == nil {
+				if ctx.Err() != nil {
+					_ = stream.Close()
+					return
 				}
+				s.hub.SetStream(stream)
+				break
+			}
+			slog.Warn("Realtime backend reconnect failed", "component", "realtime", "phase", "backend-reconnect", "error", err)
+		}
+	}
+}
+
+func (s *Server) receiveStream(ctx context.Context, stream streamer.Stream) error {
+	received := make(chan error, 1)
+	go func() {
+		for {
+			if err := ctx.Err(); err != nil {
+				received <- err
 				return
 			}
-
-			s.hub.BroadcastDelivery(delivery)
+			delivery, err := stream.Recv()
+			if err != nil {
+				received <- err
+				return
+			}
+			if delivery == nil || delivery.Event == nil {
+				continue
+			}
+			s.hub.BroadcastStreamDelivery(stream, delivery)
 		}
 	}()
-
-	return nil
+	closeStream := func() {
+		if err := stream.Close(); err != nil {
+			slog.Warn("Realtime backend close failed", "component", "realtime", "phase", "backend-close", "error", err)
+		}
+	}
+	for {
+		status := stream.Status()
+		s.hub.InvalidateReplicaStream(stream, status)
+		if status.Terminal {
+			closeStream()
+			<-received
+			if status.Err != nil {
+				return status.Err
+			}
+			return io.EOF
+		}
+		select {
+		case <-ctx.Done():
+			closeStream()
+			<-received
+			return ctx.Err()
+		case err := <-received:
+			closeStream()
+			return fmt.Errorf("receive realtime backend: %w", err)
+		case <-status.Changed:
+		}
+	}
 }

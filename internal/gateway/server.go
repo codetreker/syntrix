@@ -57,6 +57,9 @@ func NewServer(engine query.Service, auth identity.AuthN, authz identity.AuthZ, 
 	var restOpts []rest.HandlerOption
 	if cfg.dbService != nil {
 		restOpts = append(restOpts, rest.WithDatabaseService(cfg.dbService))
+		if rt != nil {
+			rt.SetDatabaseService(cfg.dbService)
+		}
 	}
 	if cfg.authRateLimiter != nil {
 		restOpts = append(restOpts, rest.WithAuthRateLimiter(cfg.authRateLimiter, cfg.authRLWindow))
@@ -107,6 +110,9 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 // This method is kept for backward compatibility.
 func (s *Server) SetDatabaseService(svc database.Service) {
 	s.rest.SetDatabaseService(svc)
+	if s.realtime != nil {
+		s.realtime.SetDatabaseService(svc)
+	}
 }
 
 // SetAuthRateLimiter sets the stricter rate limiter for auth endpoints.
