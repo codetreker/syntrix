@@ -324,3 +324,63 @@ test('a diagnostic-triggered close preserves the original storage read failure',
     expect(cleanup).toBeDefined(); await cleanup;
   } finally { inject = false; await cleanup; await db.close(); }
 });
+
+
+test('query contention diagnostics correlate recovery without exposing the query or document', async () => {
+  const original = getRxStorageDexie({ indexedDB, IDBKeyRange });
+  let armed = false;
+  let entered!: () => void, release!: () => void;
+  const waiting = new Promise<void>(resolve => { entered = resolve; });
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const storage: RxStorage<any, any> = { ...original, createStorageInstance: async parameters => {
+    const raw = await original.createStorageInstance(parameters);
+    return new Proxy(raw, { get(target, property) {
+      if (property === 'query' && parameters.collectionName.startsWith('records_')) return async (...args: Parameters<typeof target.query>) => {
+        const result = await target.query(...args);
+        if (armed) { armed = false; entered(); await gate; }
+        return result;
+      };
+      const value = Reflect.get(target, property, target); return typeof value === 'function' ? value.bind(target) : value;
+    } });
+  } };
+  const manager = createTestLockManager();
+  let queueWrite = false, writeQueued!: () => void;
+  const queued = new Promise<void>(resolve => { writeQueued = resolve; });
+  const lockManager = { request: (name: string, options: LockOptions, callback: LockGrantedCallback<unknown>) => {
+    const request = manager.request(name, options, callback);
+    if (queueWrite && name.endsWith(':view') && options.mode === 'exclusive') { queueWrite = false; writeQueued(); }
+    return request;
+  } } as LockManager;
+  const f = fixture({ storage, lockManager }); const events: ReplicaDiagnostic[] = [];
+  const options = { name: crypto.randomUUID(), collections: { users: definition }, queryLimits: { scanCandidates: 1 },
+    onDiagnostic: (event: ReplicaDiagnostic) => events.push(event) };
+  const db = await f.open(options), writer = await f.open(options);
+  let stop = () => {};
+  const results: unknown[] = [], errors: unknown[] = [];
+  try {
+    await db.sync.pause(); await writer.sync.pause();
+    await db.collection('users').doc('private-document-id').set({ secret: 'private-query-value', versioned: 1 });
+    armed = true;
+    stop = db.collection('users').where('secret', '==', 'private-query-value').watch(value => results.push(value), error => errors.push(error));
+    await waiting;
+    queueWrite = true;
+    const writing = writer.collection('users').doc('private-document-id').update({ versioned: 2 });
+    await queued;
+    release(); await writing;
+    await until(() => events.some(event => event.phase === 'recovered'));
+    const activity = events.filter(event => ['contended', 'recovered'].includes(event.phase));
+    expect(activity.map(event => event.phase)).toEqual(['contended', 'recovered']);
+    for (const event of activity) {
+      expect(event).toMatchObject({ operation: 'query', alias: 'users', sessionVersion: f.provider.getSessionVersion(), code: 'ReplicaQueryWorkContention' });
+      expect(event.durationMs).toBeGreaterThanOrEqual(0);
+      expect(Object.isFrozen(event)).toBe(true);
+    }
+    expect(activity[0].operationId).toBe(activity[1].operationId);
+    expect(activity[0].replicaId).toBe(activity[1].replicaId);
+    const diagnosticText = JSON.stringify(activity);
+    for (const value of ['private-document-id', 'private-query-value', 'secret', token(), 'filters', 'cause']) expect(diagnosticText).not.toContain(value);
+    expect(errors).toEqual([]);
+    expect(results).toHaveLength(1);
+    expect(results[0]).toMatchObject([{ id: 'private-document-id', versioned: 2 }]);
+  } finally { armed = false; release(); stop(); await writer.close(); await db.close(); }
+}, 10_000);

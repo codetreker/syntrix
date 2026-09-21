@@ -9,6 +9,10 @@ import { compareOrderKeys, createQueryMatcher, encodeQueryCursor, estimateOrderK
 import { OrderedQueryTree } from './query-tree.js';
 import { QueryBudgetExceeded, QueryResources, validateQueryLimits, typedDocumentBytes, deepFreezeDocument, type QueryLimits } from './query-resources.js';
 
+export type ReplicaQueryActivity = Readonly<{
+  phase: 'contended' | 'recovered'; operationId: string; startedAt: number;
+  code: 'ReplicaQueryViewContention' | 'ReplicaQueryWorkContention';
+}>;
 export type ReplicaQueryPage = { documents: ReplicaDocument[]; nextCursor: string | null; effectiveOrder: readonly ReplicaQueryOrder[] };
 export type ReplicaQueryClient = {
   get(spec?: ReplicaQuerySpec): Promise<ReplicaDocument[]>;
@@ -22,9 +26,12 @@ type Candidate = { row: CachedRow; key: ReplicaOrderKey; physicalKey: string; re
 type Index = { tree: OrderedQueryTree<ReplicaOrderKey, Candidate>; byKey: Map<string, Candidate> };
 type Observer = { client: Client; query: NormalizedReplicaQuery; result(page: ReplicaQueryPage): void; error(error: unknown): void;
   releaseCursor(): void; releaseLast(): void; wantsCursor: boolean; once: boolean; last: readonly CachedRow[] | undefined; closed: boolean; };
-type Client = { manager: Manager; access: AliasQueryAccess; observers: Set<Observer>; pending: Set<() => void>; preparations: Set<Promise<void>>; closed: boolean; abort(): void; };
+type Client = { manager: Manager; access: AliasQueryAccess; observers: Set<Observer>; pending: Set<() => void>; preparations: Set<Promise<void>>; closed: boolean; abort(): void; onActivity?: (event: ReplicaQueryActivity) => void; };
+class QueryContention extends Error {
+  constructor(readonly kind: 'rebuildAttempts' | 'scanCandidates' | 'scanBytes') { super('Replica query requires another bounded work round'); }
+}
 const managers = new Map<string, Manager>();
-const sameView = (a: QueryView | undefined, b: QueryView) => a?.physicalEpoch === b.physicalEpoch && a.sourceGeneration === b.sourceGeneration && a.manifestRevision === b.manifestRevision;
+const sameView = (a: QueryView | undefined, b: QueryView) => a?.physicalEpoch === b.physicalEpoch && a.sourceGeneration === b.sourceGeneration && a.visibilityHash === b.visibilityHash;
 const closedError = () => new ReplicaStorageError('ReplicaQueryClosed', 'Replica query client is closed');
 // Filter equality deliberately unifies numeric values; result equality must
 // preserve their public types so bigint/number edits remain observable.
@@ -79,9 +86,9 @@ class Manager {
   checkViews() { for (const state of this.states.values()) state.schedule(); }
   row(namespace: string, view: QueryView, projection: QueryProjection): CachedRow | null {
     if (!projection.visible) return null;
-    const identityBytes = 64 + 2 * (namespace.length + view.physicalEpoch.length + view.manifestRevision.length + projection.key.length + projection.revision.length);
+    const identityBytes = 64 + 2 * (namespace.length + view.physicalEpoch.length + view.visibilityHash.length + projection.key.length + projection.revision.length);
     const releaseIdentity = this.resources.reserve('keyBytes', identityBytes);
-    const identity = `${namespace}:${view.physicalEpoch}:${view.manifestRevision}:${projection.key}:${projection.revision}`;
+    const identity = `${namespace}:${view.physicalEpoch}:${view.visibilityHash}:${projection.key}:${projection.revision}`;
     const existing = this.cache.get(identity);
     if (existing) { releaseIdentity(); existing.refs++; return existing; }
     let release: (() => void) | undefined;
@@ -113,6 +120,11 @@ class QueryState {
   private dirty = true;
   private dead = false;
   private released = false;
+  private retryTimer: ReturnType<typeof setTimeout> | undefined;
+  private retryDelay = 25;
+  private viewHint = false;
+  private episode: Omit<ReplicaQueryActivity, 'phase'> | undefined;
+  private notified = new Set<Client>();
   constructor(readonly manager: Manager, readonly namespace: string, readonly identity: string,
     readonly query: NormalizedReplicaQuery, private readonly releaseConfig: () => void) {
     this.matcher = createQueryMatcher(query.filters); this.index = this.empty();
@@ -125,12 +137,12 @@ class QueryState {
     this.subscription?.unsubscribe();
     if (this.sourceAbort) this.source?.signal.removeEventListener('abort', this.sourceAbort);
     this.source = access; this.dirty = true;
-    this.sourceAbort = () => this.schedule();
+    this.sourceAbort = () => this.schedule(true);
     access.signal.addEventListener('abort', this.sourceAbort, { once: true });
     this.subscription = access.changes.subscribe({ next: event => {
       if (this.dead) return;
       try {
-        if (event.type === 'view') this.dirty = true;
+        if (event.type === 'view') this.viewHint = true;
         else for (const key of event.keys) {
           if (!key.startsWith('d:') && !key.startsWith('m:')) continue;
           const physicalKey = `d:${key.slice(2)}`;
@@ -146,21 +158,73 @@ class QueryState {
     }, error: error => this.fail(error), complete: () => this.schedule() });
     return access;
   }
-  schedule() {
-    if (this.dead || this.running) return;
+  schedule(wake = false) {
+    if (wake && this.retryTimer !== undefined) { clearTimeout(this.retryTimer); this.retryTimer = undefined; }
+    if (this.dead || this.running || this.retryTimer !== undefined) return;
     this.running = true;
     void this.manager.enqueue(async () => {
       try { if (!this.dead) await this.run(); }
-      catch (error) { if (!this.dead) this.fail(error); }
-      finally { this.running = false; if (this.dead) this.cleanup(); if (!this.dead && (this.pending.size || this.dirty || [...this.observers].some(observer => !observer.last))) this.schedule(); }
+      catch (error) {
+        if (!this.dead) {
+          if (error instanceof QueryContention) this.contended(error);
+          else this.fail(error);
+        }
+      }
+      finally {
+        this.running = false;
+        if (this.dead) this.cleanup();
+        else if (this.pending.size || this.dirty || [...this.observers].some(observer => !observer.last)) this.schedule();
+        else if (this.viewHint) this.defer(0);
+      }
     });
+  }
+  rebindFrom(access: AliasQueryAccess) {
+    if (this.source !== access || this.dead) return;
+    try { if (this.manager.access(this.namespace) === access) return; } catch { /* The next run reports the unavailable source. */ }
+    this.schedule(true);
+  }
+  private defer(delay: number) {
+    if (this.dead || this.retryTimer !== undefined) return;
+    this.retryTimer = setTimeout(() => { this.retryTimer = undefined; this.schedule(); }, delay);
+  }
+  private reportContention(client: Client) {
+    if (!this.episode || this.dead || client.closed || client.access.signal.aborted || this.notified.has(client) ||
+        ![...this.observers].some(observer => observer.client === client && !observer.once && !observer.closed)) return;
+    this.notified.add(client);
+    try { client.onActivity?.(Object.freeze({ ...this.episode, phase: 'contended' })); } catch { /* Diagnostics do not own query execution. */ }
+  }
+  private contended(contention: QueryContention) {
+    for (const observer of [...this.observers]) {
+      if (!observer.once || observer.closed) continue;
+      detach(observer);
+      try { observer.error(new QueryBudgetExceeded(contention.kind)); } catch { /* Consumers own their callbacks. */ }
+    }
+    if (this.dead) return;
+    if (!this.episode) this.episode = {
+      operationId: crypto.randomUUID(), startedAt: Date.now(),
+      code: contention.kind === 'rebuildAttempts' ? 'ReplicaQueryViewContention' : 'ReplicaQueryWorkContention',
+    };
+    for (const observer of [...this.observers]) { this.reportContention(observer.client); if (this.dead) return; }
+    this.defer(this.retryDelay);
+    this.retryDelay = Math.min(this.retryDelay * 2, 200);
+  }
+  private recovered() {
+    const episode = this.episode;
+    this.episode = undefined; this.retryDelay = 25;
+    const clients = [...this.notified]; this.notified.clear();
+    if (!episode) return;
+    for (const client of clients) {
+      if (this.dead || client.closed || client.access.signal.aborted ||
+          ![...this.observers].some(observer => observer.client === client && !observer.once && !observer.closed)) continue;
+      try { client.onActivity?.(Object.freeze({ ...episode, phase: 'recovered' })); } catch { /* Diagnostics do not own query execution. */ }
+    }
   }
   private remove(index: Index, key: string) {
     const old = index.byKey.get(key); if (!old) return;
     index.tree.remove(old.key); index.byKey.delete(key); old.row.release(); old.releaseKey(); old.releaseNode();
   }
   private async update(index: Index, physicalKey: string, view: QueryView, access: AliasQueryAccess) {
-    await access.withProjection({ key: physicalKey }, view, async projection => {
+    return access.withProjection({ key: physicalKey }, view, async projection => {
       this.assert();
       let replacement: Candidate | undefined;
       if (projection?.visible) {
@@ -179,6 +243,7 @@ class QueryState {
       }
       this.remove(index, physicalKey);
       if (replacement) { index.tree.insert(replacement.key, replacement); index.byKey.set(physicalKey, replacement); }
+      return projection?.encodedBytes ?? 0;
     });
   }
   private pop(): string | undefined {
@@ -187,7 +252,12 @@ class QueryState {
     this.pending.delete(entry[0]); entry[1](); return entry[0];
   }
   private async run() {
-    let scanned = 0; let scannedBytes = 0; let changes = 0; let lastYield = performance.now();
+    this.viewHint = false;
+    let workRows = 0; let workBytes = 0; let lastYield = performance.now();
+    const admitWork = () => {
+      if (workRows >= this.manager.limits.scanCandidates) throw new QueryContention('scanCandidates');
+      if (workBytes >= this.manager.limits.scanBytes) throw new QueryContention('scanBytes');
+    };
     const yieldCPU = async () => { if (performance.now() - lastYield >= 8) { await pause(); lastYield = performance.now(); this.assert(); } };
     for (let attempt = 0; attempt < this.manager.limits.rebuildAttempts; attempt++) {
       this.assert();
@@ -198,11 +268,12 @@ class QueryState {
       try {
         access = this.bind();
         const target = await access.view(); this.assert();
-        releaseTarget = this.manager.resources.reserve('keyBytes', 64 + 2 * (target.physicalEpoch.length + (target.sourceGeneration?.length ?? 0) + target.manifestRevision.length));
+        releaseTarget = this.manager.resources.reserve('keyBytes', 64 + 2 * (target.physicalEpoch.length + (target.sourceGeneration?.length ?? 0) + target.visibilityHash.length));
         const rebuild = this.dirty || !sameView(this.view, target);
         index = rebuild ? this.empty() : this.index;
         this.dirty = false; installed = !rebuild;
         if (rebuild) {
+          let scanned = 0; let scannedBytes = 0;
           let after: string | undefined;
           while (true) {
             const page = await access.scan(after, target); this.assert();
@@ -210,6 +281,7 @@ class QueryState {
               if (++scanned > this.manager.limits.scanCandidates) throw new QueryBudgetExceeded('scanCandidates');
               scannedBytes += row.encodedBytes;
               if (scannedBytes > this.manager.limits.scanBytes) throw new QueryBudgetExceeded('scanBytes');
+              admitWork(); workRows++; workBytes += row.encodedBytes;
               await this.update(index, row.key, target, access); await yieldCPU();
             }
             if (page.done) break;
@@ -217,29 +289,31 @@ class QueryState {
             after = page.lastKey;
           }
         }
+        // A complete scan is retained while pending rows are reconciled over
+        // later work rounds. It is never published before the final view fence.
+        if (!installed) { releaseIndex(this.index); this.index = index; installed = true; }
+        if (releaseTarget) {
+          this.releaseView?.(); this.releaseView = releaseTarget; releaseTarget = undefined;
+          this.view = target;
+        }
         while (true) {
-          let key: string | undefined;
-          while ((key = this.pop()) !== undefined) {
-            if (++changes > this.manager.limits.scanCandidates) throw new QueryBudgetExceeded('scanCandidates');
-            await this.update(index, key, target, access); await yieldCPU();
+          while (this.pending.size) {
+            admitWork();
+            const key = this.pop()!;
+            workRows++; workBytes += await this.update(index, key, target, access); await yieldCPU();
           }
           const current = await access.view(); this.assert();
           if (!sameView(target, current) || this.dirty) { this.dirty = true; break; }
           if (this.pending.size) continue;
-          if (!installed) { releaseIndex(this.index); this.index = index; installed = true; }
-          if (releaseTarget) {
-            this.releaseView?.(); this.releaseView = releaseTarget; releaseTarget = undefined;
-            this.view = target;
-          }
-          if (await this.publish(access, target)) return;
+          if (await this.publish(access, target)) { this.recovered(); return; }
           if (this.dirty) break;
         }
       } catch (error) {
-        if (error instanceof QueryViewChangedError || access?.signal.aborted && this.hasAlternative(access)) { this.dirty = true; continue; }
+        if (error instanceof QueryViewChangedError || access?.signal.aborted && error === access.signal.reason && this.hasAlternative(access)) { this.dirty = true; continue; }
         throw error;
-      } finally { releaseTarget?.(); if (!installed && index) releaseIndex(index); }
+      } finally { releaseTarget?.(); if (!installed && index) { releaseIndex(index); this.dirty = true; } }
     }
-    throw new QueryBudgetExceeded('rebuildAttempts');
+    throw new QueryContention('rebuildAttempts');
   }
   private remember(observer: Observer, selected: readonly Candidate[]) {
     if (observer.last?.length === selected.length && observer.last.every((row, index) => row === selected[index].row)) return;
@@ -294,8 +368,16 @@ class QueryState {
     }
     return true;
   }
-  add(observer: Observer) { this.observers.add(observer); observer.client.observers.add(observer); this.schedule(); }
-  delete(observer: Observer) { this.observers.delete(observer); if (!this.observers.size) this.dispose(); }
+  add(observer: Observer) {
+    this.observers.add(observer); observer.client.observers.add(observer);
+    this.reportContention(observer.client);
+    if (!this.dead) this.schedule();
+  }
+  delete(observer: Observer) {
+    this.observers.delete(observer);
+    if (![...this.observers].some(current => current.client === observer.client && !current.once)) this.notified.delete(observer.client);
+    if (!this.observers.size) this.dispose();
+  }
   fail(error: unknown) {
     if (this.dead) return;
     const observers = [...this.observers];
@@ -304,6 +386,8 @@ class QueryState {
   }
   private dispose() {
     if (this.dead) return; this.dead = true;
+    if (this.retryTimer !== undefined) { clearTimeout(this.retryTimer); this.retryTimer = undefined; }
+    this.episode = undefined; this.notified.clear();
     this.subscription?.unsubscribe(); if (this.sourceAbort) this.source?.signal.removeEventListener('abort', this.sourceAbort);
     for (const release of this.pending.values()) release(); this.pending.clear();
     if (!this.running) this.cleanup();
@@ -324,7 +408,7 @@ const detach = (observer: Observer) => {
   observer.client.manager.states.get(`${observer.client.access.namespace}:${observer.query.canonicalKey}`)?.delete(observer);
 };
 
-export const createReplicaQueryClient = (storage: AliasStorage, options: { limits?: Partial<QueryLimits> } = {}): ReplicaQueryClient => {
+export const createReplicaQueryClient = (storage: AliasStorage, options: { limits?: Partial<QueryLimits>; onActivity?: (event: ReplicaQueryActivity) => void } = {}): ReplicaQueryClient => {
   const limits = validateQueryLimits(options.limits);
   let manager = managers.get(storage.databaseNamespace);
   if (manager && Object.keys(limits).some(key => limits[key as keyof QueryLimits] !== manager!.limits[key as keyof QueryLimits])) {
@@ -334,14 +418,14 @@ export const createReplicaQueryClient = (storage: AliasStorage, options: { limit
   let access: AliasQueryAccess;
   try { access = storage.queryAccess(manager.budget); access.signal.throwIfAborted(); }
   catch (error) { manager.activity(); throw error; }
-  const client: Client = { manager, access, observers: new Set(), pending: new Set(), preparations: new Set(), closed: false, abort: () => { void close(); } };
+  const client: Client = { manager, access, observers: new Set(), pending: new Set(), preparations: new Set(), closed: false, abort: () => { void close(); }, onActivity: options.onActivity };
   manager.clients.add(client);
   const close = async () => {
     if (!client.closed) {
       client.closed = true; access.signal.removeEventListener('abort', client.abort);
       for (const cancel of [...client.pending]) cancel();
       for (const observer of [...client.observers]) { if (observer.once) observer.error(access.signal.reason ?? closedError()); detach(observer); }
-      for (const state of manager!.states.values()) state.schedule();
+      for (const state of manager!.states.values()) state.rebindFrom(access);
       manager!.activity();
     }
     await Promise.all(client.preparations);

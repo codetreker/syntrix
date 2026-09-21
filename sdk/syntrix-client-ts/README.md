@@ -260,6 +260,9 @@ cannot be bypassed by blind uncertain retry.
 Replica synchronization uses authorized polling; automatic WebSocket hints await
 matching query-source authorization. Local watch remains available independently.
 
+本地 watch 遇到正常视图竞争会有界退让并继续订阅；无关同步控制字段更新不会要求重建。
+稳定查询的扫描、内存或输出真正超限仍会终止，单次 get/getPage 也保持有界失败。
+
 The patched RxDB/Dexie/RxJS runtime loads lazily and is bundled with its licenses;
 applications do not install vendor packages or receive RxDB objects. Manual Pull
 retains application-owned page processing, and no public manual Push is added.

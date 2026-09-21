@@ -233,12 +233,30 @@ describe('HTTP source through native Dexie replication and query views', () => {
 
   test('multi-batch window activates atomically and manifest-only activation updates a live query', async () => {
     const env = await fixture(240);
+    const deliveries: { rows: number; final: unknown; complete: unknown; activeGeneration: string | null }[] = [];
+    const native = env.storage.native;
+    env.storage.native = async scope => {
+      const opened = await native(scope);
+      return { ...opened, fork: new Proxy(opened.fork, { get(target, key) {
+        if (key === 'bulkWrite') return async (...args: Parameters<typeof target.bulkWrite>) => {
+          const result = await target.bulkWrite(...args);
+          const control = args[0].find(row => row.document.kind === 'c');
+          if (control?.document.kind === 'c') deliveries.push({ rows: args[0].length,
+            final: control.document.checkpoint.final, complete: control.document.checkpoint.complete,
+            activeGeneration: (await env.storage.readManifest()).activeSourceGeneration });
+          return result;
+        };
+        const value = Reflect.get(target, key, target);
+        return typeof value === 'function' ? value.bind(target) : value;
+      } }) };
+    };
     let watcher: ReturnType<typeof watchResults> | undefined;
     try {
       env.handlers.push(request => Response.json(window(request, ['old'])));
       await waitState(env.start(), 'idle');
       watcher = watchResults(env.query); await watcher.wait(ids => ids.join() === 'old');
       const generation = (await env.storage.readManifest()).activeSourceGeneration;
+      deliveries.length = 0;
       const observed: (string | null)[] = [];
       let activated = false;
       const original = env.storage.withReplicationAccess;
@@ -255,9 +273,15 @@ describe('HTTP source through native Dexie replication and query views', () => {
           return Reflect.get(target, key, target);
         },
       })));
-      const next = Array.from({ length: 205 }, (_, i) => `new-${String(i).padStart(3, '0')}`);
+      // A delivery fits 100 data/member pairs plus its control row. The next
+      // document forces an intermediate checkpoint before generation activation.
+      const next = Array.from({ length: 101 }, (_, i) => `new-${String(i).padStart(3, '0')}`);
       env.handlers.push(request => Response.json(window(request, next)));
       await env.refresh(); await watcher.wait(ids => ids.length === next.length);
+      expect(deliveries).toEqual([
+        { rows: 201, final: false, complete: false, activeGeneration: generation },
+        { rows: 3, final: true, complete: true, activeGeneration: generation },
+      ]);
       expect(watcher.values.every(ids => ids.join() === 'old' || ids.join() === next.join())).toBe(true);
       expect(observed.length).toBeGreaterThan(200);
       expect(observed.every(value => value === generation)).toBe(true);

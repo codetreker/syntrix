@@ -76,7 +76,7 @@ await messages.add({ text, sender, panel: 1, sentAt: Date.now() });
 
 源复制覆盖整个集合，本地查询按 `sentAt` 降序显示最新 20 条消息。`sentAt` 是客户端生成的毫秒时间，只用于演示排序，不代表服务端提交顺序。demo 将轮询间隔设为 1 秒；SDK 默认是 10 秒。界面消费当前查询快照，并以文本渲染消息。
 
-查询继续遵守 SDK 的资源及重建次数限制。持续变化或大集合可能触发 `QueryBudgetExceeded`，此时本地 watch 停止；查询状态与同步状态分别显示，错误不会自动丢弃本地变化。
+查询继续遵守 SDK 的资源限制。正常同步控制更新不会要求重建；真实视图竞争会有界退让并保持 watch。稳定查询的扫描、内存或输出超限仍可触发 `QueryBudgetExceeded` 并停止对应 watch；查询状态与同步状态分别显示，错误不会自动丢弃本地变化。
 
 应用仅导入 `@syntrix/client` 的公开 API。构建保留懒加载运行时的独立 chunk；打开副本时才加载该运行时。
 

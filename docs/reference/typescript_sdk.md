@@ -388,6 +388,11 @@ context. Retained candidates outside a limited window still count. Lowering a
 limit never authorizes dropping pending work. Limits describe encoded records
 and controlled materialization, not total browser heap or power-loss durability.
 
+`scanCandidates` / `scanBytes` 限制一个有效视图的扫描；废弃重建尝试的累计工作量
+单独决定何时让出调度。`rebuildAttempts` 是单轮尝试上限：长 watch 遇到视图竞争会以
+25–200ms 退让保留订阅，稳定后继续；get/getPage 仍有界失败。真实保留内存、扫描或
+输出超限仍终止对应查询。正常发送阶段和分页进度更新不会单独改变查询可见性身份。
+
 Transport bounds remain independent: source pages use 100 events; windows allow
 at most 1000 documents; native delivery uses at most 201 rows/16 MiB; Push uses
 50 changes, 10 MiB HTTP and 20 MiB protobuf request budgets, plus a 32 MiB client
@@ -421,6 +426,9 @@ are `physicalEpoch`, `durationMs`, `count`, `requestId` and an allowlisted `code
 Operation IDs correlate start/completion/failure and watch lifetimes; Pull events
 include the observed request ID and returned event/document count when available.
 These are local correlations, not a distributed server tracing guarantee.
+查询竞争通过 `operation: query` 的 `contended` / `recovered` 阶段报告，同一竞争阶段
+共享 operationId。固定分类为 `ReplicaQueryViewContention` 或 `ReplicaQueryWorkContention`；
+它们是等待/恢复诊断，不代表 watch 已失败，不包含查询条件或文档 ID。
 Diagnostics exclude credentials, payloads, filter values and raw error objects.
 The callback does not introduce a telemetry service.
 It runs synchronously and may close the database, unsubscribe or change accounts.

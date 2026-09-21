@@ -6,7 +6,7 @@ import { createAliasLocks, type AliasLockOwner, type ViewLockOwner } from './loc
 import { businessEqual, canonicalJson, decodeBusinessPayload, definitionHash, encodeBusinessPayload, freezeSourceDefinition, frozenConditions, matchesConditions, projectDocument, recordKey, validateLogicalId, validateManifestIdentity, validateRecordEnvelope, validateRecordIdentity } from './records.js';
 import type { ReplicaResource, ReplicaSession } from './session.js';
 import { ReplicaStorageError, type AliasManifest, type ControlRecord, type DataRecord, type ReplicaCondition, type ReplicaDocument, type ReplicaRecord, type ReplicaSourceDefinition, type MemberRecord, type StorageLimits, type StorageIssue, type JsonObject } from './storage-types.js';
-import { QueryViewChangedError, type AliasQueryAccess, type QueryProjection, type QueryView } from './query-source.js';
+import { createVisibilityHashCache, QueryViewChangedError, type AliasQueryAccess, type QueryProjection, type QueryView } from './query-source.js';
 import type { NativeUpCheckpoint, ReplicationAccess } from './replication-access.js';
 
 export type RequestScope = Readonly<{ subject: string; sessionVersion: number; definitionHash: string; physicalEpoch: string; requestId: string; nativeInstanceId: string; }>;
@@ -505,9 +505,10 @@ export const openAliasStorage = (options: OpenAliasStorageOptions): Promise<Alia
       }, undefined, id);
     };
     const databaseNamespace = JSON.stringify([identity.tuple.endpoint, identity.tuple.subject, identity.tuple.database, identity.tuple.name]);
+    const visibilityHash = createVisibilityHashCache();
     const queryAccess = (queryBudget: ReadBudget): AliasQueryAccess => {
       const sameView = (actual: QueryView, expected: QueryView) => {
-        if (actual.physicalEpoch !== expected.physicalEpoch || actual.sourceGeneration !== expected.sourceGeneration || actual.manifestRevision !== expected.manifestRevision) {
+        if (actual.physicalEpoch !== expected.physicalEpoch || actual.sourceGeneration !== expected.sourceGeneration || actual.visibilityHash !== expected.visibilityHash) {
           throw new QueryViewChangedError();
         }
       };
@@ -521,14 +522,14 @@ export const openAliasStorage = (options: OpenAliasStorageOptions): Promise<Alia
             typeof row.activePhysicalEpoch !== 'string' || !row.activePhysicalEpoch ||
             !Array.isArray(row.physicalEpochs) || !row.physicalEpochs.includes(row.activePhysicalEpoch) ||
             (row.activeSourceGeneration !== null && (typeof row.activeSourceGeneration !== 'string' || !row.activeSourceGeneration)) ||
-            typeof row._rev !== 'string' || !row._rev || !Array.isArray(row.issues) ||
+            typeof row._rev !== 'string' || !row._rev || !Array.isArray(row.issues) || row.issues.length > 200 ||
             row.issues.some(issue => !issue || (issue.logicalId !== null && typeof issue.logicalId !== 'string')) ||
-            (row.dirtyUpstream !== null && (!row.dirtyUpstream || !Array.isArray(row.dirtyUpstream.targets) ||
+            (row.dirtyUpstream !== null && (!row.dirtyUpstream || !Array.isArray(row.dirtyUpstream.targets) || row.dirtyUpstream.targets.length > 200 ||
               row.dirtyUpstream.targets.some(target => !target || typeof target.logicalId !== 'string')))) {
           return fail('ReplicaStorageCorruption', 'Invalid query manifest');
         }
         const protectedId = id !== undefined && (!!row.dirtyUpstream?.targets.some(target => target.logicalId === id) || row.issues.some(issue => issue.logicalId === id));
-        return { view: Object.freeze({ physicalEpoch: row.activePhysicalEpoch, sourceGeneration: row.activeSourceGeneration, manifestRevision: row._rev }), protectedId };
+        return { view: Object.freeze({ physicalEpoch: row.activePhysicalEpoch, sourceGeneration: row.activeSourceGeneration, visibilityHash: await visibilityHash(row, queryBudget) }), protectedId };
       });
       const queryOperation = <T>(callback: (view: QueryView, opened: PhysicalStorage) => Promise<T>, expected?: QueryView): Promise<T> => {
         const previous = accessQueue;
@@ -614,7 +615,7 @@ export const openAliasStorage = (options: OpenAliasStorageOptions): Promise<Alia
               let active = true;
               let decoded: ReplicaDocument | null | undefined;
               const projection: QueryProjection = Object.freeze({
-                id: data!.logicalId, key, revision: JSON.stringify([data!._rev, member?._rev ?? '', assumedRevision, view.manifestRevision]),
+                id: data!.logicalId, key, revision: JSON.stringify([data!._rev, member?._rev ?? '', assumedRevision, view.visibilityHash]),
                 encodedBytes: encodedRowBytes(data) + (member ? encodedRowBytes(member) : 0) + new TextEncoder().encode(definition.collection).byteLength + 128,
                 visible: shown,
                 decode: () => {
