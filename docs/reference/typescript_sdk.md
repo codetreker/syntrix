@@ -84,7 +84,8 @@ grant; that full-scope policy remains provisional pending approval. See the
 
 `client.replicate<T>(path)` builds a source definition.
 `client.openReplica(options)` opens an account-scoped `ReplicaDatabase` with
-local CRUD, query/watch and automatic HTTP replication. It returns after local
+local CRUD, query/watch and automatic replication. 正常下行通过私有 WS 数据页传输，
+不可用时自动使用 HTTP fallback，上行仍是 HTTP Push。It returns after local
 initialization, without waiting for the network or source convergence.
 
 | Access | Behavior |
@@ -226,6 +227,39 @@ before dispatch and does not remap them. Queries preserve exact numeric types,
 UTF-8 order, missing/null distinction and logical-ID ties under the
 [filter contract](filters.md). Resource failure ends the affected query instead
 of publishing truncated results.
+
+#### Replica 数据运输
+
+每个已打开的 replica database 句柄至多拥有一条私有 WS，只供活动 leader alias
+使用。相同 collection 的 aliases 仍是独立 source/subId/进度；follower 不建立数据
+订阅。最后一个活动租约释放后，连接与重连 timer 关闭。
+
+WS 使用 [replica-data 协议](replication.md#replica-websocket-data)，真实 typed 数据页
+通过 WS 返回，不是仅收通知后继续 HTTP Pull。默认每 10 秒的源核对仍保留：WS 健康
+时核对也走 WS，以恢复遗漏通知和窗口索引滞后；应用不需要管理连接或选择运输。
+
+| 情况 | 行为 |
+|---|---|
+| WS 建连、注册或 read 运输失败 | 有限等待后以相同已提交状态使用 HTTP；后台重连的延迟有上限并带 jitter |
+| WS 页面已交给本地应用 | 完成该页后下一次 read 再换运输；socket 失效不释放仍在应用的页额度 |
+| HTTP 期间 WS 恢复 | 后台仅连接/认证，当前 HTTP read 退出、整页完成后才切回 |
+| 源限流 / REPLICATION_SOURCE_BUSY | 保留 retryAfter 和 source retryAt，不用 HTTP、changed 或重连绕过退避 |
+| Query/Store 的 REPLICATION_UNAVAILABLE、DEADLINE_EXCEEDED 或索引不可用 | 保留源错误与既有源退避，不立即改 HTTP 重试 |
+| 权限、身份、非法源、本地持久化错误 | 保留既有阻塞/恢复处理，不用运输切换掩盖 |
+
+两种运输共用同一个下行应用器和四页池；同 alias 最多一页，等待可取消且最长 45 秒。
+额度等待超时以 `REPLICA_PAGE_CAPACITY` 进入退避，不提前释放旧页。页面额度
+在整页持久化或 owner 清理完成后释放，fallback 不新增一套额度。WS ACK 只在最后
+本地分块的文档/assumed/checkpoint、必要 manifest 激活和 pin 处理完成后发送。
+ACK 不等待 token 或重连，发送失败不撤销已完成提交，也不改变进行中的 Push 结果。
+
+私有 WS 连接/认证及单次注册各限 10 秒；WS read 与 HTTP fallback read 各限 45 秒。
+WS 重连的退避基数从 1 秒增加至 30 秒并带 jitter，只要租约有效就继续尝试；没有旧公开
+WS 的五次上限。后台 probe 不提前读取数据。没有新的公共 transport/deadline 选项。
+
+首次绑定只来自共同 decoder 验证的源页。所有运输保留固定 expected database identity，
+重连使用原有持久 cursor；窗口继续整页 replacement。requestId、subId、运输代和
+ACK 都不进入存储 checkpoint。pause、维护、移除和账号切换使旧租约/迟到消息失效。
 
 #### Synchronization, status and recovery
 
@@ -411,6 +445,7 @@ appear in alias status. Uncertain mutation results are not ordinary read retries
 |---|---|
 | `ReplicaUnsupportedEnvironment` | Required browser capabilities are unavailable |
 | `OFFLINE` | Browser reported offline before Push dispatch; retry follows whole-phase safety rules |
+| `REPLICA_PAGE_CAPACITY` | 共用页额度等待超过 45 秒；保留仍在应用的页并按退避重试 |
 | `AUTH_SESSION_CHANGED`, `ReplicaScopeChanged` | Old account/database ownership ended; retain its pending data in the original namespace |
 | `ReplicaSourceMismatch` | Reopened alias definition differs; use a new alias or clean remove/recreate |
 | `ReplicaWriteConflict`, `ReplicaUpstreamUncertain`, `ReplicaRecoveryRequired` | Inspect and explicitly resolve before resume |
@@ -422,7 +457,8 @@ appear in alias status. Uncertain mutation results are not ordinary read retries
 
 `onDiagnostic` receives `replicaId` (one facade-open lifetime), `operationId`,
 `sessionVersion`, `alias`, `operation`, `phase` and `timestamp`. Optional fields
-are `physicalEpoch`, `durationMs`, `count`, `requestId` and an allowlisted `code`.
+are `physicalEpoch`, `durationMs`, `count`, `requestId`, `subId`, `transportEpoch`,
+`mode: 'ws' | 'http'` and an allowlisted `code`.
 Operation IDs correlate start/completion/failure and watch lifetimes; Pull events
 include the observed request ID and returned event/document count when available.
 These are local correlations, not a distributed server tracing guarantee.
@@ -430,6 +466,10 @@ These are local correlations, not a distributed server tracing guarantee.
 共享 operationId。固定分类为 `ReplicaQueryViewContention` 或 `ReplicaQueryWorkContention`；
 它们是等待/恢复诊断，不代表 watch 已失败，不包含查询条件或文档 ID。
 Diagnostics exclude credentials, payloads, filter values and raw error objects.
+`operation: 'transport'` 的 connect/subscribed/read/accepted/committed/fallback/
+recovered/closed 阶段使用 alias、requestId、subId 和 transportEpoch 关联。accepted
+表示合法页已接纳；committed 按实际 receipt 的 WS/HTTP mode 报告本地整页完成并释放额度，
+不保证远端收到 WS ACK，也不是上行确认。HTTP 不发送 WS ACK。
 The callback does not introduce a telemetry service.
 It runs synchronously and may close the database, unsubscribe or change accounts.
 Ownership and subscription checks run again afterward: obsolete successful
@@ -437,12 +477,8 @@ operations reject, and inactive watches receive neither results nor errors.
 Thrown diagnostic exceptions are isolated; returned asynchronous work is not
 awaited by the SDK.
 
-Authorized HTTP polling supplies convergence. Replica synchronization does not
-automatically subscribe to WebSocket notifications: current realtime authorization
-does not yet match query-source authorization. Local `watch` is fully local and
-continues to receive persisted changes. This costs periodic source reads and up
-to polling/backoff delay; notifications can become an optimization only after
-their authorization contract matches.
+私有 WS 已使用与查询源匹配的授权数据协议。周期核对仍支付 Query 读取成本；运输
+改变不保证固定同步延迟。Local `watch` 继续只消费已应用的本地状态。
 
 ### Authentication sessions
 
@@ -459,10 +495,8 @@ a subsequent login. Server token expiration and revocation rules still apply;
 local logout does not immediately revoke every issued access or derived refresh
 token.
 
-Login, signup, and logout also clear this client's cached realtime references,
-dispose its old WebSocket client, and disconnect its old SSE client before waiting
-for the authentication request. Create subscriptions again for a new session.
-Independently constructed realtime clients require explicit owner cleanup.
+登录、注册和退出还会失效旧 replica 会话及其私有运输租约，并在等待认证请求前断开
+客户端缓存的 SSE。新会话重新打开副本或连接 SSE；独立创建的 SSE client 仍需显式清理。
 
 #### Token providers
 
@@ -614,83 +648,17 @@ Trigger collection queries use `/trigger/v1/databases/{database}/query` with the
 same page and value codec as standard queries. This query contract does not
 change conditional-write or realtime filter execution.
 
-## 4. Realtime (WS & SSE)
+## 4. Realtime
 
-### WebSocket (default)
+复制 WebSocket 由每个 `ReplicaDatabase` 句柄私有管理。应用使用
+`openReplica()`、本地 `watch()` 和 `replica.sync.subscribe()`；公开
+`client.realtime()`、`client.subscribe()`、`RealtimeClient`、`RealtimeListener`
+以及原 WS 配置/消息协议类型已移除，不提供兼容包装。
+`client.pull()` 仍是独立的单页手动 HTTP API。
 
-The convenience API starts or reuses one authenticated WebSocket per client.
-Each subscription owns its callbacks:
-
-```typescript
-const subscription = client.subscribe('users', {
-  onReady: () => schedulePull(),
-  onEvent: (event) => console.log(event),
-  onSnapshot: (snapshot) => console.log(snapshot),
-  onError: (error) => console.error(error),
-});
-
-subscription.unsubscribe();
-```
-
-`onReady` runs once after initial registration and again after each reconnect's
-registration ACK. It signals registration success, not historical delivery or
-snapshot completion. Applications can use it to schedule their own reconciliation.
-Events and snapshots may arrive before the ACK. Unsubscribing removes only that
-subscription, including its callbacks; repeated unsubscribe calls are harmless.
-
-The low-level API makes connection initiation explicit:
-
-```typescript
-const rt = client.realtime();
-rt.on('onError', (error) => console.error(error));
-const subId = rt.subscribe(
-  { query: { collection: 'users' } },
-  { onEvent: (event) => console.log(event) },
-);
-await rt.connect();
-
-rt.unsubscribe(subId);
-rt.disconnect();
-```
-
-Concurrent `connect()` calls share one attempt. The promise resolves only after
-`auth_ack`; subscriptions wait locally until authentication succeeds. WebSocket
-authentication sends an `auth` message containing the token and database.
-
-| API or event | Behavior |
-|---|---|
-| `rt.subscribe(options, callbacks?)` | Return a `subId` synchronously; register immediately if authenticated, otherwise retain locally |
-| `rt.on(name, callback)` | Set one global observer for that event; subscription callbacks remain independent |
-| Event or snapshot | Route by `subId` to its active subscription and the global observer; ignore messages for removed subscriptions |
-| Registration error | Notify the matching subscription and global error observer; retain the subscription for later reconnect while suppressing current-connection events |
-| `snapshot_failed` or `snapshot_limit` after registration ACK | Notify the matching subscription and global error observer; preserve the active subscription and live events without another `onReady` |
-| Connection or authentication failure | Notify active subscriptions and the global error observer once for that failed attempt |
-| Last unsubscribe | Leave the client-owned connection open |
-| `disconnect()` | Stop socket and timers, reject a pending connection, retain subscriptions and callbacks for explicit reconnect |
-| `dispose()` | Stop transport work and permanently clear subscriptions and observers; reuse is an error |
-| `client.login()`, `client.signup()`, `client.logout()` | Invalidate the old local session and dispose the cached WebSocket and disconnect cached SSE before awaiting authentication |
-
-Disconnect and disposal are repeatable. Late socket messages, authentication
-results, and reconnect timers cannot revive a stopped connection. Synchronous
-callback exceptions are reported separately from message parsing to the global
-error observer (or logged if absent) and do not interrupt other eligible callbacks.
-An exception in an error callback is logged. Callbacks returning promises must
-handle their own asynchronous failures.
-
-`RealtimeClientOptions.activityTimeoutMs` defaults to 90,000 ms. It bounds the
-whole connection/authentication attempt even if heartbeats arrive, and detects
-inactivity after authentication. Reconnect uses exponential backoff with jitter
-(`reconnectDelayMs` default 1,000; `maxReconnectAttempts` default 5); authentication
-success resets the attempt count. Only a structured `unauthorized` error matching
-the current auth request triggers one token refresh. Invalid authentication,
-missing tokens, refresh errors, and a repeated auth rejection fail the attempt.
-
-Each connection attempt also belongs to an authentication session. Token waits and
-`auth_ack` validate that session. Automatic reconnect retains its original session
-and stops if credentials are replaced; explicit `connect()` may end an obsolete
-attempt and start under the current session. Disposal need not cancel HTTP
-refresh requests: provider checks prevent obsolete credential writes and callbacks.
-See [authentication sessions](#authentication-sessions) for the shared contract.
+`realtimeSSE()`、`RealtimeSSEClient`、`RealtimeSSEOptions` 和 SSE 使用的
+`RealtimeCallbacks`、`RealtimeEvent`、`SnapshotEvent`、`ConnectionState`
+继续公开。普通 SSE 不成为副本的数据应用路径。
 
 ### Server-Sent Events (SSE)
 

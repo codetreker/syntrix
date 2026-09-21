@@ -14,7 +14,8 @@ import { decodeBusinessPayload, encodeBusinessPayload, freezeSourceDefinition, f
 import { removeAliasStorage } from './removal.js';
 import type { RecoveryDecision, ReplicaInspection as StoredInspection } from './recovery.js';
 import type { ReplicaSession } from './session.js';
-import { createReplicaHttpSource } from './source.js';
+import { createReplicaSourceTransport, type ReplicaSourceTransportEnvironment } from './source-transport.js';
+import type { ReplicaSourceAdapter, SourceLeaseContext, SourceReadContext } from './source-types.js';
 import { openAliasStorage, type AliasStorage } from './storage.js';
 import { ReplicaStorageError, type DataRecord, type FrozenSourceDefinition, type ReplicaCondition } from './storage-types.js';
 import { createReplicaHttpUpstream } from './upstream-transport.js';
@@ -22,7 +23,10 @@ import { createReplicaHttpUpstream } from './upstream-transport.js';
 type OpenDatabaseOptions = {
   session: ReplicaSession; axios: AxiosInstance; provider: TokenProvider; endpoint: string; database: string; options: ReplicaOptionsSnapshot;
 };
-export type ReplicaDatabaseEnvironment = { storage?: RxStorage<any, any>; lockManager?: LockManager; coordinator?: CoordinatorEnvironment };
+export type ReplicaDatabaseEnvironment = {
+  storage?: RxStorage<any, any>; lockManager?: LockManager; coordinator?: CoordinatorEnvironment;
+  sourceTransport?: Partial<ReplicaSourceTransportEnvironment>;
+};
 type Alias = {
   name: string; definition: FrozenSourceDefinition; storage: AliasStorage; query: ReplicaQueryClient;
   coordinator?: ReplicaDownstream; nativeStatus: ReplicaDownstreamStatus; durable: Awaited<ReturnType<AliasStorage['status']>>;
@@ -39,7 +43,8 @@ const code = (error: unknown): string => {
     'DATABASE_IDENTITY_MISMATCH', 'RATE_LIMITED', 'INTERNAL_ERROR', 'UNAVAILABLE', 'ReplicaWriteConflict', 'ReplicaUpstreamUncertain',
     'ReplicaRecoveryPending', 'ReplicaRecoveryRequired', 'ReplicaStorageLimit', 'ReplicaReadBudgetExceeded', 'ReplicaRecordTooLarge',
     'ReplicaSourceInvalid', 'ReplicaSourceMismatch', 'ReplicaIdentityMismatch', 'ReplicaScopeChanged', 'ReplicaAliasRemoved',
-    'ReplicaQueryViewContention', 'ReplicaQueryWorkContention',
+    'ReplicaQueryViewContention', 'ReplicaQueryWorkContention', 'REPLICATION_SOURCE_BUSY',
+    'REPLICATION_TRANSPORT_BUSY', 'REPLICATION_TRANSPORT_UNAVAILABLE', 'REPLICATION_PROTOCOL_ERROR', 'DEADLINE_EXCEEDED',
     'ReplicaRecoveryStale', 'ReplicaRemovalBlocked', 'ReplicaAliasRemoving', 'QueryBudgetExceeded', 'ReplicaCoordinatorClosed', 'ReplicaDatabaseClosed']).has(value) ? value : 'ReplicaOperationFailed';
 };
 const projectedState = (collection: string, data: DataRecord | null): ReplicaDocumentState | null => {
@@ -100,7 +105,8 @@ export const openReplicaDatabase = async (input: OpenDatabaseOptions, environmen
   };
   const correlation = (): { operationId: string; started: number } => ({ operationId: crypto.randomUUID(), started: Date.now() });
   const diagnostic = (alias: string, operation: string, phase: string, error?: unknown,
-    context = correlation(), details: { requestId?: string; count?: number; physicalEpoch?: string } = {}) => {
+    context = correlation(), details: { requestId?: string; count?: number; physicalEpoch?: string;
+      subId?: string; transportEpoch?: number; mode?: 'ws' | 'http' } = {}) => {
     if (closed || !onDiagnostic) return;
     const timestamp = Date.now();
     const event: ReplicaDiagnostic = Object.freeze({ replicaId, operationId: context.operationId, sessionVersion: session.version,
@@ -109,6 +115,10 @@ export const openReplicaDatabase = async (input: OpenDatabaseOptions, environmen
       ...(error === undefined ? {} : { code: code(error) }) });
     try { onDiagnostic(event); } catch { /* Observer exceptions stay isolated; handoff checks fence reentrant invalidation. */ }
   };
+  const sourceTransport = createReplicaSourceTransport({ axios, provider, endpoint, database,
+    sessionVersion: session.version, signal: lifetime.signal,
+    onDiagnostic: (alias, phase, details, error) => diagnostic(alias, 'transport', phase, error, correlation(), details),
+  }, environment.sourceTransport);
   const snapshot = (): ReplicaSyncStatus => Object.freeze({ aliases: Object.freeze(Object.fromEntries([...aliases].filter(([, alias]) => !alias.removed).map(([name, alias]) => {
     const native = alias.nativeStatus, durable = alias.durable;
     const checkpoint = durable.mode === 'events' && typeof durable.checkpoint?.sourceCursor === 'string' ? durable.checkpoint.sourceCursor : null;
@@ -180,6 +190,7 @@ export const openReplicaDatabase = async (input: OpenDatabaseOptions, environmen
       alias.coordinator?.close(), alias.query.close(), alias.statusTask,
     ]).concat(storageClosing));
     await Promise.allSettled([...operations]);
+    results.push(...await Promise.allSettled([sourceTransport.close()]));
     const errors = [...new Set(results.flatMap(result => result.status === 'rejected' ? [result.reason] : []))];
     throwCleanupFailures(errors);
     unregister();
@@ -340,18 +351,24 @@ export const openReplicaDatabase = async (input: OpenDatabaseOptions, environmen
     }
     assert();
     for (const alias of aliases.values()) {
-      const source = createReplicaHttpSource({ axios, provider, database, definition: alias.definition });
+      const source = sourceTransport.source(alias.name, alias.definition);
+      const read = async (reader: ReplicaSourceAdapter, request: SourceReadContext) => {
+        const context = correlation(); diagnostic(alias.name, 'pull', 'start', undefined, context, { requestId: request.requestId });
+        try {
+          assertAlias(alias);
+          const page = await reader.read(request);
+          diagnostic(alias.name, 'pull', 'complete', undefined, context, { requestId: request.requestId, count: page.mode === 'events' ? page.events.length : page.documents.length });
+          assertAlias(alias);
+          return page;
+        } catch (error) { diagnostic(alias.name, 'pull', 'failed', error, context, { requestId: request.requestId }); throw error; }
+      };
       alias.coordinator = createReplicaDownstream({ storage: alias.storage,
-        source: { ...source, read: async request => {
-          const context = correlation(); diagnostic(alias.name, 'pull', 'start', undefined, context, { requestId: request.requestId });
-          try {
-            assertAlias(alias);
-            const page = await source.read(request);
-            diagnostic(alias.name, 'pull', 'complete', undefined, context, { requestId: request.requestId, count: page.mode === 'events' ? page.events.length : page.documents.length });
-            assertAlias(alias);
-            return page;
-          } catch (error) { diagnostic(alias.name, 'pull', 'failed', error, context, { requestId: request.requestId }); throw error; }
-        } },
+        source: { ...source, read: request => read(source, request),
+          ...(source.acquire ? { acquire: (context: SourceLeaseContext) => {
+            const lease = source.acquire!(context);
+            return { ...lease, read: (request: SourceReadContext) => read(lease, request) };
+          } } : {}),
+        },
         upstream: createReplicaHttpUpstream({ axios, provider, database, collection: alias.definition.collection }), options: options.sync }, environment.coordinator);
       alias.subscriptions.push(alias.storage.changes.subscribe({ next: () => markStatus(alias), error: report }));
       alias.subscriptions.push(alias.coordinator.status$.subscribe(status => {

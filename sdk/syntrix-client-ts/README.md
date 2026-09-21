@@ -80,51 +80,34 @@ opaque; they do not establish a snapshot across pages. See
 [query pages](../../docs/reference/typescript_sdk.md#query-pages) for continuation,
 errors, and numeric limits.
 
-## Realtime Subscriptions
+## SSE 与身份
+
+复制数据连接由 `openReplica()` 内部管理。公开 `client.realtime()`、
+`client.subscribe()`、WS 构造器及其协议类型已移除；本地 `watch()` 和
+`replica.sync.subscribe()` 保留。现有 SSE 入口继续用于普通服务端事件：
 
 ```typescript
-const client = new SyntrixClient('http://localhost:8080', {
-  database: 'my-database',
-  auth: { token: 'my-token' },
-});
+import type { SyntrixClient } from '@syntrix/client';
 
-const subscription = client.subscribe('users', {
-  onReady: () => schedulePull(),
-  onEvent: (event) => console.log(event),
-  onError: (error) => console.error(error),
-});
-
-subscription.unsubscribe();
-client.realtime().dispose();
+export const observeUsers = (client: SyntrixClient) => {
+  const sse = client.realtimeSSE();
+  void sse.connect({
+    onEvent: event => console.log(event),
+    onSnapshot: snapshot => console.log(snapshot),
+    onError: console.error,
+  }, { collection: 'users' }).catch(console.error);
+  return () => sse.disconnect();
+};
 ```
 
-Convenience subscriptions share one automatically connected WebSocket and have
-independent callbacks. `onReady` signals registration after authentication, both
-initially and after reconnect; schedule reconciliation there when missed changes
-must be fetched. Readiness does not mean historical data or a snapshot is complete.
-After registration is acknowledged, `snapshot_failed` and `snapshot_limit` notify
-`onError` while preserving the active subscription and subsequent live events.
+SSE 使用 Authorization header，不把 token 放入 URL。它不自动把事件写入本地副本，
+也不提供复制页的 checkpoint 或整页完成语义。登录、注册和退出会使旧认证会话失效，
+关闭其 replica 运输租约并断开缓存的 SSE；独立创建的 SSE client 仍由调用方清理。
 
-The last unsubscribe leaves the connection open. Use `disconnect()` to stop it
-while retaining subscriptions for explicit reconnect, or `dispose()` for permanent
-cleanup. Login, signup, and logout invalidate the old local authentication session,
-dispose the cached WebSocket, and disconnect cached SSE before awaiting the remote
-operation. Failed replacement login leaves the client logged out; remote logout
-failure rejects while local credentials remain cleared. Low-level
-`realtime().subscribe()` requires an explicit `connect()`; its promise resolves
-after authentication.
-
-Authentication work and automatic retries remain bound to their original session.
-HTTP requests capture that session before asynchronous interceptors run, and their
-abort signals interrupt token and refresh waits during account replacement.
-Obsolete operations reject with `AuthSessionChangedError` (`AUTH_SESSION_CHANGED`)
-and cannot restore old credentials or retry under a new account. Custom
-`TokenProvider` implementations must expose synchronous `getSessionVersion()` and
-protect their credential mutations. See the
-[authentication reference](../../docs/reference/typescript_sdk.md#authentication-sessions)
-for setter ordering, ownership, and already admitted request limits, and the
-[realtime reference](../../docs/reference/typescript_sdk.md#4-realtime-ws--sse)
-for error routing and timeouts.
+认证工作与自动重试保留原会话；旧结果以 `AUTH_SESSION_CHANGED` 拒绝，不能恢复旧凭据
+或借新账号重试。自定义 TokenProvider 需要同步的 `getSessionVersion()` 和受保护的凭据
+变更。具体边界见[认证参考](../../docs/reference/typescript_sdk.md#authentication-sessions)
+和 [SSE 参考](../../docs/reference/typescript_sdk.md#server-sent-events-sse)。
 
 ## Manual Replication Pull
 
@@ -193,8 +176,8 @@ apply operation. See the [replication reference](../../docs/reference/replicatio
 
 ## Replica Database
 
-Use `openReplica` for local persisted CRUD/query/watch with automatic HTTP
-replication. Existing `client.collection()` references keep direct REST behavior.
+使用 `openReplica` 获得本地持久 CRUD/query/watch；正常下行通过私有 WS 数据页，
+不可用时自动 HTTP fallback，上行继续 HTTP Push。Existing `client.collection()` references keep direct REST behavior.
 Open returns when local storage is ready, without waiting for network convergence.
 The [replica demo](../../example/realtime-demo/README.md) runs two independent
 browser replicas with local query watch, offline writes and synchronization controls.
@@ -257,8 +240,10 @@ result handling. Ordinary resume does not authorize repeating an unknown write.
 Inspection reports the durable phase, any recovery intent and advisory available
 actions; a dispatched marker does not prove remote execution. Content conflicts
 cannot be bypassed by blind uncertain retry.
-Replica synchronization uses authorized polling; automatic WebSocket hints await
-matching query-source authorization. Local watch remains available independently.
+同一 replica 句柄最多共享一条私有 WS，只有活动 leader alias 建立数据订阅。
+默认 10 秒源核对和 changed 都使用当前运输；WS 正常时不会再发 HTTP Pull。
+断线后已接纳页面仍完成原有本地应用，整页提交后才 ACK/切换；WS 与 HTTP 共用
+四页额度池。源退避、身份和本地持久化错误不能被 fallback 绕过。Local watch remains available independently.
 
 本地 watch 遇到正常视图竞争会有界退让并继续订阅；无关同步控制字段更新不会要求重建。
 稳定查询的扫描、内存或输出真正超限仍会终止，单次 get/getPage 也保持有界失败。

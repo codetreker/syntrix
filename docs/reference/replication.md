@@ -339,15 +339,16 @@ exit is not a stored-document deletion.
 The authoritative database identity and owner/`db_admin` gate run before window
 Query execution, including first binding. Identity failure must not be interpreted
 as an empty replacement. 公开 SDK 已通过 HTTP 实现窗口 adapter、成员替换和定时刷新；
-新增 WS 服务端数据通道尚未自动接入 SDK。通知不能替代周期性核对。
+SDK 现在优先使用 WS 数据通道，不可用时 HTTP fallback；通知不能替代周期性核对。
 
 The [query-source decision](../../.agents/notes/implemented/feature/2026-09-18-query-replication-source.md)
 records source projection, identity checking, and their guarantees.
 
 ## Replica WebSocket Data
 
-**端点：** `/realtime/ws?mode=replica-data`。这是已实现的服务端数据通道；
-公开 TypeScript replica SDK 当前仍通过 HTTP 同步，尚未自动使用该模式。
+**端点：** `/realtime/ws?mode=replica-data`。服务端交付既有 typed 源页，
+[TypeScript replica SDK](typescript_sdk.md#replica-availability)由句柄私有管理该连接，
+并在运输不可用时自动 HTTP fallback。
 
 | 模式 | 当前用途 |
 |---|---|
@@ -455,8 +456,8 @@ replacement。窗口仍有既有索引一致性限制，需要后续刷新补位
 ```
 
 Gateway 每 200ms 合并 collection 变化提示；持续变化不滑动已安排的发送时点。
-没有 read 就不会无限推页。客户端仍须周期性核对，不能只依赖通知；WS 客户端接入
-后，这些请求可以继续走 WS，但本次服务端交付没有切换公开 SDK 的 HTTP 路径。
+没有 read 就不会无限推页。客户端仍须周期性核对，不能只依赖通知；SDK 在 WS 健康时
+也通过 WS 发起核对并接收数据，运输不可用时才使用 HTTP。
 
 ### ACK and owner retirement
 

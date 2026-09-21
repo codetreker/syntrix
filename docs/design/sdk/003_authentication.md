@@ -60,29 +60,23 @@ not part of the delivered configuration. Applications own durable secret storage
   `AuthSessionChangedError` without notifying the new session through auth hooks.
 - Network errors follow existing backoff; auth errors do not exponential-backoff (they need user/token action).
 
-## Realtime Channel (/realtime/ws, /realtime/sse)
-- Shares the same `tokenProvider`/`refresh` strategy.
-- Implemented WebSocket authentication sends a token and database in an `auth`
-  message. `connect()` completes only after `auth_ack`; pending subscriptions wait
-  for that acknowledgement.
-- A structured `unauthorized` error matching the current auth request allows one
-  refresh and retry per connection attempt. Missing tokens, invalid auth, refresh
-  failure, or another rejection fail the attempt and notify active subscriptions
-  and the global error observer. Subscription failures do not trigger refresh.
-- The connection/authentication deadline is bounded by `activityTimeoutMs` and
-  cannot be extended by heartbeats. Connection attempts capture the session before
-  token acquisition and check awaits and `auth_ack`. Automatic reconnect retains
-  its original session and stops after replacement; explicit `connect()` can end
-  an obsolete attempt and start under current credentials.
-- SSE creates a controller and captures the session before token acquisition.
-  Token, response, and read waits validate session and controller ownership before
-  callbacks; old cleanup cannot clear a newer controller.
-- SyntrixClient login/signup/logout begin provider invalidation, clear both cached
-  realtime references, dispose old WebSocket/disconnect old SSE, then await the
-  authentication result. Clearing references before teardown protects callback
-  reentry. Independently constructed transports need explicit owner cleanup; no
-  global provider listener or active-connection registry is introduced.
-- Planned SSE auth-failure hooks let callers decide when to resume after refresh.
+## Replica WebSocket 与 SSE
+
+- 私有 replica WS 与 HTTP 共用 tokenProvider。活动 leader 的运输租约捕获原会话，
+  以 `replica-data` auth 帧发送 token/database，匹配 auth_ack 后才建立源注册。
+- 当前 auth 请求收到结构化 UNAUTHORIZED 时只允许一次共享 refresh；FORBIDDEN、
+  绑定身份错误或 refresh 失败保留既有阻塞语义，不能以 HTTP fallback 绕过。
+- 连接/认证及注册分别受 10 秒 deadline 限制。取消监听先于凭据调用安装，关闭只等待
+  可取消的本次尝试，不等待 provider 共享 refresh promise；底层迟到结果仍有处理器并
+  受 provider 的会话检查保护。关闭一个 WS 不取消其它 HTTP 调用共享的 refresh。
+- 重连保留原 session，只在有效 leader 租约存在时运行；账号替换退休旧租约和迟到
+  消息归属。诊断回调可同步关闭句柄，回调后必须再次核对 owner。
+- SSE 仍在等待 token 前建立 controller 并捕获会话；认证、响应、读取和回调核对
+  controller/session，旧清理不能移除新连接。公开 SSE 行为不变。
+- 登录、注册和退出先失效 provider 会话，既有 replica owner 负责取消私有运输；
+  客户端在等待远端认证前清除并断开缓存 SSE。独立创建的 SSE client 仍由调用方清理。
+- 公开 `realtime()`、`subscribe()` 及 WS 构造器/协议类型已移除；SSE 与手动 Pull 保留。
+  运输所有权和 fallback 的完整决定见[SDK WS 复制](../../../.agents/notes/implemented/architecture/2026-09-21-sdk-replica-websocket.md)。
 
 ## Replication (pull/push)
 - Pull/Push use the same auth layer; retries on 401/403 follow the refresh-once rule.
@@ -150,8 +144,8 @@ owns public usage and errors.
 - 401 on CRUD without refresh: propagate error, no retry.
 - Refresh failure: single retry attempt, then error, hook fired.
 - Concurrency: multiple parallel requests hit 401 -> only one refresh occurs; all retry once with new token.
-- WebSocket: matching unauthorized auth response refreshes once; terminal auth
-  failure ends the attempt; reconnect authenticates before restoring subscriptions.
+- Replica WebSocket：当前 auth 的 UNAUTHORIZED 只 refresh 一次；终止错误结束尝试，
+  新连接认证后为活动 alias 建立新注册，凭据取消不等待共享 refresh。
 - Replication pull/push: 401 triggers refresh-once, checkpoint unchanged on failure, resumes on success.
 
 ## Integration Points

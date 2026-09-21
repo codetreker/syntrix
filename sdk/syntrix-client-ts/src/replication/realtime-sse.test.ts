@@ -1,6 +1,5 @@
 import { describe, it, expect, mock } from 'bun:test';
 import { RealtimeSSEClient } from './realtime-sse';
-import { MessageType } from './realtime';
 import { AuthSessionChangedError } from '../api/errors';
 
 function buildSseResponse(chunks: string[]) {
@@ -27,7 +26,7 @@ const flush = async () => {
 };
 
 const eventChunk = (id: string) => `data: ${JSON.stringify({
-  type: MessageType.Event,
+  type: 'event',
   payload: { subId: 'default', delta: { type: 'create', id, timestamp: 1 } },
 })}\n\n`;
 
@@ -71,11 +70,11 @@ describe('RealtimeSSEClient', () => {
 
   it('should emit events and snapshots from SSE stream', async () => {
     const eventMsg = `data: ${JSON.stringify({
-      type: MessageType.Event,
+      type: 'event',
       payload: { subId: 'default', delta: { type: 'create', id: '1', timestamp: 1, document: { foo: 'bar' } } },
     })}\n\n`;
     const snapshotMsg = `data: ${JSON.stringify({
-      type: MessageType.Snapshot,
+      type: 'snapshot',
       payload: { subId: 'default', documents: [{ foo: 'bar' }] },
     })}\n\n`;
 

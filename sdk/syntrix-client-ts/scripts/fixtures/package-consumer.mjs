@@ -1,9 +1,19 @@
 import assert from 'node:assert/strict';
 import { createTestLockManager } from './test-locks.mjs';
 
+const originalWebSocket = globalThis.WebSocket;
+let earlySockets = 0;
+globalThis.WebSocket = class {
+  constructor() { earlySockets++; throw new Error('REST-only imports must not start WebSocket connections'); }
+};
+
 // Resolve every SDK import from this isolated installation, never from the workspace.
 const remote = await import('@syntrix/client');
 assert.equal(typeof remote.SyntrixClient, 'function');
+assert.equal(typeof remote.RealtimeSSEClient, 'function');
+for (const name of ['RealtimeClient', 'RealtimeListener', 'MessageType', 'ReplicationCoordinator', 'createReplicaWebSocket']) {
+  assert.equal(name in remote, false);
+}
 assert.equal('createReplicationRuntime' in remote, false);
 assert.equal('createReplicaQueryClient' in remote, false);
 assert.equal('createReplicaDownstream' in remote, false);
@@ -11,9 +21,16 @@ assert.equal('createReplicaHttpSource' in remote, false);
 assert.equal('createReplicaHttpUpstream' in remote, false);
 assert.equal('resolveReplica' in remote, false);
 const unsupportedClient = new remote.SyntrixClient('https://example.test', { database: 'app' });
+assert.equal('realtime' in unsupportedClient, false);
+assert.equal('subscribe' in unsupportedClient, false);
+assert.equal(typeof unsupportedClient.pull, 'function');
+assert.equal(typeof unsupportedClient.realtimeSSE, 'function');
+assert.equal(unsupportedClient.collection('users').doc('alice').path, 'users/alice');
 assert.equal(typeof unsupportedClient.replicate('users').where('active', '==', true).limit(10), 'object');
 await assert.rejects(unsupportedClient.openReplica({ name: 'unsupported', collections: { users: unsupportedClient.replicate('users') } }),
   error => error.code === 'ReplicaUnsupportedEnvironment');
+assert.equal(earlySockets, 0);
+globalThis.WebSocket = originalWebSocket;
 await import('fake-indexeddb/auto');
 const sdkEntry = import.meta.resolve('@syntrix/client');
 const { loadReplicaRuntime } = await import(new URL('./internal/replica/loader.js', sdkEntry));

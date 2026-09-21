@@ -1,6 +1,7 @@
 import type { QueryOrder } from '../../api/types.js';
 import type { QueryValue } from '../../api/value.js';
 import type { FrozenSourceDefinition } from './storage-types.js';
+import type { RequestScope } from './storage.js';
 
 export type SourceDocument = Record<string, QueryValue> & {
   id: string;
@@ -46,4 +47,15 @@ export type ReplicaSourceAdapter = {
   readonly definition: FrozenSourceDefinition;
   readonly mode: 'events' | 'replace';
   read(context: SourceReadContext): Promise<SourceEventsPage | SourceWindow>;
+  committed?(requestId: string): void;
+  released?(requestId: string): void;
+  acquire?(context: SourceLeaseContext): SourceLease;
+};
+export type SourceLeaseContext = { scope: RequestScope; signal: AbortSignal; hint(): void };
+export type SourceLease = ReplicaSourceAdapter & {
+  /** Receipt failures are transport diagnostics and cannot reject a durable commit. */
+  committed(requestId: string): void;
+  released(requestId: string): void;
+  invalidate(): void;
+  close(): Promise<void>;
 };

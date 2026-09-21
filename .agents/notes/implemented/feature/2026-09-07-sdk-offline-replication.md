@@ -19,11 +19,12 @@ Status: implemented
 replica 引用只读写本地状态，不隐式回退网络，也不发现或复制子 collection。
 [SDK reference](../../../../docs/reference/typescript_sdk.md#replica-availability)拥有签名、
 可运行示例、配置、错误和浏览器要求；[复制设计](../../../../docs/design/sdk/002_replication_client.md#public-replica-database)
-拥有架构与授权通知条件。
+拥有架构与运输边界。
 
-本决定完成原 proposal 中的公开组合，并沿用已确认的授权轮询范围。自动 WebSocket
-通知仍以源授权一致为前提，不作为轮询复制交付的前置条件；该条件及代价保留在本 note
-和复制设计，不把通知描述为已经接通。
+公开 facade 最初选择授权 HTTP 轮询，使源授权尚未一致时仍能完整交付本地复制。
+后续[服务端数据通道](2026-09-21-replica-websocket-data.md)补齐源契约，
+[SDK 运输决定](../architecture/2026-09-21-sdk-replica-websocket.md)已接入私有 WS 与 HTTP
+fallback。本决定继续拥有公共组合及原始选择理由，运输不改变本地数据和进度格式。
 
 ### Composition and ownership
 
@@ -32,7 +33,8 @@ replica 引用只读写本地状态，不隐式回退网络，也不发现或复
 | [原生运行时](../architecture/2026-09-18-sdk-native-replication-runtime.md) | 有界 changed-doc 扫描、metadata/checkpoint 持久化、取消与 lazy vendor bundle |
 | [Alias 存储](../architecture/2026-09-18-sdk-replica-storage.md) | 身份、typed d/m/c/manifest、raw CAS、容量和干净整理 |
 | [本地查询](../architecture/2026-09-18-sdk-replica-query-watch.md) | 精确过滤/排序、动态完整结果、共享资源界限和跨 tab 视图核对 |
-| [下行](../architecture/2026-09-19-sdk-downstream-replication.md) | 源成员、generation 激活、pin、授权 HTTP 轮询和原生 election |
+| [下行](../architecture/2026-09-19-sdk-downstream-replication.md) | 源成员、generation 激活、pin、有限源轮次和原生 election |
+| [源运输](../architecture/2026-09-21-sdk-replica-websocket.md) | 私有 WS 数据页、HTTP fallback、共用页额度及整页回执 |
 | [上行与恢复](../architecture/2026-09-20-sdk-upstream-replication.md) | Typed Push、真实 native ACK、有界 phase、不确定结果和恢复 intent |
 | 公共 facade | 冻结输入、投影业务文档与状态、拥有句柄生命周期、公开显式恢复与安全移除 |
 
@@ -112,13 +114,12 @@ close 可取消尚在排队的历史移除；若 terminal removal 已持久化�
 close 同步停止准入与回调，尝试全部 drain/清理并保留失败，持久数据保留。不同公共
 句柄有各自会话关闭责任，关闭一个不结束同账号的其他句柄。
 
-### Notification condition and cost
+### Transport and reconciliation cost
 
-授权 HTTP 轮询提供收敛，包括窗口补位与遗漏通知恢复。现有 realtime 授权范围尚未
-与 query source 对齐，公共 facade 不自动连接 WebSocket；本地 watch 不依赖该连接。
-
-保留此条件的成本是周期性源读取和 poll/backoff 延迟。只有通知授权与所选源一致时，
-才能接入已有 hint 入口作为调度优化；消息本身不能推进 checkpoint 或替代源核对。
+私有 WS 已使用与 query source 相同的授权数据协议。正常周期核对和变化触发读取
+都通过 WS 返回真实页，不可用时使用 HTTP；本地 watch 只消费已应用的本地状态。
+周期读取继续恢复遗漏通知和索引滞后，付出既有 Query 与 poll/backoff 成本。
+changed 和连接/页面 ACK 不能推进数据 checkpoint 或替代源核对。
 [Realtime resume proposal](../../proposed/feature/2026-09-07-realtime-client-resume.md)
 继续拥有其独立传输恢复工作，本决定不把它标为完成。
 
@@ -128,7 +129,8 @@ close 同步停止准入与回调，尝试全部 drain/清理并保留失败，�
 ACK、账号隔离和本地查询。SDK-owned replica 统一承担这些重复义务。
 
 **Realtime 事件作为本地真相源。** 能减少 Pull 请求，却无法用可靠源进度补齐遗漏，
-也不能绕过当前授权差异。选择轮询为收敛路径，通知只在满足条件后提供提示。
+也不能绕过源授权。初始交付因此选择授权轮询；当前 WS 传输完整 typed 源页，仍不把
+普通 raw 事件当本地真相。
 
 **独立 SDK Outbox。** 原 proposal 曾包含这一方向；原生 changed-docs 与 metadata
 已经保存待上传工作和确认基准。增加第二个队列会重复持久化与恢复职责。
@@ -138,14 +140,14 @@ ACK、账号隔离和本地查询。SDK-owned replica 统一承担这些重复�
 
 ## Consequences
 
-- 公开 API 组合既有存储、查询和双向 HTTP 复制，应用无需安装、修补或直接使用 RxDB。
+- 公开 API 组合既有存储、查询、WS/HTTP 下行与 HTTP Push，应用无需安装、修补或直接使用 RxDB。
   私有运行时按需加载并随包附许可证，远程客户端入口不加载整个副本运行时。
 - 完整匹配集合、有限远程窗口与本地 watch 的边界保持独立；源结果仍可能暂时回退，
   document version 不是全局顺序，删除后同 ID 重建仍被允许。
 - 资源限制会明确中止操作或查询，不截断结果或驱逐 pending。预算配置在 open 冻结，
   额度不能代替浏览器总 heap 或断电持久性保证。
 - 网络未知结果可能需要人工决定，显式 retry 仍可能重复副作用；没有 exactly-once 声明。
-- 自动 WS 通知继续受上面的授权条件约束。公开轮询复制已交付不意味着通知优化已交付。
+- 公开 raw WS 入口已移除，由 replica 私有管理数据连接；SSE 和手动 Pull 保留独立用途。
 - 持久 lifetime fence 增加少量保留 manifest 和切代校验成本，换取跨 tab 删除/重建隔离。
 - 真实服务端、浏览器故障与 packed consumer 需要独立验证，结果不能互相替代；
   存储故障注入不构成浏览器断电持久性保证。

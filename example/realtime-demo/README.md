@@ -1,6 +1,6 @@
 # Replica Demo
 
-通过两个独立的本地副本演示新版 TypeScript SDK：本地写入、动态查询、持久化和自动 HTTP replication。目录继续使用 `realtime-demo`。
+通过两个独立的本地副本演示新版 TypeScript SDK：本地写入、动态查询、持久化、自动 WS 数据复制及 HTTP fallback。目录继续使用 `realtime-demo`。
 
 ## 启动
 
@@ -58,7 +58,9 @@ cd example/realtime-demo
 ```text
 Panel 1 local add -> persisted replica -> HTTP Push -> server
                                                        |
-Panel 2 local watch <- persisted replica <- HTTP Pull <--+
+Panel 2 local watch <- persisted replica <- WS page <----+
+                                             |
+                                  WS 不可用：HTTP Pull
 ```
 
 核心 API：
@@ -67,14 +69,13 @@ Panel 2 local watch <- persisted replica <- HTTP Pull <--+
 const replica = await client.openReplica({
   name: 'demo-panel-1-messages',
   collections: { messages: client.replicate<Message>('messages') },
-  sync: { pollIntervalMs: 1000 },
 });
 const messages = replica.collection<Message>('messages');
 const stopWatch = messages.orderBy('sentAt', 'desc').limit(20).watch(render, onError);
 await messages.add({ text, sender, panel: 1, sentAt: Date.now() });
 ```
 
-源复制覆盖整个集合，本地查询按 `sentAt` 降序显示最新 20 条消息。`sentAt` 是客户端生成的毫秒时间，只用于演示排序，不代表服务端提交顺序。demo 将轮询间隔设为 1 秒；SDK 默认是 10 秒。界面消费当前查询快照，并以文本渲染消息。
+源复制覆盖整个集合，本地查询按 `sentAt` 降序显示最新 20 条消息。`sentAt` 是客户端生成的毫秒时间，只用于演示排序，不代表服务端提交顺序。demo 使用 SDK 默认配置：变化通过私有 WS 唤醒读取，真实数据页也经 WS；默认每 10 秒核对源，WS 不可用时使用 HTTP fallback。界面消费当前查询快照，并以文本渲染消息。
 
 查询继续遵守 SDK 的资源限制。正常同步控制更新不会要求重建；真实视图竞争会有界退让并保持 watch。稳定查询的扫描、内存或输出超限仍可触发 `QueryBudgetExceeded` 并停止对应 watch；查询状态与同步状态分别显示，错误不会自动丢弃本地变化。
 

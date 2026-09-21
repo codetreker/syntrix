@@ -253,8 +253,9 @@ Gateway 的连接、注册、源字节、读取、页面字节及授权工作使
 失效并重新建立。实际 Stream 对象终止或替换时，关闭依赖旧对象的普通 WS、SSE 和
 replica 连接，清除映射，再有界重建 backend；心跳不代表源注册仍有效。
 
-变化提示不能覆盖索引滞后与通知遗漏，客户端仍需周期性源核对。当前公开 SDK 仍使用
-HTTP replica adapter；本次只交付服务端通道。选择及代价见
+变化提示不能覆盖索引滞后与通知遗漏，客户端仍需周期性源核对。公开 SDK 已通过
+[私有源运输](../../sdk/002_replication_client.md)接入 WS 数据页，并保留 HTTP fallback。
+服务端通道的选择及代价见
 [WebSocket 复制数据决定](../../../../.agents/notes/implemented/feature/2026-09-21-replica-websocket-data.md)。
 
 ### 4.6 Unsubscription

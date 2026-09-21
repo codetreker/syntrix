@@ -51,6 +51,7 @@ export const createDownstreamAdapter = (options: DownstreamOptions) => {
   let complete = false;
   let started = false;
   let pending: PendingPage | undefined;
+  let retainedRequest: string | undefined;
   let gate = Promise.resolve();
   const serial = <T>(operation: () => Promise<T>): Promise<T> => {
     const result = gate.then(operation); gate = result.then(() => undefined, () => undefined); return result;
@@ -154,7 +155,9 @@ export const createDownstreamAdapter = (options: DownstreamOptions) => {
       return { databaseIdentity: access.manifest.boundDatabaseId, sourceHash: access.manifest.sourceHash };
     });
     const cursor = source.mode === 'events' && !reset ? previous?.sourceCursor ?? null : null;
-    const page = await source.read({ checkpoint: cursor, requestId: crypto.randomUUID(), signal, sessionVersion: scope.sessionVersion,
+    const requestId = crypto.randomUUID();
+    retainedRequest = requestId;
+    const page = await source.read({ checkpoint: cursor, requestId, signal, sessionVersion: scope.sessionVersion,
       expectedDatabaseIdentity: binding.databaseIdentity, expectedSourceHash: binding.sourceHash });
     await assert(signal);
     if (page.mode !== source.mode) fail('Source response mode differs from the frozen definition');
@@ -241,7 +244,18 @@ export const createDownstreamAdapter = (options: DownstreamOptions) => {
       const cp = checkpoint(value);
       if (cp.roundId !== roundId || pending?.pageId !== cp.pageId) throw new ReplicaStorageError('ReplicaScopeChanged', 'Source delivery belongs to an obsolete round');
       await finish(cp, signal);
-      if (cp.final) pending = undefined;
+      if (cp.final) {
+        const requestId = retainedRequest!;
+        pending = undefined;
+        source.committed?.(requestId);
+        retainedRequest = undefined;
+      }
+    }),
+    dispose: () => serial(async () => {
+      const requestId = retainedRequest;
+      pending = undefined;
+      retainedRequest = undefined;
+      if (requestId !== undefined) source.released?.(requestId);
     }),
     onUpCheckpoint: (frontier: NativeUpCheckpoint, signal: AbortSignal) => serial(() => scanPins(signal, 'settle', frontier)),
     recover: (signal: AbortSignal) => serial(async () => {

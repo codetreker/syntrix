@@ -44,16 +44,14 @@ a server authentication failure.
 |---|---|
 | HTTP | Stamp the version synchronously during Axios request construction, retain it through retry, and check around abortable credential waits and before processing an old 401/403, refreshing, or retrying |
 | HTTP without a token | Remove any existing Authorization header |
-| WebSocket | Capture a version per connection attempt, check token waits and authentication ACKs, and retain that version through automatic reconnect |
-| Explicit WebSocket connect | End an obsolete attempt and allow a new attempt under the current session |
+| 私有 replica WebSocket | 按活动 leader 租约捕获会话，检查 token/ACK/页关联；重连保留原会话，关闭可取消本次凭据等待 |
 | SSE | Capture a controller and version before waiting for a token; check authentication, response, and read/callback ownership; old cleanup cannot clear a newer controller |
-| SyntrixClient login, signup, logout | Begin provider invalidation, clear both cached realtime references, dispose the old WebSocket and disconnect the old SSE, then await authentication completion |
+| SyntrixClient login, signup, logout | 先失效 provider 会话及已有 replica owner，再清除并断开缓存 SSE，随后等待认证结果 |
 
-Realtime references are cleared before cleanup callbacks can reenter. Independently
-constructed realtime clients retain explicit owner cleanup. Connection identity
-checks remain necessary alongside session checks; the
-[realtime lifecycle decision](2026-09-07-sdk-realtime-subscription-lifecycle.md)
-owns subscription and transport lifetime.
+SSE 引用在清理回调重入前清除，独立创建的 SSE client 仍由调用方显式清理。连接身份
+与会话检查同时保留；[私有 replica WS 决定](../architecture/2026-09-21-sdk-replica-websocket.md)
+拥有当前数据运输生命周期，原[公开 WS 决定](2026-09-07-sdk-realtime-subscription-lifecycle.md)
+保留其历史理由。
 
 Explicitly disconnecting an established SSE connection in the same session emits
 `onDisconnect` once after detaching ownership and before aborting its fetch. This
@@ -93,9 +91,8 @@ client checks.
   and remote effects are not rolled back. The
   [replica-storage decision](../architecture/2026-09-18-sdk-replica-storage.md) owns
   credential-drain and native cancellation behavior for attached offline storage.
-- No global provider-to-transport registry is introduced. Owners of independently
-  constructed transports must close them explicitly; session checks guard their
-  later asynchronous work and prevent automatic reconnect across sessions.
+- 私有 WS 依附已有 replica owner，没有新增全局 provider-to-transport 注册表。
+  独立创建的 SSE transport 仍需显式关闭；会话检查保护其后续异步工作。
 - Adding immediate server invalidation later requires server session identifiers,
   revocation storage and checks, and a broader logout contract. Existing token
   formats remain untouched, leaving that cost explicit.

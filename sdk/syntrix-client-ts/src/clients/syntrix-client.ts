@@ -7,8 +7,7 @@ import { StorageClient } from '../internal/storage-client';
 import { CollectionReference, DocumentReference, PullOptions, PullPage } from '../api/types';
 import { PullTransport } from '../internal/pull';
 import { CollectionReferenceImpl, DocumentReferenceImpl } from '../api/reference';
-import { RealtimeClient, SubscriptionCallbacks, SubscribeOptions } from '../replication/realtime';
-import { RealtimeSSEClient, RealtimeSSEOptions } from '../replication/realtime-sse';
+import { RealtimeSSEClient } from '../replication/realtime-sse';
 import type { OpenReplicaOptions, ReplicaDatabase, ReplicaSource } from '../api/replica-types.js';
 import type { QueryValue } from '../api/value.js';
 import { createReplicaSource, snapshotReplicaOptions } from '../api/replica-reference.js';
@@ -26,7 +25,6 @@ export class SyntrixClient implements AuthService {
   private tokenProvider: DefaultTokenProvider;
   private pullTransport: PullTransport;
   private axios: AxiosInstance;
-  private realtimeClient: RealtimeClient | null = null;
   private realtimeSseClient: RealtimeSSEClient | null = null;
   private baseUrl: string;
   private database: string;
@@ -86,29 +84,26 @@ export class SyntrixClient implements AuthService {
   // Auth methods
   async signup(username: string, password: string): Promise<LoginResponse> {
     const operation = this.tokenProvider.signup(username, password);
-    this.clearRealtimeClients();
+    this.clearRealtimeSSE();
     return operation;
   }
 
   async login(username: string, password: string): Promise<LoginResponse> {
     const operation = this.tokenProvider.login(username, password);
-    this.clearRealtimeClients();
+    this.clearRealtimeSSE();
     return operation;
   }
 
   async logout(): Promise<void> {
     const operation = this.tokenProvider.logout();
-    this.clearRealtimeClients();
+    this.clearRealtimeSSE();
     return operation;
   }
 
-  private clearRealtimeClients(): void {
-    const realtime = this.realtimeClient;
+  private clearRealtimeSSE(): void {
     const sse = this.realtimeSseClient;
-    // Detach both owners before teardown callbacks can create replacements.
-    this.realtimeClient = null;
+    // Detach the old owner before teardown callbacks can create a replacement.
     this.realtimeSseClient = null;
-    realtime?.dispose();
     sse?.disconnect();
   }
 
@@ -132,15 +127,6 @@ export class SyntrixClient implements AuthService {
     return this.pullTransport.pull<T>(collection, options);
   }
 
-  // Realtime methods
-  realtime(): RealtimeClient {
-    if (!this.realtimeClient) {
-      const wsUrl = this.baseUrl.replace(/^http/, 'ws') + '/realtime/ws';
-      this.realtimeClient = new RealtimeClient(wsUrl, this.tokenProvider, this.database);
-    }
-    return this.realtimeClient;
-  }
-
   realtimeSSE(): RealtimeSSEClient {
     if (!this.realtimeSseClient) {
       this.realtimeSseClient = new RealtimeSSEClient(this.baseUrl, this.tokenProvider, this.database);
@@ -148,26 +134,4 @@ export class SyntrixClient implements AuthService {
     return this.realtimeSseClient;
   }
 
-  // Convenience method for subscribing to a collection
-  subscribe(
-    collection: string,
-    callbacks: SubscriptionCallbacks,
-    options?: Partial<SubscribeOptions>
-  ): { subId: string; unsubscribe: () => void } {
-    const rt = this.realtime();
-
-    const subId = rt.subscribe({
-      query: { collection, filters: options?.query?.filters || [] },
-      includeData: options?.includeData ?? true,
-      sendSnapshot: options?.sendSnapshot ?? false,
-    }, callbacks);
-
-    // The realtime client reports connection failures to the registered callbacks.
-    void rt.connect().catch(() => {});
-
-    return {
-      subId,
-      unsubscribe: () => rt.unsubscribe(subId),
-    };
-  }
 }

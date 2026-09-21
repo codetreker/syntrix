@@ -243,7 +243,7 @@ const openPanel = (panel: Panel) => run(panel, async () => {
   const client = panel.client!;
   const view = ++panel.viewGeneration;
   const replica = await client.openReplica({ name: `demo-panel-${panel.id}-${scope.collection}`,
-    collections: { messages: client.replicate<Message>(scope.collection) }, sync: { pollIntervalMs: 1000 } });
+    collections: { messages: client.replicate<Message>(scope.collection) } });
   panel.replica = replica;
   const current = () => panel.replica === replica && panel.viewGeneration === view;
   try {

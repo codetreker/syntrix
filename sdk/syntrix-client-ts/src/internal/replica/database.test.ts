@@ -22,6 +22,7 @@ const fixture = (override: Partial<ReplicaDatabaseEnvironment> = {}) => {
   const provider = new DefaultTokenProvider({ token: token() });
   const http = axios.create({ baseURL: 'https://example.test', adapter: async () => { throw new SyntrixError('UNAVAILABLE', 'offline', 503); } });
   const environment: ReplicaDatabaseEnvironment = { storage: getRxStorageDexie({ indexedDB, IDBKeyRange }), lockManager: createTestLockManager(),
+    sourceTransport: { socket: () => { throw new TypeError('WebSocket unavailable in the offline fixture'); } },
     coordinator: { leadership: () => ({ wait: async signal => signal.throwIfAborted(), close: async () => {} }), now: Date.now,
       random: () => 1, set: (callback, delay) => setTimeout(callback, delay), clear: timer => clearTimeout(timer) }, ...override };
   const open = async (options: ReplicaOptionsSnapshot) => {

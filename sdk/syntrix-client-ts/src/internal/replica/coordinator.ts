@@ -2,7 +2,7 @@ import { defaultHashSha256, type RxReplicationWriteToMasterRow, type WithDeleted
 import { BehaviorSubject, type Observable } from 'rxjs';
 import type { AliasStorage, RequestScope } from './storage.js';
 import { ReplicaStorageError, type ReplicaRecord } from './storage-types.js';
-import type { ReplicaSourceAdapter } from './source-types.js';
+import type { ReplicaSourceAdapter, SourceLease } from './source-types.js';
 import { createDownstreamAdapter } from './downstream.js';
 import { createReplicationRuntime, type ReplicationRuntime } from './runtime.js';
 import { businessEqual, canonicalJson } from './records.js';
@@ -59,6 +59,12 @@ type NativeOwner = {
   upstream?: ReturnType<typeof createUpstreamAdapter>;
   runtime?: ReplicationRuntime;
   unregister?: () => void;
+  sourceLease?: SourceLease;
+  invalidated?: boolean;
+  invalidationErrors: unknown[];
+  closing?: Promise<void>;
+  ownerAbort?: () => void;
+  closeObserved?: boolean;
 };
 class NativeRetired extends Error {
   constructor(readonly owner: NativeOwner) { super('Replica native owner was retired'); }
@@ -139,9 +145,27 @@ export const createReplicaDownstream = (input: ReplicaDownstreamOptions, clock: 
   };
   const drainNative = async (owned = native) => {
     if (!owned) return;
-    if (owned.runtime) await closeNative(owned.runtime);
+    await closeOwner(owned);
     owned.unregister?.();
     if (native === owned) native = undefined;
+  };
+  const invalidateOwner = (owned: NativeOwner) => {
+    if (owned.invalidated) return;
+    owned.invalidated = true;
+    try { owned.sourceLease?.invalidate(); } catch (error) { owned.invalidationErrors.push(error); }
+  };
+  const closeOwner = (owned: NativeOwner): Promise<void> => {
+    invalidateOwner(owned);
+    return owned.closing ??= (async () => {
+      const failures = [...owned.invalidationErrors];
+      try { if (owned.runtime) await closeNative(owned.runtime); } catch (error) { failures.push(error); }
+      // close() drains native queues before reporting a persistence failure.
+      // A socket abort alone must never release a page still being applied.
+      try { await owned.adapter.dispose(); } catch (error) { failures.push(error); }
+      try { await owned.sourceLease?.close(); } catch (error) { failures.push(error); }
+      if (owned.ownerAbort) owned.signal.removeEventListener('abort', owned.ownerAbort);
+      throwCleanupFailures([...new Set(failures)]);
+    })();
   };
   const assertOwner = (owned: NativeOwner) => {
     activeRun();
@@ -154,6 +178,17 @@ export const createReplicaDownstream = (input: ReplicaDownstreamOptions, clock: 
     if (timer !== undefined) clock.clear(timer);
     timer = undefined;
     publish({ state: 'blocked', error, retryAt: undefined });
+    const owned = native;
+    if (owned && !owned.closeObserved) {
+      owned.closeObserved = true;
+      // A manifest observer can block while a page is still being applied.
+      // Start the existing drain without awaiting the observer or native queue.
+      void closeOwner(owned).then(undefined, cleanupError => {
+        // The run failure path may already have reported this memoized drain.
+        if (cleanupError === error || error instanceof ReplicaCleanupError && error.errors.includes(cleanupError)) return;
+        publish({ state: 'blocked', error: new ReplicaCleanupError([error, cleanupError]) });
+      });
+    }
   };
   const schedule = (delay: number) => {
     if (closed || paused || blocked || !leader || !leaderReady || running) return;
@@ -189,21 +224,31 @@ export const createReplicaDownstream = (input: ReplicaDownstreamOptions, clock: 
       }
     }
     activeRun();
-    const guardedSource: ReplicaSourceAdapter = { ...input.source, read: async context => {
-      try { return await input.source.read(context); }
+    const ownerSignal = AbortSignal.any([handles.ownerSignal, abort.signal, activity.signal]);
+    let leaseOwner: NativeOwner | undefined;
+    const sourceLease = input.source.acquire?.({ scope, signal: ownerSignal, hint: () => {
+      if (leaseOwner && native === leaseOwner && !leaseOwner.invalidated && !ownerSignal.aborted) request(hintDelay);
+    } });
+    const source = sourceLease ?? input.source;
+    const guardedSource: ReplicaSourceAdapter = { ...source, read: async context => {
+      try { return await source.read(context); }
       catch (error) {
         if (context.signal.aborted && (error === context.signal.reason || field(error, 'code') === 'ERR_CANCELED')) throw context.signal.reason;
         throw new SourceReadFailure(error);
       }
     } };
     const owned: NativeOwner = {
-      scope, signal: handles.ownerSignal,
+      scope, signal: ownerSignal, sourceLease, invalidationErrors: [],
       adapter: createDownstreamAdapter({ storage, scope, source: guardedSource, requestRefresh: () => request(0),
         ownsPhase: marker => !activity.signal.aborted && owned.upstream?.ownsPhase(marker) === true }),
     };
+    leaseOwner = owned;
     if (input.upstream) owned.upstream = createUpstreamAdapter({ storage, scope, transport: input.upstream,
       onSettlement: (checkpoint, signal) => owned.adapter.onUpCheckpoint(checkpoint, signal) });
     native = owned;
+    owned.ownerAbort = () => invalidateOwner(owned);
+    ownerSignal.addEventListener('abort', owned.ownerAbort, { once: true });
+    if (ownerSignal.aborted) invalidateOwner(owned);
     assertOwner(owned);
     await owned.adapter.recover(AbortSignal.any([owned.signal, abort.signal, activity.signal]));
     assertOwner(owned);
@@ -215,7 +260,7 @@ export const createReplicaDownstream = (input: ReplicaDownstreamOptions, clock: 
       hashFunction: defaultHashSha256, conflictHandler: { isEqual: businessEqual, resolve: async () => {
         throw new ReplicaStorageError('ReplicaConflictUnresolved', 'Replica upstream conflicts require recovery before further replication');
       } },
-      ownerSignal: AbortSignal.any([handles.ownerSignal, abort.signal, activity.signal]), pullBatchSize: 201,
+      ownerSignal, pullBatchSize: 201,
       upstreamEnabled: input.upstream !== undefined || input.writeRemote !== undefined,
       writeRemote: owned.upstream?.writeRemote ?? input.writeRemote,
       upstreamPersistence: owned.upstream?.upstreamPersistence,
@@ -224,7 +269,7 @@ export const createReplicaDownstream = (input: ReplicaDownstreamOptions, clock: 
       onUpCheckpoint: input.upstream ? undefined : owned.adapter.onUpCheckpoint,
       onError: () => request(0),
     });
-    owned.unregister = storage.registerNative({ invalidate() {}, close: () => closeNative(owned.runtime!) });
+    owned.unregister = storage.registerNative({ invalidate: () => invalidateOwner(owned), close: () => closeOwner(owned) });
     return owned;
   };
   const run = async () => {

@@ -4,7 +4,7 @@ Status: proposed
 
 ## Problem
 
-The [console design](../../../../docs/design/server/console/01.console.md) specifies active subscriptions, a live event viewer, connection diagnostics, and a subscription test tool. The current [router](../../../../console/src/router/index.tsx) has no realtime inspector page, and the [SDK realtime client](../../../../sdk/syntrix-client-ts/src/replication/realtime.ts) is not integrated into such a workflow. Operators cannot inspect the intended subscription behavior through the console. This is a planned feature gap, not evidence that existing realtime delivery fails.
+The [console design](../../../../docs/design/server/console/01.console.md) specifies active subscriptions, a live event viewer, connection diagnostics, and a subscription test tool. The current [router](../../../../console/src/router/index.tsx) has no realtime inspector page. SDK 的[公开 WS 入口已移除](../../../../docs/reference/typescript_sdk.md#4-realtime)，私有 replica 数据运输不提供普通订阅检查器。Operators cannot inspect the intended subscription behavior through the console. This is a planned feature gap, not evidence that existing realtime delivery fails.
 
 ## Proposal
 
