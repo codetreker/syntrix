@@ -15,6 +15,8 @@ import (
 	pb "github.com/syntrixbase/syntrix/api/gen/streamer/v1"
 	"github.com/syntrixbase/syntrix/internal/core/storage"
 	"github.com/syntrixbase/syntrix/internal/puller/events"
+	streamercel "github.com/syntrixbase/syntrix/internal/streamer/cel"
+	"github.com/syntrixbase/syntrix/internal/streamer/manager"
 	"google.golang.org/grpc/metadata"
 )
 
@@ -141,6 +143,64 @@ func TestGRPCAdapter_RetiredRegistrationRejected(t *testing.T) {
 	require.ErrorIs(t, err, context.Canceled)
 	require.Empty(t, wire.sentMsgs)
 	require.Error(t, service.manager.Unsubscribe("late"))
+}
+
+type cancelDuringFilterCompilation struct {
+	manager.CELCompiler
+	cancel context.CancelFunc
+	err    error
+}
+
+func (c cancelDuringFilterCompilation) CompileProtoFilters(filters []*pb.Filter) (*manager.ExpressionSubscriber, error) {
+	c.cancel()
+	if c.err != nil {
+		return nil, c.err
+	}
+	return c.CELCompiler.CompileProtoFilters(filters)
+}
+
+func TestGRPCAdapter_RegistrationRetiredDuringCompilation(t *testing.T) {
+	for _, owner := range []string{"service", "stream"} {
+		for _, compilationFails := range []bool{false, true} {
+			name := owner + "/compiled"
+			if compilationFails {
+				name = owner + "/compile-error"
+			}
+			t.Run(name, func(t *testing.T) {
+				service, err := NewService(ServerConfig{}, slog.Default())
+				require.NoError(t, err)
+				internal := getInternalService(service)
+				ctx, cancelStream := context.WithCancel(context.Background())
+				defer cancelStream()
+				defer internal.cancel()
+				compiler, err := streamercel.NewCompiler()
+				require.NoError(t, err)
+				cancelOwner := cancelStream
+				if owner == "service" {
+					cancelOwner = internal.cancel
+				}
+				var compileErr error
+				if compilationFails {
+					compileErr = errors.New("invalid source predicate")
+				}
+				internal.manager = manager.New(manager.WithCELCompiler(cancelDuringFilterCompilation{CELCompiler: compiler, cancel: cancelOwner, err: compileErr}))
+				wire := &mockBidiStream{ctx: ctx}
+				adapter := newGRPCStreamAdapter(ctx, "gateway", wire, internal)
+				defer adapter.localStream.Close()
+				request := &pb.SubscribeRequest{Database: "db", Collection: "items", Filters: []*pb.Filter{{Field: "status", Op: "==", Value: &pb.Value{Kind: &pb.Value_StringValue{StringValue: "active"}}}}}
+				err = adapter.handleProtoMessage(&pb.GatewayMessage{Payload: &pb.GatewayMessage_Subscribe{Subscribe: request}})
+				require.ErrorIs(t, err, context.Canceled)
+				require.NotEmpty(t, request.SubscriptionId)
+				require.Empty(t, wire.sentMsgs)
+				_, exists := internal.manager.GetSubscription(request.SubscriptionId)
+				require.False(t, exists, "retired registration remained active")
+				total, exact, expressions, _ := internal.manager.Stats()
+				require.Zero(t, total)
+				require.Zero(t, exact)
+				require.Zero(t, expressions)
+			})
+		}
+	}
 }
 
 // --- GRPCStream Tests ---

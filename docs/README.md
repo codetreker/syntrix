@@ -65,12 +65,16 @@ then supported environment overrides. Select another directory with
 ```bash
 make test
 make coverage
+CI=true make coverage
 ```
 
 These commands cover Go packages, including integration tests that require the
 configured infrastructure. The [pipeline environment](../deployment/pipeline/README.md)
-describes those services. SDK and console build scripts live in their own
+describes those services and the CI checks. SDK and console build scripts live in their own
 `package.json` files and use Bun.
+
+`make coverage` 报告覆盖率；`CI=true make coverage` 同时启用 race 检测，
+并强制执行 CI 覆盖率门槛。
 
 ## Design and Reference
 

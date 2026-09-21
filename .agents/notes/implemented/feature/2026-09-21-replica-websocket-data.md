@@ -116,6 +116,14 @@ generation 只围定注册所有权，不是 Store 数据位置。此扩展不�
 协议 replay、主动 Puller 切换或跨服务订阅存储。日志关联 connection/subId/requestId
 和固定分类，排除 token、文档、filter 与 opaque checkpoint 内容。
 
+### Validation
+
+服务端 CI 将普通构建与 race/coverage 放入独立的五分钟 job。冷缓存时两种编译
+不能复用完整产物；串行执行会共同消耗测试预算。既有 `Syntrix Server (Go)`
+检查汇总两个结果，只有全部成功才通过，失败、取消和跳过均阻止通过。
+保留既有 race、函数/包/总覆盖率及 critical 未覆盖代码块检查；本地验证使用
+`CI=true make coverage` 执行同样的门槛。
+
 ## Alternatives
 
 **普通 WS 文档事件直接成为副本数据。** 缺少完整 typed、源成员/窗口和续传语义，
@@ -139,4 +147,3 @@ settlement 轮次的完成证明。请求/整页 ACK 保留明确的轮次与背
 - 大页使用独立 credit 和字节账目；慢连接可能耗尽容量并收到显式错误，不积压无限工作。
 - 实际 Stream 退休会影响依赖它的普通客户端；明确断开使客户端重建，避免假健康状态。
 - 周期核对、索引一致性、源历史保留和本地整页持久化仍由各自既有契约决定。
-

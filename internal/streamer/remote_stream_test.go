@@ -3,6 +3,7 @@ package streamer
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -500,4 +501,180 @@ func TestRemoteStream_RealGRPCRestorationAndCancellation(t *testing.T) {
 	require.NoError(t, stream.Close())
 	require.Equal(t, int32(2), takeWithin(t, backend.exits))
 	require.True(t, stream.Status().Terminal)
+}
+
+func TestRemoteStream_QueuedCanceledSendIsSkippedWithoutRetiringHealthyWriter(t *testing.T) {
+	gate := make(chan struct{})
+	_, stream, _, wire := openContractStream(t, func(_ int, wire *contractWire) error {
+		wire.sendGate = gate
+		return nil
+	}, nil)
+	firstDone := make(chan error, 1)
+	go func() { _, err := stream.Subscribe(context.Background(), "db", "first", nil); firstDone <- err }()
+	first := takeWithin(t, wire.sent).GetSubscribe()
+	require.NotNil(t, first)
+	owner := stream.(*remoteStream)
+	owner.mu.Lock()
+	attempt := owner.attempt
+	owner.mu.Unlock()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	secondDone := make(chan error, 1)
+	go func() { _, err := stream.Subscribe(ctx, "db", "second", nil); secondDone <- err }()
+	require.Eventually(t, func() bool { return len(attempt.sends) == 1 }, time.Second, time.Millisecond)
+	owner.mu.Lock()
+	var canceledID string
+	for id := range owner.pending {
+		if id != first.SubscriptionId {
+			canceledID = id
+		}
+	}
+	owner.mu.Unlock()
+	require.NotEmpty(t, canceledID)
+	cancel()
+	require.ErrorIs(t, takeWithin(t, secondDone), context.Canceled)
+	close(gate)
+	cleanup := takeWithin(t, wire.sent).GetUnsubscribe()
+	require.NotNil(t, cleanup)
+	require.Equal(t, canceledID, cleanup.SubscriptionId)
+	ackRegistration(wire, first.SubscriptionId, true)
+	require.NoError(t, takeWithin(t, firstDone))
+	require.Equal(t, attempt.generation, stream.Status().Generation)
+	require.Equal(t, StateConnected, stream.Status().State)
+	registration := registerContract(t, stream, wire)
+	require.Equal(t, attempt.generation, registration.Generation)
+}
+
+func TestRemoteStream_AcknowledgmentCannotPublishRetiredRegistration(t *testing.T) {
+	_, stream, factory, wire := openContractStream(t, nil, nil)
+	done := make(chan error, 1)
+	go func() { _, err := stream.Subscribe(context.Background(), "db", "items", nil); done <- err }()
+	request := takeWithin(t, wire.sent).GetSubscribe()
+	owner := stream.(*remoteStream)
+	owner.mu.Lock()
+	attempt := owner.attempt
+	entry := owner.pending[request.SubscriptionId]
+	// Retirement precedes I/O cancellation. An ACK already queued by the
+	// receiver must still fail the registry's final generation check.
+	owner.retireLocked(attempt, io.ErrUnexpectedEOF)
+	entry.response <- &pb.SubscribeResponse{SubscriptionId: request.SubscriptionId, Success: true}
+	owner.mu.Unlock()
+	require.ErrorIs(t, takeWithin(t, done), ErrStreamUnavailable)
+	owner.mu.Lock()
+	active, pending := len(owner.active), len(owner.pending)
+	owner.mu.Unlock()
+	require.Zero(t, active)
+	require.Zero(t, pending)
+	attempt.fail(io.ErrUnexpectedEOF)
+	second := takeWithin(t, factory.attempts)
+	waitStreamStatus(t, stream, func(state StreamStatus) bool { return state.State == StateConnected })
+	require.NotEqual(t, request.SubscriptionId, registerContract(t, stream, second).ID)
+}
+
+func TestRemoteStream_RegistrationAdmissionRechecksCapturedOwnership(t *testing.T) {
+	_, stream, _, wire := openContractStream(t, nil, nil)
+	owner := stream.(*remoteStream)
+	owner.mu.Lock()
+	attempt := owner.attempt
+	owner.mu.Unlock()
+	request := &pb.SubscribeRequest{SubscriptionId: "captured", Database: "db", Collection: "items"}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := owner.register(ctx, attempt, request, false)
+	require.ErrorIs(t, err, context.Canceled)
+	registration, err := owner.register(context.Background(), attempt, request, true)
+	require.NoError(t, err)
+	require.Empty(t, registration.ID)
+	select {
+	case msg := <-wire.sent:
+		t.Fatalf("withdrawn or canceled registration dispatched: %v", msg)
+	default:
+	}
+	require.NoError(t, stream.Close())
+	_, err = owner.register(context.Background(), attempt, request, false)
+	require.ErrorIs(t, err, ErrStreamUnavailable)
+}
+
+func TestRemoteStream_UnavailableAdmissionPreservesFailure(t *testing.T) {
+	failure := errors.New("terminal backend failure")
+	for _, terminal := range []bool{false, true} {
+		owner := &remoteStream{ctx: context.Background(), status: StreamStatus{State: StateDisconnected, Terminal: terminal, Err: failure}}
+		_, err := owner.Subscribe(context.Background(), "db", "items", nil)
+		if terminal {
+			require.ErrorIs(t, err, failure)
+		} else {
+			require.ErrorIs(t, err, ErrStreamUnavailable)
+		}
+	}
+}
+
+func TestRemoteStream_RecvClosedProducerPreservesTerminalReason(t *testing.T) {
+	failure := errors.New("backend receive terminated")
+	for _, reason := range []error{nil, failure} {
+		t.Run(fmt.Sprint(reason), func(t *testing.T) {
+			ended := make(chan receivedDelivery)
+			close(ended)
+			// Isolate producer completion from caller cancellation: the receive
+			// contract must preserve its published cause, or report clean EOF.
+			owner := &remoteStream{ctx: context.Background(), recv: ended,
+				status: StreamStatus{State: StateDisconnected, Terminal: true, Err: reason}}
+			event, err := owner.Recv()
+			require.Nil(t, event)
+			if reason == nil {
+				require.ErrorIs(t, err, io.EOF)
+			} else {
+				require.Same(t, reason, err)
+			}
+		})
+	}
+}
+
+func TestRemoteStream_FullControlQueueBoundsCancellationCleanup(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	owner := &remoteStream{ctx: ctx, changed: make(chan struct{}), pending: make(map[string]*pendingRegistration),
+		status: StreamStatus{State: StateConnected, Generation: 1}}
+	attemptCtx, stopAttempt := context.WithCancel(ctx)
+	defer stopAttempt()
+	attempt := newRemoteAttempt(owner, 1, attemptCtx, stopAttempt, nil)
+	owner.attempt = attempt
+	for range cap(attempt.sends) {
+		attempt.sends <- sendOperation{ctx: ctx}
+	}
+	message := &pb.GatewayMessage{Payload: &pb.GatewayMessage_Heartbeat{Heartbeat: &pb.Heartbeat{}}}
+	require.ErrorIs(t, owner.send(ctx, attempt, message), ErrRegistrationCapacity)
+	canceled, stopCaller := context.WithCancel(ctx)
+	stopCaller()
+	require.ErrorIs(t, owner.send(canceled, attempt, message), context.Canceled)
+	entry := &pendingRegistration{attempt: attempt}
+	owner.pending["canceled"] = entry
+	owner.abandon(attempt, "foreign", entry)
+	require.Len(t, owner.pending, 1)
+	owner.abandon(attempt, "canceled", entry)
+	state := owner.Status()
+	require.Greater(t, state.Generation, attempt.generation)
+	require.ErrorIs(t, state.Err, ErrRegistrationCapacity)
+	require.ErrorIs(t, attemptCtx.Err(), context.Canceled)
+	require.ErrorIs(t, owner.send(ctx, attempt, message), ErrRegistrationCapacity)
+	owner.abandon(attempt, "canceled", entry)
+	require.Empty(t, owner.pending)
+}
+
+func TestRemoteStream_MalformedBackendFramesRetireTheirOwner(t *testing.T) {
+	for name, payload := range map[string]*pb.StreamerMessage{
+		"missing subscribe reply": {Payload: &pb.StreamerMessage_SubscribeResponse{}},
+		"missing delivery":        {Payload: &pb.StreamerMessage_Delivery{}},
+		"unknown response":        {},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, stream, _, wire := openContractStream(t, nil, func(config *ClientConfig) { config.InitialBackoff = time.Hour })
+			initial := stream.Status()
+			wire.incoming <- streamReceive{message: payload}
+			current := waitStreamStatus(t, stream, func(state StreamStatus) bool { return state.Generation != initial.Generation })
+			require.Equal(t, StateReconnecting, current.State)
+			require.Error(t, current.Err)
+			_, err := stream.Subscribe(context.Background(), "db", "items", nil)
+			require.ErrorIs(t, err, ErrStreamUnavailable)
+		})
+	}
 }

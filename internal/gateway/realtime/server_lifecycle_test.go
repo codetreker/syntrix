@@ -103,6 +103,36 @@ func TestServerReplacesTerminalStreamAndClosesAllOldClients(t *testing.T) {
 	require.EqualValues(t, 2, service.calls.Load())
 }
 
+func TestLegacyControlFailureClosesSocketWhenHubIsAlreadyStopped(t *testing.T) {
+	hub := NewHub()
+	ctx, cancel := context.WithCancel(context.Background())
+	hub.setRunCtx(ctx)
+	t.Cleanup(cancel)
+	ready := make(chan *Client, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := (&websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}).Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		ready <- &Client{hub: hub, conn: conn, send: make(chan BaseMessage)}
+	}))
+	t.Cleanup(server.Close)
+	peer, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http"), nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = peer.Close() })
+	client := <-ready
+	t.Cleanup(func() { _ = client.conn.Close() })
+	cancel()
+	client.sendControl(BaseMessage{Type: TypeError})
+	require.NoError(t, peer.SetReadDeadline(time.Now().Add(time.Second)))
+	_, _, err = peer.ReadMessage()
+	require.Error(t, err)
+	var timeout net.Error
+	if errors.As(err, &timeout) {
+		require.False(t, timeout.Timeout(), "failed control admission must close the real socket")
+	}
+}
+
 func TestRetiredLegacyWebSocketDiscardsQueuedFrames(t *testing.T) {
 	hub := NewHub()
 	hub.SetStream(newLifecycleStream())

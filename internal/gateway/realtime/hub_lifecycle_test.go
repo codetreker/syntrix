@@ -2,6 +2,7 @@ package realtime
 
 import (
 	"context"
+	"errors"
 	"io"
 	"sync"
 	"sync/atomic"
@@ -287,4 +288,87 @@ func TestHubLegacyCleanupUsesItsLeaseWhenReplacementReusesID(t *testing.T) {
 	require.Len(t, newClient.send, 1)
 	h.ReleaseSubscription(newRegistration)
 	require.Eventually(t, func() bool { return newUnsubscribed.Load() == 1 }, time.Second, time.Millisecond)
+}
+
+type closeFailureStream struct {
+	*lifecycleStream
+	closeReturned chan struct{}
+}
+
+func (s *closeFailureStream) Close() error {
+	s.closed.Add(1)
+	close(s.closeReturned)
+	return errors.New("backend close failed")
+}
+
+func TestHubCleanupRetirementRemainsClosedWhenBackendCloseFails(t *testing.T) {
+	h := NewHub()
+	s := &closeFailureStream{lifecycleStream: newLifecycleStream(), closeReturned: make(chan struct{})}
+	h.SetStream(s)
+	h.setReplicaCleanupAdmission(func() (func(), bool) { return nil, false })
+	var closed atomic.Int32
+	_, ok := h.RegisterReplicaConnection(func() { closed.Add(1) })
+	require.True(t, ok)
+	release, err := h.SubscribeReplica(context.Background(), "db", "users", func() {}, func(error) {})
+	require.NoError(t, err)
+	release()
+	select {
+	case <-s.closeReturned:
+	case <-time.After(time.Second):
+		t.Fatal("retirement did not close its actual backend")
+	}
+	require.EqualValues(t, 1, closed.Load())
+	_, ok = h.RegisterReplicaConnection(func() { t.Error("retired stream accepted a new connection") })
+	require.False(t, ok)
+	h.retireReplicaStream(h.streamOwner, errors.New("second cleanup failure"))
+	require.EqualValues(t, 1, s.closed.Load())
+}
+
+type checkedACKStream struct {
+	*lifecycleStream
+	checks     atomic.Int32
+	ackChecked chan struct{}
+}
+
+func (s *checkedACKStream) Status() streamer.StreamStatus {
+	status := s.lifecycleStream.Status()
+	if s.checks.Add(1) == 2 {
+		close(s.ackChecked)
+	}
+	return status
+}
+
+func TestLegacyClientRejectsACKOwnerReplacedBeforeRegistration(t *testing.T) {
+	h := NewHub()
+	s := &checkedACKStream{lifecycleStream: newLifecycleStream(), ackChecked: make(chan struct{})}
+	var cleaned atomic.Int32
+	s.unsubscribe = func(string) error { cleaned.Add(1); return nil }
+	h.SetStream(s)
+	c := &Client{hub: h, authenticated: true, database: "db", send: make(chan BaseMessage, 1),
+		subscriptions: make(map[string]Subscription), streamerSubIDs: make(map[string]hubRegistration)}
+	c.mu.Lock()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		c.handleMessage(BaseMessage{ID: "subscribe", Type: TypeSubscribe, Payload: mustMarshal(SubscribePayload{Query: model.Query{Collection: "users"}})})
+	}()
+	select {
+	case <-s.ackChecked:
+	case <-time.After(time.Second):
+		c.mu.Unlock()
+		t.Fatal("subscription never reached its ACK ownership check")
+	}
+	h.SetStream(newLifecycleStream())
+	c.mu.Unlock()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("obsolete ACK did not terminate")
+	}
+	message := <-c.send
+	require.Equal(t, TypeError, message.Type)
+	require.Contains(t, string(message.Payload), "unavailable")
+	require.Empty(t, c.subscriptions)
+	require.Empty(t, c.streamerSubIDs)
+	require.Eventually(t, func() bool { return cleaned.Load() == 1 }, time.Second, time.Millisecond)
 }

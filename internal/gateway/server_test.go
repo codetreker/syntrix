@@ -180,6 +180,28 @@ func TestServer_SetDatabaseService(t *testing.T) {
 	// This is a smoke test to ensure the method works
 }
 
+func TestServer_SetDatabaseServiceUpdatesRESTAndReplicaAdmission(t *testing.T) {
+	queryService, auth, authz := new(MockQueryService), new(MockAuthService), new(MockAuthzEngine)
+	rt := realtime.NewServer(queryService, nil, "docs", auth, api_config.RealtimeConfig{})
+	server, err := NewServer(queryService, auth, authz, rt)
+	assert.NoError(t, err)
+	mux := http.NewServeMux()
+	server.RegisterRoutes(mux)
+	status := func(path string) int {
+		response := httptest.NewRecorder()
+		mux.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+		return response.Code
+	}
+	assert.Equal(t, http.StatusServiceUnavailable, status("/api/v1/databases"))
+	assert.Equal(t, http.StatusServiceUnavailable, status("/realtime/ws?mode="+realtime.ReplicaDataMode))
+	server.SetDatabaseService(&stubDatabaseService{})
+	assert.Equal(t, http.StatusUnauthorized, status("/api/v1/databases"))
+	assert.Equal(t, http.StatusBadRequest, status("/realtime/ws?mode="+realtime.ReplicaDataMode), "database injection should reach WebSocket handshake validation")
+	server.SetDatabaseService(nil)
+	assert.Equal(t, http.StatusServiceUnavailable, status("/api/v1/databases"))
+	assert.Equal(t, http.StatusServiceUnavailable, status("/realtime/ws?mode="+realtime.ReplicaDataMode))
+}
+
 func TestNewServer_WithOptions(t *testing.T) {
 	mockQuery := new(MockQueryService)
 	mockAuth := new(MockAuthService)
