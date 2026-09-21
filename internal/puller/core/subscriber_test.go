@@ -1,8 +1,10 @@
 package core
 
 import (
+	"bytes"
 	"io"
 	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -39,26 +41,97 @@ func TestSubscriber_ShouldSend(t *testing.T) {
 	assert.True(t, sub.ShouldSend("db2", "old", ctOld), "Should send event for new backend")
 }
 
-func TestSubscriber_Overflow(t *testing.T) {
-	sub := testSubscriber(t, "test-sub", nil, false, 100)
+func TestSubscriber_RecoveryFencesLiveAdmission(t *testing.T) {
+	sub := testSubscriber(t, "test-sub", nil, false, 1)
+	first := &events.StoreChangeEvent{EventID: "first"}
+	dropped := &events.StoreChangeEvent{EventID: "dropped"}
+	later := &events.StoreChangeEvent{EventID: "later"}
 
-	assert.False(t, sub.GetAndResetOverflow())
+	admitted, recoveryStarted := sub.enqueue(first)
+	require.True(t, admitted)
+	require.False(t, recoveryStarted)
+	admitted, recoveryStarted = sub.enqueue(dropped)
+	require.False(t, admitted)
+	require.True(t, recoveryStarted)
+	require.True(t, sub.RecoveryPending())
+	select {
+	case <-sub.Recovery():
+	default:
+		t.Fatal("overflow did not wake recovery")
+	}
 
-	sub.SetOverflow()
-	assert.True(t, sub.GetAndResetOverflow())
-	assert.False(t, sub.GetAndResetOverflow())
+	require.Same(t, first, <-sub.Events())
+	admitted, recoveryStarted = sub.enqueue(later)
+	require.False(t, admitted, "later live events must not cross a missing event")
+	require.False(t, recoveryStarted)
+	select {
+	case evt := <-sub.Events():
+		t.Fatalf("recovery fence admitted %q", evt.EventID)
+	default:
+	}
 
-	// Concurrency test
+	sub.BeginRecovery()
+	require.False(t, sub.RecoveryPending())
+	admitted, recoveryStarted = sub.enqueue(later)
+	require.True(t, admitted)
+	require.False(t, recoveryStarted)
+	admitted, recoveryStarted = sub.enqueue(&events.StoreChangeEvent{EventID: "second-overflow"})
+	require.False(t, admitted)
+	require.True(t, recoveryStarted)
+	select {
+	case <-sub.Recovery():
+	default:
+		t.Fatal("recovery did not rearm after a completed handoff")
+	}
+	require.Same(t, later, <-sub.Events())
+}
+
+func TestSubscriber_RecoveryCoalescesConcurrentOverflow(t *testing.T) {
+	sub := testSubscriber(t, "test-sub", nil, false, 1)
+	admitted, recoveryStarted := sub.enqueue(&events.StoreChangeEvent{EventID: "first"})
+	require.True(t, admitted)
+	require.False(t, recoveryStarted)
+
 	var wg sync.WaitGroup
+	results := make(chan bool, 100)
 	for i := 0; i < 100; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			sub.SetOverflow()
+			admitted, _ := sub.enqueue(&events.StoreChangeEvent{EventID: "overflow"})
+			results <- admitted
 		}()
 	}
 	wg.Wait()
-	assert.True(t, sub.GetAndResetOverflow())
+	close(results)
+	for admitted := range results {
+		require.False(t, admitted)
+	}
+	require.True(t, sub.RecoveryPending())
+
+	select {
+	case <-sub.Recovery():
+	default:
+		t.Fatal("concurrent overflow did not publish recovery")
+	}
+	select {
+	case <-sub.Recovery():
+		t.Fatal("concurrent overflow published duplicate recovery notifications")
+	default:
+	}
+}
+
+func TestSubscriberManager_LogsOnlyRecoveryTransition(t *testing.T) {
+	var output bytes.Buffer
+	manager := NewSubscriberManager(slog.New(slog.NewTextHandler(&output, nil)))
+	sub := testSubscriber(t, "slow", nil, false, 1)
+	manager.Add(sub)
+
+	manager.Broadcast(&events.StoreChangeEvent{EventID: "queued"})
+	manager.Broadcast(&events.StoreChangeEvent{EventID: "overflow"})
+	manager.Broadcast(&events.StoreChangeEvent{EventID: "fenced"})
+
+	require.Equal(t, 1, strings.Count(output.String(), "slow consumer requires retained replay"))
 }
 
 func TestSubscriberManager(t *testing.T) {
@@ -92,7 +165,7 @@ func TestSubscriberManager(t *testing.T) {
 
 	// Broadcast one more, should trigger overflow
 	mgr.Broadcast(evt)
-	assert.True(t, sub1.GetAndResetOverflow())
+	assert.True(t, sub1.RecoveryPending())
 
 	// Test Remove
 	mgr.Remove(sub1)

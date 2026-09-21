@@ -2,16 +2,21 @@ package grpc
 
 import (
 	"context"
+	"io"
+	"log/slog"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 	pullerv1 "github.com/syntrixbase/syntrix/api/gen/puller/v1"
 	"github.com/syntrixbase/syntrix/internal/puller/config"
 	"github.com/syntrixbase/syntrix/internal/puller/events"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 )
 
 // --- Mocks ---
@@ -77,6 +82,59 @@ func (m *controllableIterator) Close() error {
 type controllableEventSource struct {
 	replayFunc func(ctx context.Context, after map[string]string, coalesce bool) (events.Iterator, error)
 	handler    func(ctx context.Context, backendName string, event *events.StoreChangeEvent) error
+}
+
+type blockingWarnState struct {
+	once        sync.Once
+	releaseOnce sync.Once
+	entered     chan struct{}
+	release     chan struct{}
+}
+
+func (s *blockingWarnState) unblock() {
+	s.releaseOnce.Do(func() { close(s.release) })
+}
+
+type blockingWarnHandler struct {
+	next  slog.Handler
+	state *blockingWarnState
+}
+
+func newBlockingWarnLogger() (*slog.Logger, *blockingWarnState) {
+	state := &blockingWarnState{entered: make(chan struct{}), release: make(chan struct{})}
+	handler := &blockingWarnHandler{
+		next:  slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelWarn}),
+		state: state,
+	}
+	return slog.New(handler), state
+}
+
+func (h *blockingWarnHandler) Enabled(ctx context.Context, level slog.Level) bool {
+	return h.next.Enabled(ctx, level)
+}
+
+func (h *blockingWarnHandler) Handle(ctx context.Context, record slog.Record) error {
+	blocked := false
+	h.state.once.Do(func() {
+		blocked = true
+		close(h.state.entered)
+	})
+	if blocked {
+		select {
+		case <-h.state.release:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return h.next.Handle(ctx, record)
+}
+
+func (h *blockingWarnHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return &blockingWarnHandler{next: h.next.WithAttrs(attrs), state: h.state}
+}
+
+func (h *blockingWarnHandler) WithGroup(name string) slog.Handler {
+	return &blockingWarnHandler{next: h.next.WithGroup(name), state: h.state}
 }
 
 func (m *controllableEventSource) SetEventHandler(handler func(ctx context.Context, backendName string, event *events.StoreChangeEvent) error) {
@@ -183,18 +241,21 @@ func TestServer_StateMachine_LiveDowngrade(t *testing.T) {
 	cfg := config.GRPCConfig{ChannelSize: 1}
 	var replayCount int
 	var mu sync.Mutex
-	replayEvt := &events.StoreChangeEvent{
-		EventID: "replay-2", Backend: "db1", ClusterTime: events.ClusterTime{T: 103, I: 1},
+	replayEvents := []*events.StoreChangeEvent{
+		{EventID: "evt-2", Backend: "db1", ClusterTime: events.ClusterTime{T: 101, I: 1}},
+		{EventID: "evt-3", Backend: "db1", ClusterTime: events.ClusterTime{T: 102, I: 1}},
 	}
 	source := &controllableEventSource{
 		replayFunc: func(ctx context.Context, after map[string]string, coalesce bool) (events.Iterator, error) {
 			mu.Lock()
 			replayCount++
 			mu.Unlock()
-			return &controllableIterator{events: []*events.StoreChangeEvent{replayEvt}}, nil
+			return &controllableIterator{events: replayEvents}, nil
 		},
 	}
-	server := NewServer(cfg, source, nil)
+	logger, blockedWarn := newBlockingWarnLogger()
+	t.Cleanup(blockedWarn.unblock)
+	server := NewServer(cfg, source, logger)
 	server.Init()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -215,7 +276,7 @@ func TestServer_StateMachine_LiveDowngrade(t *testing.T) {
 	})).Return(nil).Once()
 	replayDone := make(chan struct{})
 	stream.On("Send", mock.MatchedBy(func(event *pullerv1.PullerEvent) bool {
-		return event.ChangeEvent != nil && event.ChangeEvent.EventId == "replay-2"
+		return event.ChangeEvent != nil && event.ChangeEvent.EventId == "evt-3"
 	})).Run(func(args mock.Arguments) {
 		close(replayDone)
 	}).Return(nil).Once()
@@ -255,10 +316,17 @@ func TestServer_StateMachine_LiveDowngrade(t *testing.T) {
 		t.Fatal("Timeout waiting for the first Send to block")
 	}
 
-	// The downgrade scenario requires overflow to be fully published before
-	// Send resumes. EmitEvent only enqueues asynchronous broadcast work.
 	server.subs.Broadcast(&events.StoreChangeEvent{EventID: "evt-2", Backend: "db1", ClusterTime: events.ClusterTime{T: 101}})
-	server.subs.Broadcast(&events.StoreChangeEvent{EventID: "evt-3", Backend: "db1", ClusterTime: events.ClusterTime{T: 102}})
+	overflowDone := make(chan struct{})
+	go func() {
+		defer close(overflowDone)
+		server.subs.Broadcast(&events.StoreChangeEvent{EventID: "evt-3", Backend: "db1", ClusterTime: events.ClusterTime{T: 102}})
+	}()
+	select {
+	case <-blockedWarn.entered:
+	case <-ctx.Done():
+		t.Fatal("Timeout waiting for overflow logging to block")
+	}
 	close(sendBlock)
 
 	select {
@@ -266,12 +334,75 @@ func TestServer_StateMachine_LiveDowngrade(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal("Timeout waiting for replay event after overflow")
 	}
+	blockedWarn.unblock()
+	select {
+	case <-overflowDone:
+	case <-ctx.Done():
+		t.Fatal("Timeout waiting for overflow broadcast to finish")
+	}
 	mu.Lock()
 	if replayCount < 1 {
 		t.Errorf("Expected at least 1 replay, got %d", replayCount)
 	}
 	mu.Unlock()
 	stream.AssertExpectations(t)
+}
+
+func TestServer_RecoveryPendingTerminatesOnCancellationOrClosure(t *testing.T) {
+	for _, phase := range []string{"cancel", "close"} {
+		t.Run(phase, func(t *testing.T) {
+			source := &controllableEventSource{}
+			server := NewServer(config.GRPCConfig{ChannelSize: 1}, source, nil)
+			server.Init()
+			t.Cleanup(server.Shutdown)
+
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			stream := &mockStream{ctx: ctx, t: t}
+			sendEntered := make(chan struct{})
+			sendBlock := make(chan struct{})
+			stream.On("Send", mock.MatchedBy(func(event *pullerv1.PullerEvent) bool {
+				return event.ChangeEvent != nil && event.ChangeEvent.EventId == "evt-1"
+			})).Run(func(mock.Arguments) {
+				close(sendEntered)
+				<-sendBlock
+			}).Return(nil).Once()
+
+			subscribeDone := make(chan error, 1)
+			go func() {
+				subscribeDone <- server.Subscribe(&pullerv1.SubscribeRequest{ConsumerId: phase}, stream)
+			}()
+			require.Eventually(t, func() bool { return server.subs.Count() == 1 }, time.Second, time.Millisecond)
+			server.subs.Broadcast(&events.StoreChangeEvent{EventID: "evt-1", Backend: "db1", ClusterTime: events.ClusterTime{T: 1}})
+			select {
+			case <-sendEntered:
+			case <-ctx.Done():
+				t.Fatal("first send did not block")
+			}
+			server.subs.Broadcast(&events.StoreChangeEvent{EventID: "evt-2", Backend: "db1", ClusterTime: events.ClusterTime{T: 2}})
+			server.subs.Broadcast(&events.StoreChangeEvent{EventID: "evt-3", Backend: "db1", ClusterTime: events.ClusterTime{T: 3}})
+			sub := server.subs.All()[0]
+			require.True(t, sub.RecoveryPending())
+
+			if phase == "cancel" {
+				cancel()
+			} else {
+				server.subs.CloseAll()
+			}
+			close(sendBlock)
+			select {
+			case err := <-subscribeDone:
+				if phase == "cancel" {
+					require.NoError(t, err)
+				} else {
+					require.Equal(t, codes.Canceled, status.Code(err))
+				}
+			case <-time.After(time.Second):
+				t.Fatal("subscription did not terminate with recovery pending")
+			}
+			stream.AssertExpectations(t)
+		})
+	}
 }
 
 func TestServer_Boundary_EmptyReplay(t *testing.T) {

@@ -286,13 +286,12 @@ func (s *Server) Subscribe(req *pullerv1.SubscribeRequest, stream pullerv1.Pulle
 		}
 
 		if mode == "catchup" {
+			sub.BeginRecovery()
 			// Drain channel to make space for new events if we are recovering from overflow
 			if shouldDrain {
 				drainChannel(sub.Events())
 				shouldDrain = false
 			}
-			sub.GetAndResetOverflow() // Clear overflow flag
-
 			// Start replay
 			var iter events.Iterator
 			var err error
@@ -335,7 +334,7 @@ func (s *Server) Subscribe(req *pullerv1.SubscribeRequest, stream pullerv1.Pulle
 			}
 
 			// Check if we overflowed during replay
-			if sub.GetAndResetOverflow() {
+			if sub.RecoveryPending() {
 				s.logger.Info("subscriber overflowed during replay, continuing catchup", "consumerId", sub.ID)
 				shouldDrain = true
 				continue
@@ -364,6 +363,12 @@ func (s *Server) Subscribe(req *pullerv1.SubscribeRequest, stream pullerv1.Pulle
 				s.logger.Info("subscriber closed", "consumerId", sub.ID)
 				return status.Error(codes.Canceled, "subscription closed")
 
+			case <-sub.Recovery():
+				s.logger.Info("subscriber overflowed, switching to catchup", "consumerId", sub.ID)
+				mode = "catchup"
+				shouldDrain = true
+				continue
+
 			case <-heartbeatTicker.C:
 				if source != nil {
 					if err := source.ValidateBoundary(ctx, sub.CurrentProgress().Encode()); err != nil {
@@ -380,18 +385,13 @@ func (s *Server) Subscribe(req *pullerv1.SubscribeRequest, stream pullerv1.Pulle
 				}
 
 			case evt := <-sub.Events():
-				// Check for overflow, but don't switch immediately.
-				// We need to process the current event 'evt' first to ensure we don't drop it.
-				// If we switch immediately, 'evt' would be lost.
-				hasOverflow := sub.GetAndResetOverflow()
-
 				if evt != nil && sub.ShouldSend(evt.Backend, evt.EventID, evt.ClusterTime) {
 					if err := s.sendEvent(stream, sub, evt.Backend, evt); err != nil {
 						return err
 					}
 				}
 
-				if hasOverflow {
+				if sub.RecoveryPending() {
 					s.logger.Info("subscriber overflowed, switching to catchup", "consumerId", sub.ID)
 					mode = "catchup"
 					shouldDrain = true

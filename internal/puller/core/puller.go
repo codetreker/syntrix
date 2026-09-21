@@ -612,7 +612,7 @@ func (p *Puller) subscribe(ctx context.Context, consumerID, after string, onRead
 		defer healthTicker.Stop()
 		for {
 			if catchup {
-				sub.GetAndResetOverflow()
+				sub.BeginRecovery()
 				var iter events.Iterator
 				var err error
 				if verified {
@@ -638,7 +638,7 @@ func (p *Puller) subscribe(ctx context.Context, consumerID, after string, onRead
 					fail(errors.Join(replayErr, closeErr), false)
 					return
 				}
-				if sub.GetAndResetOverflow() {
+				if sub.RecoveryPending() {
 					for len(sub.Events()) > 0 {
 						<-sub.Events()
 					}
@@ -667,6 +667,11 @@ func (p *Puller) subscribe(ctx context.Context, consumerID, after string, onRead
 				return
 			case <-sub.Done():
 				return
+			case <-sub.Recovery():
+				catchup = true
+				for len(sub.Events()) > 0 {
+					<-sub.Events()
+				}
 			case <-healthTicker.C:
 				if verified {
 					if err := p.ValidateBoundary(ctx, sub.CurrentProgress().Encode()); err != nil {
@@ -676,11 +681,10 @@ func (p *Puller) subscribe(ctx context.Context, consumerID, after string, onRead
 					}
 				}
 			case evt := <-sub.Events():
-				overflow := sub.GetAndResetOverflow()
 				if !send(evt) {
 					return
 				}
-				if overflow {
+				if sub.RecoveryPending() {
 					catchup = true
 					for len(sub.Events()) > 0 {
 						<-sub.Events()

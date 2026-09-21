@@ -93,9 +93,8 @@ func TestVerifiedOverflowReplaysUnseenSiblingsBeforeReady(t *testing.T) {
 		delivered = append(delivered, frame.ChangeEvent.EventId)
 		lastProgress = frame.Progress
 		if len(delivered) == 1 {
-			subscribers := server.subs.All()
-			require.Len(t, subscribers, 1)
-			subscribers[0].SetOverflow()
+			server.subs.Broadcast(&events.StoreChangeEvent{EventID: "live-1"})
+			server.subs.Broadcast(&events.StoreChangeEvent{EventID: "live-2"})
 		}
 		return nil
 	}}
