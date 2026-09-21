@@ -1,7 +1,7 @@
 # TypeScript Client SDK Architecture
 
 **Date:** December 27, 2025
-**Status:** Remote clients and the public replica database API are implemented, including local query/watch, HTTP replication and explicit recovery.
+**Status:** 远程客户端与公开 replica API 已实现；副本下行使用私有 WS 数据页并自动 HTTP fallback，上行沿用 HTTP Push。
 
 **Related:** [003_authentication.md](003_authentication.md) defines the shared auth surface used by HTTP clients, replication, and realtime. Client specifics: [004_syntrix_client.md](004_syntrix_client.md), [005_trigger_client.md](005_trigger_client.md).
 
@@ -44,55 +44,44 @@ Both clients implement `StorageClient`, enabling the Reference API to stay trans
 
 Internal details live under `src/internal` and are marked `/** @internal */`, keeping the public surface minimal.
 
-### 2.5 Realtime Auth & Transports (WS + SSE)
+### 2.5 复制运输与 SSE
 
-- Why: Realtime must honor the same database-aware auth as REST; browsers may need SSE in constrained environments.
-- How: WS sends Bearer on HTTP upgrade and a frame-level `auth`; on auth errors, a single token refresh is attempted then surfaced. SSE uses Authorization header only, rejects query tokens, and applies the same database scoping.
+私有 replica WS 以 auth 帧传递 token、database 和模式，沿用复制源授权与身份绑定。
+普通 SSE 继续使用 Authorization header；两者保留同一会话隔离规则。公开原始 WS
+订阅入口已移除，应用通过本地 watch 消费副本结果。
 
 ## 3. Architecture
 
-```mermaid
-graph TD
-    UserApp[External App] --> SyntrixClient
-    TriggerWorker[Trigger Worker] --> TriggerHandler --> TriggerClient
+```text
+应用 -> SyntrixClient -> REST document/query/manual Pull
+     -> openReplica  -> 本地 CRUD/query/watch
+                         +-> 私有 source transport -> WS typed page / HTTP fallback
+                         +-> 既有 HTTP Push
+     -> realtimeSSE  -> 普通 SSE 事件
 
-    subgraph Public API
-        SyntrixClient
-        TriggerClient
-        Ref[Reference API (doc, collection)]
-    end
-
-    subgraph Internal Implementation
-        SyntrixClient -- implements --> StorageClient
-        TriggerClient -- implements --> StorageClient
-        Ref -- depends on --> StorageClient
-    end
-
-    SyntrixClient -- HTTP REST --> Server[/api/v1/...]
-    TriggerClient -- Trigger RPC --> Server[/api/v1/trigger/...]
-    SyntrixClient -- Realtime WS/SSE --> Server[/realtime/ws|sse]
+Trigger worker -> TriggerClient -> Trigger RPC
 ```
+
+副本只有一套下行应用器；运输选择不改变本地成员、pin、冲突或 checkpoint。
+普通 SSE 不自动写入副本，也不取得 replica 连接的所有权。
 
 ## 4. Implementation Details
 
-### 4.1 Directory Structure
+### 4.1 组件责任
 
-```text
-pkg/syntrix-client-ts/src/
-├── api/                # Reference layer
-├── clients/            # SyntrixClient, TriggerClient
-├── internal/           # StorageClient contract & helpers
-├── replication/        # Realtime + replication helpers (WS/SSE)
-├── trigger/            # TriggerHandler helper
-├── types.ts            # Shared types
-└── index.ts            # Public exports
-```
+| 组件 | 责任 |
+|---|---|
+| 公开引用 | REST 与本地副本显式分离，应用不接触原生 RxDB 对象 |
+| 认证 provider | 会话归属、凭据刷新与旧请求隔离 |
+| Replica database 句柄 | 本地别名、查询、election、私有运输及关闭顺序 |
+| 源运输 | 一个句柄共享私有 WS，活动 leader 使用；不可用时有限 HTTP fallback |
+| 原生复制与存储 | 唯一的整页应用、成员激活、metadata/checkpoint 和恢复 |
 
 ### 4.2 Auth
 
 - AuthConfig carries `database`; login accepts `database` and derives `/auth/v1/login`.
 - Token refresh serialized; hooks for refresh/error callbacks.
-- Realtime WS retries auth once after refresh; SSE relies on header-only auth.
+- 私有 WS 对当前 auth 的 UNAUTHORIZED 最多 refresh 一次；SSE 保持 header-only auth。
 
 ## 5. Replication (Overview)
 
@@ -107,15 +96,14 @@ initial dependency graph. The public `openReplica` facade composes private alias
 provides account-scoped Dexie persistence, lossless typed values, raw CAS CRUD,
 source/physical generation records, and clean compaction. Private queries use
 bounded storage projections, exact scalar semantics, shared AVL candidates and
-dynamic watch with manifest reconciliation. Private downstream connects matching-set
-and window HTTP sources with durable generation activation, pin protection, polling,
-and per-alias native leadership. Private upstream sends typed HTTP Push, retains
+dynamic watch with manifest reconciliation. 私有下行通过同一 source adapter 使用 WS 数据页
+或 HTTP fallback，保留 generation 激活、pin、周期核对和 alias leader。Private upstream sends typed HTTP Push, retains
 native successful acknowledgements, and persists bounded phase/recovery state.
 Uncertain results pause automatic synchronization while local CRUD remains
 available; explicit recovery is guarded by the original database identity and
 current edit token. Public replica references use local state; REST references
-retain direct remote behavior. Authorized polling supplies convergence while
-automatic WebSocket hints await matching source authorization. See
+retain direct remote behavior. 正常核对与变化触发轮次都走当前运输；WS 不可用才走 HTTP，
+整页持久化边界控制切换与 ACK。See
 [002_replication_client.md](002_replication_client.md).
 
 ## 6. Primary Test Coverage (Planned/Implemented)
@@ -123,11 +111,11 @@ automatic WebSocket hints await matching source authorization. See
 - SyntrixClient: 401/403 single refresh + retry; 404 -> null; create with/without id; query shape.
 - TriggerClient: reject create without id; batch forwards writes; get returns null on empty; missing token fails fast.
 - Auth layer: serialized refresh under concurrent 401s; hooks fire correctly; realtime auth failure retries once then surfaces.
-- Realtime: WS auth ack gates resubscribe; SSE delivers events/snapshots with header auth; inactivity triggers reconnect.
+- Replica 运输：WS auth/注册关联、有限 read、HTTP fallback、整页 ACK、source 租约与迟到消息；SSE 保持独立 header 认证。
 - Manual Pull: typed page validation, request routing, cancellation, and session replacement.
 - Runtime and storage: bounded scans, durable page/checkpoint ordering, identity and lifecycle fences, raw CAS CRUD, size admission, and compaction recovery.
 - Private queries: exact filtering/order/cursors, window refill, generation and metadata invalidations, shared handle lifecycle, and continuous resource admission.
-- Private downstream: authenticated bounded HTTP sources, ordered member projection, durable pin boundaries, leader takeover and late-response cancellation.
+- 私有下行：WS/HTTP 共用 typed 校验、成员投影、pin、leader 接续及迟到响应取消。
 - Private upstream: typed request limits, conflict-driven CAS, whole-phase failure classification, durable recovery intent and paused local access.
 - Public replica integration: immutable source definitions, offline open, typed references, status/recovery projection, safe alias removal, lifecycle fencing and lazy package exports.
 

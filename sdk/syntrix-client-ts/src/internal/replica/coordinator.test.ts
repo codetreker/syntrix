@@ -11,7 +11,7 @@ import { compactAlias } from './compaction.js';
 import { createReplicaDownstream, type CoordinatorEnvironment, type ReplicaDownstream } from './coordinator.js';
 import { encodeBusinessPayload, freezeSourceDefinition } from './records.js';
 import { ReplicaStorageError } from './storage-types.js';
-import type { ReplicaSourceAdapter, SourceEventsPage } from './source-types.js';
+import type { ReplicaSourceAdapter, SourceEventsPage, SourceLeaseContext } from './source-types.js';
 
 const until = async (predicate: () => boolean | Promise<boolean>) => {
   const end = Date.now() + 4_000;
@@ -30,6 +30,130 @@ const page = (cursor = 'c1'): SourceEventsPage => ({ protocolVersion: 1, mode: '
 const source = (read: ReplicaSourceAdapter['read']): ReplicaSourceAdapter => ({ definition: freezeSourceDefinition({ collection: 'users', filters: [] }), mode: 'events', read });
 const immediate: CoordinatorEnvironment = { leadership: () => ({ wait: async signal => { signal.throwIfAborted(); }, close: async () => {} }),
   now: Date.now, random: () => 1, set: (callback, delay) => setTimeout(callback, delay), clear: clearTimeout };
+
+test('source leases are leader-only and external maintenance releases a page only after native drain', async () => {
+  const env = await fixture();
+  const leases: SourceLeaseContext[] = [];
+  const events: string[] = [];
+  let enter!: () => void, release!: () => void, grant!: () => void;
+  const entered = new Promise<void>(resolve => { enter = resolve; });
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const elected = new Promise<void>(resolve => { grant = resolve; });
+  const native = env.storage.native;
+  let arm = true;
+  const spy = spyOn(env.storage, 'native').mockImplementation(async scope => {
+    const handles = await native(scope);
+    return { ...handles, fork: new Proxy(handles.fork, { get(target, key) {
+      if (key === 'bulkWrite') return async (...args: Parameters<typeof target.bulkWrite>) => {
+        if (arm && args[1].startsWith('replication-downstream-')) { arm = false; enter(); await gate; }
+        return target.bulkWrite(...args);
+      };
+      const value = Reflect.get(target, key, target); return typeof value === 'function' ? value.bind(target) : value;
+    } }) };
+  });
+  const adapter = source(async () => { throw new Error('An acquired source lease must own reads'); });
+  adapter.resume = () => { events.push('resumed'); };
+  adapter.acquire = context => {
+    const index = leases.push(context);
+    return { ...adapter, read: async () => { events.push(`read:${index}`); return page(); },
+      committed: () => { events.push(`committed:${index}`); }, released: () => { events.push(`released:${index}`); },
+      invalidate: () => { events.push(`invalidated:${index}`); }, close: async () => { events.push(`closed:${index}`); } };
+  };
+  const coordinator = createReplicaDownstream({ storage: env.storage, source: adapter, options: { hintDelayMs: 5 } }, { ...immediate,
+    leadership: () => ({ wait: async () => elected, close: async () => {} }) });
+  try {
+    await until(() => coordinator.snapshot.state === 'waiting');
+    expect(leases).toEqual([]);
+    grant(); await entered;
+    expect(events).toEqual(['read:1']);
+    const maintenance = env.storage.withMaintenance(async () => {
+      expect(events).toEqual(['read:1', 'invalidated:1', 'released:1', 'closed:1']);
+    });
+    await until(() => events.includes('invalidated:1'));
+    expect(events).not.toContain('released:1'); expect(events).not.toContain('closed:1');
+    const paused = coordinator.pause();
+    release(); await Promise.all([maintenance, paused]);
+    expect(events).not.toContain('committed:1');
+    await coordinator.resume(); await until(() => coordinator.snapshot.state === 'idle');
+    expect(events.filter(event => event === 'resumed')).toHaveLength(1);
+    expect(events.indexOf('closed:1')).toBeLessThan(events.indexOf('resumed'));
+    expect(events.indexOf('resumed')).toBeLessThan(events.indexOf('read:2'));
+    await coordinator.resume();
+    expect(events.filter(event => event === 'resumed')).toHaveLength(1);
+    expect(leases).toHaveLength(2);
+    expect(leases[1].scope.nativeInstanceId).not.toBe(leases[0].scope.nativeInstanceId);
+    expect(events).toContain('committed:2');
+    leases[0].hint(); await Bun.sleep(20);
+    expect(events.filter(event => event === 'read:2')).toHaveLength(1);
+    leases[1].hint(); await until(() => events.filter(event => event === 'read:2').length === 2 && coordinator.snapshot.state === 'idle');
+  } finally { grant(); release(); spy.mockRestore(); await coordinator.close(); await env.storage.close(); }
+  expect(events.filter(event => event === 'closed:1')).toHaveLength(1);
+  expect(events.filter(event => event === 'closed:2')).toHaveLength(1);
+});
+
+test('accepted page cleanup preserves persistence and lease-close failures while releasing its receipt', async () => {
+  const env = await fixture();
+  const database = await env.storage.withMaintenance(async access => access.backend.database);
+  const persistence = new Error('binding persistence failed'), cleanup = new Error('source lease close failed');
+  const events: string[] = [];
+  const bind = spyOn(env.storage, 'bind').mockImplementation(async () => { throw persistence; });
+  const adapter = source(async () => { throw new Error('Use the elected lease'); });
+  adapter.acquire = () => ({ ...adapter, read: async () => { events.push('accepted'); return page(); },
+    committed: () => { events.push('committed'); }, released: () => { events.push('released'); },
+    invalidate: () => { events.push('invalidated'); }, close: async () => { events.push('closed'); throw cleanup; } });
+  const coordinator = createReplicaDownstream({ storage: env.storage, source: adapter }, immediate);
+  try {
+    await until(() => coordinator.snapshot.state === 'blocked');
+    expect(events).toEqual(['accepted', 'invalidated', 'released', 'closed']);
+    const failure = coordinator.snapshot.error as { errors: unknown[] };
+    expect(failure.errors[0]).toBe(persistence);
+    expect((failure.errors[1] as { errors: unknown[] }).errors).toEqual([persistence, cleanup]);
+    await expect(coordinator.close()).rejects.toBeDefined();
+    expect(events.filter(event => event === 'closed')).toHaveLength(1);
+  } finally { bind.mockRestore(); await Promise.allSettled([coordinator.close(), env.storage.close()]); await database.close(); }
+});
+
+for (const closeFails of [false, true]) test(`observer blocking drains an accepted source page automatically (cleanup failure: ${closeFails})`, async () => {
+  const env = await fixture();
+  const database = await env.storage.withMaintenance(async access => access.backend.database);
+  const events: string[] = [], cleanupError = new Error('lease cleanup failed after observer block');
+  let entered!: () => void, release!: () => void;
+  const applying = new Promise<void>(resolve => { entered = resolve; });
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const native = env.storage.native;
+  const spy = spyOn(env.storage, 'native').mockImplementation(async scope => {
+    const handles = await native(scope);
+    return { ...handles, fork: new Proxy(handles.fork, { get(target, key) {
+      if (key === 'bulkWrite') return async (...args: Parameters<typeof target.bulkWrite>) => {
+        if (args[1].startsWith('replication-downstream-')) { entered(); await gate; }
+        return target.bulkWrite(...args);
+      };
+      const value = Reflect.get(target, key, target); return typeof value === 'function' ? value.bind(target) : value;
+    } }) };
+  });
+  const adapter = source(async () => { throw new Error('Use the elected lease'); });
+  adapter.acquire = () => ({ ...adapter, read: async () => { events.push('accepted'); return page(); },
+    committed: () => { events.push('committed'); }, released: () => { events.push('released'); },
+    invalidate: () => { events.push('invalidated'); }, close: async () => { events.push('closed'); if (closeFails) throw cleanupError; } });
+  const coordinator = createReplicaDownstream({ storage: env.storage, source: adapter, options: { pollIntervalMs: 10 } }, immediate);
+  try {
+    await applying;
+    const scope = await env.storage.captureScope();
+    await env.storage.withReplicationAccess(scope, access => access.writeManifest({ ...access.manifest,
+      issues: [{ id: 'observer-issue', logicalId: null, code: 'ReplicaWriteConflict' }] }));
+    await until(() => coordinator.snapshot.state === 'blocked');
+    expect(events).toEqual(['accepted', 'invalidated']);
+    release(); await until(() => events.includes('closed'));
+    expect(events).toEqual(['accepted', 'invalidated', 'released', 'closed']);
+    if (closeFails) {
+      await until(() => (coordinator.snapshot.error as { code?: string })?.code === 'ReplicaCleanupFailed');
+      const failure = coordinator.snapshot.error as { errors: unknown[] };
+      expect(failure.errors[0]).toMatchObject({ code: 'ReplicaRecoveryPending' });
+      expect(failure.errors[1]).toBe(cleanupError);
+      await expect(coordinator.close()).rejects.toBe(cleanupError);
+    } else await coordinator.close();
+  } finally { release(); spy.mockRestore(); await Promise.allSettled([coordinator.close(), env.storage.close()]); await database.close(); }
+});
 
 test('pause drains requests and preserves leadership and CRUD until explicit resume', async () => {
   const env = await fixture(); let calls = 0, leaderCloses = 0;

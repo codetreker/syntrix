@@ -7,10 +7,34 @@ import {
   type ReplicaSyncStatus,
 } from '@syntrix/client';
 
+// @ts-expect-error WebSocket clients are private replica transports.
+type RemovedClient = import('@syntrix/client').RealtimeClient;
+// @ts-expect-error The legacy notification wrapper is removed.
+type RemovedListener = import('@syntrix/client').RealtimeListener;
+// @ts-expect-error Raw WebSocket request options are not public.
+type RemovedSubscribeOptions = import('@syntrix/client').SubscribeOptions;
+// @ts-expect-error Raw WebSocket subscription callbacks are not public.
+type RemovedSubscriptionCallbacks = import('@syntrix/client').SubscriptionCallbacks;
+// @ts-expect-error Raw WebSocket connection options are not public.
+type RemovedClientOptions = import('@syntrix/client').RealtimeClientOptions;
+// @ts-expect-error The raw message envelope is not public.
+type RemovedMessage = import('@syntrix/client').BaseMessage;
+// @ts-expect-error Raw protocol constants are not public.
+type RemovedMessageType = typeof import('@syntrix/client').MessageType;
+
+// @ts-expect-error Realtime is owned by openReplica.
+type RemovedRealtimeMethod = SyntrixClient['realtime'];
+// @ts-expect-error Applications observe replica queries through watch.
+type RemovedSubscribeMethod = SyntrixClient['subscribe'];
+
 interface Task { projectId: string; title: string; status: string; score: bigint }
 
 export const publicReplicaExample = async (endpoint: string, token: string): Promise<void> => {
   const client = new SyntrixClient(endpoint, { database: 'app', auth: { token } });
+  const sse: import('@syntrix/client').RealtimeSSEClient = client.realtimeSSE();
+  const sseCallbacks: import('@syntrix/client').RealtimeCallbacks = { onEvent: event => { void event.delta.id; } };
+  void sse; void sseCallbacks;
+  await client.pull<Task>('projects/p1/tasks');
   await client.collection<Task>('projects/p1/tasks').doc('task-1').get();
   const replica: ReplicaDatabase = await client.openReplica({
     name: 'task-cache',

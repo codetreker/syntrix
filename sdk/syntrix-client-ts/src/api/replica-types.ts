@@ -85,6 +85,9 @@ export interface ReplicaDiagnostic {
   readonly durationMs?: number;
   readonly count?: number;
   readonly requestId?: string;
+  readonly subId?: string;
+  readonly transportEpoch?: number;
+  readonly mode?: 'ws' | 'http';
 }
 export interface OpenReplicaOptions {
   name: string;

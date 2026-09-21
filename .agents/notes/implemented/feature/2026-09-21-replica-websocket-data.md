@@ -16,8 +16,8 @@ Status: implemented
 
 在现有 `/realtime/ws` 上增加显式 `mode=replica-data`，复用 Query.Pull、既有源
 规范化、typed page codec、数据库授权及错误分类。普通 WS/SSE 继续使用原协议。
-本次交付服务端能力；公开 TypeScript replica SDK 仍使用 HTTP，自动 WS 数据路径
-由后续 SDK 接入负责。
+本决定拥有服务端能力；[SDK 运输决定](../architecture/2026-09-21-sdk-replica-websocket.md)
+已将私有 WS 数据路径与 HTTP fallback 接入公开 replica API。
 
 [复制参考](../../../../docs/reference/replication.md#replica-websocket-data)拥有 wire
 和配置细节；[Gateway 设计](../../../../docs/design/server/gateway/realtime_watching.md#45-replica-websocket-data)
@@ -146,8 +146,8 @@ settlement 轮次的完成证明。请求/整页 ACK 保留明确的轮次与背
 
 - 服务端可以通过 WS 交付与 HTTP 同契约的 typed 源页，每次读取仍支付真实 Query
   和权威授权成本，不是免查询的 raw-event fast path。
-- 公开 SDK 暂未切换运输。服务端通过此模式补齐源授权与生命周期前提，不意味着
-  普通 realtime 订阅已经具备同样保证，也不意味着 SDK 已自动连接通知。
+- SDK 已使用此模式提供 WS 主数据路径与 HTTP fallback。普通 realtime 订阅仍不具备
+  相同的 typed 源页、整页 ACK 或 checkpoint 契约。
 - 大页使用独立 credit 和字节账目；慢连接可能耗尽容量并收到显式错误，不积压无限工作。
 - 实际 Stream 退休会影响依赖它的普通客户端；明确断开使客户端重建，避免假健康状态。
 - 周期核对、索引一致性、源历史保留和本地整页持久化仍由各自既有契约决定。

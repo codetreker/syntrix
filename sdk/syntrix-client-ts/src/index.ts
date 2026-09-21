@@ -5,6 +5,5 @@ export * from './api/types';
 export * from './api/replica-types';
 export * from './api/value';
 export * from './api/errors';
-export * from './replication/realtime';
 export * from './replication/realtime-sse';
-export { LoginResponse, AuthConfig, AuthService } from './internal/auth/types';
+export type { LoginResponse, AuthConfig, AuthService } from './internal/auth/types';

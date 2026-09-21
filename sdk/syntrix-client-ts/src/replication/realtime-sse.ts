@@ -1,6 +1,33 @@
-import { BaseMessage, MessageType, RealtimeCallbacks, RealtimeEvent, SnapshotEvent, ConnectionState } from './realtime';
 import { TokenProvider } from '../internal/auth/types';
 import { AuthSessionChangedError } from '../api/errors';
+
+interface BaseMessage { type: string; payload?: any }
+
+export interface RealtimeEvent {
+  subId: string;
+  delta: {
+    type: 'create' | 'update' | 'delete';
+    id: string;
+    document?: Record<string, any>;
+    timestamp: number;
+  };
+}
+
+export interface SnapshotEvent {
+  subId: string;
+  documents: Record<string, any>[];
+}
+
+export type ConnectionState = 'disconnected' | 'connecting' | 'connected' | 'error';
+
+export interface RealtimeCallbacks {
+  onConnect?: () => void;
+  onDisconnect?: () => void;
+  onError?: (error: Error) => void;
+  onEvent?: (event: RealtimeEvent) => void;
+  onSnapshot?: (snapshot: SnapshotEvent) => void;
+  onStateChange?: (state: ConnectionState) => void;
+}
 
 type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 
@@ -153,17 +180,17 @@ export class RealtimeSSEClient {
 
   private handleMessage(msg: BaseMessage, callbacks: RealtimeCallbacks) {
     switch (msg.type) {
-      case MessageType.Event: {
+      case 'event': {
         const event: RealtimeEvent = typeof msg.payload === 'string' ? JSON.parse(msg.payload) : msg.payload;
         callbacks.onEvent?.(event);
         break;
       }
-      case MessageType.Snapshot: {
+      case 'snapshot': {
         const snapshot: SnapshotEvent = typeof msg.payload === 'string' ? JSON.parse(msg.payload) : msg.payload;
         callbacks.onSnapshot?.(snapshot);
         break;
       }
-      case MessageType.Error: {
+      case 'error': {
         const errPayload = typeof msg.payload === 'string' ? JSON.parse(msg.payload) : msg.payload;
         callbacks.onError?.(new Error(errPayload?.message || 'Realtime SSE error'));
         break;

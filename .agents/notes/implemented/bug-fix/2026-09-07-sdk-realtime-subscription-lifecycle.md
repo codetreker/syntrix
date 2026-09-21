@@ -12,11 +12,10 @@ timers and late authentication results. These shared SDK defects outlive the
 
 ## Decision
 
-Each `RealtimeClient` owns one WebSocket and its connection attempt. Concurrent
-`connect()` calls share the attempt; success requires `auth_ack`. Convenience
-`SyntrixClient.subscribe()` starts or reuses the connection and returns its handle
-synchronously. Low-level `RealtimeClient.subscribe()` registers locally and leaves
-connection initiation explicit.
+本决定记录此前公开 RealtimeClient 的生命周期：每个 client 拥有一条 WebSocket，
+并发 connect 共用尝试，成功需要 auth_ack；便捷 subscribe 自动连接，低层 subscribe
+仅登记本地订阅。这些公开入口现已由[私有 replica WS 决定](../architecture/2026-09-21-sdk-replica-websocket.md)
+取代并移除。下面保留原协议的历史决策与理由，不是现行公开 API 使用说明；SSE 仍公开。
 
 | Operation | Ownership and result |
 |---|---|
@@ -41,7 +40,7 @@ retains one observer per event; convenience subscriptions do not replace it.
 Synchronous callback exceptions are reported separately from protocol parsing and do not
 prevent dispatch to other eligible callbacks.
 
-The existing `activityTimeoutMs` (default 90,000 ms) bounds socket establishment
+The earlier API's `activityTimeoutMs` (default 90,000 ms) bounds socket establishment
 and authentication independently of incoming heartbeats, and bounds inactivity
 after authentication. Only `unauthorized` correlated with the current auth request
 permits one token refresh. Invalid auth, a missing token, refresh failure, and a
@@ -63,10 +62,10 @@ closing a manually managed connection when a subscription ends.
 
 ## Consequences
 
-- Convenience subscriptions connect automatically; `connect()` completes after
-  authentication, and `onReady` reports each subscription's registration.
-- Subscription routing and teardown remain independent on a shared connection.
-  The last unsubscribe leaves the connection open until explicit teardown.
+- 旧便捷订阅曾在认证后自动注册，并用 onReady 报告注册完成；现有应用改用 replica
+  的本地 watch 和同步状态，不能继续调用已移除的公开 WS API。
+- 旧连接由 client 显式关闭的理由保留于本决定。当前私有 WS 由活动 leader 租约管理，
+  最后一个租约释放时关闭，不沿用旧 API 的最后一次 unsubscribe 保留连接规则。
 - No server protocol, durable checkpoint, or replay continuity guarantee changes.
   [Realtime resume](../../proposed/feature/2026-09-07-realtime-client-resume.md) and
   [offline replication](../feature/2026-09-07-sdk-offline-replication.md)
@@ -77,5 +76,5 @@ closing a manually managed connection when a subscription ends.
   guards still prevent stopped connections from reviving; outstanding HTTP calls
   need not be canceled for provider ownership checks to apply.
 
-The [SDK reference](../../../../docs/reference/typescript_sdk.md#4-realtime-ws--sse)
-owns the public usage and lifecycle contract.
+[SDK reference](../../../../docs/reference/typescript_sdk.md#4-realtime)维护当前 SSE 可用性；
+[replica 运输](../architecture/2026-09-21-sdk-replica-websocket.md)维护新的 WS 数据生命周期。

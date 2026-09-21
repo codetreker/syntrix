@@ -15,7 +15,7 @@ Status: implemented
 | 本地数据 | 每个面板使用独立副本名；同一账号的两个面板也必须经过服务器同步 |
 | 查询 | 完整复制集合，本地按 `sentAt` 降序 watch 最新 20 条；消息列表代表当前结果集 |
 | 写入 | 调用副本 collection 的 `add`，明确显示本地保存与远端同步的区别 |
-| 同步 | 消费 SDK 状态并提供暂停、恢复和只读检查；1 秒轮询便于观察演示 |
+| 同步 | 消费 SDK 状态并提供暂停、恢复和只读检查；使用默认 WS 数据运输与 HTTP fallback，保留 10 秒源核对 |
 | 账号 | 显式登录已有 owner 或 db_admin；access token 仅保存在标签页 sessionStorage，支持刷新后的离线打开 |
 | 生命周期 | 关闭保留数据；退出清除保存的身份；失败关闭保留句柄用于重试，异步回调受当前客户端和视图身份约束 |
 | 运行 | 启动器构建 SDK 与 demo，并在指定 loopback 端口服务前端；后端就绪和权限配置由操作者负责 |
@@ -31,6 +31,7 @@ Status: implemented
 ## Consequences
 
 - 示例只使用公开 SDK，构建保留副本运行时的懒加载 chunk；CI 覆盖类型检查和打包。
+- [SDK 运输决定](../architecture/2026-09-21-sdk-replica-websocket.md)接管私有 WS、整页回执与 fallback；demo 不另建连接或覆盖轮询间隔。
 - 页面明确呈现本地保存、初始化、pending、暂停和阻塞；不会自动重试不确定写入或丢弃变化。
 - 真正的查询错误后明确标记 watch 已停止并保留最后快照；重新打开会启动新查询。正常视图竞争由 SDK 有界退让，真实资源限制仍保持，见[查询竞争修复](../bug-fix/2026-09-20-replica-watch-contention.md)。
 - 本地数据离线可用不意味着应用静态资源离线可用；没有引入 Service Worker。内容哈希 chunk 使用长期缓存以支持刷新后的离线重开，浏览器仍可清理缓存。

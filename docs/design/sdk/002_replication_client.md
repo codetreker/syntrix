@@ -1,17 +1,17 @@
 # Replication Client Design (RxDB + Syntrix replication/realtime)
 
-**Status:** Manual Pull, WebSocket lifecycle, the public replica database API, local storage/query/watch, HTTP replication and explicit recovery are implemented. Replica synchronization uses authorized polling; automatic WebSocket hints remain conditional on matching source authorization.
+**Status:** 公开 replica API、本地 CRUD/query/watch 与恢复已实现；下行使用私有 WS typed 数据页并自动 HTTP fallback，上行保留 HTTP Push，SSE 和手动 Pull 保留。
 
 ## Context & Why
 - We need offline-first replication for web clients using RxDB as local store.
-- Server exposes scoped HTTP replication (`/replication/v1/databases/{database}/pull` and `/push`) and realtime change signals.
+- 服务端提供有界 replica-data WS 及既有 HTTP Pull/Push；运输切换共用源页契约与本地应用器。
 - Checkpoint is authoritative only in pull responses; realtime events are triggers, not state.
 
 **Related:** Authentication flows and retry semantics are defined in [003_authentication.md](003_authentication.md); replication uses the same token/refresh handling and does not advance checkpoints on auth errors.
 
 ## Goals
 - Reliable pull/push replication using RxDB, with typed wire values and flattened decoded documents that exclude storage internals.
-- Realtime events only trigger pulls; checkpoint managed solely by pull responses.
+- changed 仅调度新 read；实际数据页可走 WS 或 HTTP，checkpoint 只来自合法源响应。
 - Conflict-safe push with server-returned conflicts written back or surfaced.
 - Offline tolerance: durable local changes, resumable pulls, and native replication metadata.
 
@@ -21,7 +21,7 @@
 - Full-text search and application-defined persistent secondary indexes.
 
 ## Assumptions
-- `/realtime/ws` (or `/realtime/sse`) can subscribe per collection and delivers at least `{ collection, id, action, updatedAt, deleted? }` plus some monotonic seq/lsn (used only for diagnostics; not trusted as checkpoint).
+- 私有 WS 使用 replica-data 模式和 typed 查询源页；普通 SSE 事件不进入副本应用器。
 - HTTP replication follows the [replication reference](../../reference/replication.md).
 - Token-based auth reusable for realtime channel; reconnect allowed.
 - The SDK owns its pinned RxDB/Dexie runtime and loads it lazily; applications do not supply an RxDB instance.
@@ -59,8 +59,8 @@ independent of the private runtime below.
 The SDK owns a pinned RxDB 17.5.0 replication protocol with caller-owned fork and
 metadata stores. A source adapter supplies normalized records, an opaque
 checkpoint, and a completion flag; a write adapter supplies remote acknowledgements
-or conflicts. Private downstream and upstream adapters connect these contracts to
-Syntrix HTTP while keeping native metadata responsible for replication progress.
+or conflicts. 下行在原有 source adapter 下选择 WS/HTTP，上行使用 HTTP；原生 metadata
+继续负责复制进度，不增加另一套应用器。
 
 | Responsibility | Contract and rationale |
 |---|---|
@@ -144,7 +144,7 @@ power-loss guarantees.
 ## Private Replica Alias Storage
 
 The lazy bundle owns Dexie-backed alias storage with raw revision CAS. These are
-internal building blocks composed by the public replica facade and HTTP
+internal building blocks composed by the public replica facade and its replication
 coordinator. The [replica-storage decision](../../../.agents/notes/implemented/architecture/2026-09-18-sdk-replica-storage.md)
 owns the persistence choices and their costs.
 
@@ -338,10 +338,9 @@ identity. The existing stricter write guard remains independent.
 
 Without an internal write adapter, upstream scanning is disabled and pending edits
 remain unsent. No synthetic ACK is generated. With the private upstream adapter,
-the same coordinator owns durable phase handling and explicit recovery. Private
-hints are available, but automatic WS
-source subscriptions remain unwired until their authorization matches the source;
-authorized polling supplies correctness in the meantime.
+the same coordinator owns durable phase handling and explicit recovery. 私有源运输由活动
+native owner 取得租约，WS changed 调度现有 hint；整页完成回执在最后分块与必要
+manifest/pin 持久化之后发送，owner 清理前不释放仍在应用的页面。
 
 The [downstream decision](../../../.agents/notes/implemented/architecture/2026-09-19-sdk-downstream-replication.md)
 owns source/delivery generation distinctions, pin transitions, retry classes and
@@ -453,7 +452,7 @@ outside this contract; no outbox, idempotency service or source receipt is added
 
 `replicate(path)` constructs an immutable, client-owned source without opening
 storage or sending requests. `openReplica` freezes the complete configuration,
-opens all requested aliases locally, then starts their HTTP coordinators. It
+opens all requested aliases locally, then starts their replication coordinators. It
 returns before network convergence so existing and new local state remain usable
 offline. The [public reference](../../reference/typescript_sdk.md#replica-availability)
 owns signatures, runnable examples, defaults, errors and browser requirements.
@@ -499,86 +498,82 @@ handle, so delayed notifications from a prior lifetime cannot retire its valid
 replacement. Per-operation lifetime checks still fence genuinely obsolete handles
 when notifications are missed.
 
-### Conditional notification optimization
+### 私有 WS 数据与 HTTP fallback
 
-Authorized HTTP polling provides source convergence, including missed events and
-window refill. Existing WebSocket authorization does not yet match query-source
-authorization, so the public facade does not wire automatic notifications. Local
-`watch` observes persisted replica state and is available independently.
+`ReplicaDatabase` 句柄拥有至多一条惰性私有 WS，只有活动 leader alias 取得源运输
+租约；follower 继续观察持久状态。同一 collection 的 alias 只共享 socket，各自保留
+源定义、绑定、cursor、subId 和应用 owner。最后一个租约释放时关闭连接与重连 timer；
+独立句柄不使用全局连接池。
 
-This costs periodic source reads and polling/backoff latency. Notifications may
-later use the existing hint interface only after authorization matches; they
-remain scheduling hints and cannot replace source progress or reconciliation.
-The [offline replication decision](../../../.agents/notes/implemented/feature/2026-09-07-sdk-offline-replication.md)
-records why this condition does not prevent delivery of the polling-based API.
+```text
+现有 source.read -> 私有 WS read/page
+               \-> WS 不可用：有限 HTTP Pull
+                           |
+                  唯一 downstream 应用器
+                           |
+          最后一块 doc/meta/checkpoint + manifest/pin
+                           |
+                 committed -> ACK / 归还页额度
+```
 
-Push remains internal to replication, native metadata owns progress, and no
-separate outbox or public manual Push method is introduced. Document version
-reset after recreation still prevents treating versions as global source order.
+两种运输共用严格 request 编码和 typed page decoder，绑定、source hash、generation、
+窗口和源水位语义保持一致。只有合法数据页建立首次绑定，auth/subscribe ACK 不建立
+数据位置。已绑定后注册、read、重连和 HTTP fallback 都保留原 expectedDatabaseIdentity，
+不改写 URL namespace。Matching set 使用已有持久 cursor；窗口仍完整重取并在整页
+持久化后激活。
+
+| 边界 | 契约与原因 |
+|---|---|
+| 有限 read | 每次返回一页或错误；空进度页可结束轮次，让原生上下行重新 idle，避免阻塞本地 Push/settlement |
+| 源租约 | 绑定 session、native physical epoch/instance；pause、维护、移除或账号切换先失效请求归属 |
+| 页额度 | 句柄最多四页、同 alias 一页，WS 与 HTTP 共用；等待有界到每 alias 一个排队请求并可取消 |
+| 已接纳页 | socket 失效不释放它的额度；现有应用器完成整页或 owner 清理完成后归还 |
+| 整页 ACK | 最后分块的文档、assumed、checkpoint、manifest 激活和必要 pin 处理完成后发送；不等待 token 或重连 |
+| ACK 失败 | 仅影响运输可用性，不能反向拒绝已经完成的本地提交；HTTP receipt 只归还页额度 |
+| 新鲜轮次 | changed 与注册完成只调度现有 hint；新的 read 才产生页面，不能把 settlement 前的旧页重新标为新 round |
+| 关闭 | 先退休源租约，再 drain 原生队列及应用器，最后释放未完成页与句柄运输；真实存储错误保留 |
+| 订阅退休 | 在所属连接上发送原 subId 的 unsubscribe；发送失败则关闭连接，触发服务端清理。订阅级限流不遗留无人持有的服务端注册 |
+
+| 切换点 | 处理 |
+|---|---|
+| WS 未交付页 | 撤销旧请求/订阅归属，以同一已提交状态请求 HTTP |
+| WS 页已交给应用器 | 完成当前页后下一次 read 才换运输；不并发应用 HTTP 页 |
+| HTTP 读取/应用期间 WS 恢复 | 后台只连接/认证；等当前 read 退出且整页完成，再注册并走 WS |
+| 维护或 native owner 替换 | 旧 alias 租约失效，新 owner 取得新 subId；其它 alias 可以保留共享连接 |
+
+运输/协议损坏可撤销 WS 后使用独立校验的 HTTP 数据。明确的权限、绑定身份、非法源、
+本地持久化错误走既有阻塞/恢复流程；REPLICATION_SOURCE_BUSY/429 的 retryAfter 和
+源 retryAt 跨运输保留。重连、changed 和 fallback 都不能绕过源退避。
+权限拒绝等终止连接错误保持阻塞，直到显式 resume 在旧应用任务排空、存储校验通过后
+重新允许认证。该入口只恢复连接准入，不清除源退避，也不跨越会话失效边界。
+WS 失败不决定正在发送的 HTTP Push 成功与否。
+
+默认 10 秒源核对与 200ms hint 合并保留。WS 健康时，周期核对请求和真实页面均走 WS，
+不另发 HTTP Pull；fallback 才用 HTTP。通知遗漏和窗口索引滞后仍需要这些核对，不能把
+WS 当成没有 Query 读取成本的 raw-event 路径。完整取舍由
+[SDK WS 复制决定](../../../.agents/notes/implemented/architecture/2026-09-21-sdk-replica-websocket.md)维护。
 
 ## Connection Health & Keepalive
 
-### Server-side (WebSocket)
-- **Ping interval:** 54 seconds (`pongWait * 9/10`)
-- **Pong timeout:** 60 seconds - connection closed if no pong received
-- **Write timeout:** 10 seconds per message
+| 边界 | 当前值 |
+|---|---|
+| WS 建连/认证 | 10 秒 |
+| 每次源注册 | 10 秒 |
+| SDK WS read / HTTP fallback read | 各 45 秒；取消整个有限读取，给服务端 30 秒 Query 及授权准入留出余量 |
+| SDK 共用页池等待 | 45 秒且可取消；超时进入额度退避，不释放其它仍在应用的页 |
+| WS 重连 | 退避基数 1 秒增长至 30 秒，带 jitter；有效租约存在时持续尝试，不使用旧公开 API 的五次上限 |
+| 服务端 WS ping / pong | 54 秒 / 60 秒；浏览器自动应答 |
+| 服务端 WS 单帧写 | 10 秒 |
+| 服务端 SSE heartbeat | 15 秒，沿用普通 SSE 契约 |
 
-The server sends WebSocket Ping frames; browsers automatically respond with Pong. If the server doesn't receive a Pong within 60 seconds, it closes the connection.
+重连探测只做连接/认证，不提前建立第二套源读取。凭据取消监听先于共享 provider 调用；
+退休尝试的包装立即结束，底层共享 refresh 可供其它 HTTP 调用继续使用，迟到结果仍
+受会话 fence 限制。重新注册使用新 subId；同 requestId 的重复页不重复应用，旧代消息
+直接丢弃，当前代未知请求页作为协议错误处理。
 
-### Server-side (SSE)
-- **Heartbeat interval:** 15 seconds - server sends `: heartbeat\n\n` comments
-- Client should monitor incoming data; if no data (including heartbeats) arrives for an extended period, consider reconnecting.
-
-### WebSocket Ownership and Keepalive (implemented SDK)
-
-- One `RealtimeClient` owns one socket. Convenience subscriptions start or reuse
-  its connection; low-level subscriptions leave `connect()` explicit.
-- Concurrent connection attempts share one promise. Socket open begins auth;
-  `auth_ack` completes connection and permits pending subscription registration.
-- Subscription callbacks are keyed by `subId`; global observers remain separate.
-  Each registration ACK triggers `onReady` once for that connection. Events can
-  precede the ACK; readiness guarantees neither replay nor snapshot completion.
-- For an active acknowledged subscription, `snapshot_failed` and `snapshot_limit`
-  notify subscription and global error observers without disabling live delivery.
-  Registration rejection and other error codes retain their failure behavior;
-  a later snapshot error cannot revive a failed or removed subscription.
-- Unsubscribe releases one subscription, leaving the shared connection open.
-  `disconnect()` stops transport work but retains logical subscriptions;
-  `dispose()` clears them permanently. Logout disposes the WebSocket client.
-- Timers and asynchronous handlers are bound to their connection attempt so
-  late completion cannot revive a stopped or disposed client.
-- Browser WebSocket API automatically responds to server Ping frames
-- Client tracks `lastMessageTime` on every incoming message (including server heartbeats)
-- **Activity timeout:** `activityTimeoutMs` (default: 90s) bounds the entire
-  connection/authentication attempt independently of heartbeats; after
-  authentication it detects inactivity and triggers reconnect.
-- Reconnect uses exponential backoff with jitter: base delay × 2^(attempt-1),
-  bounded by `maxReconnectAttempts`. Successful authentication resets attempts.
-
-Client-owned connection lifetime lets explicit connection users and convenience
-subscriptions coexist without one subscriber closing another's transport. See the
-[lifecycle decision](../../../.agents/notes/implemented/bug-fix/2026-09-07-sdk-realtime-subscription-lifecycle.md)
-for alternatives and the separate authentication-provider limitation.
-
-### Reconnect Flow
-1. On disconnect detected (via `onclose` or activity timeout), set state to `disconnected`.
-2. Attempt reconnect with exponential backoff.
-3. On successful reconnect:
-   - Re-authenticate (send auth message with fresh token)
-   - Re-subscribe to all active subscriptions
-   - Notify each subscription with `onReady` after its registration ACK
-   - The application or planned coordinator schedules a pull to reconcile missed changes
-4. Connection and authentication failures notify active subscriptions and the
-   global error observer; automatic attempts stop at the configured limit.
-
-### WebSocket Configuration (implemented)
-```typescript
-interface RealtimeClientOptions {
-  maxReconnectAttempts?: number;  // default: 5
-  reconnectDelayMs?: number;      // base delay, default: 1000
-  activityTimeoutMs?: number;     // handshake deadline and inactivity, default: 90000
-}
-```
+公开 raw WS API、配置和协议类型已经移除；没有新的公共 transport 选择开关。
+SSE 与手动 Pull 保留。运输诊断通过现有 onDiagnostic 报告 mode、transportEpoch、
+subId/requestId 和固定 phase；接纳页面、本地整页完成与上行确认保持不同含义。
 
 ## Security
 - Reuse bearer token for HTTP and realtime; refresh hooks must be supported before retry.
@@ -603,5 +598,5 @@ interface RealtimeClientOptions {
 - Public replica integration covers source freezing, offline local readiness,
   typed query/CRUD and recovery projection, lifecycle removal and package exports.
   Browser/server tests and packed-package checks validate their respective paths;
-  none establish browser power-loss durability. Automatic WS hints remain subject
-  to the authorization condition above.
+  none establish browser power-loss durability. WS 主路径、HTTP fallback、整页回执与运输
+  归属需要各自的故障和真实浏览器验证，不能由静态协议检查代替。

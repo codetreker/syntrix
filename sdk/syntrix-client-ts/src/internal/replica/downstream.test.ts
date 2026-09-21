@@ -38,10 +38,10 @@ const fixture = async (mode: 'events' | 'replace' = 'events', limits?: Partial<S
   const pushed: ReplicaRecord[] = [];
   const activations: { final: boolean; complete: boolean; before: string | null; after: string | null }[] = [];
   let runtime: ReplicationRuntime | undefined;
-  const start = (upstreamEnabled = false) => runtime = createReplicationRuntime({
+  const start = (upstreamEnabled = false, pullBatchSize = 201) => runtime = createReplicationRuntime({
     identifier: native.identifier, forkInstance: native.fork, metaInstance: native.meta, ownerSignal: native.ownerSignal,
     conflictHandler: { isEqual: businessEqual, resolve: async conflict => conflict.newDocumentState }, hashFunction: defaultHashSha256,
-    upstreamEnabled, readSource: adapter.readSource, onCheckpoint: async (cp, status, signal) => {
+    upstreamEnabled, pullBatchSize, readSource: adapter.readSource, onCheckpoint: async (cp, status, signal) => {
       const before = (await storage.readManifest()).activeSourceGeneration;
       await adapter.onCheckpoint(cp, status, signal);
       activations.push({ final: cp.final, complete: cp.complete, before, after: (await storage.readManifest()).activeSourceGeneration });
@@ -49,11 +49,94 @@ const fixture = async (mode: 'events' | 'replace' = 'events', limits?: Partial<S
     isControlDocument: row => row.kind !== 'd', writeRemote: async rows => { pushed.push(...rows.map(row => row.newDocumentState)); return []; },
   });
   const state = (id: string) => storage.withReplicationAccess(scope, access => access.withDocument(id, async value => structuredClone(value)));
-  const close = async () => { await Promise.allSettled(runtime ? [runtime.close()] : []); await storage.close(); };
+  const close = async () => { await Promise.allSettled(runtime ? [runtime.close()] : []); await adapter.dispose(); await storage.close(); };
   return { storage, scope, native, source, adapter, requests, pages, start, state, close, pushed, activations, stop: () => runtime!.close(), get refreshes() { return refreshes; } };
 };
 
 describe('durable source projection', () => {
+  test('source receipt waits for the final native chunk and durable generation activation', async () => {
+    const env = await fixture('replace');
+    const committed: string[] = [], released: string[] = [], requests: string[] = [];
+    const read = env.source.read;
+    env.source.read = context => { requests.push(context.requestId); return read(context); };
+    env.source.committed = requestId => { committed.push(requestId); };
+    env.source.released = requestId => { released.push(requestId); };
+    let release!: () => void, entered!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const activation = new Promise<void>(resolve => { entered = resolve; });
+    const original = env.storage.withReplicationAccess;
+    let armed = true;
+    env.storage.withReplicationAccess = (scope, consume) => original(scope, access => consume(new Proxy(access, { get(target, key) {
+      if (key === 'writeManifest') return async (next: typeof access.manifest) => {
+        if (armed && next.sourceReady) { armed = false; entered(); await gate; }
+        return target.writeManifest(next);
+      };
+      return Reflect.get(target, key, target);
+    } })));
+    try {
+      env.pages.push({ protocolVersion: 1, mode: 'replace', databaseIdentity: 'database-id', sourceHash: 'hash',
+        requestId: 'server-request', generationId: 'server-generation', complete: true, effectiveOrder: [],
+        documents: [document('alice', 'A'), document('bob', 'B')] });
+      const runtime = env.start(false, 3);
+      await activation;
+      expect(env.activations).toHaveLength(1);
+      expect(env.activations[0].final).toBe(false);
+      expect(committed).toEqual([]); expect(released).toEqual([]);
+      release(); await runtime.waitForIdle();
+      expect(committed).toEqual(requests); expect(committed).toHaveLength(1);
+      expect((await env.storage.readManifest()).sourceReady).toBe(true);
+      await env.adapter.recover(new AbortController().signal);
+      await env.adapter.dispose();
+      expect(committed).toEqual(requests); expect(released).toEqual([]);
+    } finally { release(); env.storage.withReplicationAccess = original; await env.close(); }
+  });
+
+  test('a page rejected during projection retains its receipt until explicit owner cleanup', async () => {
+    const env = await fixture('events', { maxRecordBytes: 512 });
+    const committed: string[] = [], released: string[] = [];
+    let requestId = '';
+    env.source.read = async context => { requestId = context.requestId; return page([]); };
+    env.source.committed = id => { committed.push(id); };
+    env.source.released = id => { released.push(id); };
+    try {
+      await expect(env.adapter.readSource(undefined, 201, new AbortController().signal)).rejects.toMatchObject({ code: 'ReplicaRecordTooLarge' });
+      expect(requestId).not.toBe(''); expect(committed).toEqual([]); expect(released).toEqual([]);
+      await env.adapter.dispose(); await env.adapter.dispose();
+      expect(released).toEqual([requestId]); expect(committed).toEqual([]);
+    } finally { await env.close(); }
+  });
+
+  test('a fresh-page receipt waits for durable pin clearing after upstream settlement', async () => {
+    const env = await fixture();
+    const receipts: string[] = [];
+    env.source.committed = requestId => { receipts.push(requestId); };
+    let release!: () => void, entered!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const clearing = new Promise<void>(resolve => { entered = resolve; });
+    const original = env.storage.withReplicationAccess;
+    let armed = false;
+    env.storage.withReplicationAccess = (scope, consume) => original(scope, access => consume(new Proxy(access, { get(target, key) {
+      if (key === 'writeRecord') return async (...args: Parameters<typeof target.writeRecord>) => {
+        if (armed && args[0].kind === 'd' && args[0].pin === null) { armed = false; entered(); await gate; }
+        return target.writeRecord(...args);
+      };
+      return Reflect.get(target, key, target);
+    } })));
+    try {
+      await env.storage.set('alice', { value: 'local' });
+      env.pages.push(page([{ type: 'leave', id: 'alice' }]));
+      const runtime = env.start(true); await runtime.waitForIdle();
+      expect((await env.state('alice')).data?.pin?.stage).toBe('await-source');
+      expect(receipts).toHaveLength(1);
+      env.pages.push(page([])); armed = true;
+      await env.adapter.beginRound(); runtime.requestResync(); await clearing;
+      expect(receipts).toHaveLength(1);
+      release(); await runtime.waitForIdle();
+      expect(receipts).toHaveLength(2);
+      expect((await env.state('alice')).data?.pin).toBeNull();
+    } finally { release(); env.storage.withReplicationAccess = original; await env.close(); }
+  });
+
   test('only the live owned upstream phase permits source progress and activation', async () => {
     const env = await fixture();
     let runtime: ReplicationRuntime | undefined;
