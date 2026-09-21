@@ -2,7 +2,9 @@ package streamer
 
 import (
 	"context"
+	"errors"
 	"log/slog"
+	"sync"
 
 	"github.com/google/uuid"
 	pb "github.com/syntrixbase/syntrix/api/gen/streamer/v1"
@@ -19,6 +21,7 @@ type grpcStreamAdapter struct {
 	localStream *localStream
 	service     *streamerService
 	logger      *slog.Logger
+	sendMu      sync.Mutex
 }
 
 func newGRPCStreamAdapter(
@@ -73,11 +76,11 @@ func (g *grpcStreamAdapter) run() error {
 						Delivery: protoDelivery,
 					},
 				}
-				if err := g.grpcStream.Send(protoMsg); err != nil {
+				if err := g.send(protoMsg); err != nil {
 					errChan <- err
 					return
 				}
-			case <-g.ctx.Done():
+			case <-g.localStream.ctx.Done():
 				return
 			}
 		}
@@ -93,19 +96,42 @@ func (g *grpcStreamAdapter) run() error {
 	}
 }
 
+// gRPC permits one concurrent sender. Control replies and event delivery share
+// this lock so heartbeats and subscription ACKs cannot race data frames.
+func (g *grpcStreamAdapter) send(msg *pb.StreamerMessage) error {
+	g.sendMu.Lock()
+	defer g.sendMu.Unlock()
+	if err := g.localStream.ctx.Err(); err != nil {
+		return err
+	}
+	return g.grpcStream.Send(msg)
+}
+
 // handleProtoMessage processes a proto GatewayMessage directly.
 func (g *grpcStreamAdapter) handleProtoMessage(msg *pb.GatewayMessage) error {
 	switch m := msg.Payload.(type) {
 	case *pb.GatewayMessage_Subscribe:
+		if err := g.localStream.registrationError(g.service.ctx); err != nil {
+			return err
+		}
 		req := m.Subscribe
 		if req.SubscriptionId == "" {
 			req.SubscriptionId = uuid.New().String()
 		}
 
-		resp, _ := g.service.manager.Subscribe(g.gatewayID, req)
+		resp, err := g.service.manager.Subscribe(g.gatewayID, req)
+		if err != nil {
+			return err
+		}
+		if err := g.localStream.registrationError(g.service.ctx); err != nil {
+			if resp.Success {
+				return errors.Join(err, g.service.manager.Unsubscribe(req.SubscriptionId))
+			}
+			return err
+		}
 
 		// Send response back
-		return g.grpcStream.Send(&pb.StreamerMessage{
+		return g.send(&pb.StreamerMessage{
 			Payload: &pb.StreamerMessage_SubscribeResponse{
 				SubscribeResponse: resp,
 			},
@@ -120,7 +146,7 @@ func (g *grpcStreamAdapter) handleProtoMessage(msg *pb.GatewayMessage) error {
 		return nil
 
 	case *pb.GatewayMessage_Heartbeat:
-		return g.grpcStream.Send(&pb.StreamerMessage{
+		return g.send(&pb.StreamerMessage{
 			Payload: &pb.StreamerMessage_HeartbeatAck{
 				HeartbeatAck: &pb.HeartbeatAck{
 					Timestamp: m.Heartbeat.Timestamp,

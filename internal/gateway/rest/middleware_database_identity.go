@@ -4,7 +4,8 @@ import (
 	"net/http"
 
 	"github.com/syntrixbase/syntrix/internal/core/database"
-	"github.com/syntrixbase/syntrix/internal/core/identity"
+	"github.com/syntrixbase/syntrix/internal/core/storage"
+	"github.com/syntrixbase/syntrix/internal/gateway/replication"
 )
 
 const ExpectedDatabaseIdentityHeader = "X-Syntrix-Expected-Database-Identity"
@@ -54,41 +55,19 @@ func (h *Handler) resolveReplicationDatabase(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusBadRequest, ErrCodeBadRequest, "Invalid expected database identity header")
 		return r, false
 	}
-	uid, _ := r.Context().Value(identity.ContextKeyUserID).(string)
-	if uid == "" {
-		writeError(w, http.StatusUnauthorized, ErrCodeUnauthorized, "Authentication is required")
-		return r, false
+	var constraint *string
+	if bound {
+		constraint = &expected
 	}
-	if h.database == nil {
-		writeError(w, http.StatusInternalServerError, ErrCodeInternalError, "Database validation service is unavailable")
-		return r, false
-	}
-	identifier := r.PathValue("database")
-	if identifier == "" {
-		writeError(w, http.StatusBadRequest, ErrCodeBadRequest, "Database identifier is required in URL path")
-		return r, false
-	}
-	var db *database.Database
-	if authoritative || bound {
-		db, err = h.database.ResolveDatabaseAuthoritative(r.Context(), identifier)
-	} else {
-		db, err = h.database.ResolveDatabase(r.Context(), identifier)
-	}
+	db, err := replication.AuthorizeDatabase(r.Context(), h.database, r.PathValue("database"), replicationPrincipal(r), constraint, authoritative)
 	if err != nil {
-		(&DatabaseValidator{}).writeDatabaseValidationError(w, identifier, err)
+		failure := replication.ClassifyPullError(storage.ReplicationPullRequest{}, err)
+		if failure.Status == http.StatusInternalServerError && failure.Cause != nil {
+			writeInternalError(w, failure.Cause, failure.Message)
+		} else {
+			writeReplicationFailure(w, failure)
+		}
 		return r, false
 	}
-	if db == nil || db.ID == "" {
-		writeError(w, http.StatusInternalServerError, ErrCodeInternalError, "Database validation context is missing")
-		return r, false
-	}
-	r = r.WithContext(database.WithDatabase(r.Context(), db))
-	if !h.replicationAuthorized(w, r) {
-		return r, false
-	}
-	if bound && db.ID != expected {
-		writeError(w, http.StatusConflict, ErrCodeDatabaseIdentityMismatch, "Database identity does not match the bound database")
-		return r, false
-	}
-	return r, true
+	return r.WithContext(database.WithDatabase(r.Context(), db)), true
 }

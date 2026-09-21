@@ -2,6 +2,7 @@ package streamer
 
 import (
 	"context"
+	"errors"
 	"io"
 	"sync"
 
@@ -35,16 +36,47 @@ func newLocalStream(ctx context.Context, gatewayID string, handler subscriptionH
 	}
 }
 
-// Subscribe creates a new subscription and returns the subscription ID.
-func (ls *localStream) Subscribe(database, collection string, filters []model.Filter) (string, error) {
-	ls.closedMu.Lock()
-	if ls.closed {
-		ls.closedMu.Unlock()
-		return "", io.EOF
+func (ls *localStream) registrationError(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
 	}
-	ls.closedMu.Unlock()
+	ls.closedMu.Lock()
+	defer ls.closedMu.Unlock()
+	if ls.closed {
+		return io.EOF
+	}
+	return ls.ctx.Err()
+}
 
-	return ls.handler.subscribe(ls.gatewayID, database, collection, filters)
+func (ls *localStream) Subscribe(ctx context.Context, database, collection string, filters []model.Filter) (Registration, error) {
+	if err := ls.registrationError(ctx); err != nil {
+		return Registration{}, err
+	}
+	id, err := ls.handler.subscribe(ls.gatewayID, database, collection, filters)
+	if err != nil {
+		return Registration{}, err
+	}
+	// Registration can race service retirement or caller cancellation. Remove
+	// the new subscription even if the stream's normal API is already closed.
+	if err := ls.registrationError(ctx); err != nil {
+		return Registration{}, errors.Join(err, ls.handler.unsubscribe(id))
+	}
+	return Registration{ID: id, Generation: 1}, nil
+}
+
+func (ls *localStream) Status() StreamStatus {
+	ls.closedMu.Lock()
+	defer ls.closedMu.Unlock()
+	// The fixed local generation has only one transition. The context's Done
+	// signal and Err are synchronized by context itself, including cancellation
+	// inherited from the service or caller; no observer goroutine is required.
+	status := StreamStatus{State: StateConnected, Generation: 1, Changed: ls.ctx.Done()}
+	if err := ls.ctx.Err(); err != nil {
+		status.State = StateDisconnected
+		status.Terminal = true
+		status.Err = err
+	}
+	return status
 }
 
 // Unsubscribe removes a subscription by ID.

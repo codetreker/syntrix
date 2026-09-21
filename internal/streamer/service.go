@@ -128,6 +128,16 @@ func (s *streamerService) Stream(ctx context.Context) (Stream, error) {
 	ls := newLocalStream(ctx, gatewayID, s)
 
 	s.streamsMu.Lock()
+	if err := s.ctx.Err(); err != nil {
+		s.streamsMu.Unlock()
+		ls.close()
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		s.streamsMu.Unlock()
+		ls.close()
+		return nil, err
+	}
 	s.streams[gatewayID] = ls
 	s.streamsMu.Unlock()
 

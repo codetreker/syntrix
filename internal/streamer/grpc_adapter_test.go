@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -14,6 +15,8 @@ import (
 	pb "github.com/syntrixbase/syntrix/api/gen/streamer/v1"
 	"github.com/syntrixbase/syntrix/internal/core/storage"
 	"github.com/syntrixbase/syntrix/internal/puller/events"
+	streamercel "github.com/syntrixbase/syntrix/internal/streamer/cel"
+	"github.com/syntrixbase/syntrix/internal/streamer/manager"
 	"google.golang.org/grpc/metadata"
 )
 
@@ -64,6 +67,141 @@ func (m *mockBidiStream) SendHeader(metadata.MD) error { return nil }
 func (m *mockBidiStream) SetTrailer(metadata.MD)       {}
 func (m *mockBidiStream) SendMsg(interface{}) error    { return nil }
 func (m *mockBidiStream) RecvMsg(interface{}) error    { return nil }
+
+type concurrentSendStream struct {
+	*mockBidiStream
+	active     atomic.Int32
+	overlapped atomic.Bool
+	entered    chan struct{}
+	release    chan struct{}
+}
+
+func (m *concurrentSendStream) Send(msg *pb.StreamerMessage) error {
+	if m.active.Add(1) != 1 {
+		m.overlapped.Store(true)
+	}
+	defer m.active.Add(-1)
+	m.entered <- struct{}{}
+	<-m.release
+	return m.mockBidiStream.Send(msg)
+}
+
+func TestGRPCAdapter_SerializesDataAndControl(t *testing.T) {
+	s, err := NewService(ServerConfig{}, slog.Default())
+	require.NoError(t, err)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	wire := &concurrentSendStream{
+		mockBidiStream: &mockBidiStream{ctx: ctx},
+		entered:        make(chan struct{}, 3),
+		release:        make(chan struct{}),
+	}
+	adapter := newGRPCStreamAdapter(ctx, "gateway", wire, getInternalService(s))
+	defer adapter.localStream.Close()
+	done := make(chan error, 3)
+	go func() {
+		done <- adapter.send(&pb.StreamerMessage{Payload: &pb.StreamerMessage_Delivery{Delivery: &pb.EventDelivery{}}})
+	}()
+	select {
+	case <-wire.entered:
+	case <-ctx.Done():
+		t.Fatal("data send did not start")
+	}
+	go func() {
+		done <- adapter.handleProtoMessage(&pb.GatewayMessage{Payload: &pb.GatewayMessage_Heartbeat{Heartbeat: &pb.Heartbeat{Timestamp: 1}}})
+	}()
+	go func() {
+		done <- adapter.handleProtoMessage(&pb.GatewayMessage{Payload: &pb.GatewayMessage_Subscribe{Subscribe: &pb.SubscribeRequest{Database: "db", Collection: "items"}}})
+	}()
+	select {
+	case <-wire.entered:
+		t.Error("control send overlapped the blocked data send")
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(wire.release)
+	for range 3 {
+		select {
+		case err := <-done:
+			require.NoError(t, err)
+		case <-ctx.Done():
+			t.Fatal("send did not drain")
+		}
+	}
+	require.False(t, wire.overlapped.Load())
+	require.Len(t, wire.sentMsgs, 3)
+}
+
+func TestGRPCAdapter_RetiredRegistrationRejected(t *testing.T) {
+	s, err := NewService(ServerConfig{}, slog.Default())
+	require.NoError(t, err)
+	service := getInternalService(s)
+	wire := &mockBidiStream{ctx: context.Background()}
+	adapter := newGRPCStreamAdapter(context.Background(), "retired", wire, service)
+	defer adapter.localStream.Close()
+	require.NoError(t, s.Stop(context.Background()))
+	err = adapter.handleProtoMessage(&pb.GatewayMessage{Payload: &pb.GatewayMessage_Subscribe{Subscribe: &pb.SubscribeRequest{SubscriptionId: "late", Database: "db", Collection: "items"}}})
+	require.ErrorIs(t, err, context.Canceled)
+	require.Empty(t, wire.sentMsgs)
+	require.Error(t, service.manager.Unsubscribe("late"))
+}
+
+type cancelDuringFilterCompilation struct {
+	manager.CELCompiler
+	cancel context.CancelFunc
+	err    error
+}
+
+func (c cancelDuringFilterCompilation) CompileProtoFilters(filters []*pb.Filter) (*manager.ExpressionSubscriber, error) {
+	c.cancel()
+	if c.err != nil {
+		return nil, c.err
+	}
+	return c.CELCompiler.CompileProtoFilters(filters)
+}
+
+func TestGRPCAdapter_RegistrationRetiredDuringCompilation(t *testing.T) {
+	for _, owner := range []string{"service", "stream"} {
+		for _, compilationFails := range []bool{false, true} {
+			name := owner + "/compiled"
+			if compilationFails {
+				name = owner + "/compile-error"
+			}
+			t.Run(name, func(t *testing.T) {
+				service, err := NewService(ServerConfig{}, slog.Default())
+				require.NoError(t, err)
+				internal := getInternalService(service)
+				ctx, cancelStream := context.WithCancel(context.Background())
+				defer cancelStream()
+				defer internal.cancel()
+				compiler, err := streamercel.NewCompiler()
+				require.NoError(t, err)
+				cancelOwner := cancelStream
+				if owner == "service" {
+					cancelOwner = internal.cancel
+				}
+				var compileErr error
+				if compilationFails {
+					compileErr = errors.New("invalid source predicate")
+				}
+				internal.manager = manager.New(manager.WithCELCompiler(cancelDuringFilterCompilation{CELCompiler: compiler, cancel: cancelOwner, err: compileErr}))
+				wire := &mockBidiStream{ctx: ctx}
+				adapter := newGRPCStreamAdapter(ctx, "gateway", wire, internal)
+				defer adapter.localStream.Close()
+				request := &pb.SubscribeRequest{Database: "db", Collection: "items", Filters: []*pb.Filter{{Field: "status", Op: "==", Value: &pb.Value{Kind: &pb.Value_StringValue{StringValue: "active"}}}}}
+				err = adapter.handleProtoMessage(&pb.GatewayMessage{Payload: &pb.GatewayMessage_Subscribe{Subscribe: request}})
+				require.ErrorIs(t, err, context.Canceled)
+				require.NotEmpty(t, request.SubscriptionId)
+				require.Empty(t, wire.sentMsgs)
+				_, exists := internal.manager.GetSubscription(request.SubscriptionId)
+				require.False(t, exists, "retired registration remained active")
+				total, exact, expressions, _ := internal.manager.Stats()
+				require.Zero(t, total)
+				require.Zero(t, exact)
+				require.Zero(t, expressions)
+			})
+		}
+	}
+}
 
 // --- GRPCStream Tests ---
 
@@ -176,7 +314,8 @@ func TestGRPCStream_ServiceStopped(t *testing.T) {
 	require.NoError(t, err)
 	internal := getInternalService(s)
 
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	mockStream := &mockBidiStream{ctx: ctx}
 
 	done := make(chan error, 1)

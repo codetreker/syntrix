@@ -282,6 +282,7 @@ func TestManager_Start_AllServices(t *testing.T) {
 	// Realtime's listener loop handles error and sleeps/retries or exits.
 	// We return context canceled to stop the loop.
 	mockStream.On("Recv").Return((*streamer.EventDelivery)(nil), context.Canceled)
+	mockStream.On("Close").Return(nil).Maybe()
 	// Realtime calls Stream(ctx)
 	mockStreamer.On("Stream", mock.Anything).Return(mockStream, nil)
 	mgr.streamerService = mockStreamer
@@ -376,9 +377,15 @@ type MockStream struct {
 	mock.Mock
 }
 
-func (m *MockStream) Subscribe(database, collection string, filters []model.Filter) (string, error) {
+func (m *MockStream) Subscribe(ctx context.Context, database, collection string, filters []model.Filter) (streamer.Registration, error) {
+	if err := ctx.Err(); err != nil {
+		return streamer.Registration{}, err
+	}
 	args := m.Called(database, collection, filters)
-	return args.String(0), args.Error(1)
+	return streamer.Registration{ID: args.String(0), Generation: 1}, args.Error(1)
+}
+func (m *MockStream) Status() streamer.StreamStatus {
+	return streamer.StreamStatus{State: streamer.StateConnected, Generation: 1}
 }
 func (m *MockStream) Unsubscribe(subscriptionID string) error {
 	return m.Called(subscriptionID).Error(0)

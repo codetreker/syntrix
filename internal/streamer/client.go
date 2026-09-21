@@ -74,7 +74,8 @@ type ClientConfig struct {
 	// considering the connection stale. Defaults to 90 seconds.
 	ActivityTimeout time.Duration `yaml:"activity_timeout"`
 
-	// OnStateChange is called when connection state changes. Optional.
+	// OnStateChange reports the latest connection state. Slow observers may coalesce
+	// transitions; use the actual Stream.Status ownership fence for registrations.
 	OnStateChange StateChangeCallback
 }
 
@@ -177,21 +178,35 @@ func NewClient(config ClientConfig, logger *slog.Logger) (Service, error) {
 // Stream implements the Service interface.
 // Returns a bidirectional stream that wraps the gRPC stream with auto-reconnect.
 func (c *streamerClient) Stream(ctx context.Context) (Stream, error) {
-	grpcStream, err := c.client.Stream(ctx)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if err := c.ctx.Err(); err != nil {
+		return nil, err
+	}
+	lifetime, cancel := context.WithCancel(ctx)
+	stopClient := context.AfterFunc(c.ctx, cancel)
+	attemptCtx, attemptCancel := context.WithCancel(lifetime)
+	grpcStream, err := c.client.Stream(attemptCtx)
 	if err != nil {
+		attemptCancel()
+		cancel()
+		stopClient()
 		return nil, fmt.Errorf("failed to establish stream: %w", err)
 	}
-
-	rs := &remoteStream{
-		ctx:                 ctx,
-		grpcStream:          grpcStream,
-		client:              c,
-		logger:              c.logger,
-		activeSubscriptions: make(map[string]*subscriptionInfo),
-		state:               StateConnected,
+	if err := lifetime.Err(); err != nil {
+		attemptCancel()
+		cancel()
+		stopClient()
+		return nil, err
 	}
-
-	return rs, nil
+	if err := c.ctx.Err(); err != nil {
+		attemptCancel()
+		cancel()
+		stopClient()
+		return nil, err
+	}
+	return newRemoteStream(lifetime, cancel, c, grpcStream, attemptCtx, attemptCancel, stopClient), nil
 }
 
 // Close closes the client connection.

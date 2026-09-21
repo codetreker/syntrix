@@ -96,13 +96,16 @@ type Client struct {
 	send chan BaseMessage
 
 	// Snapshot enqueue and Hub-owned closure share this per-client lifecycle.
-	sendMu       sync.RWMutex
-	sendStopOnce sync.Once
-	sendStop     chan struct{}
+	sendMu        sync.RWMutex
+	sendStopOnce  sync.Once
+	sendCloseOnce sync.Once
+	sendStop      chan struct{}
+	transportMu   sync.Mutex
+	sseDeadline   func(time.Time) error
 
 	// Subscriptions
 	subscriptions  map[string]Subscription // clientSubID -> Subscription
-	streamerSubIDs map[string]string       // clientSubID -> streamerSubID
+	streamerSubIDs map[string]hubRegistration
 	mu             sync.Mutex
 
 	database          string
@@ -123,11 +126,52 @@ func (c *Client) outboundDone() <-chan struct{} {
 // The Hub calls closeOutbound once while removing a registered client. Signal
 // before acquiring sendMu so a full queue cannot hold up the Hub's close path.
 func (c *Client) closeOutbound() {
-	c.outboundDone()
-	close(c.sendStop)
-	c.sendMu.Lock()
-	defer c.sendMu.Unlock()
-	close(c.send)
+	c.sendCloseOnce.Do(func() {
+		c.outboundDone()
+		close(c.sendStop)
+		if c.conn != nil {
+			_ = c.conn.Close()
+		}
+		c.transportMu.Lock()
+		if c.sseDeadline != nil {
+			_ = c.sseDeadline(time.Now())
+		}
+		c.transportMu.Unlock()
+		c.sendMu.Lock()
+		close(c.send)
+		c.sendMu.Unlock()
+	})
+}
+
+func (c *Client) enqueue(message BaseMessage, wait time.Duration) bool {
+	stopped := c.outboundDone()
+	var hubDone <-chan struct{}
+	if c.hub != nil {
+		hubDone = c.hub.Done()
+	}
+	c.sendMu.RLock()
+	defer c.sendMu.RUnlock()
+	select {
+	case <-stopped:
+		return false
+	default:
+	}
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	select {
+	case c.send <- message:
+		return true
+	case <-stopped:
+	case <-hubDone:
+	case <-timer.C:
+	}
+	return false
+}
+
+func (c *Client) sendControl(message BaseMessage) {
+	if !c.enqueue(message, writeWait) && c.conn != nil {
+		_ = c.conn.Close()
+	}
 }
 
 // readPump pumps messages from the websocket connection to the hub.
@@ -140,8 +184,7 @@ func (c *Client) readPump() {
 		// Clean up subscriptions
 		c.mu.Lock()
 		for _, sid := range c.streamerSubIDs {
-			c.hub.UnsubscribeFromStream(sid)
-			c.hub.UnregisterSubscription(sid)
+			c.hub.ReleaseSubscription(sid)
 		}
 		c.mu.Unlock()
 
@@ -181,7 +224,7 @@ func (c *Client) handleMessage(msg BaseMessage) {
 		c.handleAuth(msg)
 	case TypeSubscribe:
 		if !c.authenticated {
-			c.send <- BaseMessage{ID: msg.ID, Type: TypeError, Payload: mustMarshal(ErrorPayload{Code: "unauthorized", Message: "auth required"})}
+			c.sendControl(BaseMessage{ID: msg.ID, Type: TypeError, Payload: mustMarshal(ErrorPayload{Code: "unauthorized", Message: "auth required"})})
 			return
 		}
 		var payload SubscribePayload
@@ -195,11 +238,11 @@ func (c *Client) handleMessage(msg BaseMessage) {
 		if err != nil {
 			slog.Error("WS: Failed to subscribe", "error", err)
 			errPayload, _ := json.Marshal(map[string]string{"message": "Subscribe failed: " + err.Error()})
-			c.send <- BaseMessage{
+			c.sendControl(BaseMessage{
 				ID:      msg.ID,
 				Type:    TypeError,
 				Payload: errPayload,
-			}
+			})
 			return
 		}
 
@@ -211,11 +254,18 @@ func (c *Client) handleMessage(msg BaseMessage) {
 		c.streamerSubIDs[msg.ID] = streamerSubID
 		c.mu.Unlock()
 
-		c.hub.RegisterSubscription(streamerSubID, c, msg.ID)
+		if !c.hub.RegisterSubscription(streamerSubID, c, msg.ID) {
+			c.mu.Lock()
+			delete(c.subscriptions, msg.ID)
+			delete(c.streamerSubIDs, msg.ID)
+			c.mu.Unlock()
+			c.sendControl(BaseMessage{ID: msg.ID, Type: TypeError, Payload: mustMarshal(ErrorPayload{Code: "unavailable", Message: "Subscription owner ended"})})
+			return
+		}
 		slog.Info("WS: Subscribed", "collection", payload.Query.Collection, "id", msg.ID, "includeData", payload.IncludeData)
 
 		// Send Ack
-		c.send <- BaseMessage{ID: msg.ID, Type: TypeSubscribeAck}
+		c.sendControl(BaseMessage{ID: msg.ID, Type: TypeSubscribeAck})
 
 		if payload.SendSnapshot {
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -224,7 +274,7 @@ func (c *Client) handleMessage(msg BaseMessage) {
 		}
 	case TypeUnsubscribe:
 		if !c.authenticated {
-			c.send <- BaseMessage{ID: msg.ID, Type: TypeError, Payload: mustMarshal(ErrorPayload{Code: "unauthorized", Message: "auth required"})}
+			c.sendControl(BaseMessage{ID: msg.ID, Type: TypeError, Payload: mustMarshal(ErrorPayload{Code: "unauthorized", Message: "auth required"})})
 			return
 		}
 		var payload UnsubscribePayload
@@ -241,30 +291,29 @@ func (c *Client) handleMessage(msg BaseMessage) {
 		c.mu.Unlock()
 
 		if ok {
-			c.hub.UnsubscribeFromStream(sid)
-			c.hub.UnregisterSubscription(sid)
+			c.hub.ReleaseSubscription(sid)
 		}
 
 		slog.Info("WS: Unsubscribed", "id", payload.ID)
-		c.send <- BaseMessage{ID: msg.ID, Type: TypeUnsubscribeAck}
+		c.sendControl(BaseMessage{ID: msg.ID, Type: TypeUnsubscribeAck})
 	}
 }
 
 func (c *Client) handleAuth(msg BaseMessage) {
 	var payload AuthPayload
 	if err := json.Unmarshal(msg.Payload, &payload); err != nil {
-		c.send <- BaseMessage{ID: msg.ID, Type: TypeError, Payload: mustMarshal(ErrorPayload{Code: "invalid_auth", Message: "invalid payload"})}
+		c.sendControl(BaseMessage{ID: msg.ID, Type: TypeError, Payload: mustMarshal(ErrorPayload{Code: "invalid_auth", Message: "invalid payload"})})
 		return
 	}
 
 	if payload.Database == "" {
-		c.send <- BaseMessage{ID: msg.ID, Type: TypeError, Payload: mustMarshal(ErrorPayload{Code: "invalid_auth", Message: "database is required"})}
+		c.sendControl(BaseMessage{ID: msg.ID, Type: TypeError, Payload: mustMarshal(ErrorPayload{Code: "invalid_auth", Message: "database is required"})})
 		return
 	}
 
 	claims, err := c.auth.ValidateToken(payload.Token)
 	if err != nil || claims == nil {
-		c.send <- BaseMessage{ID: msg.ID, Type: TypeError, Payload: mustMarshal(ErrorPayload{Code: "unauthorized", Message: "invalid token"})}
+		c.sendControl(BaseMessage{ID: msg.ID, Type: TypeError, Payload: mustMarshal(ErrorPayload{Code: "unauthorized", Message: "invalid token"})})
 		return
 	}
 
@@ -274,7 +323,7 @@ func (c *Client) handleAuth(msg BaseMessage) {
 	c.authenticated = true
 	c.mu.Unlock()
 
-	c.send <- BaseMessage{ID: msg.ID, Type: TypeAuthAck}
+	c.sendControl(BaseMessage{ID: msg.ID, Type: TypeAuthAck})
 }
 
 // writePump pumps messages from the hub to the websocket connection.
@@ -292,6 +341,13 @@ func (c *Client) writePump() {
 	}()
 	for {
 		select {
+		case <-c.outboundDone():
+			return
+		default:
+		}
+		select {
+		case <-c.outboundDone():
+			return
 		case message, ok := <-c.send:
 			slog.Debug("Client writePump: received message", "type", message.Type, "id", message.ID)
 			c.conn.SetWriteDeadline(time.Now().Add(writeWait))
@@ -450,7 +506,7 @@ func ServeWs(hub *Hub, qs query.Service, auth identity.AuthN, cfg api_config.Rea
 		conn:              conn,
 		send:              make(chan BaseMessage, 256),
 		subscriptions:     make(map[string]Subscription),
-		streamerSubIDs:    make(map[string]string),
+		streamerSubIDs:    make(map[string]hubRegistration),
 		database:          database,
 		authenticated:     database != "",
 		allowAllDatabases: allowAll,
@@ -477,7 +533,7 @@ func ServeSSE(hub *Hub, qs query.Service, auth identity.AuthN, cfg api_config.Re
 		return
 	}
 
-	flusher, ok := w.(http.Flusher)
+	_, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "Streaming unsupported!", http.StatusInternalServerError)
 		return
@@ -511,11 +567,42 @@ func ServeSSE(hub *Hub, qs query.Service, auth identity.AuthN, cfg api_config.Re
 		conn:              nil,
 		send:              make(chan BaseMessage, 256),
 		subscriptions:     make(map[string]Subscription),
-		streamerSubIDs:    make(map[string]string),
+		streamerSubIDs:    make(map[string]hubRegistration),
 		database:          database,
 		authenticated:     database != "",
 		allowAllDatabases: allowAll,
 	}
+	controller := http.NewResponseController(w)
+	client.sseDeadline = controller.SetWriteDeadline
+	write := func(format string, values ...any) bool {
+		client.transportMu.Lock()
+		select {
+		case <-client.outboundDone():
+			client.transportMu.Unlock()
+			return false
+		default:
+		}
+		err := controller.SetWriteDeadline(time.Now().Add(writeWait))
+		client.transportMu.Unlock()
+		if err != nil && !errors.Is(err, http.ErrNotSupported) {
+			return false
+		}
+		if _, err := fmt.Fprintf(w, format, values...); err != nil {
+			return false
+		}
+		return controller.Flush() == nil
+	}
+
+	if !client.hub.Register(client) {
+		return
+	}
+	defer func() {
+		for _, sid := range client.streamerSubIDs {
+			client.hub.ReleaseSubscription(sid)
+		}
+		client.hub.Unregister(client)
+		slog.Info("SSE: connection closed")
+	}()
 
 	// Handle initial subscription from query params
 	collection := r.URL.Query().Get("collection")
@@ -532,26 +619,15 @@ func ServeSSE(hub *Hub, qs query.Service, auth identity.AuthN, cfg api_config.Re
 		IncludeData: true, // SSE clients typically expect data
 	}
 	client.streamerSubIDs["default"] = streamerSubID
-	client.hub.RegisterSubscription(streamerSubID, client, "default")
-
-	if !client.hub.Register(client) {
+	if !client.hub.RegisterSubscription(streamerSubID, client, "default") {
+		http.Error(w, "subscription owner ended", http.StatusServiceUnavailable)
 		return
 	}
 
-	// Unregister on exit
-	defer func() {
-		// Clean up subscriptions
-		for _, sid := range client.streamerSubIDs {
-			client.hub.UnsubscribeFromStream(sid)
-			client.hub.UnregisterSubscription(sid)
-		}
-		client.hub.Unregister(client)
-		slog.Info("SSE: connection closed")
-	}()
-
 	// Send initial comment to establish connection
-	fmt.Fprintf(w, ": connected\n\n")
-	flusher.Flush()
+	if !write(": connected\n\n") {
+		return
+	}
 
 	// Heartbeat ticker
 	ticker := time.NewTicker(sseHeartbeatInterval)
@@ -559,15 +635,15 @@ func ServeSSE(hub *Hub, qs query.Service, auth identity.AuthN, cfg api_config.Re
 
 	for {
 		select {
+		case <-client.outboundDone():
+			return
 		case <-ctx.Done():
 			slog.Info("SSE: context cancelled, closing connection")
 			return
 		case <-ticker.C:
-			if _, err := fmt.Fprintf(w, ": heartbeat\n\n"); err != nil {
-				slog.Warn("SSE: heartbeat error", "error", err)
+			if !write(": heartbeat\n\n") {
 				return
 			}
-			flusher.Flush()
 		case message, ok := <-client.send:
 			if !ok {
 				slog.Info("SSE: send channel closed")
@@ -577,11 +653,9 @@ func ServeSSE(hub *Hub, qs query.Service, auth identity.AuthN, cfg api_config.Re
 			if err != nil {
 				continue
 			}
-			if _, err := fmt.Fprintf(w, "data: %s\n\n", data); err != nil {
-				slog.Error("SSE: write error", "error", err)
+			if !write("data: %s\n\n", data) {
 				return
 			}
-			flusher.Flush()
 		}
 	}
 }

@@ -96,9 +96,16 @@ type MockStreamerStream struct {
 
 var _ streamer.Stream = &MockStreamerStream{}
 
-func (m *MockStreamerStream) Subscribe(database, collection string, filters []model.Filter) (string, error) {
+func (m *MockStreamerStream) Subscribe(ctx context.Context, database, collection string, filters []model.Filter) (streamer.Registration, error) {
+	if err := ctx.Err(); err != nil {
+		return streamer.Registration{}, err
+	}
 	args := m.Called(database, collection, filters)
-	return args.String(0), args.Error(1)
+	return streamer.Registration{ID: args.String(0), Generation: 1}, args.Error(1)
+}
+
+func (m *MockStreamerStream) Status() streamer.StreamStatus {
+	return streamer.StreamStatus{State: streamer.StateConnected, Generation: 1}
 }
 
 func (m *MockStreamerStream) Unsubscribe(subscriptionID string) error {

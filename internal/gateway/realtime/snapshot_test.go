@@ -30,7 +30,7 @@ func snapshotClient(t *testing.T, pages ...*storage.ReplicationPullResponse) (*C
 	}
 	client := &Client{
 		hub: NewTestHub(), queryService: service, database: "db", authenticated: true,
-		send: make(chan BaseMessage, 3), subscriptions: make(map[string]Subscription), streamerSubIDs: make(map[string]string),
+		send: make(chan BaseMessage, 3), subscriptions: make(map[string]Subscription), streamerSubIDs: make(map[string]hubRegistration),
 	}
 	t.Cleanup(func() { service.AssertExpectations(t) })
 	return client, service

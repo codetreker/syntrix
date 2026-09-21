@@ -2,11 +2,49 @@ package config
 
 import (
 	"os"
+	"reflect"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	services "github.com/syntrixbase/syntrix/internal/services/config"
 )
+
+func TestReplicaConfigDefaultsAndValidation(t *testing.T) {
+	defaults := DefaultReplicaConfig()
+	assert.Equal(t, 1024, defaults.Connections)
+	assert.Equal(t, 4096, defaults.Subscriptions)
+	assert.Equal(t, 256, defaults.SubscriptionsPerConnection)
+	assert.Equal(t, 256, defaults.PendingRegistrations)
+	assert.Equal(t, int64(64<<20), defaults.SourceBytes)
+	assert.Equal(t, int64(4<<20), defaults.SourceBytesPerConnection)
+	assert.Equal(t, 8, defaults.ReadConcurrency)
+	assert.Equal(t, int64(256<<20), defaults.PageBytes)
+	assert.Equal(t, 4, defaults.PageCreditsPerConnection)
+	assert.Equal(t, 8, defaults.AuthConcurrency)
+	assert.Equal(t, 100, defaults.AuthRate)
+	assert.Equal(t, 100, defaults.AuthBurst)
+	assert.Equal(t, defaults, DefaultGatewayConfig().Realtime.Replica)
+	cfg := GatewayConfig{}
+	cfg.ApplyDefaults()
+	assert.Equal(t, defaults, cfg.Realtime.Replica)
+	assert.NoError(t, cfg.Validate(services.ModeStandalone))
+	for i := 0; i < reflect.TypeOf(defaults).NumField(); i++ {
+		field := reflect.TypeOf(defaults).Field(i)
+		t.Run(field.Name, func(t *testing.T) {
+			custom := ReplicaConfig{}
+			reflect.ValueOf(&custom).Elem().Field(i).SetInt(3)
+			custom.ApplyDefaults()
+			assert.EqualValues(t, 3, reflect.ValueOf(custom).Field(i).Int())
+			assert.NoError(t, custom.Validate())
+			reflect.ValueOf(&custom).Elem().Field(i).SetInt(-1)
+			custom.ApplyDefaults()
+			assert.EqualValues(t, -1, reflect.ValueOf(custom).Field(i).Int())
+			cfg := DefaultGatewayConfig()
+			cfg.Realtime.Replica = custom
+			assert.ErrorContains(t, cfg.Validate(services.ModeStandalone), "gateway.realtime.replica."+field.Tag.Get("yaml"))
+		})
+	}
+}
 
 func TestDefaultGatewayConfig(t *testing.T) {
 	cfg := DefaultGatewayConfig()

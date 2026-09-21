@@ -125,7 +125,7 @@ func TestClient_HandleMessage_InvalidPayloads(t *testing.T) {
 		hub:           hub,
 		send:          make(chan BaseMessage, 10),
 		authenticated: true,
-		subscriptions: make(map[string]Subscription), streamerSubIDs: make(map[string]string),
+		subscriptions: make(map[string]Subscription), streamerSubIDs: make(map[string]hubRegistration),
 	}
 
 	// Test Subscribe with invalid payload
@@ -227,7 +227,7 @@ func TestClient_HandleSubscribe_InvalidFilter(t *testing.T) {
 		hub:           hub,
 		send:          make(chan BaseMessage, 10),
 		authenticated: true,
-		subscriptions: make(map[string]Subscription), streamerSubIDs: make(map[string]string),
+		subscriptions: make(map[string]Subscription), streamerSubIDs: make(map[string]hubRegistration),
 	}
 
 	// Subscribe with invalid filter
@@ -317,7 +317,7 @@ func TestClient_HandleSubscribe_SnapshotError(t *testing.T) {
 		queryService:  mockQS,
 		send:          make(chan BaseMessage, 10),
 		authenticated: true,
-		subscriptions: make(map[string]Subscription), streamerSubIDs: make(map[string]string),
+		subscriptions: make(map[string]Subscription), streamerSubIDs: make(map[string]hubRegistration),
 	}
 
 	subscribePayload := SubscribePayload{
@@ -526,7 +526,7 @@ func TestServeSSE_WriteError_Data(t *testing.T) {
 		client.mu.Unlock()
 
 		// Broadcast a message
-		hub.broadcast <- &streamer.EventDelivery{
+		hub.BroadcastDelivery(&streamer.EventDelivery{
 			SubscriptionIDs: []string{streamerSubID},
 			Event: &streamer.Event{
 				Operation:  streamer.OperationInsert,
@@ -535,7 +535,7 @@ func TestServeSSE_WriteError_Data(t *testing.T) {
 				Document:   model.Document{"id": "1", "collection": "test", "a": 1},
 				Database:   "default",
 			},
-		}
+		})
 	} else {
 		t.Fatal("Client not registered")
 	}

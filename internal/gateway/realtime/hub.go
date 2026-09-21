@@ -20,14 +20,22 @@ type Hub struct {
 	clients map[*Client]bool
 
 	// Inbound messages from the clients.
-	broadcast chan *streamer.EventDelivery
+	broadcast chan hubDelivery
 
 	// Subscription tracking
 	subscriptions   map[string]*SubscriptionInfo
 	subscriptionsMu sync.RWMutex
 
-	stream   streamer.Stream
-	streamMu sync.Mutex
+	stream                  streamer.Stream
+	streamMu                sync.Mutex
+	streamOwner             *hubStreamOwner
+	replicaMu               sync.Mutex
+	replicaOwners           map[*hubReplicaOwner]struct{}
+	replicaSubscriptions    map[string]*hubReplicaOwner
+	replicaConnections      map[*hubReplicaConnection]struct{}
+	replicaCleanupAdmission func() (func(), bool)
+	replicaCleanupSlots     chan struct{}
+	closed                  bool
 
 	// Register requests from the clients.
 	register chan *Client
@@ -42,17 +50,27 @@ type Hub struct {
 }
 
 type SubscriptionInfo struct {
-	Client      *Client
-	ClientSubID string // Client's subscription ID (for protocol)
+	Client       *Client
+	ClientSubID  string // Client's subscription ID (for protocol)
+	registration hubRegistration
+}
+
+type hubDelivery struct {
+	delivery *streamer.EventDelivery
+	owner    *hubStreamOwner
 }
 
 func NewHub() *Hub {
 	return &Hub{
-		broadcast:     make(chan *streamer.EventDelivery),
-		register:      make(chan *Client),
-		unregister:    make(chan *Client),
-		clients:       make(map[*Client]bool),
-		subscriptions: make(map[string]*SubscriptionInfo),
+		broadcast:            make(chan hubDelivery, 16),
+		register:             make(chan *Client),
+		unregister:           make(chan *Client),
+		clients:              make(map[*Client]bool),
+		subscriptions:        make(map[string]*SubscriptionInfo),
+		replicaOwners:        make(map[*hubReplicaOwner]struct{}),
+		replicaSubscriptions: make(map[string]*hubReplicaOwner),
+		replicaConnections:   make(map[*hubReplicaConnection]struct{}),
+		replicaCleanupSlots:  make(chan struct{}, 256),
 	}
 }
 
@@ -62,6 +80,10 @@ func (h *Hub) Run(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
+			h.streamMu.Lock()
+			h.closed = true
+			h.streamMu.Unlock()
+			h.invalidateReplicaConnections(ctx.Err())
 			h.shutdownClients()
 			return
 		case client := <-h.register:
@@ -70,106 +92,223 @@ func (h *Hub) Run(ctx context.Context) {
 			h.mu.Unlock()
 		case client := <-h.unregister:
 			h.mu.Lock()
-			if _, ok := h.clients[client]; ok {
+			_, present := h.clients[client]
+			if present {
 				delete(h.clients, client)
-				client.closeOutbound()
 			}
 			h.mu.Unlock()
-		case delivery := <-h.broadcast:
-			h.subscriptionsMu.RLock()
-
-			// Convert to storage.Event for compatibility
-			storageEvt := eventDeliveryToStorageEvent(delivery)
-
-			// Route to matching subscriptions
-			for _, streamerSubID := range delivery.SubscriptionIDs {
-				if info, ok := h.subscriptions[streamerSubID]; ok {
-					// Send to client using clientSubID
-					info.Client.mu.Lock()
-					if sub, ok := info.Client.subscriptions[info.ClientSubID]; ok {
-						// Build event payload
-						var doc map[string]interface{}
-						if sub.IncludeData {
-							doc = flattenDocument(storageEvt.Document)
-						}
-
-						payload := EventPayload{
-							SubID: info.ClientSubID, // Use client's subscription ID
-							Delta: PublicEvent{
-								Type:      storageEvt.Type,
-								Document:  doc,
-								ID:        storageEvt.Id,
-								Timestamp: storageEvt.Timestamp,
-							},
-						}
-						msg := BaseMessage{Type: TypeEvent, Payload: mustMarshal(payload)}
-
-						select {
-						case info.Client.send <- msg:
-						default:
-							select {
-							case info.Client.send <- msg:
-							case <-time.After(50 * time.Millisecond):
-							}
-						}
-					}
-					info.Client.mu.Unlock()
-				}
+			if present {
+				client.closeOutbound()
 			}
-			h.subscriptionsMu.RUnlock()
+		case delivery := <-h.broadcast:
+			h.deliverLegacy(delivery)
 		}
 	}
 }
 
-func (h *Hub) RegisterSubscription(streamerSubID string, client *Client, clientSubID string) {
-	h.subscriptionsMu.Lock()
-	h.subscriptions[streamerSubID] = &SubscriptionInfo{
-		Client:      client,
-		ClientSubID: clientSubID,
-	}
-	h.subscriptionsMu.Unlock()
+type hubRegistration struct {
+	ID          string
+	owner       *hubStreamOwner
+	generation  uint64
+	releaseOnce *sync.Once
 }
 
-func (h *Hub) UnregisterSubscription(streamerSubID string) {
-	h.subscriptionsMu.Lock()
-	delete(h.subscriptions, streamerSubID)
-	h.subscriptionsMu.Unlock()
+func (h *Hub) RegisterSubscription(registration hubRegistration, client *Client, clientSubID string) bool {
+	h.streamMu.Lock()
+	valid := !h.closed && h.streamOwner == registration.owner
+	if valid && registration.owner != nil {
+		status := registration.owner.stream.Status()
+		valid = !registration.owner.retired.Load() && !status.Terminal && status.State == streamer.StateConnected && status.Generation == registration.generation
+	}
+	if valid {
+		h.subscriptionsMu.Lock()
+		h.subscriptions[registration.ID] = &SubscriptionInfo{Client: client, ClientSubID: clientSubID, registration: registration}
+		h.subscriptionsMu.Unlock()
+	}
+	h.streamMu.Unlock()
+	if !valid && registration.owner != nil {
+		h.ReleaseSubscription(registration)
+	}
+	return valid
+}
+
+func (h *Hub) ReleaseSubscription(registration hubRegistration) {
+	release := func() {
+		h.subscriptionsMu.Lock()
+		if info := h.subscriptions[registration.ID]; info != nil && info.registration.owner == registration.owner &&
+			info.registration.generation == registration.generation && info.registration.releaseOnce == registration.releaseOnce {
+			delete(h.subscriptions, registration.ID)
+		}
+		h.subscriptionsMu.Unlock()
+		if registration.owner != nil {
+			h.cleanupReplicaRegistration(registration.owner, registration.ID)
+		}
+	}
+	if registration.releaseOnce != nil {
+		registration.releaseOnce.Do(release)
+	} else {
+		release()
+	}
 }
 
 func (h *Hub) SetStream(s streamer.Stream) {
 	h.streamMu.Lock()
+	old := h.streamOwner
+	if h.stream == s {
+		h.streamMu.Unlock()
+		return
+	}
 	h.stream = s
+	if s == nil {
+		h.streamOwner = nil
+	} else {
+		h.streamOwner = &hubStreamOwner{stream: s, generation: s.Status().Generation}
+	}
+	if old != nil {
+		h.subscriptionsMu.Lock()
+		h.subscriptions = make(map[string]*SubscriptionInfo)
+		h.subscriptionsMu.Unlock()
+	}
 	h.streamMu.Unlock()
+	if old != nil {
+		h.invalidateReplicaOwner(old, errReplicaStreamChanged, 0)
+		h.shutdownClients()
+	}
 }
 
-func (h *Hub) SubscribeToStream(database, collection string, filters []model.Filter) (string, error) {
+func (h *Hub) SubscribeToStream(database, collection string, filters []model.Filter) (hubRegistration, error) {
 	h.streamMu.Lock()
-	defer h.streamMu.Unlock()
-	if h.stream == nil {
-		return "", fmt.Errorf("stream not initialized")
+	owner := h.streamOwner
+	h.streamMu.Unlock()
+	if owner == nil {
+		return hubRegistration{}, fmt.Errorf("stream not initialized")
 	}
-	return h.stream.Subscribe(database, collection, filters)
-}
-
-func (h *Hub) UnsubscribeFromStream(subID string) error {
+	h.runCtxMu.RLock()
+	parent := h.runCtx
+	h.runCtxMu.RUnlock()
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(parent, 10*time.Second)
+	defer cancel()
+	registration, err := owner.stream.Subscribe(ctx, database, collection, filters)
+	if err != nil {
+		return hubRegistration{}, err
+	}
 	h.streamMu.Lock()
-	defer h.streamMu.Unlock()
-	if h.stream == nil {
-		return fmt.Errorf("stream not initialized")
+	status := owner.stream.Status()
+	valid := h.streamOwner == owner && !owner.retired.Load() && !h.closed && registration.ID != "" && !status.Terminal && status.State == streamer.StateConnected && status.Generation == registration.Generation
+	h.streamMu.Unlock()
+	if !valid {
+		h.cleanupReplicaRegistration(owner, registration.ID)
+		return hubRegistration{}, errReplicaStreamChanged
 	}
-	return h.stream.Unsubscribe(subID)
+	return hubRegistration{ID: registration.ID, owner: owner, generation: registration.Generation, releaseOnce: &sync.Once{}}, nil
 }
 
 func (h *Hub) BroadcastDelivery(delivery *streamer.EventDelivery) {
+	h.streamMu.Lock()
+	s := h.stream
+	h.streamMu.Unlock()
+	h.BroadcastStreamDelivery(s, delivery)
+}
+
+func (h *Hub) BroadcastStreamDelivery(stream streamer.Stream, delivery *streamer.EventDelivery) {
+	if delivery == nil {
+		return
+	}
 	select {
 	case <-h.Done():
 		return
 	default:
 	}
-
+	h.streamMu.Lock()
+	if stream != h.stream {
+		h.streamMu.Unlock()
+		return
+	}
+	owner := h.streamOwner
+	h.streamMu.Unlock()
+	h.deliverReplicaFor(owner, delivery)
+	h.streamMu.Lock()
+	if h.streamOwner != owner {
+		h.streamMu.Unlock()
+		return
+	}
+	h.subscriptionsMu.RLock()
+	affected := make(map[*Client]struct{})
+	for _, id := range delivery.SubscriptionIDs {
+		if info := h.subscriptions[id]; info != nil {
+			affected[info.Client] = struct{}{}
+		}
+	}
+	h.subscriptionsMu.RUnlock()
+	h.streamMu.Unlock()
+	if len(affected) == 0 {
+		return
+	}
+	// Queue overload must be visible to the affected legacy consumers. Retiring
+	// their transports preserves independent replica wakes without a silent gap.
 	select {
-	case h.broadcast <- delivery:
+	case h.broadcast <- hubDelivery{delivery: delivery, owner: owner}:
 	case <-h.Done():
+	default:
+		h.retireLegacyOverflow(owner, affected)
+	}
+}
+
+func (h *Hub) retireLegacyOverflow(owner *hubStreamOwner, clients map[*Client]struct{}) {
+	h.streamMu.Lock()
+	if h.streamOwner != owner {
+		h.streamMu.Unlock()
+		return
+	}
+	h.mu.Lock()
+	for client := range clients {
+		delete(h.clients, client)
+	}
+	h.mu.Unlock()
+	h.streamMu.Unlock()
+	for client := range clients {
+		client.closeOutbound()
+	}
+}
+
+func (h *Hub) deliverLegacy(queued hubDelivery) {
+	h.streamMu.Lock()
+	if queued.owner != h.streamOwner {
+		h.streamMu.Unlock()
+		return
+	}
+	h.subscriptionsMu.RLock()
+	delivery := queued.delivery
+	subscriptions := make([]*SubscriptionInfo, 0, len(delivery.SubscriptionIDs))
+	for _, id := range delivery.SubscriptionIDs {
+		if info := h.subscriptions[id]; info != nil {
+			subscriptions = append(subscriptions, info)
+		}
+	}
+	h.subscriptionsMu.RUnlock()
+	h.streamMu.Unlock()
+	if len(subscriptions) == 0 {
+		return
+	}
+	event := eventDeliveryToStorageEvent(delivery)
+	for _, info := range subscriptions {
+		client := info.Client
+		client.mu.Lock()
+		sub, ok := client.subscriptions[info.ClientSubID]
+		client.mu.Unlock()
+		if !ok {
+			continue
+		}
+		var document map[string]interface{}
+		if sub.IncludeData {
+			document = flattenDocument(event.Document)
+		}
+		payload := EventPayload{SubID: info.ClientSubID, Delta: PublicEvent{Type: event.Type, Document: document, ID: event.Id, Timestamp: event.Timestamp}}
+		message := BaseMessage{Type: TypeEvent, Payload: mustMarshal(payload)}
+		client.enqueue(message, 50*time.Millisecond)
 	}
 }
 
@@ -285,9 +424,13 @@ func documentToStoredDoc(doc model.Document, collection string) *storage.StoredD
 
 func (h *Hub) shutdownClients() {
 	h.mu.Lock()
-	defer h.mu.Unlock()
+	clients := make([]*Client, 0, len(h.clients))
 	for client := range h.clients {
-		client.closeOutbound()
+		clients = append(clients, client)
 		delete(h.clients, client)
+	}
+	h.mu.Unlock()
+	for _, client := range clients {
+		client.closeOutbound()
 	}
 }
