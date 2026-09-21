@@ -52,6 +52,7 @@ test('source leases are leader-only and external maintenance releases a page onl
     } }) };
   });
   const adapter = source(async () => { throw new Error('An acquired source lease must own reads'); });
+  adapter.resume = () => { events.push('resumed'); };
   adapter.acquire = context => {
     const index = leases.push(context);
     return { ...adapter, read: async () => { events.push(`read:${index}`); return page(); },
@@ -74,6 +75,11 @@ test('source leases are leader-only and external maintenance releases a page onl
     release(); await Promise.all([maintenance, paused]);
     expect(events).not.toContain('committed:1');
     await coordinator.resume(); await until(() => coordinator.snapshot.state === 'idle');
+    expect(events.filter(event => event === 'resumed')).toHaveLength(1);
+    expect(events.indexOf('closed:1')).toBeLessThan(events.indexOf('resumed'));
+    expect(events.indexOf('resumed')).toBeLessThan(events.indexOf('read:2'));
+    await coordinator.resume();
+    expect(events.filter(event => event === 'resumed')).toHaveLength(1);
     expect(leases).toHaveLength(2);
     expect(leases[1].scope.nativeInstanceId).not.toBe(leases[0].scope.nativeInstanceId);
     expect(events).toContain('committed:2');

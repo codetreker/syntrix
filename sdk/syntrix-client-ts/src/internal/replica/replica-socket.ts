@@ -95,10 +95,20 @@ export const connectReplicaSocket = (options: {
   const notify = (callback: () => void): void => {
     try { callback(); } catch (error) { console.error('Replica socket callback failed', error); }
   };
-  const retire = (sub: Subscription, error: unknown): void => {
+  const retire = (sub: Subscription, error: unknown, reportSource = false): void => {
     if (subscriptions.get(sub.id) !== sub) return;
     subscriptions.delete(sub.id); sub.cleanup();
     sub.registration?.reject(error); sub.read?.reject(error);
+    // Source rejection must reach its owner before cleanup can close the socket
+    // and replace the owner's registration with a transport failure.
+    if (reportSource) notify(() => sub.onError(asError(error)));
+    // Subscription-level source errors can leave the server registration alive.
+    // Release its captured ID when retiring ownership; another alias may
+    // keep this shared socket open indefinitely. Server unsubscribe is idempotent.
+    if (!closed) {
+      try { send(sub.id, 'unsubscribe', { subId: sub.id }); }
+      catch (failure) { stop(failure, true); }
+    }
   };
   const stop = (error: unknown, report: boolean): void => {
     if (closed) return;
@@ -144,7 +154,6 @@ export const connectReplicaSocket = (options: {
         owner = sub;
         const cancel = (): void => {
           retire(sub, signal.reason);
-          try { send(id, 'unsubscribe', { subId: id }); } catch (error) { stop(error, true); }
         };
         sub.registration = pending(resolve, reject, 10_000, () => stop(transportError('Replica registration timed out'), true));
         subscriptions.set(id, sub); signal.addEventListener('abort', cancel, { once: true });
@@ -164,7 +173,7 @@ export const connectReplicaSocket = (options: {
         sub = subscriptions.get(id);
         if (!sub?.registered || sub.read) throw protocolError('Replica read has no available registration');
         const owner = sub;
-        const cancel = (): void => { retire(owner, context.signal.reason); api.unsubscribe(id); };
+        const cancel = (): void => { retire(owner, context.signal.reason); };
         const request = encodeSourceRequest(definition, context);
         const deferred = pending<Page>(resolve, reject, 45_000, () => stop(transportError('Replica read timed out'), true));
         const cleanup = (): void => { deferred.cleanup(); context.signal.removeEventListener('abort', cancel); };
@@ -190,8 +199,6 @@ export const connectReplicaSocket = (options: {
     unsubscribe: id => {
       const sub = subscriptions.get(id);
       if (sub) retire(sub, new DOMException('Replica subscription closed', 'AbortError'));
-      if (closed) return;
-      try { send(id, 'unsubscribe', { subId: id }); } catch (error) { stop(error, true); }
     },
     close: () => stop(transportError('Replica socket closed'), false),
     onClose: callback => { closeListeners.add(callback); return () => { closeListeners.delete(callback); }; },
@@ -284,9 +291,7 @@ export const connectReplicaSocket = (options: {
       try { page = decodeSourcePage(payload.page, read.definition, read.context); }
       catch (error) {
         if (error instanceof ReplicaStorageError && (error.code === 'ReplicaIdentityMismatch' || error.code === 'ReplicaSourceMismatch')) {
-          retire(sub, error);
-          api.unsubscribe(sub.id);
-          notify(() => sub.onError(error));
+          retire(sub, error, true);
           return;
         }
         if (error instanceof ReplicaStorageError && (error.code === 'ReplicaSourceInvalid' || error.code === 'ReplicaSourceResponseTooLarge')) {
@@ -303,12 +308,11 @@ export const connectReplicaSocket = (options: {
         if (envelope.id !== payload.requestId || sub.read?.context.requestId !== payload.requestId) {
           throw protocolError('Replica error belongs to an unknown request');
         }
-        if (sub.read.delivered) { retire(sub, error); notify(() => sub.onError(error)); return; }
+        if (sub.read.delivered) { retire(sub, error, true); return; }
         const read = sub.read; sub.read = undefined; read.reject(error); return;
       }
       if (envelope.id !== id) throw protocolError('Replica subscription error identity differs');
-      const registered = sub.registered; retire(sub, error);
-      if (registered) notify(() => sub.onError(error));
+      retire(sub, error, sub.registered);
       return;
     }
     if (envelope.id !== id) throw protocolError('Replica subscription correlation differs');

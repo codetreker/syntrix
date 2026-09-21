@@ -49,6 +49,8 @@ export type ReplicaSourceAdapter = {
   read(context: SourceReadContext): Promise<SourceEventsPage | SourceWindow>;
   committed?(requestId: string): void;
   released?(requestId: string): void;
+  /** Explicit recovery may retry connection authentication without clearing source backoff. */
+  resume?(): void;
   acquire?(context: SourceLeaseContext): SourceLease;
 };
 export type SourceLeaseContext = { scope: RequestScope; signal: AbortSignal; hint(): void };

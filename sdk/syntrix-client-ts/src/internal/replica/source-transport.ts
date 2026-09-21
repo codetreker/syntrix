@@ -194,6 +194,12 @@ export const createReplicaSourceTransport = (options: {
       return {
         definition, mode,
         read: async () => { throw new ReplicaStorageError('ReplicaScopeChanged', 'Source reads require an elected owner lease'); },
+        resume: () => {
+          assert();
+          if (connectionError !== undefined && !transportFailure(connectionError) && !retryableSource(connectionError)) {
+            connectionError = undefined;
+          }
+        },
         acquire(context): SourceLease {
           assert(); context.signal.throwIfAborted();
           if (context.scope.sessionVersion !== options.sessionVersion) throw new AuthSessionChangedError();

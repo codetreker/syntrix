@@ -454,6 +454,8 @@ export const createReplicaDownstream = (input: ReplicaDownstreamOptions, clock: 
       else await reconcile(true);
     } catch (error) { block(error); throw error; }
     activeRun();
+    input.source.resume?.();
+    activeRun();
     paused = false; blocked = false; dirty = true; dirtyAt = clock.now(); retryAt = 0; retryAttempt = 0;
     publish({ state: leader ? 'syncing' : 'waiting', error: undefined, retryAt: undefined });
     if (reconcileTimer !== undefined) clock.clear(reconcileTimer);

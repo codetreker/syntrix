@@ -372,6 +372,43 @@ describe('replica hybrid source transport', () => {
     source.lease.committed('busy-3');
   });
 
+  for (const code of ['REPLICATION_SOURCE_BUSY', 'FORBIDDEN'] as const) {
+    it(`preserves asynchronous ${code} when retiring its subscription cannot send`, async () => {
+      const test = fixture();
+      const source = test.acquire();
+      await flush();
+      const socket = await test.authenticate();
+      const initial = source.read('before-retirement');
+      await flush();
+      const subId = await test.register(socket);
+      socket.respond(socket.messages('replica_read')[0]!);
+      await initial;
+      source.lease.committed('before-retirement');
+      socket.failSend = 'unsubscribe';
+      socket.receive({ id: subId, type: 'error', payload: {
+        subId, code, message: 'Source is unavailable', ...(code === 'REPLICATION_SOURCE_BUSY' ? { retryAfter: 30 } : {}),
+      } });
+      expect(socket.readyState).toBe(3);
+      expect(await source.read('after-retirement').catch(error => error)).toMatchObject({
+        code, status: code === 'REPLICATION_SOURCE_BUSY' ? 429 : 403,
+        ...(code === 'REPLICATION_SOURCE_BUSY' ? { retryAfter: 30 } : {}),
+      });
+      await test.clock.advance(29_999);
+      expect(await source.read('before-retry-boundary').catch(error => error)).toMatchObject({ code });
+      expect(test.requests).toHaveLength(0);
+      expect(test.sockets.slice(1).every(probe => probe.messages('subscribe').length === 0 && probe.messages('replica_read').length === 0)).toBe(true);
+      await test.clock.advance(1);
+      if (code === 'REPLICATION_SOURCE_BUSY') {
+        expect((await source.read('after-retry-boundary')).mode).toBe('events');
+        source.lease.committed('after-retry-boundary');
+        expect(test.requests).toHaveLength(1);
+      } else {
+        expect(await source.read('still-forbidden').catch(error => error)).toMatchObject({ code: 'FORBIDDEN', status: 403 });
+        expect(test.requests).toHaveLength(0);
+      }
+    });
+  }
+
   it('re-registers after an asynchronous source-busy notification backoff expires', async () => {
     const test = fixture();
     const source = test.acquire();
@@ -563,6 +600,128 @@ describe('replica hybrid source transport', () => {
     expect(test.sockets).toHaveLength(1);
   });
 
+
+  for (const code of ['FORBIDDEN', 'DATABASE_SUSPENDED']) {
+    it(`rechecks ${code} authentication only after explicit source resume`, async () => {
+      const test = fixture();
+      const first = test.acquire();
+      const failed = first.read('denied').catch(error => error);
+      await flush();
+      const denied = test.sockets[0]!;
+      denied.open();
+      denied.receive({ id: denied.messages('auth')[0]!.id, type: 'error', payload: { code, message: 'Access is unavailable' } });
+      const reason = await failed;
+      expect(reason).toMatchObject({ code });
+      await first.lease.close();
+      const automatic = test.acquire('users', 'native-automatic');
+      expect(await automatic.read('automatic-retry').catch(error => error)).toBe(reason);
+      await automatic.lease.close();
+      await test.clock.advance(100_000);
+      expect(test.sockets).toHaveLength(1);
+      expect(test.requests).toHaveLength(0);
+
+      first.source.resume!();
+      await flush();
+      expect(test.sockets).toHaveLength(1);
+      const resumed = test.acquire('users', 'native-explicit');
+      await flush();
+      const socket = await test.authenticate();
+      const recovered = resumed.read('authorized');
+      await flush();
+      await test.register(socket);
+      socket.respond(socket.messages('replica_read')[0]!);
+      expect((await recovered).mode).toBe('events');
+      resumed.lease.committed('authorized');
+      expect(test.sockets).toHaveLength(2);
+      expect(test.requests).toHaveLength(0);
+    });
+  }
+
+  it('retains authentication source backoff across explicit resume', async () => {
+    const test = fixture();
+    const first = test.acquire();
+    const failed = first.read('busy').catch(error => error);
+    await flush();
+    const socket = test.sockets[0]!;
+    socket.open();
+    socket.receive({ id: socket.messages('auth')[0]!.id, type: 'error', payload: {
+      code: 'REPLICATION_SOURCE_BUSY', message: 'Authorization is busy', retryAfter: 2,
+    } });
+    expect(await failed).toMatchObject({ code: 'REPLICATION_SOURCE_BUSY' });
+    await first.lease.close();
+    first.source.resume!();
+    const resumed = test.acquire('users', 'native-explicit');
+    expect(await resumed.read('early').catch(error => error)).toMatchObject({ code: 'REPLICATION_SOURCE_BUSY' });
+    await test.clock.advance(1_999);
+    expect(test.sockets).toHaveLength(1);
+    expect(test.requests).toHaveLength(0);
+    await test.clock.advance(1);
+    const recovered = await test.authenticate();
+    const result = resumed.read('after-backoff');
+    await flush();
+    await test.register(recovered);
+    recovered.respond(recovered.messages('replica_read')[0]!);
+    await result;
+    resumed.lease.committed('after-backoff');
+    expect(test.requests).toHaveLength(0);
+  });
+
+  it('keeps other owners blocked until their resume and preserves a recovered shared socket', async () => {
+    const test = fixture();
+    const left = test.acquire('left');
+    const right = test.acquire('right');
+    const failedLeft = left.read('left-denied').catch(error => error);
+    const failedRight = right.read('right-denied').catch(error => error);
+    await flush();
+    const denied = test.sockets[0]!;
+    denied.open();
+    denied.receive({ id: denied.messages('auth')[0]!.id, type: 'error', payload: { code: 'FORBIDDEN', message: 'Access denied' } });
+    const reason = await failedLeft;
+    expect(await failedRight).toBe(reason);
+    await left.lease.close();
+    left.source.resume!();
+    const resumedLeft = test.acquire('left', 'left-resumed');
+    await flush();
+    const socket = await test.authenticate();
+    expect(await right.read('right-still-blocked').catch(error => error)).toBe(reason);
+    const leftPage = resumedLeft.read('left-restored');
+    await flush();
+    await test.register(socket);
+    socket.respond(socket.messages('replica_read')[0]!);
+    await leftPage;
+    resumedLeft.lease.committed('left-restored');
+
+    await right.lease.close();
+    right.source.resume!();
+    const resumedRight = test.acquire('right', 'right-resumed');
+    const rightPage = resumedRight.read('right-restored');
+    await flush();
+    await test.register(socket);
+    socket.respond(socket.messages('replica_read')[1]!);
+    await rightPage;
+    resumedRight.lease.committed('right-restored');
+    expect(test.sockets).toHaveLength(2);
+    expect(socket.readyState).toBe(1);
+    expect(test.requests).toHaveLength(0);
+  });
+
+  it('cannot resume a cached authentication failure under a replaced session', async () => {
+    let version = 0;
+    const test = fixture({ getSessionVersion: () => version });
+    const source = test.acquire();
+    const failed = source.read('denied').catch(error => error);
+    await flush();
+    const denied = test.sockets[0]!;
+    denied.open();
+    denied.receive({ id: denied.messages('auth')[0]!.id, type: 'error', payload: { code: 'FORBIDDEN', message: 'Access denied' } });
+    await failed;
+    await source.lease.close();
+    version++;
+    expect(() => source.source.resume!()).toThrow(AuthSessionChangedError);
+    expect(() => test.acquire('users', 'replacement')).toThrow(AuthSessionChangedError);
+    expect(test.sockets).toHaveLength(1);
+    expect(test.requests).toHaveLength(0);
+  });
 
   it('bounds page admission to 45 seconds without sending beyond four retained pages', async () => {
     const test = fixture();

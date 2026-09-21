@@ -92,6 +92,10 @@ namespace 不改成解析 ID。
 REPLICATION_SOURCE_BUSY/429 的 retryAfter 与 retryAt 跨连接、原生租约和运输保留，
 changed、后台重连及 fallback 不提前读取源。
 
+终止连接错误保持阻塞，显式 resume 才重新允许认证。恢复入口在旧 native 应用排空、
+存储恢复校验通过后执行，并保留源退避与会话 fence；恢复权限不需要重开整个副本，
+普通租约替换也不能变成自动绕过权限拒绝的重试。
+
 凭据取消监听先于 provider 调用安装。关闭只等待可取消尝试，不等待共享 refresh
 底层 promise；迟到结果仍有处理器和会话 fence，另一个 HTTP 调用可继续共享刷新。
 重连 probe 只连接/认证，不抢跑第二套数据源。当前 auth 的 UNAUTHORIZED 仅 refresh
@@ -100,6 +104,11 @@ changed、后台重连及 fallback 不提前读取源。
 消息归属以实际 socket attempt、subId 和 requestId 检查。旧代/取消注册的晚消息不
 激活新 owner，同请求重复页不重复应用，当前代未知请求页明确失效。只保留当前请求
 和必要的最近回执，不能累积无界历史 ID。诊断回调允许关闭句柄，之后再次核对 owner。
+
+本地订阅退休同时在所属连接发送原 subId 的 unsubscribe。订阅级 SOURCE_BUSY 可以
+保留服务端注册，不能只删除本地记录，否则其它 alias 维持共享连接时会累积订阅与
+预算占用。先保留原始源错误及退避信息，再发送取消；发送失败则关闭连接，触发剩余
+注册清理，不能把源拒绝降级为可立即改走 HTTP 的运输错误。请求级限流仍保留注册供退避后读取。
 
 ### Public surface and diagnostics
 

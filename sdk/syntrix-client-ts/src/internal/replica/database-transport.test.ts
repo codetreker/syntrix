@@ -57,6 +57,7 @@ const fixture = (storage: RxStorage<any, any> = getRxStorageDexie({ indexedDB, I
   const timers = new Set<ReturnType<typeof setTimeout>>();
   const databases = new Set<ReplicaDatabase>();
   let serial = 0, offline = false;
+  let authError: 'FORBIDDEN' | 'DATABASE_SUSPENDED' | undefined;
   let read = async (request: Read): Promise<unknown> => events(request, 'head');
   let ack = (_frame: Frame) => {};
   const send = (socket: ServerWebSocket<{ serial: number }>, frame: Frame) => {
@@ -74,7 +75,9 @@ const fixture = (storage: RxStorage<any, any> = getRxStorageDexie({ indexedDB, I
         try {
           const frame = JSON.parse(String(data)) as Frame;
           frames.push({ serial: socket.data.serial, frame });
-          if (frame.type === 'auth') send(socket, { type: 'auth_ack', id: frame.id, payload: { mode: 'replica-data' } });
+          if (frame.type === 'auth') send(socket, authError
+            ? { type: 'error', id: frame.id, payload: { code: authError, message: 'Database access denied' } }
+            : { type: 'auth_ack', id: frame.id, payload: { mode: 'replica-data' } });
           else if (frame.type === 'subscribe') {
             subscriptions.set(frame.id, frame.payload);
             send(socket, { type: 'subscribe_ack', id: frame.id, payload: { subId: frame.id, databaseIdentity } });
@@ -129,6 +132,7 @@ const fixture = (storage: RxStorage<any, any> = getRxStorageDexie({ indexedDB, I
   };
   return { provider, reads, frames, sockets, clients, subscriptions, httpCalls, paths, environment, open, close,
     reply(handler: typeof read) { read = handler; }, acknowledged(handler: typeof ack) { ack = handler; },
+    denyAuth(code?: typeof authError) { authError = code; },
     offline() { offline = true; }, messages(type: string) { return frames.filter(entry => entry.frame.type === type); },
   };
 };
@@ -280,3 +284,36 @@ test('facade close cancels a WS credential wait without awaiting the shared toke
     release(jwt());
   } finally { release(jwt()); await f.close(); }
 }, 15_000);
+
+for (const code of ['FORBIDDEN', 'DATABASE_SUSPENDED'] as const) {
+  test(`explicit facade resume reauthenticates after ${code} without an automatic HTTP bypass`, async () => {
+    const f = fixture();
+    f.denyAuth(code);
+    f.reply(async request => events(request, 'restored', [{ type: 'upsert', document: document('restored', 9007199254740993n) }]));
+    const db = await f.open({ name: crypto.randomUUID(), collections: { users: definition }, sync: { pollIntervalMs: 50 } });
+    let status!: ReplicaSyncStatus;
+    const results: string[][] = [];
+    const stopStatus = db.sync.subscribe(value => { status = value; });
+    const stopWatch = db.collection('users').watch(rows => results.push(rows.map(row => row.id)));
+    try {
+      await until(() => status?.aliases.users.state === 'blocked', 'terminal auth error blocks synchronization');
+      expect(status.aliases.users.error).toMatchObject({ code });
+      f.denyAuth();
+      // Observe three maximum retry intervals: restoring access alone must not restart a terminal owner.
+      await Bun.sleep(3 * 100);
+      expect(status.aliases.users.state).toBe('blocked');
+      expect(f.messages('auth')).toHaveLength(1);
+      expect(f.httpCalls).toEqual([]);
+      expect(f.reads).toEqual([]);
+      expect(results.every(ids => ids.length === 0)).toBe(true);
+
+      await db.sync.resume('users');
+      await until(() => f.messages('replica_ack').length > 0 && results.some(ids => ids.includes('restored')), 'explicit resume commits a newly authorized source page');
+      expect(f.messages('auth')).toHaveLength(2);
+      expect(f.messages('auth').map(frame => frame.serial)).toEqual([1, 2]);
+      expect(await db.collection('users').doc('restored').get()).toMatchObject({ value: 9007199254740993n });
+      expect(f.httpCalls).toEqual([]);
+      expect(status.aliases.users.state).not.toBe('blocked');
+    } finally { stopWatch(); stopStatus(); await f.close(); }
+  }, 20_000);
+}

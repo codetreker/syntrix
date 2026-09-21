@@ -532,6 +532,7 @@ when notifications are missed.
 | ACK 失败 | 仅影响运输可用性，不能反向拒绝已经完成的本地提交；HTTP receipt 只归还页额度 |
 | 新鲜轮次 | changed 与注册完成只调度现有 hint；新的 read 才产生页面，不能把 settlement 前的旧页重新标为新 round |
 | 关闭 | 先退休源租约，再 drain 原生队列及应用器，最后释放未完成页与句柄运输；真实存储错误保留 |
+| 订阅退休 | 在所属连接上发送原 subId 的 unsubscribe；发送失败则关闭连接，触发服务端清理。订阅级限流不遗留无人持有的服务端注册 |
 
 | 切换点 | 处理 |
 |---|---|
@@ -543,6 +544,8 @@ when notifications are missed.
 运输/协议损坏可撤销 WS 后使用独立校验的 HTTP 数据。明确的权限、绑定身份、非法源、
 本地持久化错误走既有阻塞/恢复流程；REPLICATION_SOURCE_BUSY/429 的 retryAfter 和
 源 retryAt 跨运输保留。重连、changed 和 fallback 都不能绕过源退避。
+权限拒绝等终止连接错误保持阻塞，直到显式 resume 在旧应用任务排空、存储校验通过后
+重新允许认证。该入口只恢复连接准入，不清除源退避，也不跨越会话失效边界。
 WS 失败不决定正在发送的 HTTP Push 成功与否。
 
 默认 10 秒源核对与 200ms hint 合并保留。WS 健康时，周期核对请求和真实页面均走 WS，

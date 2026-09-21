@@ -268,6 +268,10 @@ CRUD/watch. `resume(alias?)` restarts runnable aliases; omission selects all
 currently configured aliases. Unresolved conflict/uncertain state rejects resume.
 Pause/resume does not authorize repeating a possibly committed mutation.
 
+权限拒绝或数据库暂停使 WS 认证阻塞时，恢复服务端权限后可调用 `sync.resume()`
+重新认证，无需关闭并重新打开副本。显式恢复仍执行原有会话及权限检查，保留源退避
+期限；周期重试和租约替换不会自动清除此类连接错误。
+
 When `navigator.onLine === false`, a new Push is refused locally before dispatch
 with retryable `OFFLINE`; whole-phase retry rules still apply. Going offline
 after dispatch does not prove nonexecution: a possibly committed write remains
