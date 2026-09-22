@@ -6,4 +6,4 @@
 | ID | 任务 | 状态 | Owner | PR |
 |----|------|------|-------|----|
 | SYN-001 | UI 展示方案确定 | backlog | 飞马 | — |
-| SYN-002 | 统一 Puller 订阅状态机 | In Review | 飞马 | — |
+| SYN-002 | 统一 Puller 订阅状态机 | In Review | 飞马 | [#167](https://github.com/codetreker/syntrix/pull/167) |
