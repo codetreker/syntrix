@@ -67,9 +67,9 @@ temporary backpressure.
 - Iterator, retention, transport, and boundary-validation failures continue to
   propagate through their existing paths. This decision does not extend retained
   history.
-- Local and gRPC delivery loops remain separate. The shared `Subscriber` handoff
-  owns the recovery guarantee; broader loop unification remains in
-  [Puller subscription state-machine unification](../../proposed/architecture/2026-09-07-local-puller-subscription-replay.md).
+- The shared `Subscriber` handoff owns the admission fence, and the
+  [Puller subscription state machine](../architecture/2026-09-07-puller-subscription-state-machine.md)
+  now owns the common recovery transition used by local and gRPC delivery.
 - Deterministic regressions block overflow logging after queue rejection and prove
   that retained replay completes before the broadcast returns. Race tests cover
   repeated recovery epochs, pending-recovery cancellation and closure, local

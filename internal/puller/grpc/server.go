@@ -248,6 +248,9 @@ func (s *Server) Subscribe(req *pullerv1.SubscribeRequest, stream pullerv1.Pulle
 			return status.Error(codes.Unimplemented, "verified subscriptions are unavailable")
 		}
 		if err := source.ValidateBoundary(ctx, req.After); err != nil {
+			if ctx.Err() != nil {
+				return nil
+			}
 			code := codes.FailedPrecondition
 			if errors.Is(err, core.ErrCaptureUnavailable) {
 				code = codes.Unavailable
@@ -255,199 +258,109 @@ func (s *Server) Subscribe(req *pullerv1.SubscribeRequest, stream pullerv1.Pulle
 			return status.Errorf(code, "invalid subscription boundary: %v", err)
 		}
 	}
-	readySent := false
-
-	// Mode: "catchup" or "live"
-	mode := "catchup"
-	if req.GetAfter() == "" {
-		mode = "live"
-		s.logger.Info("starting in live mode (no history requested)", "consumerId", sub.ID)
-	}
-
-	// Setup heartbeat ticker if enabled
 	heartbeatInterval := s.cfg.HeartbeatInterval
 	if heartbeatInterval <= 0 {
-		heartbeatInterval = 30 * time.Second // Default to 30s
+		heartbeatInterval = 30 * time.Second
 	}
 	heartbeatTicker := time.NewTicker(heartbeatInterval)
 	defer heartbeatTicker.Stop()
 
-	shouldDrain := false
-
-	for {
-		select {
-		case <-ctx.Done():
-			s.logger.Info("subscriber disconnected", "consumerId", sub.ID)
-			return nil
-		case <-sub.Done():
-			s.logger.Info("subscriber closed", "consumerId", sub.ID)
-			return status.Error(codes.Canceled, "subscription closed")
-		default:
-		}
-
-		if mode == "catchup" {
-			sub.BeginRecovery()
-			// Drain channel to make space for new events if we are recovering from overflow
-			if shouldDrain {
-				drainChannel(sub.Events())
-				shouldDrain = false
-			}
-			// Start replay
+	driver := core.SubscriptionDriver{
+		OpenReplay: func(ctx context.Context, progress *cursor.ProgressMarker) (events.Iterator, error) {
 			var iter events.Iterator
 			var err error
 			if source != nil {
-				iter, err = source.ReplayBoundary(ctx, sub.CurrentProgress().Encode(), sub.CoalesceOnCatchUp)
+				iter, err = source.ReplayBoundary(ctx, progress.Encode(), sub.CoalesceOnCatchUp)
 			} else {
-				iter, err = s.eventSource.Replay(ctx, sub.CurrentProgress().Positions, sub.CoalesceOnCatchUp)
+				iter, err = s.eventSource.Replay(ctx, progress.Positions, sub.CoalesceOnCatchUp)
 			}
 			if err != nil {
-				s.logger.Error("failed to start replay", "error", err)
-				return status.Errorf(codes.Internal, "failed to start replay: %v", err)
+				return nil, fmt.Errorf("failed to start replay: %w", err)
 			}
-
-			// Replay loop
-			replayCount := 0
-			for iter.Next() {
-				evt := iter.Event()
-				replayCount++
-				s.logger.Debug("Replay iter.Next()", "replayCount", replayCount, "eventID", evt.EventID, "backend", evt.Backend, "clusterTime", evt.ClusterTime)
-
-				// Deduplication: check if event is already sent
-				// This is crucial if Replay restarts or if ScanFrom is inclusive
-				if !sub.ShouldSend(evt.Backend, evt.EventID, evt.ClusterTime) {
-					s.logger.Debug("Skipping event (already sent)", "eventID", evt.EventID)
-					continue
-				}
-
-				if err := s.sendEvent(stream, sub, evt.Backend, evt); err != nil {
-					iter.Close()
-					return err
+			return iter, nil
+		},
+		Deliver: func(_ context.Context, evt *events.StoreChangeEvent, progress string) error {
+			return s.sendEvent(stream, sub.ID, evt.Backend, evt, progress)
+		},
+		Maintenance: heartbeatTicker.C,
+		Maintain: func(ctx context.Context, progress string) error {
+			if source != nil {
+				if err := source.ValidateBoundary(ctx, progress); err != nil {
+					code := codes.FailedPrecondition
+					if errors.Is(err, core.ErrCaptureUnavailable) {
+						code = codes.Unavailable
+					}
+					return status.Errorf(code, "subscription boundary unavailable: %v", err)
 				}
 			}
-			replayErr := iter.Err()
-			closeErr := iter.Close()
-			s.logger.Debug("Replay finished", "totalReplayCount", replayCount, "iterErr", replayErr)
-
-			if err := errors.Join(replayErr, closeErr); err != nil {
-				s.logger.Error("replay error", "error", err)
-				return status.Errorf(codes.Internal, "replay error: %v", err)
-			}
-
-			// Check if we overflowed during replay
-			if sub.RecoveryPending() {
-				s.logger.Info("subscriber overflowed during replay, continuing catchup", "consumerId", sub.ID)
-				shouldDrain = true
-				continue
-			}
-
-			// Caught up
-			mode = "live"
-			s.logger.Info("subscriber caught up, switching to live mode", "consumerId", sub.ID, "replayedEvents", replayCount)
-			// Reset heartbeat ticker when entering live mode
+			return s.sendHeartbeat(stream, sub.ID, progress)
+		},
+		EnterLive: func() {
 			heartbeatTicker.Reset(heartbeatInterval)
-
-		} else {
-			if req.RequireReady && !readySent {
-				if err := sendResponse(stream, &pullerv1.PullerEvent{Ready: true, Progress: sub.CurrentProgress().Encode()}); err != nil {
-					return err
-				}
-				readySent = true
-			}
-			// Live loop
-			select {
-			case <-ctx.Done():
-				s.logger.Info("subscriber disconnected", "consumerId", sub.ID)
-				return nil
-
-			case <-sub.Done():
-				s.logger.Info("subscriber closed", "consumerId", sub.ID)
-				return status.Error(codes.Canceled, "subscription closed")
-
-			case <-sub.Recovery():
-				s.logger.Info("subscriber overflowed, switching to catchup", "consumerId", sub.ID)
-				mode = "catchup"
-				shouldDrain = true
-				continue
-
-			case <-heartbeatTicker.C:
-				if source != nil {
-					if err := source.ValidateBoundary(ctx, sub.CurrentProgress().Encode()); err != nil {
-						code := codes.FailedPrecondition
-						if errors.Is(err, core.ErrCaptureUnavailable) {
-							code = codes.Unavailable
-						}
-						return status.Errorf(code, "subscription boundary unavailable: %v", err)
-					}
-				}
-				// Send heartbeat (PullerEvent with nil ChangeEvent)
-				if err := s.sendHeartbeat(stream, sub); err != nil {
-					return err
-				}
-
-			case evt := <-sub.Events():
-				if evt != nil && sub.ShouldSend(evt.Backend, evt.EventID, evt.ClusterTime) {
-					if err := s.sendEvent(stream, sub, evt.Backend, evt); err != nil {
-						return err
-					}
-				}
-
-				if sub.RecoveryPending() {
-					s.logger.Info("subscriber overflowed, switching to catchup", "consumerId", sub.ID)
-					mode = "catchup"
-					shouldDrain = true
-					continue
-				}
-			}
+		},
+	}
+	if req.RequireReady {
+		driver.Ready = func(_ context.Context, progress string) error {
+			return sendResponse(stream, &pullerv1.PullerEvent{Ready: true, Progress: progress})
 		}
+	}
+
+	exit := core.RunSubscription(ctx, sub, req.GetAfter() != "", driver)
+	if exit.CleanupErr != nil {
+		s.logger.Error("failed to close replay iterator", "error", exit.CleanupErr, "consumerId", sub.ID)
+	}
+	switch exit.Kind {
+	case core.SubscriptionExitContextCanceled:
+		s.logger.Info("subscriber disconnected", "consumerId", sub.ID)
+		return nil
+	case core.SubscriptionExitSubscriberClosed:
+		s.logger.Info("subscriber closed", "consumerId", sub.ID)
+		return status.Error(codes.Canceled, "subscription closed")
+	case core.SubscriptionExitReplayFailed:
+		replayErr := exit.Err
+		if replayErr == nil {
+			replayErr = exit.CleanupErr
+		}
+		s.logger.Error("replay error", "error", replayErr)
+		return status.Errorf(codes.Internal, "replay error: %v", replayErr)
+	case core.SubscriptionExitDeliveryFailed, core.SubscriptionExitReadyFailed, core.SubscriptionExitMaintenanceFailed:
+		return exit.Err
+	default:
+		return status.Error(codes.Internal, "subscription stopped unexpectedly")
 	}
 }
 
-func drainChannel(ch <-chan *events.StoreChangeEvent) {
-	for {
-		select {
-		case <-ch:
-		default:
-			return
-		}
-	}
-}
-
-// sendEvent sends a single event to the stream and updates subscriber position.
-func (s *Server) sendEvent(stream pullerv1.PullerService_SubscribeServer, sub *core.Subscriber, backend string, evt *events.StoreChangeEvent) error {
+// sendEvent sends a single event with its prospective progress marker.
+func (s *Server) sendEvent(stream pullerv1.PullerService_SubscribeServer, consumerID, backend string, evt *events.StoreChangeEvent, progress string) error {
 	// Convert to gRPC event
 	changeEvt, err := s.convertEvent(backend, evt)
 	if err != nil {
-		s.logger.Error("failed to convert event", "error", err)
+		s.logger.Error("failed to convert event", "error", err, "consumerId", consumerID)
 		return fmt.Errorf("convert puller event: %w", err)
 	}
 
-	position := sub.CurrentProgress()
-	position.SetPosition(backend, evt.EventID)
-
 	pullerEvt := &pullerv1.PullerEvent{
 		ChangeEvent: changeEvt,
-		Progress:    position.Encode(),
+		Progress:    progress,
 	}
 
 	// Send to client
 	if err := sendResponse(stream, pullerEvt); err != nil {
-		s.logger.Error("failed to send event", "error", err, "consumerId", sub.ID)
+		s.logger.Error("failed to send event", "error", err, "consumerId", consumerID)
 		return err
 	}
-	sub.UpdatePosition(backend, evt.EventID, evt.ClusterTime)
 	return nil
 }
 
 // sendHeartbeat sends a heartbeat event to keep the connection alive.
 // Heartbeat is a PullerEvent with nil ChangeEvent but includes current progress.
-func (s *Server) sendHeartbeat(stream pullerv1.PullerService_SubscribeServer, sub *core.Subscriber) error {
+func (s *Server) sendHeartbeat(stream pullerv1.PullerService_SubscribeServer, consumerID, progress string) error {
 	pullerEvt := &pullerv1.PullerEvent{
-		ChangeEvent: nil, // nil indicates heartbeat
-		Progress:    sub.CurrentProgress().Encode(),
+		Progress: progress,
 	}
 
 	if err := sendResponse(stream, pullerEvt); err != nil {
-		s.logger.Error("failed to send heartbeat", "error", err, "consumerId", sub.ID)
+		s.logger.Error("failed to send heartbeat", "error", err, "consumerId", consumerID)
 		return err
 	}
 	return nil

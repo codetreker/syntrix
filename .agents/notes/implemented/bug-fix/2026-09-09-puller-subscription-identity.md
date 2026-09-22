@@ -11,7 +11,7 @@ connection later exited, removal by label closed and deleted the second.
 
 ## Decision
 
-The [subscription contract](../../../../docs/design/server/puller/01.architecture.md#25-grpc-server)
+The [subscription contract](../../../../docs/design/server/puller/01.architecture.md#25-subscriber)
 keeps `consumer_id` as a logging label. Each actual subscription is registered
 by its existing in-process object, including subscriptions with equal or empty
 labels. Local and gRPC cleanup both remove their own object.

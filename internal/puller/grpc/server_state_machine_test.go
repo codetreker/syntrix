@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 	pullerv1 "github.com/syntrixbase/syntrix/api/gen/puller/v1"
 	"github.com/syntrixbase/syntrix/internal/puller/config"
+	"github.com/syntrixbase/syntrix/internal/puller/cursor"
 	"github.com/syntrixbase/syntrix/internal/puller/events"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -82,6 +83,52 @@ func (m *controllableIterator) Close() error {
 type controllableEventSource struct {
 	replayFunc func(ctx context.Context, after map[string]string, coalesce bool) (events.Iterator, error)
 	handler    func(ctx context.Context, backendName string, event *events.StoreChangeEvent) error
+}
+
+type retainedReplaySource struct {
+	mu          sync.Mutex
+	history     []*events.StoreChangeEvent
+	replayCalls int
+}
+
+func (s *retainedReplaySource) SetEventHandler(func(context.Context, string, *events.StoreChangeEvent) error) {
+}
+
+func (s *retainedReplaySource) Replay(_ context.Context, after map[string]string, _ bool) (events.Iterator, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.replayCalls++
+	start := 0
+	for index, event := range s.history {
+		if event.EventID == after["source"] {
+			start = index + 1
+			break
+		}
+	}
+	replay := append([]*events.StoreChangeEvent(nil), s.history[start:]...)
+	return &controllableIterator{events: replay}, nil
+}
+
+func (s *retainedReplaySource) BootstrapBoundary(context.Context) (string, error) { return "", nil }
+func (s *retainedReplaySource) ValidateBoundary(context.Context, string) error    { return nil }
+func (s *retainedReplaySource) ReplayBoundary(ctx context.Context, progress string, coalesce bool) (events.Iterator, error) {
+	marker, err := cursor.DecodeProgressMarker(progress)
+	if err != nil {
+		return nil, err
+	}
+	return s.Replay(ctx, marker.Positions, coalesce)
+}
+
+func (s *retainedReplaySource) append(event *events.StoreChangeEvent) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.history = append(s.history, event)
+}
+
+func (s *retainedReplaySource) calls() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.replayCalls
 }
 
 type blockingWarnState struct {
@@ -348,6 +395,113 @@ func TestServer_StateMachine_LiveDowngrade(t *testing.T) {
 	stream.AssertExpectations(t)
 }
 
+func TestServer_RepeatedRecoverySendsReadyOnce(t *testing.T) {
+	source := &retainedReplaySource{}
+	server := NewServer(config.GRPCConfig{ChannelSize: 1}, source, nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	ready := make(chan struct{})
+	firstSend := make(chan struct{})
+	firstRelease := make(chan struct{})
+	firstRecovery := make(chan struct{})
+	secondSend := make(chan struct{})
+	secondRelease := make(chan struct{})
+	secondRecovery := make(chan struct{})
+	var sentMu sync.Mutex
+	readyCount := 0
+	delivered := make([]string, 0, 6)
+	stream := &mockSubscribeServer{ctx: ctx, sendFunc: func(frame *pullerv1.PullerEvent) error {
+		if frame.Ready {
+			sentMu.Lock()
+			readyCount++
+			sentMu.Unlock()
+			close(ready)
+			return nil
+		}
+		id := frame.ChangeEvent.EventId
+		sentMu.Lock()
+		delivered = append(delivered, id)
+		sentMu.Unlock()
+		switch id {
+		case "1-1-a":
+			close(firstSend)
+			<-firstRelease
+		case "3-1-d":
+			close(secondSend)
+			<-secondRelease
+		case "2-2-c":
+			close(firstRecovery)
+		case "4-2-f":
+			close(secondRecovery)
+		}
+		return nil
+	}}
+	marker := cursor.NewProgressMarker()
+	marker.Positions["source"] = "0-0-start"
+	subscribeDone := make(chan error, 1)
+	go func() {
+		subscribeDone <- server.Subscribe(&pullerv1.SubscribeRequest{
+			ConsumerId:   "repeated-recovery",
+			After:        marker.Encode(),
+			RequireReady: true,
+		}, stream)
+	}()
+
+	select {
+	case <-ready:
+	case <-ctx.Done():
+		t.Fatal("initial replay did not reach Ready")
+	}
+
+	broadcast := func(event *events.StoreChangeEvent) {
+		source.append(event)
+		server.subs.Broadcast(event)
+	}
+	broadcast(&events.StoreChangeEvent{Backend: "source", EventID: "1-1-a", ClusterTime: events.ClusterTime{T: 1, I: 1}})
+	select {
+	case <-firstSend:
+	case <-ctx.Done():
+		t.Fatal("first live send did not start")
+	}
+	broadcast(&events.StoreChangeEvent{Backend: "source", EventID: "2-1-b", ClusterTime: events.ClusterTime{T: 2, I: 1}})
+	broadcast(&events.StoreChangeEvent{Backend: "source", EventID: "2-2-c", ClusterTime: events.ClusterTime{T: 2, I: 2}})
+	close(firstRelease)
+	select {
+	case <-firstRecovery:
+	case <-ctx.Done():
+		t.Fatal("first recovery did not replay retained history")
+	}
+
+	broadcast(&events.StoreChangeEvent{Backend: "source", EventID: "3-1-d", ClusterTime: events.ClusterTime{T: 3, I: 1}})
+	select {
+	case <-secondSend:
+	case <-ctx.Done():
+		t.Fatal("second live send did not start")
+	}
+	broadcast(&events.StoreChangeEvent{Backend: "source", EventID: "4-1-e", ClusterTime: events.ClusterTime{T: 4, I: 1}})
+	broadcast(&events.StoreChangeEvent{Backend: "source", EventID: "4-2-f", ClusterTime: events.ClusterTime{T: 4, I: 2}})
+	close(secondRelease)
+	select {
+	case <-secondRecovery:
+	case <-ctx.Done():
+		t.Fatal("second recovery did not replay retained history")
+	}
+	cancel()
+	select {
+	case err := <-subscribeDone:
+		require.NoError(t, err)
+	case <-time.After(time.Second):
+		t.Fatal("subscription did not stop after cancellation")
+	}
+
+	sentMu.Lock()
+	require.Equal(t, 1, readyCount)
+	require.Equal(t, []string{"1-1-a", "2-1-b", "2-2-c", "3-1-d", "4-1-e", "4-2-f"}, delivered)
+	sentMu.Unlock()
+	require.Equal(t, 3, source.calls())
+}
+
 func TestServer_RecoveryPendingTerminatesOnCancellationOrClosure(t *testing.T) {
 	for _, phase := range []string{"cancel", "close"} {
 		t.Run(phase, func(t *testing.T) {
@@ -406,11 +560,11 @@ func TestServer_RecoveryPendingTerminatesOnCancellationOrClosure(t *testing.T) {
 }
 
 func TestServer_Boundary_EmptyReplay(t *testing.T) {
-	// Scenario: Replay returns no events -> Immediate switch to Live
-
 	cfg := config.GRPCConfig{ChannelSize: 100}
+	replayCalled := make(chan map[string]string, 1)
 	source := &controllableEventSource{
 		replayFunc: func(ctx context.Context, after map[string]string, coalesce bool) (events.Iterator, error) {
+			replayCalled <- after
 			return &controllableIterator{events: []*events.StoreChangeEvent{}}, nil
 		},
 	}
@@ -424,22 +578,24 @@ func TestServer_Boundary_EmptyReplay(t *testing.T) {
 
 	done := make(chan struct{})
 	stream.On("Send", mock.MatchedBy(func(event *pullerv1.PullerEvent) bool {
-		if event.ChangeEvent.EventId == "live-1" {
-			close(done)
-			return true
-		}
-		return false
-	})).Return(nil).Once()
+		return event.ChangeEvent != nil && event.ChangeEvent.EventId == "2-1-live"
+	})).Run(func(mock.Arguments) { close(done) }).Return(nil).Once()
 
+	marker := makeProgressMarker("db1", "1-1-replayed")
 	go func() {
-		req := &pullerv1.SubscribeRequest{ConsumerId: "empty-replay"}
+		req := &pullerv1.SubscribeRequest{ConsumerId: "empty-replay", After: marker}
 		server.Subscribe(req, stream)
 	}()
 
-	time.Sleep(50 * time.Millisecond)
+	select {
+	case after := <-replayCalled:
+		require.Equal(t, "1-1-replayed", after["db1"])
+	case <-ctx.Done():
+		t.Fatal("Timeout waiting for the empty replay")
+	}
+	require.Eventually(t, func() bool { return server.SubscriberCount() == 1 }, time.Second, time.Millisecond)
 
-	// Emit live event
-	liveEvt := &events.StoreChangeEvent{EventID: "live-1", ClusterTime: events.ClusterTime{T: 200}}
+	liveEvt := &events.StoreChangeEvent{EventID: "2-1-live", ClusterTime: events.ClusterTime{T: 2, I: 1}}
 	source.EmitEvent(context.Background(), "db1", liveEvt)
 
 	select {

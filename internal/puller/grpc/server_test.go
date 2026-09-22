@@ -272,7 +272,7 @@ func TestServer_SendHeartbeat(t *testing.T) {
 	sub := testSubscriber(t, "test-consumer", initialProgress, false, 100)
 
 	// Send heartbeat
-	err := server.sendHeartbeat(mockStream, sub)
+	err := server.sendHeartbeat(mockStream, sub.ID, sub.CurrentProgress().Encode())
 	if err != nil {
 		t.Fatalf("sendHeartbeat() error = %v", err)
 	}
@@ -309,7 +309,7 @@ func TestServer_SendHeartbeat_EmptyProgress(t *testing.T) {
 	sub := testSubscriber(t, "test-consumer", nil, false, 100)
 
 	// Send heartbeat
-	err := server.sendHeartbeat(mockStream, sub)
+	err := server.sendHeartbeat(mockStream, sub.ID, sub.CurrentProgress().Encode())
 	if err != nil {
 		t.Fatalf("sendHeartbeat() error = %v", err)
 	}
@@ -353,7 +353,7 @@ func TestServer_SendHeartbeat_Error(t *testing.T) {
 		err: errors.New("send failed"),
 	}
 
-	err := server.sendHeartbeat(mockStream, sub)
+	err := server.sendHeartbeat(mockStream, sub.ID, sub.CurrentProgress().Encode())
 	if err == nil {
 		t.Fatal("sendHeartbeat() should return error when stream.Send fails")
 	}

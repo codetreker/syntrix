@@ -10,7 +10,7 @@ replay work, so the configured limit did not bound these per-subscription costs.
 
 ## Decision
 
-The [gRPC subscription contract](../../../../docs/design/server/puller/01.architecture.md#54-subscription-admission)
+The [gRPC subscription contract](../../../../docs/design/server/puller/01.architecture.md#53-grpc-admission)
 limits active `Subscribe` RPCs independently in each Puller gRPC Server. The
 configuration name remains `max_connections`, with an effective default of 100.
 The constructor resolves nonpositive values to that default, matching existing

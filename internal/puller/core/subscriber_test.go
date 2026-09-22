@@ -134,6 +134,44 @@ func TestSubscriberManager_LogsOnlyRecoveryTransition(t *testing.T) {
 	require.Equal(t, 1, strings.Count(output.String(), "slow consumer requires retained replay"))
 }
 
+func TestSubscriberManager_WarningDoesNotHoldRegistryLock(t *testing.T) {
+	logger, blockedWarn := newBlockingWarnLogger()
+	t.Cleanup(blockedWarn.unblock)
+	manager := NewSubscriberManager(logger)
+	sub := testSubscriber(t, "slow", nil, false, 1)
+	manager.Add(sub)
+	manager.Broadcast(&events.StoreChangeEvent{EventID: "queued"})
+
+	broadcastDone := make(chan struct{})
+	go func() {
+		defer close(broadcastDone)
+		manager.Broadcast(&events.StoreChangeEvent{EventID: "overflow"})
+	}()
+	select {
+	case <-blockedWarn.entered:
+	case <-time.After(time.Second):
+		t.Fatal("overflow warning did not block")
+	}
+
+	removeDone := make(chan struct{})
+	go func() {
+		defer close(removeDone)
+		manager.Remove(sub)
+	}()
+	select {
+	case <-removeDone:
+	case <-time.After(time.Second):
+		t.Fatal("overflow warning held the subscriber registry lock")
+	}
+
+	blockedWarn.unblock()
+	select {
+	case <-broadcastDone:
+	case <-time.After(time.Second):
+		t.Fatal("broadcast did not finish after warning resumed")
+	}
+}
+
 func TestSubscriberManager(t *testing.T) {
 	logger := slog.Default() // Use default logger for tests
 	mgr := NewSubscriberManager(logger)

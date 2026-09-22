@@ -105,8 +105,19 @@ func (s *Subscriber) Recovery() <-chan struct{} {
 	return s.recovery
 }
 
-// BeginRecovery clears the recovery state before retained replay starts. Any
-// later overflow publishes a new notification and fences subsequent live events.
+// drainEvents discards stale live events while recovery admission remains fenced.
+func (s *Subscriber) drainEvents() {
+	for {
+		select {
+		case <-s.ch:
+		default:
+			return
+		}
+	}
+}
+
+// BeginRecovery clears the recovery state immediately before retained replay.
+// Any later overflow publishes a new notification and fences subsequent events.
 func (s *Subscriber) BeginRecovery() {
 	s.recoveryMu.Lock()
 	defer s.recoveryMu.Unlock()
@@ -251,10 +262,15 @@ func (m *SubscriberManager) CloseAll() {
 // Broadcast sends an event to all subscribers.
 func (m *SubscriberManager) Broadcast(be *events.StoreChangeEvent) {
 	m.mu.RLock()
-	defer m.mu.RUnlock()
+	var recovering []string
 	for sub := range m.subscribers {
 		if _, recoveryStarted := sub.enqueue(be); recoveryStarted {
-			m.logger.Warn("slow consumer requires retained replay", "consumerId", sub.ID)
+			recovering = append(recovering, sub.ID)
 		}
+	}
+	m.mu.RUnlock()
+
+	for _, consumerID := range recovering {
+		m.logger.Warn("slow consumer requires retained replay", "consumerId", consumerID)
 	}
 }

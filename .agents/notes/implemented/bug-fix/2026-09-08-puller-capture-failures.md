@@ -12,7 +12,7 @@ resume-history failures could open a fresh stream, concealing missing history.
 
 ## Decision
 
-The existing [Puller capture](../../../../docs/design/server/puller/01.architecture.md#43-gap-detection-and-recovery)
+The existing [Puller capture](../../../../docs/design/server/puller/01.architecture.md#42-capture-startup-and-failure)
 keeps one native BSON resume token per backend, committed atomically with the
 batch's events. Reconnection reloads that durable token.
 
@@ -54,6 +54,7 @@ Background write failure is observed on the next write/checkpoint read or during
 shutdown. It does not immediately interrupt an otherwise idle native cursor.
 Consumer-visible history errors, cross-Puller replay, and cache-miss source
 replay remain in the [history recovery](../../proposed/architecture/2026-09-07-puller-history-gap-recovery.md)
-and [subscription replay](../../proposed/architecture/2026-09-07-local-puller-subscription-replay.md)
-proposals. Those require separate delivery work; this repair adds no new
-checkpoint authority or format to constrain it.
+proposal. The shared
+[subscription replay state machine](../architecture/2026-09-07-puller-subscription-state-machine.md)
+is implemented, while history recovery remains separate work. This repair adds
+no new checkpoint authority or format to constrain either mechanism.

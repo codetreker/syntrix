@@ -9,42 +9,42 @@ import (
 	"github.com/stretchr/testify/require"
 	pullerv1 "github.com/syntrixbase/syntrix/api/gen/puller/v1"
 	"github.com/syntrixbase/syntrix/internal/puller/config"
+	"github.com/syntrixbase/syntrix/internal/puller/core"
 	"github.com/syntrixbase/syntrix/internal/puller/cursor"
 	"github.com/syntrixbase/syntrix/internal/puller/events"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
 
-func TestEqualTimestampDeliveryAcknowledgesOnlySuccessfulSends(t *testing.T) {
+func TestFailedReplaySendDoesNotAdvanceProgress(t *testing.T) {
 	t.Parallel()
-	server := NewServer(config.GRPCConfig{}, &mockEventSource{}, nil)
-	sub := testSubscriber(t, "identity-ack", nil, false, 4)
 	first := &events.StoreChangeEvent{Backend: "source", EventID: "10-1-z", ClusterTime: events.ClusterTime{T: 10, I: 1}}
-	failed := errors.New("send interrupted")
-	var sent []*pullerv1.PullerEvent
-	transport := &mockSubscribeServer{ctx: context.Background(), sendFunc: func(evt *pullerv1.PullerEvent) error {
-		if failed != nil {
-			return failed
-		}
-		sent = append(sent, evt)
-		return nil
+	source := &controllableEventSource{replayFunc: func(context.Context, map[string]string, bool) (events.Iterator, error) {
+		return &controllableIterator{events: []*events.StoreChangeEvent{first}}, nil
 	}}
-	require.ErrorIs(t, server.sendEvent(transport, sub, "source", first), failed)
-	require.Empty(t, sub.CurrentProgress().Positions)
-	require.True(t, sub.ShouldSend("source", first.EventID, first.ClusterTime))
-	failed = nil
-	require.NoError(t, server.sendEvent(transport, sub, "source", first))
-	sibling := *first
-	sibling.EventID = "10-1-a"
-	require.True(t, sub.ShouldSend("source", sibling.EventID, sibling.ClusterTime))
-	require.NoError(t, server.sendEvent(transport, sub, "source", &sibling))
-	require.False(t, sub.ShouldSend("source", first.EventID, first.ClusterTime))
-	require.False(t, sub.ShouldSend("source", sibling.EventID, sibling.ClusterTime))
-	require.Equal(t, "10-1-a", sub.CurrentProgress().Positions["source"])
-	require.Len(t, sent, 2)
-	progress, err := cursor.DecodeProgressMarker(sent[1].Progress)
+	server := NewServer(config.GRPCConfig{}, source, nil)
+	marker := cursor.NewProgressMarker()
+	marker.Positions["source"] = ""
+	failed := errors.New("send interrupted")
+	var activeSub *core.Subscriber
+	transport := &mockSubscribeServer{ctx: context.Background(), sendFunc: func(frame *pullerv1.PullerEvent) error {
+		activeSub = server.subs.All()[0]
+		require.Empty(t, activeSub.CurrentProgress().GetPosition("source"))
+		prospective, err := cursor.DecodeProgressMarker(frame.Progress)
+		require.NoError(t, err)
+		require.Equal(t, first.EventID, prospective.GetPosition("source"))
+		return failed
+	}}
+
+	err := server.Subscribe(&pullerv1.SubscribeRequest{After: marker.Encode()}, transport)
+	require.ErrorIs(t, err, failed)
+	require.NotNil(t, activeSub)
+	require.Empty(t, activeSub.CurrentProgress().GetPosition("source"))
+	require.True(t, activeSub.ShouldSend("source", first.EventID, first.ClusterTime))
+	require.Zero(t, server.SubscriberCount())
+	progress, err := cursor.DecodeProgressMarker(marker.Encode())
 	require.NoError(t, err)
-	require.Equal(t, "10-1-a", progress.Positions["source"])
+	require.Empty(t, progress.GetPosition("source"))
 }
 
 type equalTimestampReplaySource struct {

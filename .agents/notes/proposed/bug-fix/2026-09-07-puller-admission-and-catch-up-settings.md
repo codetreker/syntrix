@@ -78,8 +78,8 @@ remain independent of future threshold measurement.
 
 ## Dependencies
 
-[Subscription state-machine unification](../architecture/2026-09-07-local-puller-subscription-replay.md)
-owns the proposed control-flow consolidation. Lag measurement requires its own
+[Subscription state-machine unification](../../implemented/architecture/2026-09-07-puller-subscription-state-machine.md)
+owns the delivered control-flow consolidation. Lag measurement requires its own
 confirmed reference-head definition; the rejected
 [publication scheme](../../rejected/architecture/2026-09-07-puller-persist-before-publish.md)
 supplies none.
