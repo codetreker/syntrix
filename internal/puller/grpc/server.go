@@ -18,11 +18,12 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// EventSource provides the event handler setter interface.
+// EventSource supplies live events and retained replay to subscriptions.
 // The handler function receives events from the puller for distribution.
 type EventSource interface {
 	SetEventHandler(handler func(ctx context.Context, backendName string, event *events.StoreChangeEvent) error)
 	Replay(ctx context.Context, after map[string]string, coalesce bool) (events.Iterator, error)
+	ReplayFromAdmission(ctx context.Context, after map[string]string, firstBroadcast map[string]events.ClusterTime) (events.Iterator, error)
 }
 
 type boundarySource interface {
@@ -274,6 +275,13 @@ func (s *Server) Subscribe(req *pullerv1.SubscribeRequest, stream pullerv1.Pulle
 			} else {
 				iter, err = s.eventSource.Replay(ctx, progress.Positions, false)
 			}
+			if err != nil {
+				return nil, fmt.Errorf("failed to start replay: %w", err)
+			}
+			return iter, nil
+		},
+		OpenAdmissionReplay: func(ctx context.Context, progress *cursor.ProgressMarker, floors map[string]events.ClusterTime) (events.Iterator, error) {
+			iter, err := s.eventSource.ReplayFromAdmission(ctx, progress.Positions, floors)
 			if err != nil {
 				return nil, fmt.Errorf("failed to start replay: %w", err)
 			}

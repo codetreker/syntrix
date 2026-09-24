@@ -101,6 +101,11 @@ type LocalService interface {
 	// events. Boundary-group events may repeat because EventID hashes do not encode
 	// source arrival order. An empty position starts at the beginning of retention.
 	Replay(ctx context.Context, after map[string]string, coalesce bool) (Iterator, error)
+
+	// ReplayFromAdmission opens raw recovery at the later of delivered progress
+	// and each backend's first post-registration broadcast group. Backends absent
+	// from firstBroadcast are excluded.
+	ReplayFromAdmission(ctx context.Context, after map[string]string, firstBroadcast map[string]events.ClusterTime) (Iterator, error)
 }
 
 // NewService creates a new local Puller service (in-process).

@@ -35,6 +35,10 @@ func (m *mockEventSource) Replay(ctx context.Context, after map[string]string, c
 	return &mockIterator{}, nil
 }
 
+func (m *mockEventSource) ReplayFromAdmission(ctx context.Context, after map[string]string, firstBroadcast map[string]events.ClusterTime) (events.Iterator, error) {
+	return m.Replay(ctx, after, false)
+}
+
 type mockIterator struct{}
 
 func (m *mockIterator) Next() bool                      { return false }

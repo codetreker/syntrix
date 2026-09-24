@@ -16,6 +16,7 @@ import (
 type subscriptionIterator struct {
 	events   []*events.StoreChangeEvent
 	index    int
+	nextHook func(int)
 	err      error
 	closeErr error
 	closed   int
@@ -27,6 +28,9 @@ func newSubscriptionIterator(events ...*events.StoreChangeEvent) *subscriptionIt
 
 func (i *subscriptionIterator) Next() bool {
 	i.index++
+	if i.nextHook != nil {
+		i.nextHook(i.index + 1)
+	}
 	return i.index < len(i.events)
 }
 
@@ -190,8 +194,12 @@ func TestRunSubscriptionStartFromNowFiltersHistoryBeforeCoalescing(t *testing.T)
 
 	var delivered []string
 	exit := RunSubscription(ctx, sub, false, SubscriptionDriver{
-		OpenReplay: func(_ context.Context, progress *cursor.ProgressMarker) (events.Iterator, error) {
+		OpenAdmissionReplay: func(_ context.Context, progress *cursor.ProgressMarker, floors map[string]events.ClusterTime) (events.Iterator, error) {
 			require.Empty(t, progress.Positions)
+			require.Equal(t, map[string]events.ClusterTime{
+				"a": first.ClusterTime,
+				"b": quietNew.ClusterTime,
+			}, floors)
 			return newSubscriptionIterator(old, oldSibling, first, second, quietOld, quietNew), nil
 		},
 		Deliver: func(_ context.Context, evt *events.StoreChangeEvent, _ string) error {
@@ -204,6 +212,36 @@ func TestRunSubscriptionStartFromNowFiltersHistoryBeforeCoalescing(t *testing.T)
 	})
 	require.Equal(t, SubscriptionExitContextCanceled, exit.Kind)
 	require.ElementsMatch(t, []string{first.EventID, second.EventID, quietNew.EventID}, delivered)
+}
+
+func TestRunSubscriptionStartFromNowStopsDuringFilteredReplay(t *testing.T) {
+	sub, err := NewSubscriber("cancel-filter", cursor.NewProgressMarker(), true, false, 1)
+	require.NoError(t, err)
+	post := subscriptionEvent(2)
+	sub.enqueue(post)
+	sub.enqueue(subscriptionEvent(3))
+	require.True(t, sub.RecoveryPending())
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	old := subscriptionEvent(1)
+	iter := newSubscriptionIterator(old, old, old)
+	iter.nextHook = func(count int) {
+		if count == 1 {
+			cancel()
+		}
+	}
+	exit := RunSubscription(ctx, sub, false, SubscriptionDriver{
+		OpenAdmissionReplay: func(context.Context, *cursor.ProgressMarker, map[string]events.ClusterTime) (events.Iterator, error) {
+			return iter, nil
+		},
+		Deliver: func(context.Context, *events.StoreChangeEvent, string) error {
+			t.Fatal("canceled replay delivered an event")
+			return nil
+		},
+	})
+	require.Equal(t, SubscriptionExitContextCanceled, exit.Kind)
+	require.Equal(t, 1, iter.index+1)
+	require.Equal(t, 1, iter.closed)
 }
 
 func TestRunSubscriptionSeparatesDeliveryAndIteratorCleanupFailures(t *testing.T) {

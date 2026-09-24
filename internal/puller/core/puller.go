@@ -474,15 +474,29 @@ func (p *Puller) BackendNames() []string {
 // Replay returns an iterator that replays events from the given progress marker.
 // If the marker is empty, it replays from the beginning of the buffer.
 func (p *Puller) Replay(ctx context.Context, after map[string]string, coalesce bool) (events.Iterator, error) {
-	return p.replay(ctx, after, nil, coalesce)
+	return p.replay(ctx, after, nil, nil, coalesce)
 }
 
-func (p *Puller) replay(ctx context.Context, after, lineages map[string]string, coalesce bool) (events.Iterator, error) {
+// ReplayFromAdmission opens raw replay at each backend's first post-registration
+// broadcast group or later delivered progress. A backend absent from
+// firstBroadcast has no retained events to recover.
+func (p *Puller) ReplayFromAdmission(ctx context.Context, after map[string]string, firstBroadcast map[string]events.ClusterTime) (events.Iterator, error) {
+	if firstBroadcast == nil {
+		return nil, fmt.Errorf("admission replay requires backend floors")
+	}
+	return p.replay(ctx, after, nil, firstBroadcast, false)
+}
+
+func (p *Puller) replay(ctx context.Context, after, lineages map[string]string, firstBroadcast map[string]events.ClusterTime, coalesce bool) (events.Iterator, error) {
 	var iters []events.Iterator
 
 	p.logger.Info("Replay called", "after", after, "coalesce", coalesce)
 
 	for name, backend := range p.backends {
+		floor, admitted := firstBroadcast[name]
+		if firstBroadcast != nil && !admitted {
+			continue
+		}
 		startID, groupStart := "", ""
 		if after != nil {
 			eventID := after[name]
@@ -498,6 +512,12 @@ func (p *Puller) replay(ctx context.Context, after, lineages map[string]string, 
 				startID = events.FormatBufferKey(ct, eventID)
 				groupStart = events.FormatBufferKey(ct, "")
 				p.logger.Debug("Replay backend", "backend", name, "eventID", eventID, "startID", startID)
+			}
+		}
+		if firstBroadcast != nil {
+			admissionStart := events.FormatBufferKey(floor, "")
+			if admissionStart > groupStart {
+				groupStart = admissionStart
 			}
 		}
 
@@ -602,6 +622,9 @@ func (p *Puller) subscribe(ctx context.Context, consumerID, after string, onRead
 					return p.ReplayBoundary(ctx, progress.Encode(), false)
 				}
 				return p.Replay(ctx, progress.Positions, false)
+			},
+			OpenAdmissionReplay: func(ctx context.Context, progress *cursor.ProgressMarker, floors map[string]events.ClusterTime) (events.Iterator, error) {
+				return p.ReplayFromAdmission(ctx, progress.Positions, floors)
 			},
 			Deliver: func(ctx context.Context, evt *events.StoreChangeEvent, progress string) error {
 				select {

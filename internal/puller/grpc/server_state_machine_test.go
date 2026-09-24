@@ -136,6 +136,21 @@ func (s *retainedReplaySource) Replay(_ context.Context, after map[string]string
 	return &controllableIterator{events: replay}, nil
 }
 
+func (s *retainedReplaySource) ReplayFromAdmission(_ context.Context, after map[string]string, firstBroadcast map[string]events.ClusterTime) (events.Iterator, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.replayCalls++
+	var replay []*events.StoreChangeEvent
+	for _, event := range s.history {
+		floor, present := firstBroadcast[event.Backend]
+		if !present || event.ClusterTime.Compare(floor) < 0 {
+			continue
+		}
+		replay = append(replay, event)
+	}
+	return &controllableIterator{events: replay}, nil
+}
+
 func (s *retainedReplaySource) BootstrapBoundary(context.Context) (string, error) { return "", nil }
 func (s *retainedReplaySource) ValidateBoundary(context.Context, string) error    { return nil }
 func (s *retainedReplaySource) ReplayBoundary(ctx context.Context, progress string, coalesce bool) (events.Iterator, error) {
@@ -227,6 +242,10 @@ func (m *controllableEventSource) Replay(ctx context.Context, after map[string]s
 		return m.replayFunc(ctx, after, coalesce)
 	}
 	return &controllableIterator{events: nil}, nil
+}
+
+func (m *controllableEventSource) ReplayFromAdmission(ctx context.Context, after map[string]string, firstBroadcast map[string]events.ClusterTime) (events.Iterator, error) {
+	return m.Replay(ctx, after, false)
 }
 
 // --- Tests ---

@@ -146,6 +146,18 @@ func (s *Subscriber) replayAdmitted(event *events.StoreChangeEvent) bool {
 	}
 }
 
+// AdmissionFloors snapshots the first broadcast timestamp for each backend.
+// Missing backends have no post-registration events to recover.
+func (s *Subscriber) AdmissionFloors() map[string]events.ClusterTime {
+	s.recoveryMu.Lock()
+	defer s.recoveryMu.Unlock()
+	floors := make(map[string]events.ClusterTime, len(s.admissionGroups))
+	for backend, group := range s.admissionGroups {
+		floors[backend] = group.clusterTime
+	}
+	return floors
+}
+
 // Recovery returns a level-triggered notification that wakes an idle consumer.
 func (s *Subscriber) Recovery() <-chan struct{} {
 	return s.recovery

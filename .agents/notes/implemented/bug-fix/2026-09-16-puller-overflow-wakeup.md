@@ -33,9 +33,9 @@ event, cancellation, and lifecycle channels. A dequeued prefix event may finish
 delivery, after which the loop enters catch-up. Each replay attempt clears the
 consumed recovery latch, and the recovery transition discards stale live entries
 before returning to live delivery. Replay starts from the last successfully
-delivered position. For empty-start subscriptions with no delivered position,
-the shared runner filters retained history against post-registration broadcast
-groups before coalescing, as defined by the
+delivered position. For empty-start subscriptions, replay seeks to each backend's
+first post-registration broadcast group and filters older identities in that
+group before coalescing, as defined by the
 [subscription state machine](../architecture/2026-09-07-puller-subscription-state-machine.md).
 Overflow during replay latches another notification and repeats catch-up. An
 overflow immediately after the final check remains pending and wakes the live

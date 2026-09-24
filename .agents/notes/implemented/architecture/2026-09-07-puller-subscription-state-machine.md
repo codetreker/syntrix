@@ -46,11 +46,12 @@ The runner owns these invariants:
   transition.
 - For an empty `after`, each backend records the first post-registration
   broadcast timestamp and the identities broadcast in that timestamp group,
-  including events rejected by the recovery fence. Recovery filters retained
-  history against these admission groups before coalescing. A backend with no
-  post-registration broadcast contributes no retained events. This prevents
-  recovery before first delivery from exposing earlier history while retaining
-  same-timestamp events whose IDs do not reflect arrival order.
+  including events rejected by the recovery fence. Recovery opens each observed
+  backend at the later of its last delivered timestamp group and first broadcast
+  group; backends without a post-registration broadcast open no iterator.
+  Recovery then filters older identities in the first group before coalescing.
+  This skips earlier timestamp groups while retaining same-timestamp events
+  whose IDs do not reflect arrival order.
 - The verified Ready barrier is published only after the initial replay reaches
   live mode and at most once per subscription. Later overflow recovery does not
   publish another Ready barrier.
@@ -99,10 +100,12 @@ exclusion until they receive one.
   subscription, so consumers remain responsible for idempotency.
 - A failed send cannot advance delivery progress. Overflow during live delivery
   or replay cannot allow newer live events to cross the retained-recovery fence.
-- Empty-start recovery scans retained history but discards events preceding the
-  subscription's broadcast boundary. Its first timestamp group retains an ID
-  set per backend until subscription termination. Filtering before coalescing
+- Empty-start recovery seeks past earlier timestamp groups and skips backends
+  without a broadcast. Its first timestamp group retains an ID set per backend
+  until subscription termination. Filtering that group before coalescing
   prevents pre-registration changes from altering a post-registration result.
+  The filter checks cancellation and subscriber closure between candidates,
+  including when an admitted group contains many older identities.
 - The gRPC event pump queues source events before broadcasting them. Its
   existing registration boundary is therefore the subscriber manager's
   broadcast order, which can lag a source write.

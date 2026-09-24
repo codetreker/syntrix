@@ -459,6 +459,62 @@ func TestNativeSubscriptionStartFromNowOverflowBeforeFirstDelivery(t *testing.T)
 	}
 }
 
+func TestReplayFromAdmissionSeeksPastOldBackends(t *testing.T) {
+	ctx := context.Background()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	corruptHistory := func(name string, old *events.StoreChangeEvent) *Backend {
+		t.Helper()
+		path := t.TempDir()
+		b, err := buffer.New(buffer.Options{Path: path, Logger: logger})
+		require.NoError(t, err)
+		require.NoError(t, b.Write(ctx, old, bson.Raw{5, 0, 0, 0, 0}))
+		require.NoError(t, b.Flush(ctx))
+		require.NoError(t, b.Close())
+		db, err := pebble.Open(path, &pebble.Options{})
+		require.NoError(t, err)
+		require.NoError(t, db.Set([]byte(old.BufferKey()), []byte("corrupt old event"), pebble.Sync))
+		require.NoError(t, db.Close())
+		b, err = buffer.New(buffer.Options{Path: path, Logger: logger})
+		require.NoError(t, err)
+		t.Cleanup(func() { require.NoError(t, b.Close()) })
+		return &Backend{name: name, buffer: b}
+	}
+
+	p := New(config.DefaultConfig(), logger)
+	oldActive := &events.StoreChangeEvent{Backend: "active", EventID: "1-1-old", ClusterTime: events.ClusterTime{T: 1, I: 1}}
+	oldQuiet := &events.StoreChangeEvent{Backend: "quiet", EventID: "1-1-old", ClusterTime: events.ClusterTime{T: 1, I: 1}}
+	p.backends["active"] = corruptHistory("active", oldActive)
+	p.backends["quiet"] = corruptHistory("quiet", oldQuiet)
+	newEvent := &events.StoreChangeEvent{Backend: "active", EventID: "2-1-new", ClusterTime: events.ClusterTime{T: 2, I: 1}}
+	require.NoError(t, p.backends["active"].buffer.Write(ctx, newEvent, bson.Raw{5, 0, 0, 0, 0}))
+	require.NoError(t, p.backends["active"].buffer.Flush(ctx))
+
+	iter, err := p.ReplayFromAdmission(ctx, nil, map[string]events.ClusterTime{"active": newEvent.ClusterTime})
+	require.NoError(t, err)
+	require.True(t, iter.Next())
+	require.Equal(t, newEvent.EventID, iter.Event().EventID)
+	require.False(t, iter.Next())
+	require.NoError(t, iter.Err())
+	require.NoError(t, iter.Close())
+	later := &events.StoreChangeEvent{Backend: "active", EventID: "3-1-later", ClusterTime: events.ClusterTime{T: 3, I: 1}}
+	require.NoError(t, p.backends["active"].buffer.Write(ctx, later, bson.Raw{5, 0, 0, 0, 0}))
+	require.NoError(t, p.backends["active"].buffer.Flush(ctx))
+	iter, err = p.ReplayFromAdmission(ctx, map[string]string{"active": later.EventID}, map[string]events.ClusterTime{"active": newEvent.ClusterTime})
+	require.NoError(t, err)
+	require.True(t, iter.Next())
+	require.Equal(t, later.EventID, iter.Event().EventID)
+	require.False(t, iter.Next())
+	require.NoError(t, iter.Err())
+	require.NoError(t, iter.Close())
+
+	iter, err = p.ReplayFromAdmission(ctx, nil, map[string]events.ClusterTime{})
+	require.NoError(t, err)
+	require.False(t, iter.Next())
+	require.NoError(t, iter.Close())
+	_, err = p.ReplayFromAdmission(ctx, nil, nil)
+	require.ErrorContains(t, err, "requires backend floors")
+}
+
 func TestNativeSubscriptionCancellationWithRecoveryPending(t *testing.T) {
 	logger, blockedWarn := newBlockingWarnLogger()
 	t.Cleanup(blockedWarn.unblock)

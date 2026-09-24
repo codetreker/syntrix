@@ -825,6 +825,9 @@ func (m *mockPullerService) SetEventHandler(handler func(ctx context.Context, ba
 func (m *mockPullerService) Replay(ctx context.Context, after map[string]string, streaming bool) (puller.Iterator, error) {
 	return nil, nil
 }
+func (m *mockPullerService) ReplayFromAdmission(ctx context.Context, after map[string]string, firstBroadcast map[string]puller.ClusterTime) (puller.Iterator, error) {
+	return nil, nil
+}
 
 // Note: TestManager_initStreamerService_Standalone was removed because
 // standalone mode Streamer initialization is now inlined in initStandalone().

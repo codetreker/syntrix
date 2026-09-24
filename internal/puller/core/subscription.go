@@ -44,14 +44,16 @@ type SubscriptionExit struct {
 }
 
 // SubscriptionDriver supplies transport-specific operations to the shared
-// subscription state machine.
+// subscription state machine. Replay callbacks return raw iterators so the
+// runner can filter admission history before coalescing.
 type SubscriptionDriver struct {
-	OpenReplay  func(context.Context, *cursor.ProgressMarker) (events.Iterator, error)
-	Deliver     func(context.Context, *events.StoreChangeEvent, string) error
-	Ready       func(context.Context, string) error
-	Maintenance <-chan time.Time
-	Maintain    func(context.Context, string) error
-	EnterLive   func()
+	OpenReplay          func(context.Context, *cursor.ProgressMarker) (events.Iterator, error)
+	OpenAdmissionReplay func(context.Context, *cursor.ProgressMarker, map[string]events.ClusterTime) (events.Iterator, error)
+	Deliver             func(context.Context, *events.StoreChangeEvent, string) error
+	Ready               func(context.Context, string) error
+	Maintenance         <-chan time.Time
+	Maintain            func(context.Context, string) error
+	EnterLive           func()
 }
 
 // RunSubscription delivers replay and live events until the context or
@@ -152,7 +154,14 @@ func RunSubscription(ctx context.Context, sub *Subscriber, initialCatchUp bool, 
 }
 
 func runReplay(ctx context.Context, sub *Subscriber, driver SubscriptionDriver) (SubscriptionExit, bool) {
-	iter, err := driver.OpenReplay(ctx, sub.CurrentProgress())
+	progress := sub.CurrentProgress()
+	var iter events.Iterator
+	var err error
+	if sub.startFromNow {
+		iter, err = driver.OpenAdmissionReplay(ctx, progress, sub.AdmissionFloors())
+	} else {
+		iter, err = driver.OpenReplay(ctx, progress)
+	}
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return canceledSubscriptionExit(SubscriptionPhaseReplay, ctxErr, nil), true
@@ -160,7 +169,7 @@ func runReplay(ctx context.Context, sub *Subscriber, driver SubscriptionDriver) 
 		return SubscriptionExit{Kind: SubscriptionExitReplayFailed, Phase: SubscriptionPhaseReplay, Err: err}, true
 	}
 	if sub.startFromNow {
-		iter = &admittedReplayIterator{source: iter, sub: sub}
+		iter = &admittedReplayIterator{ctx: ctx, source: iter, sub: sub}
 	}
 	if sub.CoalesceOnCatchUp {
 		iter = NewCoalescingIterator(iter, 100)
@@ -172,6 +181,10 @@ func runReplay(ctx context.Context, sub *Subscriber, driver SubscriptionDriver) 
 			return exit, true
 		}
 		if !iter.Next() {
+			if exit, stopped := subscriptionStopped(ctx, sub, SubscriptionPhaseReplay); stopped {
+				exit.CleanupErr = iter.Close()
+				return exit, true
+			}
 			break
 		}
 		if exit, stopped := subscriptionStopped(ctx, sub, SubscriptionPhaseReplay); stopped {
@@ -209,25 +222,43 @@ func runReplay(ctx context.Context, sub *Subscriber, driver SubscriptionDriver) 
 }
 
 type admittedReplayIterator struct {
+	ctx     context.Context
 	source  events.Iterator
 	sub     *Subscriber
 	current *events.StoreChangeEvent
+	err     error
 }
 
 func (i *admittedReplayIterator) Next() bool {
-	for i.source.Next() {
+	for {
+		if err := i.ctx.Err(); err != nil {
+			i.err = err
+			return false
+		}
+		select {
+		case <-i.sub.Done():
+			return false
+		default:
+		}
+		if !i.source.Next() {
+			return false
+		}
 		candidate := i.source.Event()
 		if i.sub.replayAdmitted(candidate) {
 			i.current = candidate
 			return true
 		}
 	}
-	return false
 }
 
 func (i *admittedReplayIterator) Event() *events.StoreChangeEvent { return i.current }
-func (i *admittedReplayIterator) Err() error                      { return i.source.Err() }
-func (i *admittedReplayIterator) Close() error                    { return i.source.Close() }
+func (i *admittedReplayIterator) Err() error {
+	if i.err != nil {
+		return i.err
+	}
+	return i.source.Err()
+}
+func (i *admittedReplayIterator) Close() error { return i.source.Close() }
 
 func deliverSubscriptionEvent(
 	ctx context.Context,
