@@ -38,14 +38,21 @@ type Subscriber struct {
 	// ch receives events for this subscriber.
 	ch chan *events.StoreChangeEvent
 
-	// overflow indicates if the subscriber channel has overflowed.
-	overflow bool
-	// overflowMu protects overflow.
-	overflowMu sync.Mutex
+	// recoveryMu serializes live admission with recovery state transitions.
+	recoveryMu      sync.Mutex
+	recoveryPending bool
+	recovery        chan struct{}
+	startFromNow    bool
+	admissionGroups map[string]*admissionGroup
+}
+
+type admissionGroup struct {
+	clusterTime events.ClusterTime
+	eventIDs    map[string]struct{}
 }
 
 // NewSubscriber creates a new subscriber.
-func NewSubscriber(id string, after *cursor.ProgressMarker, coalesceOnCatchUp bool, channelSize int) (*Subscriber, error) {
+func NewSubscriber(id string, after *cursor.ProgressMarker, startFromNow, coalesceOnCatchUp bool, channelSize int) (*Subscriber, error) {
 	if after == nil {
 		after = cursor.NewProgressMarker()
 	}
@@ -63,6 +70,10 @@ func NewSubscriber(id string, after *cursor.ProgressMarker, coalesceOnCatchUp bo
 		}
 		floors[backend] = timestamp
 	}
+	var admissionGroups map[string]*admissionGroup
+	if startFromNow {
+		admissionGroups = make(map[string]*admissionGroup)
+	}
 	return &Subscriber{
 		ID:                id,
 		After:             after,
@@ -73,24 +84,114 @@ func NewSubscriber(id string, after *cursor.ProgressMarker, coalesceOnCatchUp bo
 		done:              make(chan struct{}),
 		// Increase buffer size to handle transient spikes and avoid flapping between live and catchup modes.
 		// 10000 events * ~1KB/event ~= 10MB memory per subscriber.
-		ch: make(chan *events.StoreChangeEvent, channelSize),
+		ch:              make(chan *events.StoreChangeEvent, channelSize),
+		recovery:        make(chan struct{}, 1),
+		startFromNow:    startFromNow,
+		admissionGroups: admissionGroups,
 	}, nil
 }
 
-// SetOverflow sets the overflow flag.
-func (s *Subscriber) SetOverflow() {
-	s.overflowMu.Lock()
-	defer s.overflowMu.Unlock()
-	s.overflow = true
+// enqueue admits an event to live delivery. Once the queue overflows, all later
+// events remain in retained history until the consumer begins recovery.
+func (s *Subscriber) enqueue(event *events.StoreChangeEvent) (admitted, recoveryStarted bool) {
+	s.recoveryMu.Lock()
+	defer s.recoveryMu.Unlock()
+	if s.startFromNow && event != nil {
+		group := s.admissionGroups[event.Backend]
+		if group == nil {
+			group = &admissionGroup{clusterTime: event.ClusterTime, eventIDs: make(map[string]struct{})}
+			s.admissionGroups[event.Backend] = group
+		}
+		if event.ClusterTime.Compare(group.clusterTime) == 0 {
+			group.eventIDs[event.EventID] = struct{}{}
+		}
+	}
+
+	if s.recoveryPending {
+		return false, false
+	}
+	select {
+	case s.ch <- event:
+		return true, false
+	default:
+		s.recoveryPending = true
+		select {
+		case s.recovery <- struct{}{}:
+		default:
+		}
+		return false, true
+	}
 }
 
-// GetAndResetOverflow returns the current overflow state and resets it to false.
-func (s *Subscriber) GetAndResetOverflow() bool {
-	s.overflowMu.Lock()
-	defer s.overflowMu.Unlock()
-	overflow := s.overflow
-	s.overflow = false
-	return overflow
+// replayAdmitted keeps retained history before an empty subscription's first
+// broadcast out of recovery, including earlier events in the same timestamp group.
+func (s *Subscriber) replayAdmitted(event *events.StoreChangeEvent) bool {
+	if event == nil || !s.startFromNow {
+		return true
+	}
+	s.recoveryMu.Lock()
+	defer s.recoveryMu.Unlock()
+	group := s.admissionGroups[event.Backend]
+	if group == nil {
+		return false
+	}
+	switch event.ClusterTime.Compare(group.clusterTime) {
+	case -1:
+		return false
+	case 1:
+		return true
+	default:
+		_, admitted := group.eventIDs[event.EventID]
+		return admitted
+	}
+}
+
+// AdmissionFloors snapshots the first broadcast timestamp for each backend.
+// Missing backends have no post-registration events to recover.
+func (s *Subscriber) AdmissionFloors() map[string]events.ClusterTime {
+	s.recoveryMu.Lock()
+	defer s.recoveryMu.Unlock()
+	floors := make(map[string]events.ClusterTime, len(s.admissionGroups))
+	for backend, group := range s.admissionGroups {
+		floors[backend] = group.clusterTime
+	}
+	return floors
+}
+
+// Recovery returns a level-triggered notification that wakes an idle consumer.
+func (s *Subscriber) Recovery() <-chan struct{} {
+	return s.recovery
+}
+
+// drainEvents discards stale live events while recovery admission remains fenced.
+func (s *Subscriber) drainEvents() {
+	for {
+		select {
+		case <-s.ch:
+		default:
+			return
+		}
+	}
+}
+
+// BeginRecovery clears the recovery state immediately before retained replay.
+// Any later overflow publishes a new notification and fences subsequent events.
+func (s *Subscriber) BeginRecovery() {
+	s.recoveryMu.Lock()
+	defer s.recoveryMu.Unlock()
+
+	s.recoveryPending = false
+	select {
+	case <-s.recovery:
+	default:
+	}
+}
+
+// RecoveryPending reports whether retained replay is required.
+func (s *Subscriber) RecoveryPending() bool {
+	s.recoveryMu.Lock()
+	defer s.recoveryMu.Unlock()
+	return s.recoveryPending
 }
 
 // UpdatePosition updates the current position for a backend.
@@ -219,14 +320,15 @@ func (m *SubscriberManager) CloseAll() {
 // Broadcast sends an event to all subscribers.
 func (m *SubscriberManager) Broadcast(be *events.StoreChangeEvent) {
 	m.mu.RLock()
-	defer m.mu.RUnlock()
+	var recovering []string
 	for sub := range m.subscribers {
-		select {
-		case sub.ch <- be:
-		default:
-			// Slow consumer: mark as overflowed instead of disconnecting
-			m.logger.Warn("slow consumer detected, marking overflow", "consumerId", sub.ID)
-			sub.SetOverflow()
+		if _, recoveryStarted := sub.enqueue(be); recoveryStarted {
+			recovering = append(recovering, sub.ID)
 		}
+	}
+	m.mu.RUnlock()
+
+	for _, consumerID := range recovering {
+		m.logger.Warn("slow consumer requires retained replay", "consumerId", consumerID)
 	}
 }

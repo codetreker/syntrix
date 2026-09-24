@@ -87,9 +87,6 @@ func TestEqualTimestampOverflowAndReconnectReplayEveryDistinctEvent(t *testing.T
 			require.False(t, seen[evt.Change.EventID], "duplicate event %s", evt.Change.EventID)
 			seen[evt.Change.EventID] = true
 			progress = evt.Progress
-			if i == 0 {
-				require.Equal(t, eventID(count), evt.Change.EventID)
-			}
 		case <-ctx.Done():
 			t.Fatal(ctx.Err())
 		}

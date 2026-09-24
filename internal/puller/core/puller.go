@@ -474,15 +474,29 @@ func (p *Puller) BackendNames() []string {
 // Replay returns an iterator that replays events from the given progress marker.
 // If the marker is empty, it replays from the beginning of the buffer.
 func (p *Puller) Replay(ctx context.Context, after map[string]string, coalesce bool) (events.Iterator, error) {
-	return p.replay(ctx, after, nil, coalesce)
+	return p.replay(ctx, after, nil, nil, coalesce)
 }
 
-func (p *Puller) replay(ctx context.Context, after, lineages map[string]string, coalesce bool) (events.Iterator, error) {
+// ReplayFromAdmission opens raw replay at each backend's first post-registration
+// broadcast group or later delivered progress. A backend absent from
+// firstBroadcast has no retained events to recover.
+func (p *Puller) ReplayFromAdmission(ctx context.Context, after map[string]string, firstBroadcast map[string]events.ClusterTime) (events.Iterator, error) {
+	if firstBroadcast == nil {
+		return nil, fmt.Errorf("admission replay requires backend floors")
+	}
+	return p.replay(ctx, after, nil, firstBroadcast, false)
+}
+
+func (p *Puller) replay(ctx context.Context, after, lineages map[string]string, firstBroadcast map[string]events.ClusterTime, coalesce bool) (events.Iterator, error) {
 	var iters []events.Iterator
 
 	p.logger.Info("Replay called", "after", after, "coalesce", coalesce)
 
 	for name, backend := range p.backends {
+		floor, admitted := firstBroadcast[name]
+		if firstBroadcast != nil && !admitted {
+			continue
+		}
 		startID, groupStart := "", ""
 		if after != nil {
 			eventID := after[name]
@@ -500,12 +514,12 @@ func (p *Puller) replay(ctx context.Context, after, lineages map[string]string, 
 				p.logger.Debug("Replay backend", "backend", name, "eventID", eventID, "startID", startID)
 			}
 		}
-
-		// Debug: check buffer state before scan
-		count, _ := backend.buffer.Count()
-		first, _ := backend.buffer.First()
-		head, _ := backend.buffer.Head()
-		p.logger.Info("Buffer state before ScanFrom", "backend", name, "count", count, "first", first, "head", head, "startID", startID)
+		if firstBroadcast != nil {
+			admissionStart := events.FormatBufferKey(floor, "")
+			if admissionStart > groupStart {
+				groupStart = admissionStart
+			}
+		}
 
 		var iter buffer.Iterator
 		var err error
@@ -562,10 +576,13 @@ func (p *Puller) subscribe(ctx context.Context, consumerID, after string, onRead
 	pm, err := cursor.DecodeProgressMarker(after)
 	if err != nil {
 		p.logger.Error("invalid subscription progress", "error", err)
+		if verified {
+			out <- &events.PullerEvent{Error: err}
+		}
 		close(out)
 		return out
 	}
-	sub, err := NewSubscriber(consumerID, pm, false, 1000)
+	sub, err := NewSubscriber(consumerID, pm, after == "", false, 1000)
 	if err != nil {
 		if verified {
 			out <- &events.PullerEvent{Error: err}
@@ -592,101 +609,73 @@ func (p *Puller) subscribe(ctx context.Context, consumerID, after string, onRead
 				return
 			}
 		}
-		send := func(evt *events.StoreChangeEvent) bool {
-			if !sub.ShouldSend(evt.Backend, evt.EventID, evt.ClusterTime) {
-				return true
+		var healthTicker *time.Ticker
+		var maintenance <-chan time.Time
+		if verified {
+			healthTicker = time.NewTicker(time.Second)
+			maintenance = healthTicker.C
+			defer healthTicker.Stop()
+		}
+		driver := SubscriptionDriver{
+			OpenReplay: func(ctx context.Context, progress *cursor.ProgressMarker) (events.Iterator, error) {
+				if verified {
+					return p.ReplayBoundary(ctx, progress.Encode(), false)
+				}
+				return p.Replay(ctx, progress.Positions, false)
+			},
+			OpenAdmissionReplay: func(ctx context.Context, progress *cursor.ProgressMarker, floors map[string]events.ClusterTime) (events.Iterator, error) {
+				return p.ReplayFromAdmission(ctx, progress.Positions, floors)
+			},
+			Deliver: func(ctx context.Context, evt *events.StoreChangeEvent, progress string) error {
+				select {
+				case out <- &events.PullerEvent{Change: evt, Progress: progress}:
+					return nil
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+			},
+			Maintenance: maintenance,
+		}
+		if verified {
+			driver.Ready = func(ctx context.Context, progress string) error {
+				select {
+				case out <- &events.PullerEvent{Ready: true, Progress: progress}:
+					if onReady != nil {
+						onReady(progress)
+					}
+					return nil
+				case <-ctx.Done():
+					return ctx.Err()
+				}
 			}
-			position := sub.CurrentProgress()
-			position.SetPosition(evt.Backend, evt.EventID)
-			select {
-			case out <- &events.PullerEvent{Change: evt, Progress: position.Encode()}:
-				sub.UpdatePosition(evt.Backend, evt.EventID, evt.ClusterTime)
-				return true
-			case <-ctx.Done():
-				return false
+			driver.Maintain = func(ctx context.Context, progress string) error {
+				return p.ValidateBoundary(ctx, progress)
+			}
+		} else if onReady != nil {
+			driver.Ready = func(_ context.Context, progress string) error {
+				onReady(progress)
+				return nil
 			}
 		}
-		catchup := after != ""
-		ready := false
-		healthTicker := time.NewTicker(time.Second)
-		defer healthTicker.Stop()
-		for {
-			if catchup {
-				sub.GetAndResetOverflow()
-				var iter events.Iterator
-				var err error
-				if verified {
-					iter, err = p.ReplayBoundary(ctx, sub.CurrentProgress().Encode(), false)
-				} else {
-					iter, err = p.Replay(ctx, sub.CurrentProgress().Positions, false)
-				}
-				if err != nil {
-					p.logger.Error("subscription replay failed", "error", err)
-					fail(err, false)
-					return
-				}
-				for iter.Next() {
-					if !send(iter.Event()) {
-						iter.Close()
-						return
-					}
-				}
-				replayErr := iter.Err()
-				closeErr := iter.Close()
-				if replayErr != nil || closeErr != nil {
-					p.logger.Error("subscription replay failed", "error", errors.Join(replayErr, closeErr))
-					fail(errors.Join(replayErr, closeErr), false)
-					return
-				}
-				if sub.GetAndResetOverflow() {
-					for len(sub.Events()) > 0 {
-						<-sub.Events()
-					}
-					continue
-				}
-				catchup = false
+
+		exit := RunSubscription(ctx, sub, after != "", driver)
+		if exit.CleanupErr != nil && exit.Err != nil {
+			p.logger.Error("subscription replay cleanup failed", "error", exit.CleanupErr)
+		}
+		switch exit.Kind {
+		case SubscriptionExitReplayFailed:
+			err := exit.Err
+			if err == nil {
+				err = exit.CleanupErr
 			}
-			if !ready {
-				if ctx.Err() != nil {
-					return
-				}
-				if verified {
-					select {
-					case out <- &events.PullerEvent{Ready: true, Progress: sub.CurrentProgress().Encode()}:
-					case <-ctx.Done():
-						return
-					}
-				}
-				if onReady != nil {
-					onReady(sub.CurrentProgress().Encode())
-				}
-				ready = true
-			}
-			select {
-			case <-ctx.Done():
-				return
-			case <-sub.Done():
-				return
-			case <-healthTicker.C:
-				if verified {
-					if err := p.ValidateBoundary(ctx, sub.CurrentProgress().Encode()); err != nil {
-						p.logger.Error("subscription boundary unavailable", "error", err)
-						fail(err, errors.Is(err, ErrCaptureUnavailable))
-						return
-					}
-				}
-			case evt := <-sub.Events():
-				overflow := sub.GetAndResetOverflow()
-				if !send(evt) {
-					return
-				}
-				if overflow {
-					catchup = true
-					for len(sub.Events()) > 0 {
-						<-sub.Events()
-					}
-				}
-			}
+			p.logger.Error("subscription replay failed", "error", err)
+			fail(err, false)
+		case SubscriptionExitMaintenanceFailed:
+			p.logger.Error("subscription boundary unavailable", "error", exit.Err)
+			fail(exit.Err, errors.Is(exit.Err, ErrCaptureUnavailable))
+		case SubscriptionExitDeliveryFailed, SubscriptionExitReadyFailed:
+			p.logger.Error("subscription delivery failed", "error", exit.Err)
+			fail(exit.Err, false)
 		}
 	}()
 	return out

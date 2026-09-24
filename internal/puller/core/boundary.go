@@ -140,5 +140,5 @@ func (p *Puller) ReplayBoundary(ctx context.Context, after string, coalesce bool
 	if err != nil {
 		return nil, err
 	}
-	return p.replay(ctx, pm.Positions, pm.Lineages, coalesce)
+	return p.replay(ctx, pm.Positions, pm.Lineages, nil, coalesce)
 }

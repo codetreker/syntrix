@@ -35,6 +35,10 @@ func (s *codecEventSource) Replay(context.Context, map[string]string, bool) (eve
 	return nil, fmt.Errorf("unexpected replay")
 }
 
+func (s *codecEventSource) ReplayFromAdmission(context.Context, map[string]string, map[string]events.ClusterTime) (events.Iterator, error) {
+	return nil, fmt.Errorf("unexpected replay")
+}
+
 func TestGRPCDocumentCodecRoundTrip(t *testing.T) {
 	t.Parallel()
 	listener := bufconn.Listen(1024 * 1024)

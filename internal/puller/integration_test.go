@@ -119,6 +119,7 @@ func TestPuller_GRPC_Integration(t *testing.T) {
 			ConsumerId: "consumer-1",
 		})
 		require.NoError(t, err)
+		requireSubscriberCount(t, pullerServer, 1)
 
 		// Insert document
 		_, err = coll.InsertOne(ctx, storage.NewStoredDoc(dbName, collName, "doc1", map[string]any{"val": 1}))

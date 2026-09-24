@@ -39,6 +39,9 @@ func (m *mockTriggerPuller) SetEventHandler(handler func(ctx context.Context, ba
 func (m *mockTriggerPuller) Replay(ctx context.Context, after map[string]string, streaming bool) (puller.Iterator, error) {
 	return nil, nil
 }
+func (m *mockTriggerPuller) ReplayFromAdmission(ctx context.Context, after map[string]string, firstBroadcast map[string]puller.ClusterTime) (puller.Iterator, error) {
+	return nil, nil
+}
 
 // setupTriggerTestFactories saves and restores all trigger-related factories
 func setupTriggerTestFactories(t *testing.T) func() {
