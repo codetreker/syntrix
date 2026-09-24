@@ -44,6 +44,13 @@ The runner owns these invariants:
   the consumed latch immediately before opening replay from the last successful
   delivery position. Overflow during replay relatches recovery and repeats the
   transition.
+- For an empty `after`, each backend records the first post-registration
+  broadcast timestamp and the identities broadcast in that timestamp group,
+  including events rejected by the recovery fence. Recovery filters retained
+  history against these admission groups before coalescing. A backend with no
+  post-registration broadcast contributes no retained events. This prevents
+  recovery before first delivery from exposing earlier history while retaining
+  same-timestamp events whose IDs do not reflect arrival order.
 - The verified Ready barrier is published only after the initial replay reaches
   live mode and at most once per subscription. Later overflow recovery does not
   publish another Ready barrier.
@@ -52,11 +59,11 @@ The runner owns these invariants:
   boundaries before sending each heartbeat.
 
 A nonempty marker starts retained replay. An empty marker starts an ordinary
-subscription at the current head. Verified subscriptions require a nonempty
-marker accepted by boundary validation. Live capture registration still occurs
-before replay opens, so concurrent events are covered by retained replay or the
-bounded live queue. The existing admission fence remains owned by the
-[overflow wakeup decision](../bug-fix/2026-09-16-puller-overflow-wakeup.md).
+subscription at the broadcast registration boundary. Verified subscriptions
+require a nonempty marker accepted by boundary validation. Live capture
+registration still occurs before replay opens, so concurrent events are covered
+by retained replay or the bounded live queue. The existing admission fence
+remains owned by the [overflow wakeup decision](../bug-fix/2026-09-16-puller-overflow-wakeup.md).
 
 The runner returns a structured terminal result containing the exit kind, active
 phase, primary error, and iterator cleanup error. Adapters preserve their
@@ -76,6 +83,12 @@ cleanup rules.
 **Route standalone consumers through gRPC.** This would reuse the remote state
 machine but require a listener and serialization in in-process deployments.
 
+**Use the first post-registration EventID as the empty-start replay floor.**
+Replay includes the complete boundary timestamp group, and EventIDs do not
+encode arrival order within that group. A single ID would admit older siblings
+or exclude later ones. Backends without a first broadcast also need an explicit
+exclusion until they receive one.
+
 ## Consequences
 
 - Local and gRPC adapters now share the same replay/live/recovery ordering while
@@ -86,6 +99,13 @@ machine but require a listener and serialization in in-process deployments.
   subscription, so consumers remain responsible for idempotency.
 - A failed send cannot advance delivery progress. Overflow during live delivery
   or replay cannot allow newer live events to cross the retained-recovery fence.
+- Empty-start recovery scans retained history but discards events preceding the
+  subscription's broadcast boundary. Its first timestamp group retains an ID
+  set per backend until subscription termination. Filtering before coalescing
+  prevents pre-registration changes from altering a post-registration result.
+- The gRPC event pump queues source events before broadcasting them. Its
+  existing registration boundary is therefore the subscriber manager's
+  broadcast order, which can lag a source write.
 - Iterator iteration and cleanup failures remain separately observable. This
   increases adapter responsibility because both errors may require reporting or
   logging even though only the primary failure determines the transport result.
@@ -93,8 +113,8 @@ machine but require a listener and serialization in in-process deployments.
   callbacks therefore remain explicit so blocking sends and transport-specific
   status mapping are visible at the integration boundary.
 - The shared runner does not define retained-history reconstruction, lag
-  measurement, catch-up thresholds, coalescing policy, or local subscription
-  quotas. [History-gap recovery](../../proposed/architecture/2026-09-07-puller-history-gap-recovery.md)
+  measurement, catch-up thresholds, effective default coalescing policy, or
+  local subscription quotas. [History-gap recovery](../../proposed/architecture/2026-09-07-puller-history-gap-recovery.md)
   and [consumer settings](../../proposed/bug-fix/2026-09-07-puller-admission-and-catch-up-settings.md)
   retain those decisions. The implemented
   [gRPC admission limit](../bug-fix/2026-09-07-puller-grpc-admission.md) remains

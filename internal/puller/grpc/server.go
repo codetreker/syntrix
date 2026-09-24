@@ -225,7 +225,7 @@ func (s *Server) Subscribe(req *pullerv1.SubscribeRequest, stream pullerv1.Pulle
 		channelSize = 10000
 	}
 
-	sub, err := core.NewSubscriber(req.GetConsumerId(), after, req.GetCoalesceOnCatchUp(), channelSize)
+	sub, err := core.NewSubscriber(req.GetConsumerId(), after, req.GetAfter() == "", req.GetCoalesceOnCatchUp(), channelSize)
 	if err != nil {
 		s.mu.Unlock()
 		return status.Errorf(codes.InvalidArgument, "invalid subscription progress: %v", err)
@@ -270,9 +270,9 @@ func (s *Server) Subscribe(req *pullerv1.SubscribeRequest, stream pullerv1.Pulle
 			var iter events.Iterator
 			var err error
 			if source != nil {
-				iter, err = source.ReplayBoundary(ctx, progress.Encode(), sub.CoalesceOnCatchUp)
+				iter, err = source.ReplayBoundary(ctx, progress.Encode(), false)
 			} else {
-				iter, err = s.eventSource.Replay(ctx, progress.Positions, sub.CoalesceOnCatchUp)
+				iter, err = s.eventSource.Replay(ctx, progress.Positions, false)
 			}
 			if err != nil {
 				return nil, fmt.Errorf("failed to start replay: %w", err)

@@ -412,6 +412,53 @@ func TestNativeSubscriptionWakesForOverflowBeforeBroadcastReturns(t *testing.T) 
 	}
 }
 
+func TestNativeSubscriptionStartFromNowOverflowBeforeFirstDelivery(t *testing.T) {
+	p, backend, _ := nativeBoundaryFixture(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	require.NoError(t, backend.buffer.Write(ctx, nativeBoundaryEvent(1), bson.Raw{5, 0, 0, 0, 0}))
+	require.NoError(t, backend.buffer.Flush(ctx))
+
+	enteredLive := make(chan struct{})
+	release := make(chan struct{})
+	stream := p.subscribe(ctx, "current-head-overflow", "", func(string) {
+		close(enteredLive)
+		select {
+		case <-release:
+		case <-ctx.Done():
+		}
+	}, false)
+	select {
+	case <-enteredLive:
+	case <-ctx.Done():
+		t.Fatal("subscription did not enter live mode")
+	}
+
+	const last = 1002
+	for i := 2; i <= last; i++ {
+		evt := nativeBoundaryEvent(i)
+		require.NoError(t, backend.buffer.Write(ctx, evt, bson.Raw{5, 0, 0, 0, 0}))
+		p.subs.Broadcast(evt)
+	}
+	require.NoError(t, backend.buffer.Flush(ctx))
+	sub := p.subs.All()[0]
+	require.True(t, sub.RecoveryPending())
+	require.Empty(t, sub.CurrentProgress().Positions)
+	sub.drainEvents()
+	close(release)
+
+	for i := 2; i <= last; i++ {
+		select {
+		case evt := <-stream:
+			require.NotNil(t, evt)
+			require.NotNil(t, evt.Change)
+			require.Equal(t, nativeBoundaryEvent(i).EventID, evt.Change.EventID)
+		case <-ctx.Done():
+			t.Fatalf("subscription stopped before event %d: %v", i, ctx.Err())
+		}
+	}
+}
+
 func TestNativeSubscriptionCancellationWithRecoveryPending(t *testing.T) {
 	logger, blockedWarn := newBlockingWarnLogger()
 	t.Cleanup(blockedWarn.unblock)

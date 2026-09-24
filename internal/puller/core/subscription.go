@@ -159,6 +159,12 @@ func runReplay(ctx context.Context, sub *Subscriber, driver SubscriptionDriver) 
 		}
 		return SubscriptionExit{Kind: SubscriptionExitReplayFailed, Phase: SubscriptionPhaseReplay, Err: err}, true
 	}
+	if sub.startFromNow {
+		iter = &admittedReplayIterator{source: iter, sub: sub}
+	}
+	if sub.CoalesceOnCatchUp {
+		iter = NewCoalescingIterator(iter, 100)
+	}
 
 	for {
 		if exit, stopped := subscriptionStopped(ctx, sub, SubscriptionPhaseReplay); stopped {
@@ -201,6 +207,27 @@ func runReplay(ctx context.Context, sub *Subscriber, driver SubscriptionDriver) 
 	}
 	return SubscriptionExit{}, false
 }
+
+type admittedReplayIterator struct {
+	source  events.Iterator
+	sub     *Subscriber
+	current *events.StoreChangeEvent
+}
+
+func (i *admittedReplayIterator) Next() bool {
+	for i.source.Next() {
+		candidate := i.source.Event()
+		if i.sub.replayAdmitted(candidate) {
+			i.current = candidate
+			return true
+		}
+	}
+	return false
+}
+
+func (i *admittedReplayIterator) Event() *events.StoreChangeEvent { return i.current }
+func (i *admittedReplayIterator) Err() error                      { return i.source.Err() }
+func (i *admittedReplayIterator) Close() error                    { return i.source.Close() }
 
 func deliverSubscriptionEvent(
 	ctx context.Context,

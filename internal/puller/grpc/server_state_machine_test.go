@@ -91,6 +91,33 @@ type retainedReplaySource struct {
 	replayCalls int
 }
 
+type connectedLogGate struct {
+	next    slog.Handler
+	entered chan struct{}
+	release chan struct{}
+	once    *sync.Once
+}
+
+func (h *connectedLogGate) Enabled(ctx context.Context, level slog.Level) bool {
+	return h.next.Enabled(ctx, level)
+}
+
+func (h *connectedLogGate) Handle(ctx context.Context, record slog.Record) error {
+	if record.Message == "subscriber connected" {
+		h.once.Do(func() { close(h.entered) })
+		<-h.release
+	}
+	return h.next.Handle(ctx, record)
+}
+
+func (h *connectedLogGate) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return &connectedLogGate{next: h.next.WithAttrs(attrs), entered: h.entered, release: h.release, once: h.once}
+}
+
+func (h *connectedLogGate) WithGroup(name string) slog.Handler {
+	return &connectedLogGate{next: h.next.WithGroup(name), entered: h.entered, release: h.release, once: h.once}
+}
+
 func (s *retainedReplaySource) SetEventHandler(func(context.Context, string, *events.StoreChangeEvent) error) {
 }
 
@@ -393,6 +420,78 @@ func TestServer_StateMachine_LiveDowngrade(t *testing.T) {
 	}
 	mu.Unlock()
 	stream.AssertExpectations(t)
+}
+
+func TestServerStartFromNowOverflowBeforeFirstDelivery(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	gate := &connectedLogGate{
+		next:    slog.NewTextHandler(io.Discard, nil),
+		entered: make(chan struct{}),
+		release: make(chan struct{}),
+		once:    &sync.Once{},
+	}
+	t.Cleanup(func() {
+		select {
+		case <-gate.release:
+		default:
+			close(gate.release)
+		}
+	})
+	newEvent := func(backend, id, doc string, second uint32, operation events.StoreOperationType) *events.StoreChangeEvent {
+		return &events.StoreChangeEvent{
+			Backend: backend, EventID: id, MgoColl: "items", MgoDocID: doc,
+			ClusterTime: events.ClusterTime{T: second, I: 1}, OpType: operation,
+		}
+	}
+	old := newEvent("a", "old-a", "shared", 1, events.StoreOperationInsert)
+	oldSibling := newEvent("a", "old-sibling", "prior", 2, events.StoreOperationUpdate)
+	quietOld := newEvent("b", "old-b", "quiet", 1, events.StoreOperationInsert)
+	first := newEvent("a", "first", "shared", 2, events.StoreOperationDelete)
+	second := newEvent("a", "second", "other", 2, events.StoreOperationUpdate)
+	quietNew := newEvent("b", "quiet-new", "quiet", 3, events.StoreOperationUpdate)
+	source := &retainedReplaySource{history: []*events.StoreChangeEvent{old, oldSibling, quietOld}}
+	server := NewServer(config.GRPCConfig{ChannelSize: 1}, source, slog.New(gate))
+	server.Init()
+	defer server.Shutdown()
+
+	received := make(chan string, 8)
+	stream := &mockStream{ctx: ctx, t: t}
+	stream.On("Send", mock.Anything).Run(func(args mock.Arguments) {
+		evt := args.Get(0).(*pullerv1.PullerEvent)
+		if evt.ChangeEvent != nil {
+			received <- evt.ChangeEvent.EventId
+		}
+	}).Return(nil)
+	done := make(chan error, 1)
+	go func() {
+		done <- server.Subscribe(&pullerv1.SubscribeRequest{ConsumerId: "current-head", CoalesceOnCatchUp: true}, stream)
+	}()
+	select {
+	case <-gate.entered:
+	case <-ctx.Done():
+		t.Fatal("subscriber did not register")
+	}
+	for _, evt := range []*events.StoreChangeEvent{first, second, quietNew} {
+		source.append(evt)
+		server.subs.Broadcast(evt)
+	}
+	require.True(t, server.subs.All()[0].RecoveryPending())
+	close(gate.release)
+
+	var delivered []string
+	for len(delivered) < 3 {
+		select {
+		case id := <-received:
+			delivered = append(delivered, id)
+		case <-ctx.Done():
+			t.Fatal("subscription did not recover before timeout")
+		}
+	}
+	cancel()
+	require.NoError(t, <-done)
+	require.ElementsMatch(t, []string{first.EventID, second.EventID, quietNew.EventID}, delivered)
+	require.Empty(t, received)
 }
 
 func TestServer_RepeatedRecoverySendsReadyOnce(t *testing.T) {

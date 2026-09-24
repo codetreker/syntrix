@@ -399,7 +399,7 @@ func (m *mockSubscribeStream) Context() context.Context {
 
 func testSubscriber(t *testing.T, id string, after *cursor.ProgressMarker, coalesce bool, size int) *core.Subscriber {
 	t.Helper()
-	sub, err := core.NewSubscriber(id, after, coalesce, size)
+	sub, err := core.NewSubscriber(id, after, false, coalesce, size)
 	if err != nil {
 		t.Fatal(err)
 	}

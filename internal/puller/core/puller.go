@@ -562,7 +562,7 @@ func (p *Puller) subscribe(ctx context.Context, consumerID, after string, onRead
 		close(out)
 		return out
 	}
-	sub, err := NewSubscriber(consumerID, pm, false, 1000)
+	sub, err := NewSubscriber(consumerID, pm, after == "", false, 1000)
 	if err != nil {
 		if verified {
 			out <- &events.PullerEvent{Error: err}
@@ -599,9 +599,9 @@ func (p *Puller) subscribe(ctx context.Context, consumerID, after string, onRead
 		driver := SubscriptionDriver{
 			OpenReplay: func(ctx context.Context, progress *cursor.ProgressMarker) (events.Iterator, error) {
 				if verified {
-					return p.ReplayBoundary(ctx, progress.Encode(), sub.CoalesceOnCatchUp)
+					return p.ReplayBoundary(ctx, progress.Encode(), false)
 				}
-				return p.Replay(ctx, progress.Positions, sub.CoalesceOnCatchUp)
+				return p.Replay(ctx, progress.Positions, false)
 			},
 			Deliver: func(ctx context.Context, evt *events.StoreChangeEvent, progress string) error {
 				select {

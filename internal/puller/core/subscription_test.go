@@ -161,6 +161,51 @@ func TestRunSubscriptionRecoveryReplaysBehindFenceAndAnnouncesReadyOnce(t *testi
 	require.Equal(t, 1, recoveryIter.closed)
 }
 
+func TestRunSubscriptionStartFromNowFiltersHistoryBeforeCoalescing(t *testing.T) {
+	sub, err := NewSubscriber("current-head", cursor.NewProgressMarker(), true, true, 1)
+	require.NoError(t, err)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	event := func(backend, id, doc string, second uint32, operation events.StoreOperationType) *events.StoreChangeEvent {
+		return &events.StoreChangeEvent{
+			Backend: backend, EventID: id, MgoColl: "items", MgoDocID: doc,
+			ClusterTime: events.ClusterTime{T: second, I: 1}, OpType: operation,
+		}
+	}
+	old := event("a", "1-1-old", "shared", 1, events.StoreOperationInsert)
+	oldSibling := event("a", "2-1-old", "prior", 2, events.StoreOperationUpdate)
+	first := event("a", "2-1-first", "shared", 2, events.StoreOperationDelete)
+	second := event("a", "2-1-second", "other", 2, events.StoreOperationUpdate)
+	quietOld := event("b", "1-1-old", "quiet", 1, events.StoreOperationInsert)
+	quietNew := event("b", "3-1-new", "quiet", 3, events.StoreOperationUpdate)
+
+	admitted, _ := sub.enqueue(first)
+	require.True(t, admitted)
+	admitted, started := sub.enqueue(second)
+	require.False(t, admitted)
+	require.True(t, started)
+	admitted, _ = sub.enqueue(quietNew)
+	require.False(t, admitted)
+
+	var delivered []string
+	exit := RunSubscription(ctx, sub, false, SubscriptionDriver{
+		OpenReplay: func(_ context.Context, progress *cursor.ProgressMarker) (events.Iterator, error) {
+			require.Empty(t, progress.Positions)
+			return newSubscriptionIterator(old, oldSibling, first, second, quietOld, quietNew), nil
+		},
+		Deliver: func(_ context.Context, evt *events.StoreChangeEvent, _ string) error {
+			delivered = append(delivered, evt.EventID)
+			if len(delivered) == 3 {
+				cancel()
+			}
+			return nil
+		},
+	})
+	require.Equal(t, SubscriptionExitContextCanceled, exit.Kind)
+	require.ElementsMatch(t, []string{first.EventID, second.EventID, quietNew.EventID}, delivered)
+}
+
 func TestRunSubscriptionSeparatesDeliveryAndIteratorCleanupFailures(t *testing.T) {
 	deliveryErr := errors.New("delivery failed")
 	closeErr := errors.New("close failed")

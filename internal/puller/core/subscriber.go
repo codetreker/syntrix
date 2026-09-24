@@ -42,10 +42,17 @@ type Subscriber struct {
 	recoveryMu      sync.Mutex
 	recoveryPending bool
 	recovery        chan struct{}
+	startFromNow    bool
+	admissionGroups map[string]*admissionGroup
+}
+
+type admissionGroup struct {
+	clusterTime events.ClusterTime
+	eventIDs    map[string]struct{}
 }
 
 // NewSubscriber creates a new subscriber.
-func NewSubscriber(id string, after *cursor.ProgressMarker, coalesceOnCatchUp bool, channelSize int) (*Subscriber, error) {
+func NewSubscriber(id string, after *cursor.ProgressMarker, startFromNow, coalesceOnCatchUp bool, channelSize int) (*Subscriber, error) {
 	if after == nil {
 		after = cursor.NewProgressMarker()
 	}
@@ -63,6 +70,10 @@ func NewSubscriber(id string, after *cursor.ProgressMarker, coalesceOnCatchUp bo
 		}
 		floors[backend] = timestamp
 	}
+	var admissionGroups map[string]*admissionGroup
+	if startFromNow {
+		admissionGroups = make(map[string]*admissionGroup)
+	}
 	return &Subscriber{
 		ID:                id,
 		After:             after,
@@ -73,8 +84,10 @@ func NewSubscriber(id string, after *cursor.ProgressMarker, coalesceOnCatchUp bo
 		done:              make(chan struct{}),
 		// Increase buffer size to handle transient spikes and avoid flapping between live and catchup modes.
 		// 10000 events * ~1KB/event ~= 10MB memory per subscriber.
-		ch:       make(chan *events.StoreChangeEvent, channelSize),
-		recovery: make(chan struct{}, 1),
+		ch:              make(chan *events.StoreChangeEvent, channelSize),
+		recovery:        make(chan struct{}, 1),
+		startFromNow:    startFromNow,
+		admissionGroups: admissionGroups,
 	}, nil
 }
 
@@ -83,6 +96,16 @@ func NewSubscriber(id string, after *cursor.ProgressMarker, coalesceOnCatchUp bo
 func (s *Subscriber) enqueue(event *events.StoreChangeEvent) (admitted, recoveryStarted bool) {
 	s.recoveryMu.Lock()
 	defer s.recoveryMu.Unlock()
+	if s.startFromNow && event != nil {
+		group := s.admissionGroups[event.Backend]
+		if group == nil {
+			group = &admissionGroup{clusterTime: event.ClusterTime, eventIDs: make(map[string]struct{})}
+			s.admissionGroups[event.Backend] = group
+		}
+		if event.ClusterTime.Compare(group.clusterTime) == 0 {
+			group.eventIDs[event.EventID] = struct{}{}
+		}
+	}
 
 	if s.recoveryPending {
 		return false, false
@@ -97,6 +120,29 @@ func (s *Subscriber) enqueue(event *events.StoreChangeEvent) (admitted, recovery
 		default:
 		}
 		return false, true
+	}
+}
+
+// replayAdmitted keeps retained history before an empty subscription's first
+// broadcast out of recovery, including earlier events in the same timestamp group.
+func (s *Subscriber) replayAdmitted(event *events.StoreChangeEvent) bool {
+	if event == nil || !s.startFromNow {
+		return true
+	}
+	s.recoveryMu.Lock()
+	defer s.recoveryMu.Unlock()
+	group := s.admissionGroups[event.Backend]
+	if group == nil {
+		return false
+	}
+	switch event.ClusterTime.Compare(group.clusterTime) {
+	case -1:
+		return false
+	case 1:
+		return true
+	default:
+		_, admitted := group.eventIDs[event.EventID]
+		return admitted
 	}
 }
 

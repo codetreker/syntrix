@@ -376,7 +376,7 @@ func TestSubscriberManager_CloseAll(t *testing.T) {
 
 func testSubscriber(t *testing.T, id string, after *cursor.ProgressMarker, coalesce bool, size int) *Subscriber {
 	t.Helper()
-	sub, err := NewSubscriber(id, after, coalesce, size)
+	sub, err := NewSubscriber(id, after, false, coalesce, size)
 	require.NoError(t, err)
 	return sub
 }
@@ -404,11 +404,11 @@ func TestSubscriberResumedGroupAcknowledgesEachIdentityIndependently(t *testing.
 func TestSubscriberRejectsInvalidResumeIdentityBeforeAdmission(t *testing.T) {
 	marker := cursor.NewProgressMarker()
 	marker.SetPosition("source", "invalid-event-id")
-	subscriber, err := NewSubscriber("invalid", marker, false, 1)
+	subscriber, err := NewSubscriber("invalid", marker, false, false, 1)
 	require.Error(t, err)
 	require.Nil(t, subscriber)
 	marker.SetPosition("source", "")
-	subscriber, err = NewSubscriber("empty-source", marker, false, 1)
+	subscriber, err = NewSubscriber("empty-source", marker, false, false, 1)
 	require.NoError(t, err)
 	require.True(t, subscriber.ShouldSend("source", "1-1-a", events.ClusterTime{T: 1, I: 1}))
 }
