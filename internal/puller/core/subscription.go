@@ -226,13 +226,11 @@ type admittedReplayIterator struct {
 	source  events.Iterator
 	sub     *Subscriber
 	current *events.StoreChangeEvent
-	err     error
 }
 
 func (i *admittedReplayIterator) Next() bool {
 	for {
-		if err := i.ctx.Err(); err != nil {
-			i.err = err
+		if i.ctx.Err() != nil {
 			return false
 		}
 		select {
@@ -252,13 +250,8 @@ func (i *admittedReplayIterator) Next() bool {
 }
 
 func (i *admittedReplayIterator) Event() *events.StoreChangeEvent { return i.current }
-func (i *admittedReplayIterator) Err() error {
-	if i.err != nil {
-		return i.err
-	}
-	return i.source.Err()
-}
-func (i *admittedReplayIterator) Close() error { return i.source.Close() }
+func (i *admittedReplayIterator) Err() error                      { return i.source.Err() }
+func (i *admittedReplayIterator) Close() error                    { return i.source.Close() }
 
 func deliverSubscriptionEvent(
 	ctx context.Context,
