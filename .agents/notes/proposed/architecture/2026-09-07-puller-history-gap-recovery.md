@@ -69,8 +69,8 @@ recovery reason, and affected consumer identity without raw tokens or payloads.
 
 ## Dependencies
 
-[Local subscription replay](2026-09-07-local-puller-subscription-replay.md) carries
-errors to local callers;
+[Puller subscription replay](../../implemented/architecture/2026-09-07-puller-subscription-state-machine.md)
+carries errors to local and gRPC adapters;
 [Indexer recovery](2026-09-07-indexer-recovery-lifecycle.md) and
 [Streamer durable progress](2026-09-07-streamer-durable-progress.md) own their
 recovery workflows.

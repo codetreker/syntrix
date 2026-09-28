@@ -151,13 +151,13 @@ type SubscribeRequest struct {
 	// Consumer identifier for logging/monitoring only.
 	// Does not affect event delivery.
 	ConsumerId string `protobuf:"bytes,1,opt,name=consumer_id,json=consumerId,proto3" json:"consumer_id,omitempty"`
-	// Progress marker from last processed event.
-	// Return events AFTER this marker (exclusive).
-	// Empty = start from current head (no historical events).
+	// Opaque progress marker from the last processed event.
+	// Resume includes the marker's complete timestamp group, so boundary events
+	// may repeat. Empty starts an ordinary subscription at the current head;
+	// verified subscriptions require a valid boundary marker.
 	After string `protobuf:"bytes,2,opt,name=after,proto3" json:"after,omitempty"`
-	// Enable catch-up coalescing when consumer is behind.
-	// When enabled and consumer is catching up, multiple events
-	// for the same document may be merged.
+	// Enable coalescing during retained replay. Multiple events for the same
+	// document may be merged within that replay.
 	CoalesceOnCatchUp bool `protobuf:"varint,3,opt,name=coalesce_on_catch_up,json=coalesceOnCatchUp,proto3" json:"coalesce_on_catch_up,omitempty"`
 	// Require source readiness and verified replay; receive a ready control frame.
 	RequireReady  bool `protobuf:"varint,4,opt,name=require_ready,json=requireReady,proto3" json:"require_ready,omitempty"`
@@ -232,7 +232,7 @@ type PullerEvent struct {
 	// Consumer should save this value and pass it as 'after'
 	// when reconnecting to resume from this position.
 	Progress string `protobuf:"bytes,2,opt,name=progress,proto3" json:"progress,omitempty"`
-	// Set only after registration and validated catch-up have reached live mode.
+	// Set once after registration and validated replay have reached live mode.
 	Ready         bool `protobuf:"varint,3,opt,name=ready,proto3" json:"ready,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache

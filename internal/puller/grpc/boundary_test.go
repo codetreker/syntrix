@@ -175,6 +175,24 @@ func TestVerifiedSubscribeRejectsBoundaryWithoutReadyFrame(t *testing.T) {
 	require.Empty(t, stream.sent)
 }
 
+func TestVerifiedSubscribeTreatsCancellationDuringBoundaryValidationAsNormalTermination(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	source := &testBoundarySource{validated: func() error {
+		cancel()
+		return context.Canceled
+	}}
+	server := NewServer(config.GRPCConfig{}, source, nil)
+	stream := &mockSubscribeServer{ctx: ctx}
+
+	err := server.Subscribe(&pullerv1.SubscribeRequest{
+		After:        cursor.NewProgressMarker().Encode(),
+		RequireReady: true,
+	}, stream)
+	require.NoError(t, err)
+	require.Zero(t, server.SubscriberCount())
+}
+
 type failingBoundaryIterator struct {
 	mockIterator
 	closed bool
@@ -187,6 +205,21 @@ func (i *failingBoundaryIterator) Err() error {
 	return errors.New("corrupt buffered event")
 }
 func (i *failingBoundaryIterator) Close() error { i.closed = true; return nil }
+
+type blockingEmptyBoundaryIterator struct {
+	started chan struct{}
+	release chan struct{}
+}
+
+func (i *blockingEmptyBoundaryIterator) Next() bool {
+	close(i.started)
+	<-i.release
+	return false
+}
+
+func (*blockingEmptyBoundaryIterator) Event() *events.StoreChangeEvent { return nil }
+func (*blockingEmptyBoundaryIterator) Err() error                      { return nil }
+func (*blockingEmptyBoundaryIterator) Close() error                    { return nil }
 
 func TestVerifiedSubscribeRejectsReplayFailureBeforeReady(t *testing.T) {
 	t.Parallel()
@@ -201,4 +234,66 @@ func TestVerifiedSubscribeRejectsReplayFailureBeforeReady(t *testing.T) {
 	require.Equal(t, codes.Internal, status.Code(err))
 	require.Contains(t, err.Error(), "corrupt buffered event")
 	require.Empty(t, stream.sent)
+}
+
+func TestVerifiedSubscribeResetsHeartbeatAfterReplay(t *testing.T) {
+	t.Parallel()
+	interval := 40 * time.Millisecond
+	iter := &blockingEmptyBoundaryIterator{started: make(chan struct{}), release: make(chan struct{})}
+	source := &testBoundarySource{validated: func() error { return nil }, replayIterator: iter}
+	server := NewServer(config.GRPCConfig{HeartbeatInterval: interval}, source, nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	type observedFrame struct {
+		ready bool
+		at    time.Time
+	}
+	frames := make(chan observedFrame, 2)
+	stream := &mockSubscribeServer{ctx: ctx, sendFunc: func(frame *pullerv1.PullerEvent) error {
+		frames <- observedFrame{ready: frame.Ready, at: time.Now()}
+		if !frame.Ready {
+			cancel()
+		}
+		return nil
+	}}
+	marker := cursor.NewProgressMarker()
+	marker.Positions["source"] = "0-0-start"
+	done := make(chan error, 1)
+	go func() {
+		done <- server.Subscribe(&pullerv1.SubscribeRequest{After: marker.Encode(), RequireReady: true}, stream)
+	}()
+
+	select {
+	case <-iter.started:
+	case <-ctx.Done():
+		t.Fatal("replay did not start")
+	}
+	select {
+	case frame := <-frames:
+		t.Fatalf("frame sent during replay: ready=%t", frame.ready)
+	case <-time.After(3 * interval):
+	}
+	close(iter.release)
+
+	receiveFrame := func(description string) observedFrame {
+		t.Helper()
+		select {
+		case frame := <-frames:
+			return frame
+		case <-time.After(time.Second):
+			t.Fatalf("timed out waiting for %s", description)
+			return observedFrame{}
+		}
+	}
+	ready := receiveFrame("Ready")
+	require.True(t, ready.ready)
+	heartbeat := receiveFrame("heartbeat")
+	require.False(t, heartbeat.ready)
+	require.GreaterOrEqual(t, heartbeat.at.Sub(ready.at), interval*3/4)
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(time.Second):
+		t.Fatal("subscription did not stop after heartbeat cancellation")
+	}
 }

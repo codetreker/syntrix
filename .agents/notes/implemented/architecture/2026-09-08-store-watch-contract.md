@@ -189,17 +189,17 @@ validation. Puller ingestion still obtains Mongo clients through
 [`StorageFactory.GetMongoClient`](../../../../internal/services/manager_init.go)
 and bypasses `DocumentStore.Watch`. Its ingestion, batching, caches, pending
 writes, persisted buffers, and local/gRPC delivery are unchanged by this
-contract. The broader Puller design remains separate proposed work.
+contract. Puller capture and delivery remain separate from Store Watch.
 
 Puller [write-admission bounds](../bug-fix/2026-09-07-puller-pending-write-bound.md)
 are implemented separately. The [publication redesign](../../rejected/architecture/2026-09-07-puller-persist-before-publish.md)
 is rejected; Store checkpoints remain portable and source-owned, and cache
 completion cannot define consumer checkpoint validity.
 
-| Deferred work and owner | Cost and constraint retained here |
+| Related work and owner | Cost and constraint retained here |
 |---|---|
 | Native Puller ingestion, described by the [Puller architecture](../../../../docs/design/server/puller/01.architecture.md) | Continues its direct native capture; routing it through Store Watch is not a prerequisite of replication Pull. Store source codecs remain private to their adapters. |
-| [Local replay](../../proposed/architecture/2026-09-07-local-puller-subscription-replay.md) and [history-gap recovery](../../proposed/architecture/2026-09-07-puller-history-gap-recovery.md) | Requires durable continuity and retention boundaries plus consumer-visible failures; Store errors provide a source failure without implementing Puller generations or recovery |
+| [Puller subscription replay](2026-09-07-puller-subscription-state-machine.md) and [history-gap recovery](../../proposed/architecture/2026-09-07-puller-history-gap-recovery.md) | Shared replay delivery is implemented; durable continuity across missing retained history still requires generation and recovery policy beyond Store source errors |
 | Multi-source discovery and aggregation in Puller, and [dedicated read/write routing](../../proposed/architecture/2026-09-07-dedicated-backend-read-write-routing.md) | Requires source inventory, ownership, and progress aggregation; one Store watch remains explicitly scoped, and separate source checkpoints must not be compared or combined as a scalar |
 | [Indexer rebuild](../../proposed/architecture/2026-09-07-indexer-recovery-lifecycle.md) and [filtered subscription snapshots](../../proposed/bug-fix/2026-09-07-realtime-filtered-snapshots.md) | Requires consumer recovery integration; the scan-boundary extension supplies overlap, but neither an ordinary current checkpoint nor C0 creates a snapshot or performs a rebuild |
 | [Trigger before-images](../../proposed/feature/2026-09-07-trigger-before-images.md) and [delivery idempotency](../../proposed/architecture/2026-09-07-trigger-delivery-idempotency.md) | Requires retained payloads, transport changes, durable delivery/outbox decisions, and consumer state; optional Store images and ChangeID do not provide those guarantees |
@@ -209,7 +209,7 @@ The [SDK replica API](../feature/2026-09-07-sdk-offline-replication.md) now owns
 local progress and recovery policy. A Store frame still does not acknowledge
 application processing or an external side effect.
 
-These gaps can still expose current Puller consumers to the failures described
-by their proposal owners. Their statuses remain proposed; this implementation
-does not establish a consolidated Puller redesign or an end-to-end durability
-guarantee.
+The remaining proposed gaps can still expose Puller consumers to the failures
+described by their owners. The implemented subscription runner consolidates
+delivery control flow; neither it nor this Store contract establishes
+end-to-end durability.

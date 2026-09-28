@@ -35,6 +35,10 @@ func (m *mockEventSource) Replay(ctx context.Context, after map[string]string, c
 	return &mockIterator{}, nil
 }
 
+func (m *mockEventSource) ReplayFromAdmission(ctx context.Context, after map[string]string, firstBroadcast map[string]events.ClusterTime) (events.Iterator, error) {
+	return m.Replay(ctx, after, false)
+}
+
 type mockIterator struct{}
 
 func (m *mockIterator) Next() bool                      { return false }
@@ -272,7 +276,7 @@ func TestServer_SendHeartbeat(t *testing.T) {
 	sub := testSubscriber(t, "test-consumer", initialProgress, false, 100)
 
 	// Send heartbeat
-	err := server.sendHeartbeat(mockStream, sub)
+	err := server.sendHeartbeat(mockStream, sub.ID, sub.CurrentProgress().Encode())
 	if err != nil {
 		t.Fatalf("sendHeartbeat() error = %v", err)
 	}
@@ -309,7 +313,7 @@ func TestServer_SendHeartbeat_EmptyProgress(t *testing.T) {
 	sub := testSubscriber(t, "test-consumer", nil, false, 100)
 
 	// Send heartbeat
-	err := server.sendHeartbeat(mockStream, sub)
+	err := server.sendHeartbeat(mockStream, sub.ID, sub.CurrentProgress().Encode())
 	if err != nil {
 		t.Fatalf("sendHeartbeat() error = %v", err)
 	}
@@ -353,7 +357,7 @@ func TestServer_SendHeartbeat_Error(t *testing.T) {
 		err: errors.New("send failed"),
 	}
 
-	err := server.sendHeartbeat(mockStream, sub)
+	err := server.sendHeartbeat(mockStream, sub.ID, sub.CurrentProgress().Encode())
 	if err == nil {
 		t.Fatal("sendHeartbeat() should return error when stream.Send fails")
 	}
@@ -399,7 +403,7 @@ func (m *mockSubscribeStream) Context() context.Context {
 
 func testSubscriber(t *testing.T, id string, after *cursor.ProgressMarker, coalesce bool, size int) *core.Subscriber {
 	t.Helper()
-	sub, err := core.NewSubscriber(id, after, coalesce, size)
+	sub, err := core.NewSubscriber(id, after, false, coalesce, size)
 	if err != nil {
 		t.Fatal(err)
 	}

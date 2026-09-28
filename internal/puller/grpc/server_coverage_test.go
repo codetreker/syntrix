@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -13,6 +14,7 @@ import (
 	pullerv1 "github.com/syntrixbase/syntrix/api/gen/puller/v1"
 	"github.com/syntrixbase/syntrix/internal/core/storage"
 	"github.com/syntrixbase/syntrix/internal/puller/config"
+	"github.com/syntrixbase/syntrix/internal/puller/core"
 	"github.com/syntrixbase/syntrix/internal/puller/cursor"
 	"github.com/syntrixbase/syntrix/internal/puller/events"
 	"google.golang.org/grpc"
@@ -290,38 +292,30 @@ func TestServer_Subscribe_SubscriberClosed(t *testing.T) {
 func TestServer_Subscribe_NilEvent(t *testing.T) {
 	t.Parallel()
 	srv := NewServer(config.GRPCConfig{}, &mockEventSource{}, nil)
-	go srv.processEvents()
+	srv.Init()
+	t.Cleanup(srv.Shutdown)
 
 	req := &pullerv1.SubscribeRequest{ConsumerId: "c1"}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	stream := &mockSubscribeServer{ctx: ctx}
 
+	done := make(chan error, 1)
 	go func() {
-		_ = srv.Subscribe(req, stream)
+		done <- srv.Subscribe(req, stream)
 	}()
-	time.Sleep(50 * time.Millisecond)
-
-	// Send nil event - should be ignored
+	require.Eventually(t, func() bool { return srv.SubscriberCount() == 1 }, time.Second, time.Millisecond)
+	sub := srv.subs.All()[0]
 	srv.eventChan <- nil
 
-	// Send valid event to ensure it's still running
-	done := make(chan struct{})
-	stream.sendFunc = func(e *pullerv1.PullerEvent) error {
-		close(done)
-		return nil
-	}
-
-	srv.eventChan <- &events.StoreChangeEvent{
-		Backend: "b1",
-		EventID: "1",
-	}
-
 	select {
-	case <-done:
+	case err := <-done:
+		require.ErrorIs(t, err, core.ErrNilSubscriptionEvent)
 	case <-time.After(2 * time.Second):
-		t.Fatal("Timeout waiting for event after nil")
+		t.Fatal("subscription did not reject a nil event")
 	}
+	require.Empty(t, sub.CurrentProgress().Positions)
+	require.Zero(t, srv.SubscriberCount())
 }
 
 func TestServer_SendEvent_ConvertErrorPreservesProgress(t *testing.T) {
@@ -330,7 +324,7 @@ func TestServer_SendEvent_ConvertErrorPreservesProgress(t *testing.T) {
 	sub := testSubscriber(t, "consumer", cursor.NewProgressMarker(), false, 1)
 	stream := &mockSubscribeServer{ctx: context.Background()}
 	doc := storage.NewStoredDoc("database", "users", "doc", map[string]any{"bad": make(chan int)})
-	err := srv.sendEvent(stream, sub, "backend", &events.StoreChangeEvent{EventID: "bad", FullDocument: &doc})
+	err := srv.sendEvent(stream, sub.ID, "backend", &events.StoreChangeEvent{EventID: "bad", FullDocument: &doc}, "prospective")
 	require.Error(t, err)
 	require.Empty(t, sub.CurrentProgress().Positions)
 }
@@ -345,10 +339,12 @@ func TestServer_ResponseSizeAdmissionPreservesProgress(t *testing.T) {
 		t.Fatal("oversized response reached transport")
 		return nil
 	}}
-	err := server.sendEvent(stream, sub, "backend", &events.StoreChangeEvent{EventID: "next"})
+	progress := sub.CurrentProgress()
+	progress.SetPosition("backend", "next")
+	err := server.sendEvent(stream, sub.ID, "backend", &events.StoreChangeEvent{EventID: "next"}, progress.Encode())
 	require.Equal(t, codes.FailedPrecondition, status.Code(err))
 	require.Empty(t, sub.CurrentProgress().GetPosition("backend"))
-	err = server.sendHeartbeat(stream, sub)
+	err = server.sendHeartbeat(stream, sub.ID, sub.CurrentProgress().Encode())
 	require.Equal(t, codes.FailedPrecondition, status.Code(err))
 	err = validateResponseSize(&pullerv1.BoundaryResponse{Progress: strings.Repeat("x", events.MaxRPCBytes)})
 	require.Equal(t, codes.FailedPrecondition, status.Code(err))
@@ -536,9 +532,11 @@ func TestServer_Subscribe_ReplayError(t *testing.T) {
 
 // iteratorWithError returns an error from Err()
 type iteratorWithError struct {
-	events []*events.StoreChangeEvent
-	idx    int
-	err    error
+	events     []*events.StoreChangeEvent
+	idx        int
+	err        error
+	closeErr   error
+	closeCalls int
 }
 
 func (i *iteratorWithError) Next() bool {
@@ -553,8 +551,11 @@ func (i *iteratorWithError) Event() *events.StoreChangeEvent {
 	return nil
 }
 
-func (i *iteratorWithError) Err() error   { return i.err }
-func (i *iteratorWithError) Close() error { return nil }
+func (i *iteratorWithError) Err() error { return i.err }
+func (i *iteratorWithError) Close() error {
+	i.closeCalls++
+	return i.closeErr
+}
 
 type iteratorErrEventSource struct {
 	mockEventSource
@@ -599,9 +600,32 @@ func TestServer_Subscribe_IteratorError(t *testing.T) {
 		if !containsSubstr(err.Error(), "replay error") {
 			t.Errorf("Expected 'replay error' error, got: %v", err)
 		}
+		require.Contains(t, err.Error(), source.iter.err.Error())
+		require.Equal(t, 1, source.iter.closeCalls)
 	case <-time.After(2 * time.Second):
 		t.Fatal("Timeout waiting for Subscribe to return")
 	}
+	assertAdmissionSlotReusable(t, srv)
+}
+
+func TestServer_Subscribe_IteratorCloseError(t *testing.T) {
+	t.Parallel()
+
+	closeErr := errors.New("close replay cursor")
+	source := &iteratorErrEventSource{iter: &iteratorWithError{closeErr: closeErr}}
+	srv := NewServer(config.GRPCConfig{MaxConnections: 1}, source, nil)
+	t.Cleanup(srv.cancel)
+	go srv.processEvents()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	err := srv.Subscribe(&pullerv1.SubscribeRequest{
+		ConsumerId: "close-error",
+		After:      makeProgressMarker("backend1", "1-1-initial"),
+	}, &mockSubscribeServer{ctx: ctx})
+	require.Equal(t, codes.Internal, status.Code(err))
+	require.Contains(t, err.Error(), closeErr.Error())
+	require.Equal(t, 1, source.iter.closeCalls)
 	assertAdmissionSlotReusable(t, srv)
 }
 

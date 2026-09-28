@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"sync"
 	"testing"
 	"time"
 
@@ -19,6 +20,59 @@ import (
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
+
+type blockingWarnState struct {
+	once        sync.Once
+	releaseOnce sync.Once
+	entered     chan struct{}
+	release     chan struct{}
+}
+
+func (s *blockingWarnState) unblock() {
+	s.releaseOnce.Do(func() { close(s.release) })
+}
+
+type blockingWarnHandler struct {
+	next  slog.Handler
+	state *blockingWarnState
+}
+
+func newBlockingWarnLogger() (*slog.Logger, *blockingWarnState) {
+	state := &blockingWarnState{entered: make(chan struct{}), release: make(chan struct{})}
+	handler := &blockingWarnHandler{
+		next:  slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelWarn}),
+		state: state,
+	}
+	return slog.New(handler), state
+}
+
+func (h *blockingWarnHandler) Enabled(ctx context.Context, level slog.Level) bool {
+	return h.next.Enabled(ctx, level)
+}
+
+func (h *blockingWarnHandler) Handle(ctx context.Context, record slog.Record) error {
+	blocked := false
+	h.state.once.Do(func() {
+		blocked = true
+		close(h.state.entered)
+	})
+	if blocked {
+		select {
+		case <-h.state.release:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return h.next.Handle(ctx, record)
+}
+
+func (h *blockingWarnHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return &blockingWarnHandler{next: h.next.WithAttrs(attrs), state: h.state}
+}
+
+func (h *blockingWarnHandler) WithGroup(name string) slog.Handler {
+	return &blockingWarnHandler{next: h.next.WithGroup(name), state: h.state}
+}
 
 func nativeBoundaryFixture(t *testing.T) (*Puller, *Backend, string) {
 	t.Helper()
@@ -297,6 +351,219 @@ func TestVerifiedNativeSubscriptionRecoversOverflowWithoutLosingHistory(t *testi
 			}
 			require.Zero(t, p.subs.Count())
 		})
+	}
+}
+
+func TestNativeSubscriptionWakesForOverflowBeforeBroadcastReturns(t *testing.T) {
+	p, backend, _ := nativeBoundaryFixture(t)
+	logger, blockedWarn := newBlockingWarnLogger()
+	t.Cleanup(blockedWarn.unblock)
+	p.subs = NewSubscriberManager(logger)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	const last = 2002
+	for i := 1; i <= last; i++ {
+		require.NoError(t, backend.buffer.Write(ctx, nativeBoundaryEvent(i), bson.Raw{5, 0, 0, 0, 0}))
+	}
+	require.NoError(t, backend.buffer.Flush(ctx))
+
+	stream := p.Subscribe(ctx, "late-overflow", "")
+	require.Eventually(t, func() bool { return p.subs.Count() == 1 }, time.Second, time.Millisecond)
+	for i := 1; i <= 1000; i++ {
+		p.subs.Broadcast(nativeBoundaryEvent(i))
+	}
+	require.Eventually(t, func() bool { return len(stream) == cap(stream) }, time.Second, time.Millisecond)
+
+	sub := p.subs.All()[0]
+	p.subs.Broadcast(nativeBoundaryEvent(1001))
+	require.Eventually(t, func() bool { return len(sub.Events()) == 0 }, time.Second, time.Millisecond)
+	for i := 1002; i <= 2001; i++ {
+		p.subs.Broadcast(nativeBoundaryEvent(i))
+	}
+	require.Equal(t, cap(sub.Events()), len(sub.Events()))
+
+	overflowDone := make(chan struct{})
+	go func() {
+		defer close(overflowDone)
+		p.subs.Broadcast(nativeBoundaryEvent(last))
+	}()
+	select {
+	case <-blockedWarn.entered:
+	case <-ctx.Done():
+		t.Fatal("overflow logging did not block")
+	}
+
+	for i := 1; i <= last; i++ {
+		select {
+		case evt := <-stream:
+			require.NotNil(t, evt.Change)
+			require.Equal(t, nativeBoundaryEvent(i).EventID, evt.Change.EventID)
+		case <-ctx.Done():
+			t.Fatalf("subscription stopped before event %d: %v", i, ctx.Err())
+		}
+	}
+
+	blockedWarn.unblock()
+	select {
+	case <-overflowDone:
+	case <-ctx.Done():
+		t.Fatal("overflow broadcast did not finish")
+	}
+}
+
+func TestNativeSubscriptionStartFromNowOverflowBeforeFirstDelivery(t *testing.T) {
+	p, backend, _ := nativeBoundaryFixture(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	require.NoError(t, backend.buffer.Write(ctx, nativeBoundaryEvent(1), bson.Raw{5, 0, 0, 0, 0}))
+	require.NoError(t, backend.buffer.Flush(ctx))
+
+	enteredLive := make(chan struct{})
+	release := make(chan struct{})
+	stream := p.subscribe(ctx, "current-head-overflow", "", func(string) {
+		close(enteredLive)
+		select {
+		case <-release:
+		case <-ctx.Done():
+		}
+	}, false)
+	select {
+	case <-enteredLive:
+	case <-ctx.Done():
+		t.Fatal("subscription did not enter live mode")
+	}
+
+	const last = 1002
+	for i := 2; i <= last; i++ {
+		evt := nativeBoundaryEvent(i)
+		require.NoError(t, backend.buffer.Write(ctx, evt, bson.Raw{5, 0, 0, 0, 0}))
+		p.subs.Broadcast(evt)
+	}
+	require.NoError(t, backend.buffer.Flush(ctx))
+	sub := p.subs.All()[0]
+	require.True(t, sub.RecoveryPending())
+	require.Empty(t, sub.CurrentProgress().Positions)
+	sub.drainEvents()
+	close(release)
+
+	for i := 2; i <= last; i++ {
+		select {
+		case evt := <-stream:
+			require.NotNil(t, evt)
+			require.NotNil(t, evt.Change)
+			require.Equal(t, nativeBoundaryEvent(i).EventID, evt.Change.EventID)
+		case <-ctx.Done():
+			t.Fatalf("subscription stopped before event %d: %v", i, ctx.Err())
+		}
+	}
+}
+
+func TestReplayFromAdmissionSeeksPastOldBackends(t *testing.T) {
+	ctx := context.Background()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	corruptHistory := func(name string, old *events.StoreChangeEvent) *Backend {
+		t.Helper()
+		path := t.TempDir()
+		b, err := buffer.New(buffer.Options{Path: path, Logger: logger})
+		require.NoError(t, err)
+		require.NoError(t, b.Write(ctx, old, bson.Raw{5, 0, 0, 0, 0}))
+		require.NoError(t, b.Flush(ctx))
+		require.NoError(t, b.Close())
+		db, err := pebble.Open(path, &pebble.Options{})
+		require.NoError(t, err)
+		require.NoError(t, db.Set([]byte(old.BufferKey()), []byte("corrupt old event"), pebble.Sync))
+		require.NoError(t, db.Close())
+		b, err = buffer.New(buffer.Options{Path: path, Logger: logger})
+		require.NoError(t, err)
+		t.Cleanup(func() { require.NoError(t, b.Close()) })
+		return &Backend{name: name, buffer: b}
+	}
+
+	p := New(config.DefaultConfig(), logger)
+	oldActive := &events.StoreChangeEvent{Backend: "active", EventID: "1-1-old", ClusterTime: events.ClusterTime{T: 1, I: 1}}
+	oldQuiet := &events.StoreChangeEvent{Backend: "quiet", EventID: "1-1-old", ClusterTime: events.ClusterTime{T: 1, I: 1}}
+	p.backends["active"] = corruptHistory("active", oldActive)
+	p.backends["quiet"] = corruptHistory("quiet", oldQuiet)
+	newEvent := &events.StoreChangeEvent{Backend: "active", EventID: "2-1-new", ClusterTime: events.ClusterTime{T: 2, I: 1}}
+	require.NoError(t, p.backends["active"].buffer.Write(ctx, newEvent, bson.Raw{5, 0, 0, 0, 0}))
+	require.NoError(t, p.backends["active"].buffer.Flush(ctx))
+
+	iter, err := p.ReplayFromAdmission(ctx, nil, map[string]events.ClusterTime{"active": newEvent.ClusterTime})
+	require.NoError(t, err)
+	require.True(t, iter.Next())
+	require.Equal(t, newEvent.EventID, iter.Event().EventID)
+	require.False(t, iter.Next())
+	require.NoError(t, iter.Err())
+	require.NoError(t, iter.Close())
+	later := &events.StoreChangeEvent{Backend: "active", EventID: "3-1-later", ClusterTime: events.ClusterTime{T: 3, I: 1}}
+	require.NoError(t, p.backends["active"].buffer.Write(ctx, later, bson.Raw{5, 0, 0, 0, 0}))
+	require.NoError(t, p.backends["active"].buffer.Flush(ctx))
+	iter, err = p.ReplayFromAdmission(ctx, map[string]string{"active": later.EventID}, map[string]events.ClusterTime{"active": newEvent.ClusterTime})
+	require.NoError(t, err)
+	require.True(t, iter.Next())
+	require.Equal(t, later.EventID, iter.Event().EventID)
+	require.False(t, iter.Next())
+	require.NoError(t, iter.Err())
+	require.NoError(t, iter.Close())
+
+	iter, err = p.ReplayFromAdmission(ctx, nil, map[string]events.ClusterTime{})
+	require.NoError(t, err)
+	require.False(t, iter.Next())
+	require.NoError(t, iter.Close())
+	_, err = p.ReplayFromAdmission(ctx, nil, nil)
+	require.ErrorContains(t, err, "requires backend floors")
+}
+
+func TestNativeSubscriptionCancellationWithRecoveryPending(t *testing.T) {
+	logger, blockedWarn := newBlockingWarnLogger()
+	t.Cleanup(blockedWarn.unblock)
+	p := New(config.DefaultConfig(), logger)
+	ctx, cancel := context.WithCancel(context.Background())
+	stream := p.Subscribe(ctx, "cancel-overflow", "")
+	require.Eventually(t, func() bool { return p.subs.Count() == 1 }, time.Second, time.Millisecond)
+
+	for i := 1; i <= 1000; i++ {
+		p.subs.Broadcast(nativeBoundaryEvent(i))
+	}
+	require.Eventually(t, func() bool { return len(stream) == cap(stream) }, time.Second, time.Millisecond)
+	sub := p.subs.All()[0]
+	p.subs.Broadcast(nativeBoundaryEvent(1001))
+	require.Eventually(t, func() bool { return len(sub.Events()) == 0 }, time.Second, time.Millisecond)
+	for i := 1002; i <= 2001; i++ {
+		p.subs.Broadcast(nativeBoundaryEvent(i))
+	}
+
+	overflowDone := make(chan struct{})
+	go func() {
+		defer close(overflowDone)
+		p.subs.Broadcast(nativeBoundaryEvent(2002))
+	}()
+	select {
+	case <-blockedWarn.entered:
+	case <-time.After(time.Second):
+		t.Fatal("overflow logging did not block")
+	}
+	require.True(t, sub.RecoveryPending())
+	cancel()
+	blockedWarn.unblock()
+	select {
+	case <-overflowDone:
+	case <-time.After(time.Second):
+		t.Fatal("overflow broadcast did not finish")
+	}
+
+	deadline := time.After(time.Second)
+	for {
+		select {
+		case _, open := <-stream:
+			if !open {
+				require.Zero(t, p.subs.Count())
+				return
+			}
+		case <-deadline:
+			t.Fatal("subscription did not terminate with recovery pending")
+		}
 	}
 }
 

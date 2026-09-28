@@ -226,6 +226,9 @@ func (s *stubPullerService) SetEventHandler(func(ctx context.Context, backendNam
 func (s *stubPullerService) Replay(ctx context.Context, after map[string]string, coalesce bool) (events.Iterator, error) {
 	return nil, nil
 }
+func (s *stubPullerService) ReplayFromAdmission(ctx context.Context, after map[string]string, firstBroadcast map[string]events.ClusterTime) (events.Iterator, error) {
+	return nil, nil
+}
 func (s *stubPullerService) Subscribe(ctx context.Context, consumerID string, after string) <-chan *events.PullerEvent {
 	return make(chan *events.PullerEvent)
 }

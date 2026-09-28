@@ -96,7 +96,7 @@ without resume tokens or document payloads.
 ## Dependencies
 
 [Pending-write bounds](../../implemented/bug-fix/2026-09-07-puller-pending-write-bound.md) owns
-admission capacity. [Local subscription replay](../../proposed/architecture/2026-09-07-local-puller-subscription-replay.md)
+admission capacity. [Puller subscription replay](../../implemented/architecture/2026-09-07-puller-subscription-state-machine.md)
 consumes the committed position and frontier.
 [History-gap recovery](../../proposed/architecture/2026-09-07-puller-history-gap-recovery.md) owns continuity
 generations, retention boundaries, and invalidation during migration.

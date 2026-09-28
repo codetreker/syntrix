@@ -69,6 +69,13 @@ func (s *testGRPCServer) Stop() {
 	s.grpcServer.GracefulStop()
 }
 
+func requireSubscriberCount(t *testing.T, server *pullergrpc.Server, want int) {
+	t.Helper()
+	require.Eventually(t, func() bool {
+		return server.SubscriberCount() == want
+	}, 2*time.Second, time.Millisecond)
+}
+
 func setupIntegrationEnv(t *testing.T) (*mongo.Collection, *core.Puller, *pullergrpc.Server, pullerv1.PullerServiceClient, func()) {
 	// Setup MongoDB connection
 
@@ -150,7 +157,7 @@ func setupIntegrationEnv(t *testing.T) (*mongo.Collection, *core.Puller, *puller
 }
 
 func TestPuller_FullCycle_DataIntegrity(t *testing.T) {
-	coll, _, _, client, cleanup := setupIntegrationEnv(t)
+	coll, _, server, client, cleanup := setupIntegrationEnv(t)
 	defer cleanup()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -161,6 +168,7 @@ func TestPuller_FullCycle_DataIntegrity(t *testing.T) {
 		ConsumerId: "integrity-consumer",
 	})
 	require.NoError(t, err)
+	requireSubscriberCount(t, server, 1)
 
 	// Insert 50 documents
 	count := 50
@@ -273,6 +281,7 @@ func TestPuller_FullCycle_Resilience(t *testing.T) {
 	// 2. Subscribe and consume some events
 	stream1, err := c1.Subscribe(ctx, &pullerv1.SubscribeRequest{ConsumerId: "resilience-1"})
 	require.NoError(t, err)
+	requireSubscriberCount(t, s1.pullerServer, 1)
 
 	// Insert 10 docs
 	for i := 0; i < 10; i++ {
@@ -337,7 +346,7 @@ func TestPuller_FullCycle_Resilience(t *testing.T) {
 }
 
 func TestPuller_FullCycle_SlowConsumer(t *testing.T) {
-	coll, _, _, client, cleanup := setupIntegrationEnv(t)
+	coll, _, server, client, cleanup := setupIntegrationEnv(t)
 	defer cleanup()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -348,6 +357,7 @@ func TestPuller_FullCycle_SlowConsumer(t *testing.T) {
 		ConsumerId: "slow-consumer",
 	})
 	require.NoError(t, err)
+	requireSubscriberCount(t, server, 1)
 
 	// Insert 20 docs fast
 	for i := 0; i < 20; i++ {

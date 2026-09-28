@@ -69,7 +69,7 @@ must survive deployment changes without allowing concurrent writers.
 
 ## Dependencies
 
-[Local replay](2026-09-07-local-puller-subscription-replay.md) and
+[Puller subscription replay](../../implemented/architecture/2026-09-07-puller-subscription-state-machine.md) and
 [history-gap recovery](2026-09-07-puller-history-gap-recovery.md) provide upstream
 recovery. [Client resume](../feature/2026-09-07-realtime-client-resume.md) owns
 downstream continuity; [consumer scaling](2026-09-07-consumer-shard-scaling.md)

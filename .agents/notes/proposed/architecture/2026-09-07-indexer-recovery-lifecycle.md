@@ -49,9 +49,10 @@ Long scans may outlive retained replay history and require a visible retry or fa
 
 ## Dependencies
 
-[History-gap recovery](2026-09-07-puller-history-gap-recovery.md) and
-[local replay](2026-09-07-local-puller-subscription-replay.md) retain their proposed
-recovery guarantees. [Query pagination](../../implemented/feature/2026-09-07-query-cursor-pagination.md)
+[History-gap recovery](2026-09-07-puller-history-gap-recovery.md) retains its
+proposed recovery guarantees. The implemented
+[subscription state machine](../../implemented/architecture/2026-09-07-puller-subscription-state-machine.md)
+carries local and gRPC replay failures to their adapters. [Query pagination](../../implemented/feature/2026-09-07-query-cursor-pagination.md)
 supplies the public page contract; offline bootstrap uses bounded source scans.
 The [publication proposal](../../rejected/architecture/2026-09-07-puller-persist-before-publish.md)
 is rejected. Verified retained replay boundaries are supplied by the completed

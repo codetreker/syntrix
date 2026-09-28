@@ -55,7 +55,8 @@ import (
 // Both the local Puller and the remote Client implement this interface.
 type Service interface {
 	// Subscribe subscribes to events from the puller with automatic reconnection.
-	// The after parameter is the progress marker to resume from (empty for beginning).
+	// A nonempty after marker resumes by replaying its complete boundary timestamp
+	// group, so boundary events may repeat. Empty starts at the current head.
 	// Returns a channel of events that will be closed when:
 	//   - The context is canceled
 	//   - Max reconnect retries is reached (for remote clients)
@@ -63,9 +64,10 @@ type Service interface {
 }
 
 // BoundaryService supports an offline bootstrap and verified replay subscription.
-// SubscribeReady delivers an ordered Event.Ready barrier after replay. Consumers
-// must apply preceding events and flush before serving; onReady only means sent.
-// Writers remain quiesced until consumers have processed that barrier.
+// SubscribeReady requires a valid, nonempty boundary and delivers one ordered
+// Event.Ready barrier after verified replay. Consumers must apply preceding
+// events and flush before serving; onReady only means sent. Writers remain
+// quiesced until consumers have processed that barrier.
 type BoundaryService interface {
 	Service
 	BootstrapBoundary(ctx context.Context) (string, error)
@@ -99,6 +101,11 @@ type LocalService interface {
 	// events. Boundary-group events may repeat because EventID hashes do not encode
 	// source arrival order. An empty position starts at the beginning of retention.
 	Replay(ctx context.Context, after map[string]string, coalesce bool) (Iterator, error)
+
+	// ReplayFromAdmission opens raw recovery at the later of delivered progress
+	// and each backend's first post-registration broadcast group. Backends absent
+	// from firstBroadcast are excluded.
+	ReplayFromAdmission(ctx context.Context, after map[string]string, firstBroadcast map[string]events.ClusterTime) (Iterator, error)
 }
 
 // NewService creates a new local Puller service (in-process).
