@@ -109,6 +109,10 @@ exclusion until they receive one.
 - The gRPC event pump queues source events before broadcasting them. Its
   existing registration boundary is therefore the subscriber manager's
   broadcast order, which can lag a source write.
+- The gRPC live-closure test waits for subscriber registration and a delivered
+  live event before closing the subscriber. Fixed delays cannot establish
+  registration under concurrent test load. The test checks the cancellation
+  status and removal from the subscriber registry after closure.
 - Iterator iteration and cleanup failures remain separately observable. This
   increases adapter responsibility because both errors may require reporting or
   logging even though only the primary failure determines the transport result.
