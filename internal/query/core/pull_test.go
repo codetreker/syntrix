@@ -466,10 +466,17 @@ func TestPullUnchangedCheckpointCannotExhaustBudgetSuccessfully(t *testing.T) {
 }
 
 func TestPullSlowReadRespectsHardDeadline(t *testing.T) {
+	stream := &pullWatch{frames: []types.WatchFrame{{Checkpoint: "C0"}}}
+	source := &pullStore{watch: func(watchCtx context.Context, _, _ string, checkpoint types.WatchCheckpoint, _ types.WatchOptions) (types.WatchStream, error) {
+		stream.initial = checkpoint
+		stream.afterRead = func() { <-watchCtx.Done() }
+		return stream, nil
+	}}
+	engine := New(source, nil)
+	req := types.ReplicationPullRequest{Collection: "users", Checkpoint: pullToken(t, "changes", "C0", "")}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
 	defer cancel()
-	stream := &pullWatch{frames: []types.WatchFrame{{Checkpoint: "C0"}}, afterRead: func() { <-ctx.Done() }}
-	page, err := changesEngine(t, stream).Pull(ctx, "db", types.ReplicationPullRequest{Collection: "users", Checkpoint: pullToken(t, "changes", "C0", "")})
+	page, err := engine.Pull(ctx, "db", req)
 	require.Nil(t, page)
 	require.ErrorIs(t, err, context.DeadlineExceeded)
 	require.Equal(t, 1, stream.reads)

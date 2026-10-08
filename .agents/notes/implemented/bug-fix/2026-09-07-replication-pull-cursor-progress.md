@@ -81,6 +81,11 @@ encoding. Pull extends its HTTP socket write deadline ten seconds past that
 deadline, so the configured general write timeout cannot discard a valid result.
 The handler requires write-deadline control before calling Query.
 
+The slow-read deadline test waits on the context supplied to storage Watch.
+Waiting only on the caller's context can release the read before cancellation
+has propagated to Pull's derived context, changing the error observed by the
+test. The fixture preserves the requested checkpoint and checks stream closure.
+
 ### Realtime Snapshot Consumer
 
 The existing snapshot message consumes opaque Pull pages through `caughtUp`,
