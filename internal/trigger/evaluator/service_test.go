@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -43,6 +44,20 @@ func (m *MockDocumentWatcher) Close() error {
 type MockTaskPublisher struct {
 	mock.Mock
 }
+
+type evaluatorFunc func(context.Context, *types.Trigger, events.SyntrixChangeEvent) (bool, error)
+
+func (f evaluatorFunc) Evaluate(ctx context.Context, trigger *types.Trigger, event events.SyntrixChangeEvent) (bool, error) {
+	return f(ctx, trigger, event)
+}
+
+type publisherFunc func(context.Context, *types.DeliveryTask) error
+
+func (f publisherFunc) Publish(ctx context.Context, task *types.DeliveryTask) error {
+	return f(ctx, task)
+}
+
+func (f publisherFunc) Close() error { return nil }
 
 func (m *MockTaskPublisher) Publish(ctx context.Context, task *types.DeliveryTask) error {
 	args := m.Called(ctx, task)
@@ -144,7 +159,7 @@ func TestService_Start(t *testing.T) {
 
 	eventCh := make(chan events.SyntrixChangeEvent)
 	mockWatcher.On("Watch", mock.Anything).Return((<-chan events.SyntrixChangeEvent)(eventCh), nil)
-	mockWatcher.On("SaveCheckpoint", mock.Anything, "token1").Return(nil)
+	mockWatcher.On("SaveCheckpoint", mock.Anything, "token1").Return(nil).Maybe()
 	mockPublisher.On("Publish", mock.Anything, mock.Anything).Return(nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -188,8 +203,10 @@ func TestService_Start_TaskTimeouts(t *testing.T) {
 	eventsCh <- events.SyntrixChangeEvent{
 		Type:     events.EventCreate,
 		Document: &storage.StoredDoc{Id: "doc1", Database: "db1", Collection: "users", Data: map[string]interface{}{"name": "test"}},
+		Progress: "task-timeout-progress",
 	}
 	watcher.On("Watch", mock.Anything).Return((<-chan events.SyntrixChangeEvent)(eventsCh), nil)
+	watcher.On("SaveCheckpoint", mock.Anything, "task-timeout-progress").Return(nil).Maybe()
 	captured := make(map[string]types.Duration)
 	publisher.On("Publish", mock.Anything, mock.Anything).Run(func(args mock.Arguments) {
 		task := args.Get(1).(*types.DeliveryTask)
@@ -266,6 +283,7 @@ func TestService_Start_EvaluateError(t *testing.T) {
 
 	eventCh := make(chan events.SyntrixChangeEvent)
 	mockWatcher.On("Watch", mock.Anything).Return((<-chan events.SyntrixChangeEvent)(eventCh), nil)
+	mockWatcher.On("SaveCheckpoint", mock.Anything, "evaluation-progress").Return(nil).Maybe()
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -278,6 +296,7 @@ func TestService_Start_EvaluateError(t *testing.T) {
 				Collection: "users",
 				Data:       map[string]interface{}{"name": "test"},
 			},
+			Progress: "evaluation-progress",
 		}
 		time.Sleep(50 * time.Millisecond)
 		cancel()
@@ -349,9 +368,10 @@ func TestService_Start_PublishError(t *testing.T) {
 
 	eventCh := make(chan events.SyntrixChangeEvent)
 	mockWatcher.On("Watch", mock.Anything).Return((<-chan events.SyntrixChangeEvent)(eventCh), nil)
-	mockPublisher.On("Publish", mock.Anything, mock.Anything).Return(errors.New("publish error"))
+	mockWatcher.On("SaveCheckpoint", mock.Anything, mock.Anything).Return(nil).Maybe()
 
 	ctx, cancel := context.WithCancel(context.Background())
+	mockPublisher.On("Publish", mock.Anything, mock.Anything).Run(func(mock.Arguments) { cancel() }).Return(errors.New("publish error"))
 
 	go func() {
 		eventCh <- events.SyntrixChangeEvent{
@@ -362,14 +382,133 @@ func TestService_Start_PublishError(t *testing.T) {
 				Collection: "users",
 				Data:       map[string]interface{}{"name": "test"},
 			},
+			Progress: "failed-progress",
 		}
-		time.Sleep(50 * time.Millisecond)
-		cancel()
 	}()
 
 	err = svc.Start(ctx)
 	assert.NoError(t, err)
 	mockPublisher.AssertExpectations(t)
+	mockWatcher.AssertNotCalled(t, "SaveCheckpoint", mock.Anything, mock.Anything)
+}
+
+func TestService_Start_DoesNotCheckpointFailedEvaluation(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	watcher := new(MockDocumentWatcher)
+	eventsCh := make(chan events.SyntrixChangeEvent, 1)
+	eventsCh <- events.SyntrixChangeEvent{
+		Id:       "event-1",
+		Type:     events.EventCreate,
+		Document: &storage.StoredDoc{Id: "doc1", Database: "db1", Collection: "users"},
+		Progress: "failed-progress",
+	}
+	watcher.On("Watch", mock.Anything).Return((<-chan events.SyntrixChangeEvent)(eventsCh), nil)
+	watcher.On("SaveCheckpoint", mock.Anything, mock.Anything).Return(nil).Maybe()
+	eval := evaluatorFunc(func(context.Context, *types.Trigger, events.SyntrixChangeEvent) (bool, error) {
+		cancel()
+		return false, errors.New("evaluation failed")
+	})
+	svc := &service{
+		evaluator: eval,
+		watcher:   watcher,
+		publisher: publisherFunc(func(context.Context, *types.DeliveryTask) error {
+			t.Error("publisher called after evaluation failure")
+			return nil
+		}),
+		triggers: []*types.Trigger{{ID: "trigger-1"}},
+	}
+
+	require.NoError(t, svc.Start(ctx))
+	watcher.AssertNotCalled(t, "SaveCheckpoint", mock.Anything, mock.Anything)
+}
+
+func TestService_Start_RetriesFailedPublishBeforeCheckpoint(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	watcher := new(MockDocumentWatcher)
+	eventsCh := make(chan events.SyntrixChangeEvent, 2)
+	eventsCh <- events.SyntrixChangeEvent{
+		Id:       "event-0",
+		Type:     events.EventCreate,
+		Document: &storage.StoredDoc{Id: "doc0", Database: "db1", Collection: "users"},
+		Progress: "safe-progress",
+	}
+	eventsCh <- events.SyntrixChangeEvent{
+		Id:       "event-1",
+		Type:     events.EventCreate,
+		Document: &storage.StoredDoc{Id: "doc1", Database: "db1", Collection: "users"},
+		Progress: "completed-progress",
+	}
+	watcher.On("Watch", mock.Anything).Return((<-chan events.SyntrixChangeEvent)(eventsCh), nil)
+	var firstPublishes, secondPublishes atomic.Int32
+	var checkpointBeforeCompletion atomic.Bool
+	watcher.On("SaveCheckpoint", mock.Anything, "safe-progress").Return(nil).Maybe()
+	watcher.On("SaveCheckpoint", mock.Anything, "completed-progress").Run(func(mock.Arguments) {
+		if secondPublishes.Load() != 2 {
+			checkpointBeforeCompletion.Store(true)
+		}
+		cancel()
+	}).Return(nil).Maybe()
+	svc := &service{
+		evaluator: evaluatorFunc(func(_ context.Context, _ *types.Trigger, event events.SyntrixChangeEvent) (bool, error) {
+			return event.Id == "event-1", nil
+		}),
+		watcher: watcher,
+		publisher: publisherFunc(func(_ context.Context, task *types.DeliveryTask) error {
+			if task.TriggerID == "first" {
+				firstPublishes.Add(1)
+				return nil
+			}
+			if secondPublishes.Add(1) == 1 {
+				return errors.New("temporary publish failure")
+			}
+			return nil
+		}),
+		triggers: []*types.Trigger{{ID: "first"}, {ID: "second"}},
+	}
+
+	require.NoError(t, svc.Start(ctx))
+	assert.EqualValues(t, 1, firstPublishes.Load())
+	assert.EqualValues(t, 2, secondPublishes.Load())
+	assert.False(t, checkpointBeforeCompletion.Load())
+	watcher.AssertCalled(t, "SaveCheckpoint", mock.Anything, "completed-progress")
+}
+
+func TestService_Start_FailedEventBlocksLaterProgress(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	watcher := new(MockDocumentWatcher)
+	eventsCh := make(chan events.SyntrixChangeEvent, 3)
+	for _, event := range []struct{ id, progress string }{
+		{"first", "first-progress"},
+		{"failed", "failed-progress"},
+		{"later", "later-progress"},
+	} {
+		eventsCh <- events.SyntrixChangeEvent{
+			Id:       event.id,
+			Type:     events.EventCreate,
+			Document: &storage.StoredDoc{Id: event.id, Database: "db1", Collection: "users"},
+			Progress: event.progress,
+		}
+	}
+	watcher.On("Watch", mock.Anything).Return((<-chan events.SyntrixChangeEvent)(eventsCh), nil)
+	watcher.On("SaveCheckpoint", mock.Anything, "first-progress").Return(nil).Maybe()
+	svc := &service{
+		evaluator: evaluatorFunc(func(_ context.Context, _ *types.Trigger, event events.SyntrixChangeEvent) (bool, error) {
+			return event.Id != "first", nil
+		}),
+		watcher: watcher,
+		publisher: publisherFunc(func(context.Context, *types.DeliveryTask) error {
+			cancel()
+			return errors.New("publish failed")
+		}),
+		triggers: []*types.Trigger{{ID: "trigger-1"}},
+	}
+
+	require.NoError(t, svc.Start(ctx))
+	watcher.AssertNotCalled(t, "SaveCheckpoint", mock.Anything, "failed-progress")
+	watcher.AssertNotCalled(t, "SaveCheckpoint", mock.Anything, "later-progress")
 }
 
 func TestService_Start_SaveCheckpointError(t *testing.T) {
@@ -442,6 +581,7 @@ func TestService_Start_BeforeOnlyEvent(t *testing.T) {
 
 	eventCh := make(chan events.SyntrixChangeEvent)
 	mockWatcher.On("Watch", mock.Anything).Return((<-chan events.SyntrixChangeEvent)(eventCh), nil)
+	mockWatcher.On("SaveCheckpoint", mock.Anything, "before-progress").Return(nil)
 	mockPublisher.On("Publish", mock.Anything, mock.Anything).Return(nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -455,6 +595,7 @@ func TestService_Start_BeforeOnlyEvent(t *testing.T) {
 				Collection: "users",
 				Data:       map[string]interface{}{"name": "test"},
 			},
+			Progress: "before-progress",
 		}
 		time.Sleep(50 * time.Millisecond)
 		cancel()

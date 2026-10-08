@@ -2,11 +2,20 @@ package evaluator
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log/slog"
 	"sync"
+	"time"
 
+	"github.com/syntrixbase/syntrix/internal/puller/events"
 	"github.com/syntrixbase/syntrix/internal/trigger/evaluator/watcher"
 	"github.com/syntrixbase/syntrix/internal/trigger/types"
+)
+
+const (
+	initialRetryDelay = time.Second
+	maxRetryDelay     = 30 * time.Second
 )
 
 // Service evaluates document changes against trigger rules and publishes matched tasks.
@@ -62,20 +71,21 @@ func (s *service) Start(ctx context.Context) error {
 	// Initialize async checkpoint saving
 	s.checkpointNotify = make(chan struct{}, 1)
 	s.checkpointDone = make(chan struct{})
+	checkpointCtx, stopCheckpoint := context.WithCancel(ctx)
+	defer func() {
+		stopCheckpoint()
+		<-s.checkpointDone
+	}()
 
 	// Start checkpoint saver goroutine
-	go s.checkpointSaver(ctx)
+	go s.checkpointSaver(checkpointCtx)
 
 	for {
 		select {
 		case <-ctx.Done():
-			// Wait for checkpoint saver to finish
-			<-s.checkpointDone
 			return nil
 		case evt, ok := <-stream:
 			if !ok {
-				// Wait for checkpoint saver to finish
-				<-s.checkpointDone
 				return nil
 			}
 
@@ -84,55 +94,15 @@ func (s *service) Start(ctx context.Context) error {
 				slog.Warn("Skipping event with nil Document and Before")
 				continue
 			}
+			if evt.Progress == "" {
+				return fmt.Errorf("trigger event %q has no puller progress", evt.Id)
+			}
 
-			s.mu.RLock()
-			currentTriggers := s.triggers
-			s.mu.RUnlock()
-
-			for _, t := range currentTriggers {
-				matched, err := s.evaluator.Evaluate(ctx, t, evt)
-				if err != nil {
-					slog.Error("Evaluation failed for trigger", "trigger_id", t.ID, "error", err)
-					continue
+			if err := s.processEvent(ctx, evt); err != nil {
+				if ctx.Err() != nil {
+					return nil
 				}
-				if matched {
-					var collection string
-					var documentID string
-					var payload map[string]interface{}
-
-					if evt.Document != nil {
-						collection = evt.Document.Collection
-						documentID = evt.Document.Id
-						payload = evt.Document.Data
-					} else if evt.Before != nil {
-						collection = evt.Before.Collection
-						documentID = evt.Before.Id
-						payload = evt.Before.Data
-					}
-
-					timeout := t.Timeout
-					if timeout == 0 {
-						timeout = types.Duration(types.DefaultTaskTimeout)
-					}
-					task := &types.DeliveryTask{
-						TriggerID:   t.ID,
-						Database:    t.Database,
-						Event:       string(evt.Type),
-						Collection:  collection,
-						DocumentID:  documentID,
-						Payload:     payload,
-						URL:         t.URL,
-						Headers:     t.Headers,
-						SecretsRef:  t.SecretsRef,
-						RetryPolicy: t.RetryPolicy,
-						Timeout:     timeout,
-					}
-					if s.publisher != nil {
-						if err := s.publisher.Publish(ctx, task); err != nil {
-							slog.Error("Failed to publish task for trigger", "trigger_id", t.ID, "error", err)
-						}
-					}
-				}
+				return err
 			}
 
 			// Update latest progress and notify (non-blocking)
@@ -148,6 +118,88 @@ func (s *service) Start(ctx context.Context) error {
 					// Already notified, skip
 				}
 			}
+		}
+	}
+}
+
+func (s *service) processEvent(ctx context.Context, evt events.SyntrixChangeEvent) error {
+	s.mu.RLock()
+	currentTriggers := s.triggers
+	s.mu.RUnlock()
+
+	for _, t := range currentTriggers {
+		var matched bool
+		if err := retryUntilSuccess(ctx, t.ID, evt.Id, "evaluate", func() error {
+			var err error
+			matched, err = s.evaluator.Evaluate(ctx, t, evt)
+			return err
+		}); err != nil {
+			return err
+		}
+		if !matched {
+			continue
+		}
+		if s.publisher == nil {
+			return errors.New("trigger task publisher is not configured")
+		}
+
+		task := deliveryTask(t, evt)
+		if err := retryUntilSuccess(ctx, t.ID, evt.Id, "publish", func() error {
+			return s.publisher.Publish(ctx, task)
+		}); err != nil {
+			return err
+		}
+	}
+	return ctx.Err()
+}
+
+func deliveryTask(t *types.Trigger, evt events.SyntrixChangeEvent) *types.DeliveryTask {
+	doc := evt.Document
+	if doc == nil {
+		doc = evt.Before
+	}
+	timeout := t.Timeout
+	if timeout == 0 {
+		timeout = types.Duration(types.DefaultTaskTimeout)
+	}
+	return &types.DeliveryTask{
+		TriggerID:   t.ID,
+		Database:    t.Database,
+		Event:       string(evt.Type),
+		Collection:  doc.Collection,
+		DocumentID:  doc.Id,
+		Payload:     doc.Data,
+		URL:         t.URL,
+		Headers:     t.Headers,
+		SecretsRef:  t.SecretsRef,
+		RetryPolicy: t.RetryPolicy,
+		Timeout:     timeout,
+	}
+}
+
+func retryUntilSuccess(ctx context.Context, triggerID, eventID, operation string, attempt func() error) error {
+	delay := initialRetryDelay
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := attempt(); err == nil {
+			return nil
+		} else {
+			slog.Error("Trigger event processing failed; retrying", "trigger_id", triggerID, "event_id", eventID, "operation", operation, "retry_delay", delay, "error", err)
+		}
+
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+		if delay < maxRetryDelay/2 {
+			delay *= 2
+		} else {
+			delay = maxRetryDelay
 		}
 	}
 }

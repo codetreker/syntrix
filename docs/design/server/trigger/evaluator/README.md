@@ -1,119 +1,22 @@
-# Evaluator Service Design
+# Trigger Evaluator
 
-## Overview
+The evaluator turns Puller document changes into delivery tasks. Its watcher
+subscribes across all logical databases and excludes its own checkpoint
+document; each configured rule filters the database, event type, and collection
+and may evaluate a CEL condition.
+Matching rules produce tasks through the configured pubsub publisher.
 
-The Evaluator Service watches document changes, evaluates trigger conditions, and publishes matched tasks to the delivery queue.
+The service processes one source event at a time. It advances checkpoint
+progress only after all matching tasks have been published. A reported
+evaluation or publication failure retries the same rule with cancellable
+backoff and blocks later events. The rule's effective task timeout is captured
+when the task is built.
 
-## Responsibility
+| Document | Contract |
+|----------|----------|
+| [Checkpoint](01.checkpoint.md) | Source position, failure gate, and restart behavior |
+| [CEL evaluator](02.cel_evaluator.md) | Rule matching, condition input, caching, and evaluation errors |
+| [Task publisher](03.publisher.md) | Delivery task serialization and subject routing |
 
-- Watch document changes from Puller
-- Filter events by database
-- Evaluate trigger conditions using CEL
-- Build and publish DeliveryTask to NATS JetStream
-- Manage checkpoint for resume capability
-
-## Data Flow
-
-```
-┌──────────────────────────────────────────────────────────────────────┐
-│                      Evaluator Service                                │
-│                                                                       │
-│  ┌──────────┐    ┌─────────┐    ┌───────────┐    ┌──────────────┐   │
-│  │ Watcher  │ -> │   CEL   │ -> │  Builder  │ -> │  Publisher   │   │
-│  │(Puller)  │    │Evaluator│    │(DelivTask)│    │(NATS JS)     │   │
-│  └──────────┘    └─────────┘    └───────────┘    └──────────────┘   │
-│       │                                                    │         │
-│       v                                                    v         │
-│  ┌──────────────────────────────────────────────────────────────┐   │
-│  │                      Checkpoint Store                         │   │
-│  │                 (sys/checkpoints/trigger_evaluator)          │   │
-│  └──────────────────────────────────────────────────────────────┘   │
-└──────────────────────────────────────────────────────────────────────┘
-```
-
-## Service Interface
-
-```go
-// Service evaluates document changes against trigger rules and publishes matched tasks.
-type Service interface {
-    // LoadTriggers validates and loads trigger rules.
-    LoadTriggers(triggers []*types.Trigger) error
-
-    // Start begins watching for changes and evaluating triggers.
-    // Blocks until context is cancelled.
-    Start(ctx context.Context) error
-
-    // Close releases resources.
-    Close() error
-}
-
-// ServiceOptions configures the evaluator service.
-type ServiceOptions struct {
-    Database     string  // Syntrix logical database for event filtering
-    StartFromNow bool    // If true, start from "now" when checkpoint missing
-    RulesFile    string  // Path to trigger rules file (JSON/YAML)
-    StreamName   string  // NATS stream name (default: "TRIGGERS")
-}
-
-// Dependencies contains external dependencies for the evaluator service.
-type Dependencies struct {
-    Store   storage.DocumentStore
-    Puller  puller.Service
-    Nats    *nats.Conn
-    Metrics types.Metrics
-}
-```
-
-## Components
-
-### 1. DocumentWatcher
-
-The watcher subscribes to Puller and emits filtered change events.
-
-**Key behaviors:**
-- Subscribes to Puller with a consumer ID
-- Filters events by `Database` field (Syntrix logical database)
-- Transforms `PullerEvent` to `SyntrixChangeEvent`
-- Preserves Syntrix logical deletion from tombstone updates; ignores Mongo physical deletion, including later cleanup
-- Manages checkpoint for resume capability
-
-See: [01.checkpoint.md](01.checkpoint.md)
-
-### 2. CEL Evaluator
-
-Evaluates trigger conditions against events.
-
-**Key behaviors:**
-- Compiles CEL expressions once and caches programs
-- Evaluates conditions against event data
-- Supports `path.Match` for collection glob matching
-
-### 3. TaskPublisher
-
-Publishes matched tasks to NATS JetStream.
-
-**Key behaviors:**
-- Publishes to subject: `<stream>.<database>.<collection>.<docKey>`
-- Uses subject-safe encoding for docKey (base64url without padding)
-- Hashes docKey if subject would exceed NATS limit (1024 bytes)
-
-## Configuration
-
-```go
-type TriggerConfig struct {
-    // Evaluator-specific
-    Database     string  // Syntrix logical database
-    StartFromNow bool    // Start from now if checkpoint missing
-    RulesFile    string  // Trigger rules file path
-
-    // Shared
-    StreamName   string  // NATS stream name
-}
-```
-
-## Implementation
-
-See: `internal/trigger/evaluator/`
-- `service.go` - Service interface and implementation
-- `factory.go` - Factory function
-- `validation.go` - Trigger validation
+The [trigger architecture](../01.architecture.md) describes the delivery
+service and the limits of publisher acceptance.
