@@ -386,32 +386,40 @@ func TestServer_Subscribe_ContextCancellation(t *testing.T) {
 func TestServer_Subscribe_SubscriberClosed_Live(t *testing.T) {
 	t.Parallel()
 	srv := NewServer(config.GRPCConfig{}, &mockEventSource{}, nil)
-	go srv.processEvents()
+	t.Cleanup(srv.Shutdown)
 
 	req := &pullerv1.SubscribeRequest{ConsumerId: "sub-close-test"}
-	ctx := context.Background()
-	stream := &mockSubscribeServer{ctx: ctx}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	delivered := make(chan struct{}, 1)
+	stream := &mockSubscribeServer{ctx: ctx, sendFunc: func(*pullerv1.PullerEvent) error {
+		delivered <- struct{}{}
+		return nil
+	}}
 
-	errChan := make(chan error)
+	errChan := make(chan error, 1)
 	go func() {
 		errChan <- srv.Subscribe(req, stream)
 	}()
 
-	// Wait for subscription to be established in live mode
-	time.Sleep(50 * time.Millisecond)
+	require.Eventually(t, func() bool { return srv.SubscriberCount() == 1 }, time.Second, time.Millisecond)
+	srv.subs.Broadcast(&events.StoreChangeEvent{Backend: "backend", EventID: "1-1-live", ClusterTime: events.ClusterTime{T: 1, I: 1}})
+	select {
+	case <-delivered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("subscription did not deliver a live event")
+	}
 
 	// Close all subscribers - this should trigger sub.Done() branch
 	srv.subs.CloseAll()
 
 	select {
 	case err := <-errChan:
-		// Should return error when subscriber is closed
-		if err == nil {
-			t.Error("Expected error when subscriber is closed")
-		}
+		require.Equal(t, codes.Canceled, status.Code(err))
 	case <-time.After(2 * time.Second):
 		t.Fatal("Timeout waiting for Subscribe to return after subscriber closed")
 	}
+	require.Zero(t, srv.SubscriberCount())
 }
 
 func TestServer_Shutdown_NotInitialized(t *testing.T) {

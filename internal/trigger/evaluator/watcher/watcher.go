@@ -72,6 +72,13 @@ func (w *pullerWatcher) Watch(ctx context.Context) (<-chan events.SyntrixChangeE
 	go func() {
 		defer close(outCh)
 		for pEvent := range pullerCh {
+			// Our checkpoint writes reenter Puller; evaluating them would keep
+			// advancing the checkpoint without a document change to process.
+			if pEvent.Change != nil && pEvent.Change.FullDocument != nil &&
+				pEvent.Change.FullDocument.Database == checkpointDatabase &&
+				pEvent.Change.FullDocument.Fullpath == checkpointKey {
+				continue
+			}
 			// Convert puller event to SyntrixChangeEvent
 			// No database filtering here - Evaluator handles database matching per trigger
 			event, err := events.Transform(pEvent)

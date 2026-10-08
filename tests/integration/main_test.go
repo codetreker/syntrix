@@ -430,7 +430,7 @@ triggers:
     events:
       - create
       - update
-    condition: "event.document.age >= 18"
+    condition: "has(event.document.age) && event.document.age >= 18"
     url: "%s"
     headers:
       X-Test: "true"

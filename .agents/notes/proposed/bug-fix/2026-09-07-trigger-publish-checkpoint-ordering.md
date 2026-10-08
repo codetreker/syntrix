@@ -4,79 +4,83 @@ Status: proposed
 
 ## Problem
 
-[The evaluator loop](../../../../internal/trigger/evaluator/service.go) logs a
-publish failure, continues processing, and then assigns
-`s.latestProgress = evt.Progress`. Its asynchronous saver can persist that
-position even though a matching delivery task was never accepted. A restart can
-therefore resume after undelivered work. Evaluation failures follow a similar
-continue path. Static inspection establishes the ordering hazard; no crash
-reproduction is claimed here.
+The evaluator now [blocks progress beyond reported evaluation and publication
+failures](../../implemented/bug-fix/2026-09-29-trigger-checkpoint-failure-gate.md).
+That process-local gate has no durable record of which rules were selected or
+which tasks were accepted. A crash during partial fan-out can replay successful
+publications, and replay after a rule edit can select a different rule set.
+Publisher success alone does not preserve a task across loss of an in-memory
+queue. Source progress and task recovery therefore lack one durable ownership
+boundary.
 
 ## Proposal
 
-Track the highest contiguous event position whose durable scheduling is complete.
-Use the same boundary in standalone and distributed modes: an event becomes
-checkpoint-eligible only after its rule selection and evaluation outcomes are
-persisted, every matched task has a durable outbox record, and the scheduling
-record is marked complete. An event matching no rules requires a persisted
-successful no-match outcome. The idempotency proposal owns these records and
-their recovery; this proposal owns advancement of source progress.
+Track the highest contiguous event position whose durable scheduling is
+complete. Use the same boundary in standalone and distributed modes: persist
+rule selection and evaluation outcomes, create a durable outbox record for every
+matched task, then mark scheduling complete. An event matching no rules needs a
+persisted successful no-match outcome. The [delivery identity proposal](../architecture/2026-09-07-trigger-delivery-idempotency.md)
+owns those records and their recovery; this proposal owns source progress.
 
 An evaluation failure, outbox write failure, or incomplete fan-out blocks
-advancement across that event and enters a bounded, cancellable retry or explicit
-operator-visible failure state. Recovery resumes against the persisted rule
-selection and outcomes. It must not combine partial scheduling with a newly
-loaded rule set.
+advancement across that event and enters cancellable retry or an explicit
+operator-visible failure state. Recovery uses the persisted rule selection and
+outcomes; it must not combine partial scheduling with a newly loaded rule set.
 
-Broker acknowledgement records dispatch progress only. Once durable scheduling
-is complete, the checkpoint may advance while the broker is unavailable; the
-outbox dispatcher retains responsibility for eventual publication and delivery.
-Memory enqueue success and durable broker acknowledgement cannot independently
-make an incompletely scheduled source event checkpoint-eligible.
+Broker acknowledgement records dispatch progress. Once scheduling is durable,
+the source checkpoint may advance while the broker is unavailable because the
+outbox retains unpublished tasks. Memory enqueue or broker acknowledgement
+alone cannot make an incompletely scheduled event checkpoint-eligible.
 
 Keep asynchronous checkpoint coalescing, but save only completed progress and
-retry failed checkpoint writes without moving the completion boundary backwards.
-Stop and join the saver when the source closes. On shutdown, use a bounded flush
-context independent of the cancelled processing context. Required scheduling
-storage and dispatcher dependencies must be validated during service assembly.
-
-A crash before checkpoint persistence may replay an already scheduled event;
-recovery must reuse its durable scheduling records. Previously skipped work
-requires an explicit replay boundary chosen from retained source history.
+retry failed checkpoint writes. Stop and join the saver when the source closes.
+On shutdown, use a bounded flush context independent of the cancelled
+processing context. Validate required storage and dispatcher dependencies during
+service assembly. Establish a durable live admission boundary before a new
+evaluator can receive its first event; the current empty-token `StartFromNow`
+subscription has no such boundary. Recovery must reuse retained
+scheduling records when a crash precedes checkpoint persistence. Previously
+skipped work needs an explicit replay boundary chosen from retained source
+history.
 
 ## Alternatives
 
-**Use broker acknowledgement as the checkpoint boundary** avoids durable
-scheduling records but does not preserve rule selection during partial fan-out
-and cannot provide the same recovery behavior for standalone memory queues.
+**Keep the process-local failure gate as the final boundary.** It protects
+against reported failures while the evaluator remains alive, but cannot recover
+partial fan-out identity or tasks lost after a publisher reports success.
 
-**One transaction across source, checkpoint, and broker** would provide stronger
-atomicity, but the current independent storage and broker interfaces do not share
+**Use broker acknowledgement as the checkpoint boundary.** It avoids scheduling
+storage, but does not preserve rule selection during partial fan-out and cannot
+provide the same recovery behavior for the standalone memory queue.
+
+**Use one transaction across source, checkpoint, and broker.** This could offer
+stronger atomicity, but the current storage and broker interfaces do not share
 such a transaction. Durable scheduling plus replay separates these boundaries.
 
 ## Acceptance Criteria
 
-- If one matched task fails its outbox write or fan-out completion remains
-  unrecorded, persisted progress never passes that source event.
+- Incomplete rule selection, evaluation, or outbox fan-out never makes a later
+  source position checkpoint-eligible.
 - A broker outage permits progress after complete durable scheduling; restart
-  and broker recovery deliver the retained tasks using their original identities.
-- Crashes during rule selection, evaluation, fan-out, or checkpoint persistence
-  reuse the recorded rule set and outcomes without silently omitting tasks.
-- Evaluation and scheduling/checkpoint-store failures are observable and use
-  bounded backoff and cancellation.
-- Source closure and cancellation terminate checkpoint goroutines within the
-  documented deadline; multiple databases preserve aggregate progress order.
+  and broker recovery dispatch retained tasks with their original identities.
+- Crashes during scheduling, fan-out, publication, or checkpoint persistence
+  reuse recorded rules and outcomes without silently omitting tasks.
+- Storage and checkpoint failures remain observable, cancellable, and bounded
+  by backpressure or an explicit failure state.
+- Source closure and cancellation terminate checkpoint work within the
+  documented deadline; aggregate progress preserves cross-database order.
+- First startup survives a crash before any event is processed without
+  silently restarting from a later `StartFromNow` admission point.
 
 ## Risks
 
-A scheduling failure can delay unrelated databases sharing one aggregate
-checkpoint. Advancing during a broker outage grows the durable outbox, so its
-admission bounds must propagate backpressure before storage is exhausted.
+Scheduling failure can delay unrelated databases behind the global checkpoint.
+Broker outages grow the outbox, so admission bounds must propagate backpressure.
+Retained task identity and rule selection require storage and cleanup policies.
 
 ## Dependencies
 
-[Delivery idempotency](../architecture/2026-09-07-trigger-delivery-idempotency.md)
-owns durable rule selection, evaluation outcomes, task records, and dispatch.
-[Puller subscription replay](../../implemented/architecture/2026-09-07-puller-subscription-state-machine.md)
+[Delivery identity](../architecture/2026-09-07-trigger-delivery-idempotency.md)
+owns durable records and dispatch. [Puller subscription replay](../../implemented/architecture/2026-09-07-puller-subscription-state-machine.md)
 and [history-gap recovery](../architecture/2026-09-07-puller-history-gap-recovery.md)
-own the availability of recoverable source events.
+own source event availability.

@@ -3,9 +3,11 @@ package watcher
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 	"github.com/syntrixbase/syntrix/internal/core/storage"
 	"github.com/syntrixbase/syntrix/internal/puller/events"
 	"github.com/syntrixbase/syntrix/pkg/model"
@@ -204,6 +206,43 @@ func TestWatch_AllDatabaseEvents(t *testing.T) {
 
 	_, ok := <-eventCh
 	assert.False(t, ok)
+}
+
+func TestWatch_ExcludesOnlyEvaluatorCheckpoint(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	store := new(MockDocumentStore)
+	puller := new(MockPullerService)
+	w := NewWatcher(puller, store, WatcherOptions{})
+	store.On("Get", mock.Anything, "default", "sys/checkpoints/trigger_evaluator").Return(&storage.StoredDoc{
+		Data: map[string]interface{}{"token": "resume-token"},
+	}, nil)
+	pullerCh := make(chan *events.PullerEvent, 2)
+	pullerCh <- &events.PullerEvent{Change: &events.StoreChangeEvent{
+		EventID: "checkpoint-event", OpType: events.StoreOperationUpdate,
+		FullDocument: &storage.StoredDoc{Database: "default", Collection: "sys/checkpoints", Fullpath: "sys/checkpoints/trigger_evaluator"},
+	}}
+	pullerCh <- &events.PullerEvent{Change: &events.StoreChangeEvent{
+		EventID: "other-system-event", OpType: events.StoreOperationUpdate,
+		FullDocument: &storage.StoredDoc{Database: "default", Collection: "sys/checkpoints", Fullpath: "sys/checkpoints/other"},
+	}}
+	close(pullerCh)
+	puller.On("Subscribe", mock.Anything, "trigger-evaluator", "resume-token").Return((<-chan *events.PullerEvent)(pullerCh))
+
+	changeCh, err := w.Watch(ctx)
+	require.NoError(t, err)
+	select {
+	case change := <-changeCh:
+		require.Equal(t, "other-system-event", change.Id)
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	select {
+	case _, open := <-changeCh:
+		require.False(t, open)
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
 }
 
 func TestWatch_NoCheckpoint_Fail(t *testing.T) {
