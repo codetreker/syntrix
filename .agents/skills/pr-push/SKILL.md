@@ -147,5 +147,5 @@ Extract common mock implementations to reduce duplication across test files.
 - Update all test files to use shared mock
 
 ## Test Plan
-Run `make test` - all tests should pass unchanged.
+Run `make -C packages/syntrix test` from the repository root - all tests should pass unchanged.
 ```

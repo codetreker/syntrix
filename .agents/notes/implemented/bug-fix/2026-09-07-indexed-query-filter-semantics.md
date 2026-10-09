@@ -201,7 +201,10 @@ barrier and successful publication/flush.
 
 ### Reproducible Cost Fixture
 
+Run from the Go module directory:
+
 ```bash
+cd packages/syntrix
 go test ./internal/query/core -run '^$' -bench '^BenchmarkIndexedQueryPage$' -benchmem
 ```
 

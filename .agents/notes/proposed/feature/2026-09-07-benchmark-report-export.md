@@ -4,11 +4,11 @@ Status: proposed
 
 ## Problem
 
-The [configuration loader](../../../../pkg/benchmark/config/loader.go) accepts
+The [configuration loader](../../../../packages/syntrix/pkg/benchmark/config/loader.go) accepts
 JSON, Prometheus, and CSV output and resolves Output.File. The
-[CLI](../../../../cmd/syntrix-benchmark/main.go) always creates a console reporter
+[CLI](../../../../packages/syntrix/cmd/syntrix-benchmark/main.go) always creates a console reporter
 and calls ReportSummary, without selecting a format or writing the configured
-file. [ReportJSON](../../../../pkg/benchmark/reporter/console.go) already encodes
+file. [ReportJSON](../../../../packages/syntrix/pkg/benchmark/reporter/console.go) already encodes
 Result but is not called by the CLI. The loader also assigns
 `config.Output.Console = true` whenever Console is false, preventing an explicit
 request to disable console output. These are static integration findings.

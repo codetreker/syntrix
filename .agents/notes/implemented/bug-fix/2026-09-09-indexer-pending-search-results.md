@@ -11,7 +11,7 @@ could omit matching documents or fill a limit with later entries instead.
 
 ## Decision
 
-The existing [search merge](../../../../internal/indexer/persist_store/pebble.go)
+The existing [search merge](../../../../packages/syntrix/internal/indexer/persist_store/pebble.go)
 marks a document as seen only when appending it to the result. Suppressing a
 persisted row because an in-memory operation shadows it does not set that mark.
 

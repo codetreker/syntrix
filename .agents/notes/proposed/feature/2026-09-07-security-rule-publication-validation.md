@@ -5,7 +5,7 @@ Status: proposed
 ## Problem
 
 Rules already undergo YAML parsing, database/path consistency checks, and CEL
-compilation. In the [validator](../../../../internal/core/identity/authz/engine.go),
+compilation. In the [validator](../../../../packages/syntrix/internal/core/identity/authz/engine.go),
 `env.Compile(cleanCondition)` checks expressions recursively. It does not apply
 the additional publication limits and ambiguity checks described in the
 [authorization design](../../../../docs/design/server/core/identity/03.authorization.md).

@@ -3,9 +3,10 @@ name: SDK CI
 on:
   pull_request:
     paths:
-      - 'sdk/syntrix-client-ts/**'
-      - 'example/realtime-demo/**'
+      - 'packages/sdks/client-ts/**'
+      - 'packages/examples/realtime-demo/**'
       - '.github/workflows/sdk.yml'
+      - '.github/workflows/scripts/sdk_test_and_coverage.sh'
 
 jobs:
   sdk:
@@ -14,7 +15,7 @@ jobs:
     timeout-minutes: 5
     defaults:
       run:
-        working-directory: ./sdk/syntrix-client-ts
+        working-directory: ./packages/sdks/client-ts
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -36,13 +37,13 @@ jobs:
         run: bun run build
 
       - name: Test with Coverage
-        run: ../../.github/workflows/scripts/sdk_test_and_coverage.sh
+        run: ../../../.github/workflows/scripts/sdk_test_and_coverage.sh
 
       - name: Verify isolated package consumer
         run: bun run test:package
 
       - name: Build replica demo
-        working-directory: ./example/realtime-demo
+        working-directory: ./packages/examples/realtime-demo
         run: |
           bun install --frozen-lockfile --force
           bun run build

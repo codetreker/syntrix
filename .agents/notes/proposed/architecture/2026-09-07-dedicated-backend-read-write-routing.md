@@ -5,10 +5,10 @@ Status: proposed
 ## Problem
 
 Shared document/revocation topology already supports `read_write_split` through
-the [split routers](../../../../internal/core/storage/router/split.go). Dedicated
+the [split routers](../../../../packages/syntrix/internal/core/storage/router/split.go). Dedicated
 bindings use a single backend field in
-[storage configuration](../../../../internal/core/storage/config/config.go), and
-the [factory](../../../../internal/core/storage/factory_impl.go) constructs
+[storage configuration](../../../../packages/syntrix/internal/core/storage/config/config.go), and
+the [factory](../../../../packages/syntrix/internal/core/storage/factory_impl.go) constructs
 `router.NewSingleDocumentRouter(store)` for each dedicated document binding.
 The [multi-database design](../../../../docs/design/server/core/storage/05.multi-database.md)
 explicitly leaves dedicated read/write strategy open. This is a planned topology

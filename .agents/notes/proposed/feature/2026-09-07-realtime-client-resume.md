@@ -6,9 +6,9 @@ Status: proposed
 
 The [realtime design](../../../../docs/design/server/gateway/realtime_watching.md)
 calls for brief-disconnect replay and resynchronization outside retention.
-The [client protocol](../../../../internal/gateway/realtime/protocol.go) has no
+The [client protocol](../../../../packages/syntrix/internal/gateway/realtime/protocol.go) has no
 replay cursor, resume request, or resynchronization status. In
-[the Hub](../../../../internal/gateway/realtime/hub.go), the public event ID uses
+[the Hub](../../../../packages/syntrix/internal/gateway/realtime/hub.go), the public event ID uses
 collection and document ID, so separate changes to one document are not uniquely
 identified. Its empty `case <-time.After(50 * time.Millisecond):` branch discards
 an event when a client queue stays full without invalidating the subscription.

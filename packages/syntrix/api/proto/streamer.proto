@@ -1,0 +1,153 @@
+syntax = "proto3";
+
+package syntrix.streamer.v1;
+
+option go_package = "github.com/codetreker/syntrix/api/gen/streamer/v1;streamerv1";
+
+// StreamerService provides centralized fan-out and subscription matching.
+// Gateways connect via bidirectional streaming to receive matched events.
+service StreamerService {
+  // Stream establishes a bidirectional stream for subscription management
+  // and event delivery. Gateways send subscription requests, Streamer
+  // delivers matched events.
+  rpc Stream(stream GatewayMessage) returns (stream StreamerMessage);
+}
+
+// OperationType defines the type of change operation.
+enum OperationType {
+  OPERATION_TYPE_UNSPECIFIED = 0;
+  OPERATION_TYPE_INSERT = 1;
+  OPERATION_TYPE_UPDATE = 2;
+  OPERATION_TYPE_DELETE = 4;
+}
+
+// StreamerEvent represents a matched change event delivered to gateways.
+message StreamerEvent {
+  // Unique event identifier.
+  string event_id = 1;
+
+  // Database identifier.
+  string database = 2;
+
+  // Collection name.
+  string collection = 3;
+
+  // Document identifier.
+  string document_id = 4;
+
+  // Type of operation.
+  OperationType operation = 5;
+
+  // Document data as JSON bytes.
+  // Empty for delete operations.
+  bytes document_data = 6;
+
+  // Unix timestamp in milliseconds.
+  int64 timestamp = 7;
+}
+
+// GatewayMessage is sent from Gateway to Streamer.
+message GatewayMessage {
+  oneof payload {
+    SubscribeRequest subscribe = 1;
+    UnsubscribeRequest unsubscribe = 2;
+    Heartbeat heartbeat = 3;
+  }
+}
+
+// StreamerMessage is sent from Streamer to Gateway.
+message StreamerMessage {
+  oneof payload {
+    EventDelivery delivery = 1;
+    HeartbeatAck heartbeat_ack = 2;
+    SubscribeResponse subscribe_response = 3;
+  }
+}
+
+// SubscribeRequest registers a subscription for event matching.
+message SubscribeRequest {
+  // Unique subscription identifier (UUID recommended).
+  string subscription_id = 1;
+
+  // Target collection to watch.
+  string collection = 2;
+
+  // Structured filters for type-safe matching.
+  // All filters are ANDed together.
+  // For document ID match, use Filter(field="_id", op="==", value=...).
+  repeated Filter filters = 3;
+
+  // Database identifier for multi-database.
+  string database = 4;
+}
+
+// Filter defines a single match condition.
+// Operators: eq, ne, gt, lt, gte, lte, in, contains
+message Filter {
+  // Field path to match (e.g., "_id", "status", "nested.field").
+  string field = 1;
+
+  // Comparison operator.
+  string op = 2;
+
+  // Value to compare against.
+  Value value = 3;
+}
+
+// Value represents a typed value for filter matching.
+message Value {
+  oneof kind {
+    string string_value = 1;
+    int64 int_value = 2;
+    double double_value = 3;
+    bool bool_value = 4;
+    ListValue list_value = 5;
+  }
+}
+
+// ListValue represents a list of values (for "in" operator).
+message ListValue {
+  repeated Value values = 1;
+}
+
+// UnsubscribeRequest removes a subscription.
+message UnsubscribeRequest {
+  // Subscription ID to remove.
+  string subscription_id = 1;
+}
+
+// Heartbeat is sent periodically to maintain connection health.
+message Heartbeat {
+  // Gateway identifier for logging.
+  string gateway_id = 1;
+
+  // Timestamp in milliseconds.
+  int64 timestamp = 2;
+}
+
+// HeartbeatAck acknowledges a heartbeat.
+message HeartbeatAck {
+  // Echo back the timestamp.
+  int64 timestamp = 1;
+}
+
+// SubscribeResponse confirms subscription creation.
+message SubscribeResponse {
+  // Subscription ID that was created.
+  string subscription_id = 1;
+
+  // Whether subscription was successful.
+  bool success = 2;
+
+  // Error message if not successful.
+  string error = 3;
+}
+
+// EventDelivery wraps an event with routing metadata.
+message EventDelivery {
+  // List of subscription IDs that matched this event.
+  repeated string subscription_ids = 1;
+
+  // The matched event.
+  StreamerEvent event = 2;
+}

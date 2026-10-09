@@ -8,30 +8,30 @@ material.
 
 ```text
 syntrix/
-├── cmd/                     # Server, CLI, and benchmark entrypoints
-├── internal/
-│   ├── config/              # Configuration loading
-│   ├── core/                # Storage, identity, database management, and pubsub
-│   ├── gateway/             # REST, WebSocket, and SSE routes
-│   ├── indexer/             # Secondary indexes
-│   ├── puller/              # Storage change streams and event buffering
-│   ├── query/               # Document operations and query execution
-│   ├── server/              # Shared HTTP and gRPC servers
-│   ├── services/            # Service composition and lifecycle
-│   ├── streamer/            # Realtime subscription matching
-│   └── trigger/             # Rule evaluation and webhook delivery
-├── pkg/                     # Shared models and benchmark components
-├── api/                     # Protocol definitions and generated code
-├── sdk/syntrix-client-ts/    # TypeScript SDK
-├── console/                 # Web administration console
-├── example/                 # Example applications
-├── tests/                   # Integration tests
-├── configs/                 # Runtime configuration and rule examples
+├── packages/
+│   ├── syntrix/             # Go module and server tools
+│   │   ├── cmd/             # Server, CLI, and benchmark entrypoints
+│   │   ├── internal/        # Storage, services, gateways, and configuration
+│   │   ├── pkg/             # Shared models and benchmark components
+│   │   ├── api/             # Protocol definitions and generated code
+│   │   ├── tests/           # Integration tests
+│   │   ├── configs/         # Runtime configuration and rule examples
+│   │   ├── scripts/         # Protocol generation and Go coverage helpers
+│   │   ├── go.mod           # Go module dependencies
+│   │   └── Makefile         # Go build, test, coverage, and generation targets
+│   ├── sdks/client-ts/      # TypeScript SDK
+│   ├── console/             # Web administration console
+│   └── examples/realtime-demo/ # Browser replica example
 ├── deployment/              # Development and CI infrastructure
-├── scripts/                 # Build and validation helpers
+├── scripts/                 # Repository maintenance helpers
 ├── docs/                    # Designs, references, plans, and task tracking
 └── .agents/                 # Repository skills and decision notes
 ```
+
+Packages own their build configuration and dependency manifests. The Go module
+is `github.com/codetreker/syntrix`, and the SDK package is `@syntrixbase/client`.
+The [package layout decision](../.agents/notes/implemented/architecture/2026-10-09-package-layout.md)
+records the build and working-directory boundaries.
 
 ## Getting Started
 
@@ -41,40 +41,49 @@ as a replica set for change streams. Distributed trigger delivery uses NATS;
 standalone delivery uses in-memory pubsub.
 
 See the [development environment](../deployment/dev/README.md) for infrastructure
-setup and the [configuration](../configs/config.yml) for connection settings.
+setup and the [configuration](../packages/syntrix/configs/config.yml) for connection
+settings. Run these commands from the repository root:
 
 ```bash
-make build
-./bin/syntrix --standalone
+make -C packages/syntrix build
+(cd packages/syntrix && ./bin/syntrix --standalone)
 ```
 
 Standalone runs the services together with direct in-process calls. Distributed
 mode uses gRPC between services, including when they share a process:
 
 ```bash
-./bin/syntrix --all
-./bin/syntrix --api
+(cd packages/syntrix && ./bin/syntrix --all)
+(cd packages/syntrix && ./bin/syntrix --api)
 ```
 
-Configuration loads defaults, `configs/config.yml`, `configs/config.local.yml`,
-then supported environment overrides. Select another directory with
-`--config-dir` or `SYNTRIX_CONFIG_DIR`.
+Run server binaries with `packages/syntrix` as the working directory to use the
+supplied configuration, package-local data and logs, and console assets from
+`packages/console/dist`. Build the console separately with `bun run build` from
+`packages/console` before using its UI. Configuration loads
+defaults, `configs/config.yml`, `configs/config.local.yml`, then supported
+environment overrides. Select another directory with `--config-dir` or
+`SYNTRIX_CONFIG_DIR`.
 
 ## Validation
 
+From the repository root:
+
 ```bash
-make test
-make coverage
-CI=true make coverage
+make -C packages/syntrix test
+make -C packages/syntrix coverage
+CI=true make -C packages/syntrix coverage
+make -C packages/syntrix generate
 ```
 
 These commands cover Go packages, including integration tests that require the
 configured infrastructure. The [pipeline environment](../deployment/pipeline/README.md)
-describes those services and the CI checks. SDK and console build scripts live in their own
-`package.json` files and use Bun.
+describes those services and the CI checks. SDK and console build scripts live
+in their own `package.json` files. The SDK uses pnpm for its locked dependencies
+and Bun for its scripts; the console and demo use Bun.
 
-`make coverage` 报告覆盖率；`CI=true make coverage` 同时启用 race 检测，
-并强制执行 CI 覆盖率门槛。
+`make -C packages/syntrix coverage` reports coverage. Setting `CI=true` also
+enables race detection and enforces the CI coverage thresholds.
 
 ## Design and Reference
 
@@ -87,7 +96,7 @@ describes those services and the CI checks. SDK and console build scripts live i
 - [Filter Syntax](reference/filters.md)
 - [Trigger Rules](reference/trigger_rules.md)
 - [TypeScript SDK](reference/typescript_sdk.md)
-- [Browser Replica Demo](../example/realtime-demo/README.md)
+- [Browser Replica Demo](../packages/examples/realtime-demo/README.md)
 - [Replication](reference/replication.md)
 
 Design documents include proposals as well as implemented mechanisms; read their

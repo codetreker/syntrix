@@ -4,9 +4,9 @@ Status: proposed
 
 ## Problem
 
-The [benchmark configuration](../../../../pkg/benchmark/types/types.go) defines
+The [benchmark configuration](../../../../packages/syntrix/pkg/benchmark/types/types.go) defines
 Monitor.Enabled, Address, AutoOpen, and Interval. Static inspection of the
-[CLI](../../../../cmd/syntrix-benchmark/main.go) shows console progress reporting
+[CLI](../../../../packages/syntrix/cmd/syntrix-benchmark/main.go) shows console progress reporting
 but no monitoring server or dashboard startup. The
 [monitoring design](../../../../docs/benchmark/monitoring.md) specifies HTTP
 status, metrics, workers, errors, timeline, and an embedded dashboard; these are

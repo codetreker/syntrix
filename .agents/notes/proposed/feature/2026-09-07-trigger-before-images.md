@@ -5,10 +5,10 @@ Status: proposed
 ## Problem
 
 Rules expose `includeBefore`, and
-[CEL evaluation](../../../../internal/trigger/evaluator/cel/evaluator.go) can read
-`event.before`. However, [the raw event](../../../../internal/puller/normalizer/normalizer.go)
-and [buffered event](../../../../internal/puller/events/types.go) do not carry a
-previous document, and [transformation](../../../../internal/puller/events/transform.go)
+[CEL evaluation](../../../../packages/syntrix/internal/trigger/evaluator/cel/evaluator.go) can read
+`event.before`. However, [the raw event](../../../../packages/syntrix/internal/puller/normalizer/normalizer.go)
+and [buffered event](../../../../packages/syntrix/internal/puller/events/types.go) do not carry a
+previous document, and [transformation](../../../../packages/syntrix/internal/puller/events/transform.go)
 never populates `Before`. The supported expression therefore lacks upstream data.
 This is a missing integration established by static inspection.
 

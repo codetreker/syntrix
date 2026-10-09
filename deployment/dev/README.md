@@ -2,6 +2,13 @@
 
 This directory contains Docker Compose configuration for running Syntrix with full monitoring stack locally.
 
+The MongoDB container sets soft and hard `nofile` limits to 64,000. Data files,
+journals, and connections consume file descriptors; a low inherited Docker limit
+can stop WiredTiger during collection and index creation. These explicit limits
+follow [MongoDB resource-limit guidance](https://www.mongodb.com/docs/manual/reference/ulimit/).
+Recreate the MongoDB container after changing the limits so the new process
+inherits them. The pipeline and devcontainer MongoDB services use the same limits.
+
 ## Quick Start
 
 ```bash
@@ -33,13 +40,13 @@ docker compose down -v
 ### Option 1: Outside Docker (Recommended for Development)
 
 ```bash
-# In project root
-make build
-./bin/syntrix --standalone
-
-# Or with live reload
-make dev
+# From the repository root
+make -C packages/syntrix build
+(cd packages/syntrix && ./bin/syntrix --standalone)
 ```
+
+The package working directory supplies the default `configs/` directory and
+keeps runtime data and logs with the server package.
 
 Prometheus is pre-configured to scrape `host.docker.internal:8080`.
 

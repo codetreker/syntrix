@@ -1,9 +1,9 @@
 #!/bin/bash
-set -e
+set -euo pipefail
 
-# Get the workspace root directory
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-WORKSPACE_ROOT="$(dirname "$SCRIPT_DIR")"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+PACKAGE_ROOT="$PROJECT_ROOT/packages/syntrix"
 
 # Colors for output
 GREEN='\033[0;32m'
@@ -12,7 +12,7 @@ RED='\033[0;31m'
 NC='\033[0m' # No Color
 
 # Default values
-CONFIG_FILE="configs/benchmark.yaml"
+CONFIG_FILE="$PACKAGE_ROOT/configs/benchmark.yaml"
 TARGET=""
 DURATION=""
 WORKERS=""
@@ -26,7 +26,7 @@ usage() {
     echo "Usage: $0 [options]"
     echo ""
     echo "Options:"
-    echo "  -c, --config <file>     Configuration file (default: configs/benchmark.yaml)"
+    echo "  -c, --config <file>     Configuration file (default: packages/syntrix/configs/benchmark.yaml)"
     echo "  -t, --target <url>      Target Syntrix URL (overrides config)"
     echo "  -d, --duration <time>   Benchmark duration (e.g., 10s, 1m) (overrides config)"
     echo "  -w, --workers <n>       Number of concurrent workers (overrides config)"
@@ -36,7 +36,7 @@ usage() {
     echo ""
     echo "Examples:"
     echo "  $0                                    # Run with default config"
-    echo "  $0 --config configs/benchmark.yaml    # Run with specific config"
+    echo "  $0 --config packages/syntrix/configs/benchmark.yaml"
     echo "  $0 --target http://localhost:8080 --duration 30s --workers 10"
     echo "  $0 --rebuild                          # Force rebuild and run"
     echo ""
@@ -80,8 +80,10 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# Change to workspace root
-cd "$WORKSPACE_ROOT"
+if [[ "$CONFIG_FILE" != /* ]]; then
+    CONFIG_FILE="$PROJECT_ROOT/$CONFIG_FILE"
+fi
+cd "$PACKAGE_ROOT"
 
 # Check if benchmark binary exists
 BENCHMARK_BIN="bin/syntrix-benchmark"

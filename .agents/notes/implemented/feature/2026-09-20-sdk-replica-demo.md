@@ -8,7 +8,7 @@ Status: implemented
 
 ## Decision
 
-保留 `example/realtime-demo`，用公开的 `openReplica` API 重写其数据流。运行方法由 [demo README](../../../../example/realtime-demo/README.md) 维护。
+保留 `packages/examples/realtime-demo`，用公开的 `openReplica` API 重写其数据流。运行方法由 [demo README](../../../../packages/examples/realtime-demo/README.md) 维护。
 
 | 责任 | 决策与原因 |
 |---|---|

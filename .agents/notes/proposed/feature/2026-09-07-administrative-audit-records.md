@@ -8,8 +8,8 @@ The [authentication design](../../../../docs/design/server/core/identity/02.auth
 requires append-only authentication events and at least 30 days of audit retention.
 The [console design](../../../../docs/design/server/console/01.console.md) requires
 administrative mutation history. Static inspection of
-[authentication](../../../../internal/core/identity/authn/service.go) and
-[admin handlers](../../../../internal/gateway/rest/handler_admin.go) finds operation
+[authentication](../../../../packages/syntrix/internal/core/identity/authn/service.go) and
+[admin handlers](../../../../packages/syntrix/internal/gateway/rest/handler_admin.go) finds operation
 execution and diagnostic logging, without a durable audit store or query API.
 Logs alone do not establish which administrative operation completed after a
 restart or an interrupted response.

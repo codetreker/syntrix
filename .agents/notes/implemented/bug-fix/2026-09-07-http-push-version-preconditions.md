@@ -14,7 +14,7 @@ the HTTP precondition was preserved.
 
 ## Decision
 
-The original [HTTP change decoder](../../../../internal/gateway/rest/types.go)
+The original [HTTP change decoder](../../../../packages/syntrix/internal/gateway/rest/types.go)
 extracted the exact, case-sensitive `document.version` from raw ordinary JSON
 before decoding business numbers as float64. This preserved optional int64
 preconditions without changing the then-existing document-number representation.
@@ -37,7 +37,7 @@ anywhere in a batch prevents the entire request from reaching the Engine; input
 validation does not make writes transactional. Ordinary document CRUD retains its
 existing number representation.
 
-[The handler](../../../../internal/gateway/rest/handler_replication.go) forwards
+[The handler](../../../../packages/syntrix/internal/gateway/rest/handler_replication.go) forwards
 the extracted precondition separately while continuing to strip protected fields.
 `NewStoredDoc` retains its version-1 initialization; client versions are not copied
 into stored metadata. Storage owns resulting versions.

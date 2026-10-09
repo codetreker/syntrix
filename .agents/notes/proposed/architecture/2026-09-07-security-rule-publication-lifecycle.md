@@ -5,7 +5,7 @@ Status: proposed
 ## Problem
 
 The administrator push endpoint updates the receiving process only. In the
-[rule engine](../../../../internal/core/identity/authz/engine.go),
+[rule engine](../../../../packages/syntrix/internal/core/identity/authz/engine.go),
 `e.dbRules[database] = &rules` replaces an in-memory entry, while startup loads
 the configured rules directory. Static inspection therefore establishes no
 durable publication history, rollback, dry-run, or propagation to other nodes.

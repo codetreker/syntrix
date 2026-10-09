@@ -4,9 +4,9 @@ Status: proposed
 
 ## Problem
 
-[DeliveryTask](../../../../internal/trigger/types/types.go) declares `lsn`, `seq`,
+[DeliveryTask](../../../../packages/syntrix/internal/trigger/types/types.go) declares `lsn`, `seq`,
 `before`, `after`, and `ts`, but
-[task construction](../../../../internal/trigger/evaluator/service.go) supplies
+[task construction](../../../../packages/syntrix/internal/trigger/evaluator/service.go) supplies
 only identity, routing, execution settings, and `Payload`. The worker serializes
 the task directly, leaving declared event metadata at zero values or absent.
 Receivers cannot reliably identify or interpret the source event. This is a

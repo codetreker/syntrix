@@ -5,13 +5,13 @@ Status: proposed
 ## Problem
 
 Puller health types and an HTTP handler exist but are not connected to the
-running service. [The public constructor](../../../../internal/puller/interface.go#L139)
+running service. [The public constructor](../../../../packages/syntrix/internal/puller/interface.go#L139)
 returns `health.NewChecker(logger)`, while
-[service assembly](../../../../internal/services/manager_init.go#L466) creates the
+[service assembly](../../../../packages/syntrix/internal/services/manager_init.go#L466) creates the
 Puller and its backends without creating or registering a checker. Production
 callers do not invoke StartHealthServer or update Checker state.
 The helper also hardcodes `mux.Handle("/health", checker)` despite the
-[Health.Path configuration](../../../../internal/puller/config/puller.go).
+[Health.Path configuration](../../../../packages/syntrix/internal/puller/config/puller.go).
 
 This is a static integration finding. Bootstrap behavior is separate and already
 applies `Bootstrap.Mode` in watchChangeStream; health work must preserve it.

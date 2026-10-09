@@ -4,9 +4,9 @@ Status: proposed
 
 ## Problem
 
-[Collection discovery](../../../../console/src/lib/documents.ts) sends `collection: ''` to the document query endpoint, samples at most 100 documents, and converts every error into an empty list. [Query validation](../../../../internal/gateway/rest/validation.go) requires a valid collection path, so this call cannot provide the collection tree. Sampling would also miss collections even if the endpoint allowed it.
+[Collection discovery](../../../../packages/console/src/lib/documents.ts) sends `collection: ''` to the document query endpoint, samples at most 100 documents, and converts every error into an empty list. [Query validation](../../../../packages/syntrix/internal/gateway/rest/validation.go) requires a valid collection path, so this call cannot provide the collection tree. Sampling would also miss collections even if the endpoint allowed it.
 
-The [collection tree](../../../../console/src/components/features/data-browser/CollectionTree.tsx) calls `onSelectDatabase(data.databases[0].display_name)` and routes later requests using that label. Display names are presentation data; the database API resolves identifiers. These are confirmed static integration defects. The normal query helper already consumes the backend's bare document array correctly.
+The [collection tree](../../../../packages/console/src/components/features/data-browser/CollectionTree.tsx) calls `onSelectDatabase(data.databases[0].display_name)` and routes later requests using that label. Display names are presentation data; the database API resolves identifiers. These are confirmed static integration defects. The normal query helper already consumes the backend's bare document array correctly.
 
 ## Proposal
 

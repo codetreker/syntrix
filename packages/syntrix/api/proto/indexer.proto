@@ -1,0 +1,337 @@
+syntax = "proto3";
+
+package syntrix.indexer.v1;
+
+option go_package = "github.com/codetreker/syntrix/api/gen/indexer/v1;indexerv1";
+
+// IndexerService provides index-accelerated search for Query Engine.
+// In distributed mode, Query Engine connects via gRPC.
+// In standalone mode, Query Engine calls LocalService directly.
+//
+// Index management follows a declarative model:
+// - Desired state comes from templates.yaml (loaded via Reload)
+// - Actual state is the in-memory indexes
+// - Reconciler computes diff and executes create/delete/rebuild operations
+service IndexerService {
+  // --- Query Interface ---
+
+  // Search executes an index query and returns ordered document references.
+  // Indexer internally selects the best matching template based on
+  // plan's OrderBy and Filters using Query-to-Index matching rules.
+  rpc Search(SearchRequest) returns (SearchResponse);
+
+  // OpenCandidates sends metadata, complete candidate groups, then completion.
+  // Each message is limited to 1 MiB; cancellation releases the index snapshot.
+  rpc OpenCandidates(CandidateRequest) returns (stream CandidateResponse);
+
+  // Health returns the current health status of the indexer.
+  rpc Health(HealthRequest) returns (HealthResponse);
+
+  // Stats returns current aggregate statistics for this Indexer service instance.
+  rpc Stats(StatsRequest) returns (StatsResponse);
+
+  // --- Declarative Index Management ---
+
+  // GetState returns the complete index state including desired, actual, and pending operations.
+  // Use this to observe the current state and what the reconciler will do.
+  rpc GetState(GetStateRequest) returns (IndexerState);
+
+  // Reload reloads index templates from the configuration file (templates.yaml).
+  // This updates the desired state; the reconciler will then create/delete indexes as needed.
+  rpc Reload(ReloadRequest) returns (ReloadResponse);
+
+  // InvalidateIndex marks an index as needing rebuild.
+  // The reconciler will automatically trigger a rebuild for the affected index(es).
+  rpc InvalidateIndex(InvalidateIndexRequest) returns (InvalidateIndexResponse);
+}
+
+// --- Query Messages ---
+
+message CandidateRequest {
+  string database = 1;
+  string collection = 2;
+  repeated CandidateFilter filters = 3;
+  repeated OrderByField order_by = 4;
+  bytes after_position = 5;
+  string template_fingerprint = 6;
+  string generation = 7;
+  string branch_hash = 8;
+  int64 max_examined = 9;
+  bool show_deleted = 10;
+}
+
+message CandidateFilter {
+  string field = 1;
+  string op = 2;
+  // model.EncodeTypedValue format preserves int64 and binary64 domains.
+  bytes typed_value = 3;
+}
+
+message CandidateTemplateField {
+  string field = 1;
+  string direction = 2;
+  string mode = 3;
+}
+
+message CandidateMetadata {
+  string template_name = 1;
+  string collection_pattern = 2;
+  repeated CandidateTemplateField fields = 3;
+  bool include_deleted = 4;
+  string template_fingerprint = 5;
+  string generation = 6;
+  string branch_hash = 7;
+  repeated OrderByField effective_order = 8;
+  repeated CandidateBranch branches = 9;
+  repeated PredicateAssignment assignments = 10;
+}
+
+message PredicateAssignment {
+  int32 predicate = 1;
+  bool access = 2;
+  bool residual = 3;
+}
+
+message CandidateBranch {
+  bytes prefix = 1;
+  int32 fixed_fields = 2;
+  bytes lower = 3;
+  bytes upper = 4;
+}
+
+message CandidateGroup {
+  string id = 1;
+  bytes position = 2;
+  repeated int32 branches = 3;
+}
+
+message CandidateComplete {}
+
+message CandidateResponse {
+  oneof payload {
+    CandidateMetadata metadata = 1;
+    CandidateGroup group = 2;
+    CandidateComplete complete = 3;
+  }
+  // Cumulative entries examined when this message was produced.
+  int64 examined = 4;
+}
+
+// SearchRequest represents a search query plan.
+message SearchRequest {
+  // Database identifier.
+  string database = 1;
+
+  // Concrete collection path (e.g., "users/alice/chats").
+  string collection = 2;
+
+  // Equality/range filters to apply.
+  repeated Filter filters = 3;
+
+  // Ordering specification.
+  repeated OrderByField order_by = 4;
+
+  // Maximum number of documents to return.
+  int32 limit = 5;
+
+  // Base64 encoded cursor (OrderKey) for pagination.
+  // Returns documents after this cursor (exclusive).
+  string start_after = 6;
+}
+
+// Filter represents a filter condition.
+message Filter {
+  // Field path to filter on.
+  string field = 1;
+
+  // Filter operator: "eq", "gt", "lt", "gte", "lte".
+  string op = 2;
+
+  // JSON encoded value to compare against.
+  bytes value = 3;
+}
+
+// OrderByField represents an ordering specification.
+message OrderByField {
+  // Field path to order by.
+  string field = 1;
+
+  // Sort direction: "asc" or "desc".
+  string direction = 2;
+}
+
+// SearchResponse contains the search results.
+message SearchResponse {
+  // Ordered list of document references.
+  repeated DocRef docs = 1;
+}
+
+// DocRef represents a document reference with its sort key.
+message DocRef {
+  // Document ID within the collection.
+  string id = 1;
+
+  // Base64 encoded OrderKey for cursor/pagination use.
+  string order_key = 2;
+}
+
+// --- Health Messages ---
+
+// HealthRequest is empty for health checks.
+message HealthRequest {}
+
+// HealthResponse contains the indexer health status.
+message HealthResponse {
+  // Overall status: "healthy", "degraded", "unhealthy".
+  string status = 1;
+
+  // Per-index health information.
+  // Key format: "database|pattern|templateID".
+  map<string, IndexHealth> indexes = 2;
+}
+
+// IndexHealth represents the health of a single index.
+message IndexHealth {
+  // Index state: "healthy", "rebuilding", "failed".
+  string state = 1;
+
+  // Number of documents in the index.
+  int64 doc_count = 2;
+}
+
+// --- Statistics Messages ---
+
+message StatsRequest {}
+
+// Fields are sampled independently; they are not a joint atomic snapshot.
+message StatsResponse {
+  // Current loaded template count across all databases, not instantiated indexes.
+  int64 template_count = 1;
+
+  // Events reaching the end of matching-template processing in this service
+  // instance, including events with logged template write failures.
+  int64 events_applied = 2;
+
+  // Local processing time in Unix seconds when the last event was counted.
+  // Zero means no event time has been recorded in this service instance.
+  int64 last_event_time = 3;
+}
+
+// --- Declarative Index Management Messages ---
+
+// GetStateRequest optionally filters the state query.
+message GetStateRequest {
+  // Optional: filter by database.
+  string database = 1;
+  // Optional: filter by pattern.
+  string pattern = 2;
+}
+
+// IndexerState contains the complete indexer state.
+message IndexerState {
+  // Desired indexes from configuration (templates.yaml).
+  repeated IndexSpec desired = 1;
+
+  // Actual indexes in memory.
+  repeated IndexInfo actual = 2;
+
+  // Pending operations to reconcile desired vs actual.
+  repeated PendingOperation pending_ops = 3;
+}
+
+// IndexSpec describes a desired index from configuration.
+message IndexSpec {
+  // Collection pattern (e.g., "users/*/chats").
+  string pattern = 1;
+
+  // Template ID (e.g., "timestamp:desc" or template name).
+  string template_id = 2;
+
+  // Indexed fields specification.
+  repeated IndexField fields = 3;
+}
+
+// IndexField describes a field in an index template.
+message IndexField {
+  // Field path.
+  string field = 1;
+
+  // Sort direction: "asc" or "desc".
+  string direction = 2;
+}
+
+// IndexInfo describes an actual index in memory.
+message IndexInfo {
+  // Database name.
+  string database = 1;
+
+  // Collection pattern (e.g., "users/*/chats").
+  string pattern = 2;
+
+  // Template ID (e.g., "timestamp:desc").
+  string template_id = 3;
+
+  // Current state: "healthy", "rebuilding", "failed".
+  string state = 4;
+
+  // Number of documents in the index.
+  int64 doc_count = 5;
+}
+
+// PendingOperation describes an operation the reconciler will execute.
+message PendingOperation {
+  // Operation type: "create", "delete", "rebuild".
+  string op_type = 1;
+
+  // Target database.
+  string database = 2;
+
+  // Collection pattern.
+  string pattern = 3;
+
+  // Template ID.
+  string template_id = 4;
+
+  // Status: "pending", "running".
+  string status = 5;
+
+  // Progress percentage (0-100) for rebuild operations.
+  int32 progress = 6;
+
+  // Error message if the operation failed.
+  string error = 7;
+
+  // Unix timestamp when operation started (0 if pending).
+  int64 started_at = 8;
+}
+
+// ReloadRequest triggers a reload of templates.yaml.
+message ReloadRequest {}
+
+// ReloadResponse contains the result of the reload.
+message ReloadResponse {
+  // Number of templates loaded.
+  int32 templates_loaded = 1;
+
+  // Any errors encountered during loading.
+  repeated string errors = 2;
+}
+
+// InvalidateIndexRequest marks index(es) for rebuild.
+message InvalidateIndexRequest {
+  // Target database.
+  string database = 1;
+
+  // Collection pattern (e.g., "users/*/chats").
+  string pattern = 2;
+
+  // Optional: specific template ID.
+  // If empty, all templates for this pattern will be invalidated.
+  string template_id = 3;
+}
+
+// InvalidateIndexResponse contains the result.
+message InvalidateIndexResponse {
+  // Number of indexes invalidated.
+  int32 indexes_invalidated = 1;
+}

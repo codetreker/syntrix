@@ -11,7 +11,7 @@ which requires rate-limited deliveries to retry with backoff.
 
 ## Decision
 
-[The worker](../../../../internal/trigger/delivery/worker/worker.go) classifies
+[The worker](../../../../packages/syntrix/internal/trigger/delivery/worker/worker.go) classifies
 400–499 responses other than 429 as fatal. HTTP 2xx succeeds; 429 and all other
 non-2xx responses retain their retryable status classification. The failure
 metric's fatal flag and returned `FatalError` agree. Transport errors and attempt
@@ -23,7 +23,7 @@ adds a typed relative hint and one terminal exception: a valid 429 hint beyond
 the supported duration range returns `FatalError` with a sanitized explanation
 and a fatal metric. Invalid or absent hints retain rule-only retry behavior.
 
-[The consumer](../../../../internal/trigger/delivery/consumer.go) remains the
+[The consumer](../../../../packages/syntrix/internal/trigger/delivery/consumer.go) remains the
 owner of attempt accounting and scheduling. Fatal failures terminate immediately.
 Retryable failures use queue delivery metadata and the task's total attempt
 limit, including the initial delivery. Reaching the limit logs exhaustion and

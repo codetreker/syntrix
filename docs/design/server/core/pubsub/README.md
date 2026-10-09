@@ -14,7 +14,7 @@ The trigger system originally had NATS JetStream publisher/consumer implementati
 
 ## How
 
-Extract a generic pubsub abstraction into `internal/core/pubsub/` that provides transport-agnostic interfaces. Services use this abstraction, with pluggable implementations:
+Extract a generic pubsub abstraction into `packages/syntrix/internal/core/pubsub/` that provides transport-agnostic interfaces. Services use this abstraction, with pluggable implementations:
 
 - **NATS JetStream** - For distributed mode (production)
 - **In-Memory** - For standalone mode (dev/test/edge)
@@ -34,7 +34,7 @@ Extract a generic pubsub abstraction into `internal/core/pubsub/` that provides 
 ## Package Structure
 
 ```
-internal/core/pubsub/
+packages/syntrix/internal/core/pubsub/
 ├── interfaces.go     # Core interfaces (Publisher, Consumer, Message)
 ├── options.go        # Configuration options
 ├── nats/             # NATS JetStream implementation (distributed mode)

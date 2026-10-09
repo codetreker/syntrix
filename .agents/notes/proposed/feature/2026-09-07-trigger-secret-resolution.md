@@ -5,8 +5,8 @@ Status: proposed
 ## Problem
 
 The delivery worker supports signing, but service assembly injects `Secrets: nil`
-in both deployment modes in [manager_init.go](../../../../internal/services/manager_init.go).
-[The worker](../../../../internal/trigger/delivery/worker/worker.go) returns a
+in both deployment modes in [manager_init.go](../../../../packages/syntrix/internal/services/manager_init.go).
+[The worker](../../../../packages/syntrix/internal/trigger/delivery/worker/worker.go) returns a
 fatal error when a task contains `secretsRef` without a provider. Static inspection
 therefore establishes that configured signed webhooks cannot use the normal
 runtime path; it does not establish a live secret-store failure.

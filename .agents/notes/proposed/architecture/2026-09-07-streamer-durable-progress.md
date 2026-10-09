@@ -5,14 +5,14 @@ Status: proposed
 ## Problem
 
 The [Streamer requirements](../../../../docs/design/server/streamer/00.requirements.md)
-require replay after restart. In [the service](../../../../internal/streamer/service.go),
+require replay after restart. In [the service](../../../../packages/syntrix/internal/streamer/service.go),
 `s.progress = evt.Progress` updates process memory, and startup passes that field
 to Puller without loading durable state. The assignment also follows failed
 transformation or processing. Static inspection therefore shows an incomplete
 restart contract and a checkpoint ordering problem.
 
 Subscriptions intentionally remain soft state. Gateway re-registration is
-implemented in [the remote stream](../../../../internal/streamer/remote_stream.go).
+implemented in [the remote stream](../../../../packages/syntrix/internal/streamer/remote_stream.go).
 A persisted ingestion marker cannot recover subscriptions or prove delivery to
 disconnected clients.
 

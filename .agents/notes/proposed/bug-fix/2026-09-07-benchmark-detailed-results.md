@@ -4,12 +4,12 @@ Status: proposed
 
 ## Problem
 
-The [collector](../../../../pkg/benchmark/metrics/collector.go) already records
+The [collector](../../../../packages/syntrix/pkg/benchmark/metrics/collector.go) already records
 operation-specific counts and latency samples and exposes GetOperationMetrics.
-The [runner](../../../../pkg/benchmark/runner/runner.go) assembles timestamps,
+The [runner](../../../../packages/syntrix/pkg/benchmark/runner/runner.go) assembles timestamps,
 duration, configuration, and `result.Summary = r.metrics.GetSnapshot()` only.
 It does not populate the Result type's SessionID, Name, Operations, Errors, or
-Timeline. The [console reporter](../../../../pkg/benchmark/reporter/console.go)
+Timeline. The [console reporter](../../../../packages/syntrix/pkg/benchmark/reporter/console.go)
 already renders operation metrics when present, so collected detail is lost at
 the assembly boundary. Static inspection establishes this integration gap;
 detailed error entries and timeline sampling still require collection work.

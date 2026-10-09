@@ -8,7 +8,7 @@ The [control-plane discussion](../../../../docs/design/server/console/02.control
 lists backup, restore, and point-in-time recovery as future topics. The
 [authentication design](../../../../docs/design/server/core/identity/02.authentication.md)
 requires user records and rule versions in backups. Current
-[storage assembly](../../../../internal/core/storage/factory_impl.go) places documents
+[storage assembly](../../../../packages/syntrix/internal/core/storage/factory_impl.go) places documents
 in MongoDB and users/database metadata in PostgreSQL. Static inspection finds no
 coordinated backup catalog or restore operation. Existing database deletion
 cleanup is implemented; it does not supply recovery artifacts.

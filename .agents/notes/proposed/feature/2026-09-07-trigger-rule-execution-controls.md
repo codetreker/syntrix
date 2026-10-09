@@ -4,9 +4,9 @@ Status: proposed
 
 ## Problem
 
-[Trigger configuration](../../../../internal/trigger/types/types.go) accepts
+[Trigger configuration](../../../../packages/syntrix/internal/trigger/types/types.go) accepts
 `Concurrency` and `RateLimit`, but task construction does not carry them and
-[the consumer](../../../../internal/trigger/delivery/consumer.go) uses only a
+[the consumer](../../../../packages/syntrix/internal/trigger/delivery/consumer.go) uses only a
 global worker count. A configured rule currently cannot bound its own concurrent
 requests or dispatch rate. This finding comes from the configuration-to-consumer
 call path, not a load test.

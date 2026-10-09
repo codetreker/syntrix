@@ -554,17 +554,19 @@ Estimated memory overhead:
 ### 12.1 Starting Benchmark with Monitor
 
 ```bash
+cd packages/syntrix
+
 # Default (monitor enabled on localhost:9090)
-./syntrix-benchmark run --config configs/crud_mixed.yaml
+./bin/syntrix-benchmark run --config configs/crud_mixed.yaml
 
 # Custom address
-./syntrix-benchmark run --monitor-addr :8080
+./bin/syntrix-benchmark run --monitor-addr :8080
 
 # Disable monitor
-./syntrix-benchmark run --no-monitor
+./bin/syntrix-benchmark run --no-monitor
 
 # Auto-open browser
-./syntrix-benchmark run --monitor-open
+./bin/syntrix-benchmark run --monitor-open
 ```
 
 ### 12.2 Accessing Monitor

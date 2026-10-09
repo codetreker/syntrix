@@ -6,7 +6,8 @@ A comprehensive performance testing tool for the Syntrix realtime document datab
 
 ```bash
 # Build the benchmark tool
-make build-benchmark
+make -C packages/syntrix build-benchmark
+cd packages/syntrix
 
 # Run a basic CRUD benchmark
 ./bin/syntrix-benchmark run \
@@ -36,30 +37,28 @@ make build-benchmark
 
 - [Design Document](DESIGN.md) - Architecture and implementation details
 - [Task Breakdown](TASKS.md) - Development roadmap and task list
-- [Monitoring Guide](docs/monitoring.md) - Real-time monitoring server documentation
-- [Configuration Guide](docs/configuration.md) - Configuration options (coming soon)
-- [Scenarios Guide](docs/scenarios.md) - Available benchmark scenarios (coming soon)
+- [Monitoring Guide](monitoring.md) - Real-time monitoring server documentation
+- Configuration Guide - Configuration options (coming soon)
+- Scenarios Guide - Available benchmark scenarios (coming soon)
 
 ## Project Structure
 
-```
-tests/benchmark/
-├── DESIGN.md              # Architecture and design document
-├── TASKS.md              # Task breakdown and roadmap
-├── README.md             # This file
-├── cmd/
-│   └── syntrix-benchmark/
-│       └── main.go       # CLI entry point
-├── pkg/
-│   ├── config/          # Configuration loading and validation
-│   ├── runner/          # Benchmark execution engine
-│   ├── scenario/        # Benchmark scenarios
-│   ├── client/          # HTTP/WebSocket client
-│   ├── metrics/         # Metrics collection and reporting
-│   ├── generator/       # Test data generation
-│   └── utils/           # Utility functions
-├── configs/             # Pre-defined scenario configurations
-└── examples/            # Example custom scenarios
+```text
+packages/syntrix/
+├── cmd/syntrix-benchmark/    # CLI entry point
+├── pkg/benchmark/
+│   ├── config/              # Configuration loading and validation
+│   ├── runner/              # Benchmark execution engine
+│   ├── scenario/            # Benchmark scenarios
+│   ├── client/              # HTTP client
+│   ├── metrics/             # Metrics collection
+│   ├── reporter/            # Result reporting
+│   ├── generator/           # Test data generation
+│   ├── types/               # Shared interfaces and data types
+│   └── utils/               # Utility functions
+└── configs/benchmark.yaml   # Benchmark configuration
+
+docs/benchmark/              # Design, monitoring, and task documentation
 ```
 
 ## Development Status

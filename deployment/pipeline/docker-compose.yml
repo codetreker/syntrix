@@ -9,6 +9,10 @@ services:
   mongodb:
     image: mongo:8.0
     container_name: syntrix-pipeline-mongodb
+    ulimits:
+      nofile:
+        soft: 64000
+        hard: 64000
     command:
       - "--replSet"
       - "rs0"

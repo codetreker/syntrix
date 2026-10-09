@@ -1,0 +1,14 @@
+{
+  "name": "realtime-demo",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "./start-demo.sh",
+    "typecheck": "bun ../../sdks/client-ts/node_modules/typescript/bin/tsc --noEmit -p tsconfig.json",
+    "build": "bun run typecheck && bun build src/main.ts --target browser --format esm --splitting --outdir dist --entry-naming '[name].js' --chunk-naming 'chunks/[name]-[hash].js'"
+  },
+  "dependencies": {
+    "@syntrixbase/client": "file:../../sdks/client-ts"
+  }
+}

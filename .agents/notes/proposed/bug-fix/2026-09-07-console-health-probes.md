@@ -4,7 +4,7 @@ Status: proposed
 
 ## Problem
 
-The [Settings page](../../../../console/src/pages/SettingsPage.tsx) probes `/auth/v1/health` and the obsolete `/api/v1/query` route. When either request fails, `results[0]?.status === 'healthy'` converts the failed component check into a healthy result if the general API responds. Both the [public health handler](../../../../internal/gateway/rest/handler_health.go) and [admin health handler](../../../../internal/gateway/rest/handler_admin.go) simply return `OK`; they do not check authentication or database dependencies. The UI therefore reports inferred component health as observed health. This conclusion follows from static control flow.
+The [Settings page](../../../../packages/console/src/pages/SettingsPage.tsx) probes `/auth/v1/health` and the obsolete `/api/v1/query` route. When either request fails, `results[0]?.status === 'healthy'` converts the failed component check into a healthy result if the general API responds. Both the [public health handler](../../../../packages/syntrix/internal/gateway/rest/handler_health.go) and [admin health handler](../../../../packages/syntrix/internal/gateway/rest/handler_admin.go) simply return `OK`; they do not check authentication or database dependencies. The UI therefore reports inferred component health as observed health. This conclusion follows from static control flow.
 
 ## Proposal
 

@@ -3,6 +3,10 @@ services:
   mongodb:
     image: mongo:7.0
     container_name: syntrix_mongodb
+    ulimits:
+      nofile:
+        soft: 64000
+        hard: 64000
     restart: always
     ports:
       - "27017:27017"

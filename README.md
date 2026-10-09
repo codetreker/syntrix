@@ -23,15 +23,18 @@ See [docs/README.md](docs/README.md) for detailed documentation including:
 
 ## Quick Start
 
+Run from the repository root. The server runs from its package directory so
+configuration, data, and logs resolve against that package.
+
 ```bash
 # Build
-make build
+make -C packages/syntrix build
 
 # Run (standalone mode - all services in one process)
-./bin/syntrix --standalone
+(cd packages/syntrix && ./bin/syntrix --standalone)
 
 # Run tests
-make test
+make -C packages/syntrix test
 ```
 
 ## Configuration
@@ -56,7 +59,7 @@ logs/
 └── errors-20260119-002.log.gz
 ```
 
-**Configuration (`configs/config.yml`):**
+**Configuration (`packages/syntrix/configs/config.yml`):**
 ```yaml
 logging:
   level: "info"           # debug, info, warn, error
