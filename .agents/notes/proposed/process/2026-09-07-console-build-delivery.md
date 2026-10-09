@@ -4,7 +4,17 @@ Status: proposed
 
 ## Problem
 
-The [gateway](../../../../internal/gateway/server.go) serves the console from `console/dist`, while [make build](../../../../Makefile) only builds Go executables. [Server CI](../../../../.github/workflows/syntrix-server.yml) invokes that target without building the console, and its path filter does not include console changes. [The console package](../../../../console/package.json) already supplies `tsc -b && vite build`. A successful server build therefore does not establish that its console assets exist or match the source. This is a build integration gap identified statically.
+The [gateway](../../../../packages/syntrix/internal/gateway/server.go) serves the
+console from `../console/dist` relative to the `packages/syntrix` working
+directory, while [make -C packages/syntrix build](../../../../packages/syntrix/Makefile)
+only builds Go executables. [Server CI](../../../../.github/workflows/syntrix-server.yml)
+invokes that target without building the console. The
+[console package](../../../../packages/console/package.json) supplies
+`tsc -b && vite build`, and its [README](../../../../packages/console/README.md)
+documents separate frontend and Go builds. A successful server build therefore
+does not establish that its console assets exist or match the source. The
+[package layout decision](../../implemented/architecture/2026-10-09-package-layout.md)
+defines development locations; a combined distribution contract remains open.
 
 ## Proposal
 

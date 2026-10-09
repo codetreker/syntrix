@@ -12,7 +12,7 @@ and attempt limits.
 
 ## Decision
 
-[The HTTP worker](../../../../internal/trigger/delivery/worker/worker.go) parses
+[The HTTP worker](../../../../packages/syntrix/internal/trigger/delivery/worker/worker.go) parses
 `Retry-After` only on HTTP 429. Parsing accepts the current time as an argument,
 so date handling is deterministic under a controlled clock. A positive hint is
 carried as a relative `time.Duration` in `RetryAfterError`, which wraps the
@@ -35,7 +35,7 @@ message `Retry-After exceeds the maximum supported delay`, retaining HTTP 429
 in the surrounding error. This distinction prevents overflow or saturation from
 silently scheduling an earlier retry.
 
-[The consumer](../../../../internal/trigger/delivery/consumer.go) keeps ownership
+[The consumer](../../../../packages/syntrix/internal/trigger/delivery/consumer.go) keeps ownership
 of attempts and scheduling. It first computes existing rule backoff, applying a
 positive `maxBackoff` to that component, then schedules:
 

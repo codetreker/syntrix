@@ -4,7 +4,7 @@ Status: proposed
 
 ## Problem
 
-The [console design](../../../../docs/design/server/console/01.console.md) requires users to view and update their own non-secret profile data. The current [router](../../../../console/src/router/index.tsx) has no account page, and the [auth store](../../../../console/src/stores/auth.ts) derives displayed identity from token claims. The [API wrapper](../../../../console/src/lib/api.ts) declares `/auth/v1/me`, but the [gateway route registration](../../../../internal/gateway/rest/handler.go) does not provide that route or a profile update operation. Profile self-service is therefore an incomplete planned feature, not merely a hidden page.
+The [console design](../../../../docs/design/server/console/01.console.md) requires users to view and update their own non-secret profile data. The current [router](../../../../packages/console/src/router/index.tsx) has no account page, and the [auth store](../../../../packages/console/src/stores/auth.ts) derives displayed identity from token claims. The [API wrapper](../../../../packages/console/src/lib/api.ts) declares `/auth/v1/me`, but the [gateway route registration](../../../../packages/syntrix/internal/gateway/rest/handler.go) does not provide that route or a profile update operation. Profile self-service is therefore an incomplete planned feature, not merely a hidden page.
 
 ## Proposal
 

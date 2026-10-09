@@ -4,11 +4,11 @@ Status: proposed
 
 ## Problem
 
-[Service assembly](../../../../internal/services/manager_init.go) creates trigger
+[Service assembly](../../../../packages/syntrix/internal/services/manager_init.go) creates trigger
 publishers and consumers with stream and subject names only. The evaluator and
-delivery [factory helpers](../../../../internal/trigger/evaluator/factory.go)
+delivery [factory helpers](../../../../packages/syntrix/internal/trigger/evaluator/factory.go)
 carry storage, retry, and consumer-name settings, but that configuration mapping
-is bypassed by assembly. [The NATS consumer](../../../../internal/core/pubsub/nats/consumer.go)
+is bypassed by assembly. [The NATS consumer](../../../../packages/syntrix/internal/core/pubsub/nats/consumer.go)
 uses memory storage and the durable name `consumer` when those options are absent.
 Consequently, configured file storage and delivery identity do not reach the
 active distributed path. This conclusion is based on static call tracing.

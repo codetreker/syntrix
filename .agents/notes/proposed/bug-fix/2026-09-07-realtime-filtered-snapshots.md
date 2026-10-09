@@ -15,7 +15,7 @@ errors, not a successful prefix. The
 owns these consumer guarantees; predicate matching and snapshot/live handoff
 remain unresolved.
 
-In [Streamer processing](../../../../internal/streamer/service.go),
+In [Streamer processing](../../../../packages/syntrix/internal/streamer/service.go),
 `doc := helper.FlattenStorageDocument(event.Document)` supplies only the current
 document to subscription matching. A snapshot row changing from `status=pending`
 to `status=completed` stops matching without a removal notification, leaving

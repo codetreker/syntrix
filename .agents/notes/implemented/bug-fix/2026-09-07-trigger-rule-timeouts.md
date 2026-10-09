@@ -11,12 +11,12 @@ configured values before delivery. The HTTP worker also imposed an implicit
 
 ## Decision
 
-[Rule validation](../../../../internal/trigger/evaluator/validation.go) rejects
+[Rule validation](../../../../packages/syntrix/internal/trigger/evaluator/validation.go) rejects
 negative timeouts before a new rule set replaces the active set. Malformed or
 out-of-range duration strings remain configuration parsing errors; no additional
 upper bound is imposed. Positive values are accepted unchanged.
 
-[Task construction](../../../../internal/trigger/evaluator/service.go) captures
+[Task construction](../../../../packages/syntrix/internal/trigger/evaluator/service.go) captures
 the effective timeout into each delivery task:
 
 | Rule timeout | Task timeout |
@@ -30,14 +30,14 @@ rule. Retry deliveries retain that captured value; later rule updates affect
 newly created tasks. The 30-second default is explicit and replaces the earlier
 10-second value.
 
-[The consumer](../../../../internal/trigger/delivery/consumer.go) starts a fresh
+[The consumer](../../../../packages/syntrix/internal/trigger/delivery/consumer.go) starts a fresh
 attempt context after queue waiting, immediately before calling the worker.
 Its deadline covers request preparation, secret resolution, system token
 signing, and HTTP work together. Retries each receive a fresh budget from the
 same task timeout. An earlier parent cancellation or deadline still applies.
 A zero timeout in an existing task uses the same 30-second default.
 
-[The worker](../../../../internal/trigger/delivery/worker/worker.go) uses the
+[The worker](../../../../packages/syntrix/internal/trigger/delivery/worker/worker.go) uses the
 caller's context for its execution deadline. Zero `HTTPClientOptions.Timeout`
 adds no total HTTP client cap; an explicitly positive option retains its cap.
 The implicit 5-second fallback and its constant are removed. Direct worker

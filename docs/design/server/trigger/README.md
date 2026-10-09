@@ -41,7 +41,7 @@ Consumes tasks and executes HTTP webhook deliveries.
 
 ## Implementation
 
-- Evaluator: `internal/trigger/evaluator/`
-- Delivery: `internal/trigger/delivery/`
-- Watcher: `internal/trigger/watcher/`
-- Worker: `internal/trigger/worker/`
+- Evaluator: `packages/syntrix/internal/trigger/evaluator/`
+- Delivery: `packages/syntrix/internal/trigger/delivery/`
+- Watcher: `packages/syntrix/internal/trigger/watcher/`
+- Worker: `packages/syntrix/internal/trigger/worker/`

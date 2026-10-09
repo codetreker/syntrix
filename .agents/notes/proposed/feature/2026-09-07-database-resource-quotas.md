@@ -4,14 +4,14 @@ Status: proposed
 
 ## Problem
 
-The [database model](../../../../internal/core/database/types.go) stores
+The [database model](../../../../packages/syntrix/internal/core/database/types.go) stores
 `MaxDocuments` and `MaxStorageBytes`, and metadata APIs persist those settings.
 The [integration design](../../../../docs/design/server/core/database/04.integration.md)
 explicitly labels resource enforcement as future work. Production references to
 these fields are confined to metadata handling. By contrast,
-[database creation](../../../../internal/core/database/service.go) already checks
+[database creation](../../../../packages/syntrix/internal/core/database/service.go) already checks
 `MaxDatabasesPerUser`, and the
-[deletion worker](../../../../internal/core/database/deletion_worker.go) performs
+[deletion worker](../../../../packages/syntrix/internal/core/database/deletion_worker.go) performs
 background cleanup. The missing capability is document/storage admission within
 each database, not all quota or lifecycle handling.
 

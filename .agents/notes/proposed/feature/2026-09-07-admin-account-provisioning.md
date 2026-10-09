@@ -6,10 +6,10 @@ Status: proposed
 
 The [console design](../../../../docs/design/server/console/01.console.md) calls for
 administrators to create users and rotate passwords. The
-[REST routes](../../../../internal/gateway/rest/handler.go) currently expose
+[REST routes](../../../../packages/syntrix/internal/gateway/rest/handler.go) currently expose
 `GET /admin/users` and `PATCH /admin/users/{id}`; the latter changes roles,
 database administration, and disabled state through
-[admin handlers](../../../../internal/gateway/rest/handler_admin.go). Public signup
+[admin handlers](../../../../packages/syntrix/internal/gateway/rest/handler_admin.go). Public signup
 already creates accounts. What is missing is an authorized administrative
 creation/credential-recovery operation with separate actor and target semantics.
 

@@ -6,10 +6,10 @@ Status: proposed
 
 The deployment includes Prometheus and Grafana configuration, but the application
 does not expose a metrics handler. The [metrics design](../../../../docs/design/monitor/003.metrics_collection.md)
-describes collection across services. Current [trigger counters](../../../../internal/trigger/types/metrics.go#L28)
+describes collection across services. Current [trigger counters](../../../../packages/syntrix/internal/trigger/types/metrics.go#L28)
 only execute `_ = database`; normal factories select that no-op implementation.
 Puller registers collectors, while many events never update them. Shared
-[gRPC interceptors](../../../../internal/server/middleware.go#L255) contain only
+[gRPC interceptors](../../../../packages/syntrix/internal/server/middleware.go#L255) contain only
 `recoveryUnaryInterceptor` and `loggingUnaryInterceptor`. The proposed tracing
 pipeline has no corresponding runtime instrumentation.
 

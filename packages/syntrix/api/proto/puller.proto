@@ -1,0 +1,100 @@
+syntax = "proto3";
+
+package syntrix.puller.v1;
+
+option go_package = "github.com/codetreker/syntrix/api/gen/puller/v1;pullerv1";
+
+// PullerService provides access to the merged event stream from all backends.
+// Consumers subscribe to events and manage their own progress.
+service PullerService {
+  // Subscribe to merged event stream from all backends.
+  // Events are delivered in order within each backend, merged across backends.
+  rpc Subscribe(SubscribeRequest) returns (stream PullerEvent);
+  // Requires quiesced writers and explicitly reset buffers.
+  rpc BootstrapBoundary(BootstrapBoundaryRequest) returns (BoundaryResponse);
+  // Rejects a different buffer lineage or unavailable replay history.
+  rpc ValidateBoundary(ValidateBoundaryRequest) returns (BoundaryResponse);
+}
+
+message BootstrapBoundaryRequest {}
+message ValidateBoundaryRequest { string progress = 1; }
+message BoundaryResponse { string progress = 1; }
+
+// SubscribeRequest configures a subscription to the event stream.
+message SubscribeRequest {
+  // Consumer identifier for logging/monitoring only.
+  // Does not affect event delivery.
+  string consumer_id = 1;
+
+  // Opaque progress marker from the last processed event.
+  // Resume includes the marker's complete timestamp group, so boundary events
+  // may repeat. Empty starts an ordinary subscription at the current head;
+  // verified subscriptions require a valid boundary marker.
+  string after = 2;
+
+  // Enable coalescing during retained replay. Multiple events for the same
+  // document may be merged within that replay.
+  bool coalesce_on_catch_up = 3;
+  // Require source readiness and verified replay; receive a ready control frame.
+  bool require_ready = 4;
+}
+
+// PullerEvent is the top-level wrapper for events emitted by the Puller service.
+message PullerEvent {
+  // The actual change event.
+  ChangeEvent change_event = 1;
+
+  // Current progress marker (opaque string).
+  // Consumer should save this value and pass it as 'after'
+  // when reconnecting to resume from this position.
+  string progress = 2;
+  // Set once after registration and validated replay have reached live mode.
+  bool ready = 3;
+}
+
+// ChangeEvent represents a normalized change event from the database.
+message ChangeEvent {
+  // Unique event identifier.
+  string event_id = 1;
+
+  // Database identifier.
+  string database = 2;
+
+  // Mongo collection name.
+  string mgo_coll = 3;
+
+  // Mongo document identifier.
+  string mgo_doc_id = 4;
+
+  // Operation type: "insert", "update", "replace", or "delete".
+  string op_type = 5;
+
+  // Full document after the change (typed BSON encoded storage.StoredDoc).
+  // Empty for delete operations.
+  bytes full_doc = 6;
+
+  // Description of update changes (typed BSON encoded).
+  // Only present for update operations.
+  bytes update_desc = 7;
+
+  // MongoDB cluster timestamp.
+  ClusterTime cluster_time = 8;
+
+  // Unix timestamp in milliseconds when the event was received.
+  int64 timestamp = 9;
+
+  // Transaction number if part of a transaction.
+  int64 txn_number = 10;
+
+  // Backend identifier.
+  string backend = 11;
+}
+
+// ClusterTime represents MongoDB cluster timestamp for ordering.
+message ClusterTime {
+  // Seconds since Unix epoch.
+  uint32 t = 1;
+
+  // Increment within the second (for ordering multiple events).
+  uint32 i = 2;
+}

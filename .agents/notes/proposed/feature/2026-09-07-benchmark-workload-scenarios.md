@@ -5,11 +5,11 @@ Status: proposed
 ## Problem
 
 The benchmark validates `crud`, `query`, `realtime`, and `mixed` in the
-[configuration loader](../../../../pkg/benchmark/config/loader.go), but its
-[CLI dispatch](../../../../cmd/syntrix-benchmark/main.go) only constructs a
+[configuration loader](../../../../packages/syntrix/pkg/benchmark/config/loader.go), but its
+[CLI dispatch](../../../../packages/syntrix/cmd/syntrix-benchmark/main.go) only constructs a
 scenario for `case "crud", "":`. The existing CRUD scenario, HTTP query client,
 runner, and metrics collector are functional implementations. The missing work
-is scenario integration: the [client](../../../../pkg/benchmark/client/http.go)
+is scenario integration: the [client](../../../../packages/syntrix/pkg/benchmark/client/http.go)
 returns `"realtime subscriptions not yet implemented in HTTP client"` from
 Subscribe and Unsubscribe. This finding follows static call-path inspection.
 

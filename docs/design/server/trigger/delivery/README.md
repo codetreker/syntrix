@@ -120,10 +120,10 @@ See: [03.graceful_shutdown.md](03.graceful_shutdown.md)
 
 ## Implementation
 
-See: `internal/trigger/delivery/`
+See: `packages/syntrix/internal/trigger/delivery/`
 - `service.go` - Service interface and implementation
 - `factory.go` - Factory function
 
-See: `internal/trigger/worker/`
+See: `packages/syntrix/internal/trigger/worker/`
 - `worker.go` - HTTP delivery worker
 - `interfaces.go` - Worker interfaces

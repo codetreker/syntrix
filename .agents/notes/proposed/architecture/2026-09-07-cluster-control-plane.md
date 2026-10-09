@@ -6,8 +6,8 @@ Status: proposed
 
 The [control-plane discussion](../../../../docs/design/server/console/02.control_plane.md)
 is explicitly a placeholder listing node discovery, health, and dynamic
-configuration. The [service manager](../../../../internal/services/manager_start.go)
-starts configured services, while [service configuration](../../../../internal/services/config/config.go)
+configuration. The [service manager](../../../../packages/syntrix/internal/services/manager_start.go)
+starts configured services, while [service configuration](../../../../packages/syntrix/internal/services/config/config.go)
 describes local/remote placement. Static inspection does not establish a cluster
 membership or configuration-reconciliation service. This is planned operating
 capability, not evidence that configured standalone or distributed startup fails.

@@ -10,7 +10,7 @@ the entire pending queue. Neither setting bounded the work its name described.
 
 ## Decision
 
-The existing [buffer writer](../../../../internal/puller/buffer/writer.go)
+The existing [buffer writer](../../../../packages/syntrix/internal/puller/buffer/writer.go)
 enforces both limits while retaining its pending/flushing queues and batcher.
 
 | Condition | Behavior |

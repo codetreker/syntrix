@@ -7,10 +7,10 @@ Status: proposed
 Horizontal consumer partitioning remains planned capability.
 [The existing design](../../../../docs/design/server/puller/future/001.shard-scaling.md)
 explicitly calls it a "future enhancement" and proposes per-subscription field
-hashing. [SubscribeRequest](../../../../api/proto/puller.proto) currently contains
+hashing. [SubscribeRequest](../../../../packages/syntrix/api/proto/puller.proto) currently contains
 consumer_id, after, coalesce_on_catch_up, and require_ready, with no shard
 configuration.
-The live [broadcast implementation](../../../../internal/puller/core/subscriber.go)
+The live [broadcast implementation](../../../../packages/syntrix/internal/puller/core/subscriber.go)
 sends each event to every subscription. Adding replicas alone therefore does
 not partition the downstream workload.
 

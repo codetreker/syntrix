@@ -6,11 +6,11 @@ Status: proposed
 
 The [realtime design](../../../../docs/design/server/gateway/realtime_watching.md)
 intends SSE and WebSocket to share authentication and subscription semantics.
-The transports exist, but [the SSE handler](../../../../internal/gateway/realtime/client.go)
+The transports exist, but [the SSE handler](../../../../packages/syntrix/internal/gateway/realtime/client.go)
 registers without filters and includes document data. It has no snapshot option.
-[SDK SSE options](../../../../sdk/syntrix-client-ts/src/replication/realtime-sse.ts)
+[SDK SSE options](../../../../packages/sdks/client-ts/src/replication/realtime-sse.ts)
 expose only collection and an injected fetch implementation, while
-[ordinary server WebSocket options](../../../../internal/gateway/realtime/protocol.go)
+[ordinary server WebSocket options](../../../../packages/syntrix/internal/gateway/realtime/protocol.go)
 include a query, `includeData`, and `sendSnapshot`. SDK 的公开 WS client 已移除；此提案
 保留普通协议的 SSE parity 目标，不将私有 replica-data 当作普通 WS 的兼容包装。
 

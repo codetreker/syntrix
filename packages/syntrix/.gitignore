@@ -1,0 +1,45 @@
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+/syntrix
+/puller
+/syntrix-cli
+/bin/
+
+# Test binary
+*.test
+*.pem
+
+# Output of go coverage tool
+*.out
+test_coverage.html
+
+# Dependency directories
+vendor/
+node_modules/
+
+# IDE
+.idea/
+
+# Environment files
+.env
+
+# Config
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local running cache
+.syntrix/
+
+# Temporary files
+/logs
+/docs/plans
+/docs/_drafts/

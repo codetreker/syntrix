@@ -7,10 +7,10 @@ Status: implemented
 Local and gRPC subscriptions both require retained catch-up, live delivery,
 identity-aware boundary replay, verified readiness, and overflow recovery. The
 transport adapters previously implemented those state transitions separately in
-[`Puller.subscribe`](../../../../internal/puller/core/puller.go) and
-[`Server.Subscribe`](../../../../internal/puller/grpc/server.go).
+[`Puller.subscribe`](../../../../packages/syntrix/internal/puller/core/puller.go) and
+[`Server.Subscribe`](../../../../packages/syntrix/internal/puller/grpc/server.go).
 
-The shared [`Subscriber`](../../../../internal/puller/core/subscriber.go) already
+The shared [`Subscriber`](../../../../packages/syntrix/internal/puller/core/subscriber.go) already
 owned delivery progress, boundary-group identities, bounded live admission, and
 the latched recovery handoff. Duplicating replay startup, iterator cleanup,
 overflow-during-replay handling, stale-queue drainage, and the catch-up-to-live
@@ -25,7 +25,7 @@ adapter-specific contracts.
 
 ## Decision
 
-[`RunSubscription`](../../../../internal/puller/core/subscription.go) is the
+[`RunSubscription`](../../../../packages/syntrix/internal/puller/core/subscription.go) is the
 transport-neutral owner of replay, live delivery, recovery, readiness, and
 maintenance transitions. Local and gRPC adapters supply replay opening,
 successful delivery, readiness publication, periodic maintenance, live-entry

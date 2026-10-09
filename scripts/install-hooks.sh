@@ -7,7 +7,7 @@ HOOKS_DIR="$PROJECT_ROOT/git-hooks"
 
 # Set git to use our hooks directory
 echo "Setting git hooks path to $HOOKS_DIR..."
-git config core.hooksPath "$HOOKS_DIR"
+git -C "$PROJECT_ROOT" config core.hooksPath "$HOOKS_DIR"
 
 # Ensure hooks are executable
 chmod +x "$HOOKS_DIR/pre-commit"

@@ -1,13 +1,13 @@
 # TypeScript Client SDK Reference
 
-The `@syntrix/client` package provides a type-safe interface for Syntrix. It includes `SyntrixClient` for external apps and `TriggerClient` for trigger workers.
+The `@syntrixbase/client` package provides a type-safe interface for Syntrix. It includes `SyntrixClient` for external apps and `TriggerClient` for trigger workers.
 
 ## Installation
 
 ```bash
-npm install @syntrix/client
+npm install @syntrixbase/client
 # or
-bun add @syntrix/client
+bun add @syntrixbase/client
 ```
 
 ## 1. SyntrixClient (Standard)
@@ -15,7 +15,7 @@ bun add @syntrix/client
 Use this client in external applications (Web, Mobile, Backend). Multi-database auth requires a database ID during login.
 
 ```typescript
-import { SyntrixClient } from '@syntrix/client';
+import { SyntrixClient } from '@syntrixbase/client';
 
 const client = new SyntrixClient('<URL_ENDPOINT>', {
   database: 'my-database',
@@ -127,7 +127,7 @@ Run this from a browser application with a configured endpoint and JWT. The
 server must provide the indexes required by the source filter/window.
 
 ```typescript
-import { SyntrixClient, type ReplicaDocument } from '@syntrix/client';
+import { SyntrixClient, type ReplicaDocument } from '@syntrixbase/client';
 
 type Task = {
   projectId: string;
@@ -319,7 +319,7 @@ explicit resume. Adopt/merge independently reread current; an old issue, token o
 physical epoch fails without overwriting later edits.
 
 ```typescript
-import type { ReplicaDatabase } from '@syntrix/client';
+import type { ReplicaDatabase } from '@syntrixbase/client';
 
 export const adoptInspectedServerState = async (
   replica: ReplicaDatabase,
@@ -375,7 +375,7 @@ An empty configuration opens only the named local database handle, so historical
 aliases can be removed without creating or starting another source:
 
 ```typescript
-import type { SyntrixClient } from '@syntrix/client';
+import type { SyntrixClient } from '@syntrixbase/client';
 
 export const removeHistoricalAlias = async (
   client: SyntrixClient,
@@ -563,7 +563,7 @@ transport ownership.
 Use only within Syntrix Trigger Workers. It requires the `preIssuedToken` from the webhook payload.
 
 ```typescript
-import { TriggerHandler, WebhookPayload } from '@syntrix/client';
+import { TriggerHandler, WebhookPayload } from '@syntrixbase/client';
 
 const payload = req.body as WebhookPayload;
 const handler = new TriggerHandler(payload, process.env.SYNTRIX_API_URL);

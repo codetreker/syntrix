@@ -18,9 +18,9 @@ history or scope differs from the caller's saved state.
 
 ## Decision
 
-The [DocumentStore API](../../../../internal/core/storage/types/types.go) exposes
+The [DocumentStore API](../../../../packages/syntrix/internal/core/storage/types/types.go) exposes
 `Watch(ctx, database, collection, after, opts) (WatchStream, error)`. Its
-[shared Watch types](../../../../internal/core/storage/types/watch.go) carry an
+[shared Watch types](../../../../packages/syntrix/internal/core/storage/types/watch.go) carry an
 opaque string `WatchCheckpoint`, an initial checkpoint, ordered
 `WatchFrame` results, and terminal errors. The
 [Store design](../../../../docs/design/server/core/storage/03.stores.md#2-document-watch)
@@ -87,8 +87,8 @@ establish its identity and an initial server position. It surfaces metadata,
 change-stream, and collection-creation permission errors. A resumed missing or
 replaced source returns `WatchSourceMismatch`.
 
-The [routing facade](../../../../internal/core/storage/router/routed_store.go)
-uses `OpWatch`. The [split router](../../../../internal/core/storage/router/split.go)
+The [routing facade](../../../../packages/syntrix/internal/core/storage/router/routed_store.go)
+uses `OpWatch`. The [split router](../../../../packages/syntrix/internal/core/storage/router/split.go)
 sends this operation to the primary while ordinary `OpRead` operations retain
 the replica. Source/scope mismatches and unavailable history propagate to the
 caller; Store and router never discard the checkpoint and open a fresh stream
@@ -186,7 +186,7 @@ guarantee historical snapshots.
 
 This note owns the implemented Store API, Mongo adapter, routing, and associated
 validation. Puller ingestion still obtains Mongo clients through
-[`StorageFactory.GetMongoClient`](../../../../internal/services/manager_init.go)
+[`StorageFactory.GetMongoClient`](../../../../packages/syntrix/internal/services/manager_init.go)
 and bypasses `DocumentStore.Watch`. Its ingestion, batching, caches, pending
 writes, persisted buffers, and local/gRPC delivery are unchanged by this
 contract. Puller capture and delivery remain separate from Store Watch.

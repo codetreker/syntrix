@@ -174,13 +174,11 @@ type Client interface {
 ### 2.3 Directory Structure
 
 ```
-tests/benchmark/
-├── DESIGN.md                     # This document
-├── README.md                     # User guide and quick start
+packages/syntrix/
 ├── cmd/
 │   └── syntrix-benchmark/
 │       └── main.go               # CLI entry point
-├── pkg/
+├── pkg/benchmark/
 │   ├── config/
 │   │   ├── config.go             # Configuration structs
 │   │   ├── loader.go             # Config file loading
@@ -552,7 +550,8 @@ Output shows:
 
 ```bash
 # Build the benchmark tool
-make build-benchmark
+make -C packages/syntrix build-benchmark
+cd packages/syntrix
 
 # Run a simple CRUD benchmark
 ./bin/syntrix-benchmark run \
@@ -581,6 +580,9 @@ on:
 jobs:
   benchmark:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packages/syntrix
     steps:
       - uses: actions/checkout@v3
 
@@ -611,8 +613,8 @@ package main
 
 import (
     "context"
-    "github.com/syntrixbase/syntrix/tests/benchmark/pkg/scenario"
-    "github.com/syntrixbase/syntrix/tests/benchmark/pkg/client"
+    "github.com/codetreker/syntrix/pkg/benchmark/scenario"
+    "github.com/codetreker/syntrix/pkg/benchmark/client"
 )
 
 // CustomScenario implements a custom benchmark scenario
@@ -682,12 +684,12 @@ These are preliminary targets to validate system design:
 5. **Should benchmark tool reuse `tests/integration` helpers?**
    - Code reuse is good, but introduces coupling
    - Integration test helpers may change frequently
-   - **Decision**: Extract common utilities to `internal/testutil`, shared by both integration and benchmark
+   - **Decision**: Extract common utilities to `packages/syntrix/internal/testutil`, shared by both integration and benchmark
 
 ## 10. References
 
-- [Syntrix Architecture](../../docs/architecture.md)
-- [Integration Tests](../integration/)
+- [Syntrix Architecture](../architecture.md)
+- [Integration Tests](../../packages/syntrix/tests/integration/)
 - [MongoDB Performance Best Practices](https://www.mongodb.com/docs/manual/administration/analyzing-mongodb-performance/)
 - [Load Testing Best Practices](https://grafana.com/blog/2024/01/30/load-testing-best-practices/)
 

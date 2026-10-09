@@ -6,7 +6,7 @@ Status: proposed
 
 The [benchmark guide](../../../../docs/benchmark/README.md) advertises
 `syntrix-benchmark compare results/run1.json results/run2.json`. The
-[command dispatcher](../../../../cmd/syntrix-benchmark/main.go) implements only
+[command dispatcher](../../../../packages/syntrix/cmd/syntrix-benchmark/main.go) implements only
 run, version, and help. The [design](../../../../docs/benchmark/DESIGN.md) calls
 for throughput deltas, percentile latency changes, error-rate changes, and
 side-by-side charts. There is no command connecting stored results to that

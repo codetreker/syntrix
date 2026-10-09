@@ -5,19 +5,19 @@ Status: rejected - Requires cache-owned consumer progress and pre-publication co
 ## Problem
 
 An event can reach consumers before its durable write succeeds. In
-[Buffer.Write](../../../../internal/puller/buffer/writer.go#L51),
+[Buffer.Write](../../../../packages/syntrix/internal/puller/buffer/writer.go#L51),
 `b.pending = append(b.pending, req)` precedes a successful return. The background
 batcher later calls `batch.Commit(pebble.Sync)`, while
-[ingestion](../../../../internal/puller/core/puller.go#L382) immediately invokes
+[ingestion](../../../../packages/syntrix/internal/puller/core/puller.go#L382) immediately invokes
 `p.invokeHandlerWithBackpressure(ctx, backend, evt)` after Write returns.
-[ScanFrom](../../../../internal/puller/buffer/reader.go#L66) also includes a
+[ScanFrom](../../../../packages/syntrix/internal/puller/buffer/reader.go#L66) also includes a
 snapshot of pending writes. Static inspection shows that neither publication
 path establishes the durable premise required by overflow replay.
 
 Replay ordering also lacks an ingestion position. The
-[buffer key](../../../../internal/puller/events/types.go#L124) uses
+[buffer key](../../../../packages/syntrix/internal/puller/events/types.go#L124) uses
 `FormatBufferKey(e.ClusterTime, e.EventID)`, while
-[event IDs](../../../../internal/puller/normalizer/normalizer.go) contain a hash.
+[event IDs](../../../../packages/syntrix/internal/puller/normalizer/normalizer.go) contain a hash.
 A later event with the same timestamp and a smaller hash sorts behind an already
 saved replay cursor and can be excluded after restart.
 

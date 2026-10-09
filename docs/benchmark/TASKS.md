@@ -321,16 +321,16 @@ Phase 3 Production:
 
 ```bash
 # Run benchmark tests
-make test-benchmark
+make -C packages/syntrix test-benchmark
 
 # Build benchmark binary
-make build-benchmark
+make -C packages/syntrix build-benchmark
 
-# Run linter
-make lint
+# Check Go formatting
+.github/workflows/scripts/check-fmt.sh
 
 # Check test coverage
-make coverage
+make -C packages/syntrix coverage
 ```
 
 ---

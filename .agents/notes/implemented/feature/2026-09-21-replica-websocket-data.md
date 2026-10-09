@@ -123,7 +123,7 @@ generation 只围定注册所有权，不是 Store 数据位置。此扩展不�
 不能复用完整产物；串行执行会共同消耗测试预算。既有 `Syntrix Server (Go)`
 检查汇总两个结果，只有全部成功才通过，失败、取消和跳过均阻止通过。
 保留既有 race、函数/包/总覆盖率及 critical 未覆盖代码块检查；本地验证使用
-`CI=true make coverage` 执行同样的门槛。
+`CI=true make -C packages/syntrix coverage` 执行同样的门槛。
 
 ## Alternatives
 

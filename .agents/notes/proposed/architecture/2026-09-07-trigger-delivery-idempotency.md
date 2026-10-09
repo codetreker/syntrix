@@ -6,9 +6,9 @@ Status: proposed
 
 The [publisher design](../../../../docs/design/server/trigger/evaluator/03.publisher.md)
 calls for an idempotency key derived from original document and event identity.
-[The active publisher](../../../../internal/trigger/evaluator/publisher.go) sends
+[The active publisher](../../../../packages/syntrix/internal/trigger/evaluator/publisher.go) sends
 only subject and serialized task bytes, while
-[the worker](../../../../internal/trigger/delivery/worker/worker.go) sends each
+[the worker](../../../../packages/syntrix/internal/trigger/delivery/worker/worker.go) sends each
 received task without a stable idempotency header or delivery ledger. Broker
 redelivery, replay, or a lost acknowledgement can repeat a webhook effect.
 Memory queue acceptance also cannot preserve a task across process restart.

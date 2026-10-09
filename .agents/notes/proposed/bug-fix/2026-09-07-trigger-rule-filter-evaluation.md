@@ -4,8 +4,8 @@ Status: proposed
 
 ## Problem
 
-[Trigger](../../../../internal/trigger/types/types.go) exposes `Filters []string`,
-but [the CEL evaluator](../../../../internal/trigger/evaluator/cel/evaluator.go)
+[Trigger](../../../../packages/syntrix/internal/trigger/types/types.go) exposes `Filters []string`,
+but [the CEL evaluator](../../../../packages/syntrix/internal/trigger/evaluator/cel/evaluator.go)
 checks database, event type, collection, and `Condition` only. A rule containing
 filters can therefore publish tasks without applying them. Repository inspection
 finds no defined syntax or combination semantics for this string list; the

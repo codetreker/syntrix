@@ -10,7 +10,7 @@ description: Identifies redundant or duplicate test cases, removes them while en
 
 1. **Run initial coverage baseline**:
    ```bash
-   make coverage
+   make -C packages/syntrix coverage
    ```
    Record the initial coverage percentage as the baseline. Coverage must not drop below this.
 
@@ -47,7 +47,7 @@ For each test file, perform the following steps:
 
 5. **Verify coverage after each file**:
    ```bash
-   make coverage
+   make -C packages/syntrix coverage
    ```
    - If coverage dropped or CRITICAL issue reported: **immediately revert the changes** and try a more conservative approach
    - If coverage is maintained or improved: proceed to commit
@@ -91,7 +91,7 @@ After processing all files, provide a summary:
 ### Safety Rules
 - **NEVER reduce test coverage** - this is the primary constraint
 - Process ONE file at a time
-- Run `make coverage` after EVERY file modification
+- Run `make -C packages/syntrix coverage` after EVERY file modification
 - If coverage drops, immediately revert and move to the next file
 - When in doubt, keep the test
 - Create atomic commits (one file per commit)
@@ -116,7 +116,7 @@ After processing all files, provide a summary:
 
 ### Example 1: Removing Duplicate Test
 
-From `internal/streamer/remote_stream_test.go`:
+From `packages/syntrix/internal/streamer/remote_stream_test.go`:
 
 **Before** (two tests with identical logic):
 ```go
@@ -188,7 +188,7 @@ func TestRemoteStream_Recv_EventDelivery(t *testing.T) {
 
 ### Example 2: Removing Test Subsumed by Another
 
-From `internal/streamer/grpc_adapter_test.go`:
+From `packages/syntrix/internal/streamer/grpc_adapter_test.go`:
 
 **Before** (two tests, one is subset of the other):
 ```go
@@ -251,7 +251,7 @@ func TestGRPCAdapter_Subscribe_ManagerError(t *testing.T) {
 
 ### Example 3: Merging Idempotent Check into Existing Test
 
-From `internal/streamer/remote_stream_test.go`:
+From `packages/syntrix/internal/streamer/remote_stream_test.go`:
 
 **Before** (two separate tests):
 ```go

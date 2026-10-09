@@ -6,7 +6,10 @@ $hooksDir = Join-Path $projectRoot 'git-hooks'
 
 # Set git to use our hooks directory
 Write-Output "Setting git hooks path to $hooksDir..."
-git config core.hooksPath $hooksDir
+git -C $projectRoot config core.hooksPath $hooksDir
+if ($LASTEXITCODE -ne 0) {
+    throw "Failed to configure Git hooks for $projectRoot"
+}
 
 Write-Output "Git hooks configured successfully!"
 Write-Output "Hooks path: $hooksDir"

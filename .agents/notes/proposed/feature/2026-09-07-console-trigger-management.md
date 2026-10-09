@@ -4,7 +4,7 @@ Status: proposed
 
 ## Problem
 
-The [Triggers page](../../../../console/src/pages/TriggersPage.tsx) contains only `Trigger rules management coming soon...`. The [console design](../../../../docs/design/server/console/01.console.md) calls for configuration inspection, execution history, manual tests, and error logs. The current [gateway routes](../../../../internal/gateway/rest/handler.go) expose trigger document operations, not a complete trigger administration API. This is an incomplete planned capability, established through static inspection.
+The [Triggers page](../../../../packages/console/src/pages/TriggersPage.tsx) contains only `Trigger rules management coming soon...`. The [console design](../../../../docs/design/server/console/01.console.md) calls for configuration inspection, execution history, manual tests, and error logs. The current [gateway routes](../../../../packages/syntrix/internal/gateway/rest/handler.go) expose trigger document operations, not a complete trigger administration API. This is an incomplete planned capability, established through static inspection.
 
 ## Proposal
 

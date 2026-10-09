@@ -32,9 +32,9 @@ available.
 
 | Path | Purpose |
 |---|---|
-| `cmd/`, `internal/`, `pkg/`, `api/` | Go services, shared code, and protocol definitions |
-| `sdk/syntrix-client-ts/` | TypeScript client SDK |
-| `console/`, `example/` | Web console and example applications |
+| `packages/syntrix/` | Go module, services, shared code, protocols, configuration, and integration tests |
+| `packages/sdks/client-ts/` | TypeScript client SDK |
+| `packages/console/`, `packages/examples/` | Web console and example applications |
 | `docs/design/` | Requirements, architecture, and design discussions |
 | `docs/reference/` | API and SDK behavior |
 | `docs/plans/` | Task execution plans |
@@ -92,8 +92,9 @@ contents or replace the existing planning directories.
 
 ## Validation and engineering preferences
 
-- Run tests after code changes. Run `make coverage` to evaluate coverage and
-  address gaps within the authorized task.
+- Run tests after code changes. Run `make -C packages/syntrix coverage` from the
+  repository root to evaluate Go coverage and address gaps within the authorized
+  task.
 - Ask "should I add more testing" when assessing testing needs. Keep tests
   robust without over-engineering them.
 - Add timeouts to tests or commands that may hang.

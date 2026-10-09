@@ -4,7 +4,7 @@ Status: proposed
 
 ## Problem
 
-Active references describe incompatible API generations. [The REST reference](../../../../docs/reference/api.md) documents `GET /api/v1/{path...}`, while [gateway registration](../../../../internal/gateway/rest/handler.go) uses database-scoped document routes. [The SDK reference](../../../../docs/reference/typescript_sdk.md) calls `client.login('username', 'password', 'my-database')`, but [SyntrixClient](../../../../sdk/syntrix-client-ts/src/clients/syntrix-client.ts) accepts two login arguments. [The SDK README](../../../../sdk/syntrix-client-ts/README.md) supplies token options at the constructor's top level, while the implementation requires a database and nested `auth` configuration. The [console README](../../../../console/README.md) remains a framework template. These static mismatches make documented entry points unreliable.
+Active references describe incompatible API generations. [The REST reference](../../../../docs/reference/api.md) documents `GET /api/v1/{path...}`, while [gateway registration](../../../../packages/syntrix/internal/gateway/rest/handler.go) uses database-scoped document routes. [The SDK reference](../../../../docs/reference/typescript_sdk.md) calls `client.login('username', 'password', 'my-database')`, but [SyntrixClient](../../../../packages/sdks/client-ts/src/clients/syntrix-client.ts) accepts two login arguments. [The SDK README](../../../../packages/sdks/client-ts/README.md) supplies token options at the constructor's top level, while the implementation requires a database and nested `auth` configuration. These static mismatches make documented entry points unreliable.
 
 ## Proposal
 

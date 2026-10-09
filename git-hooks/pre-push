@@ -1,6 +1,6 @@
 #!/bin/bash
 # Pre-push hook: Run coverage check and block push if critical issues found
-set -e
+set -euo pipefail
 
 echo "Running coverage check before push..."
 
@@ -8,14 +8,12 @@ echo "Running coverage check before push..."
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-cd "$PROJECT_ROOT"
-
-# Run coverage and capture output
-COVERAGE_OUTPUT=$(mktemp)
+mkdir -p "$PROJECT_ROOT/.tmp"
+COVERAGE_OUTPUT=$(mktemp "$PROJECT_ROOT/.tmp/pre-push-coverage.XXXXXX")
 trap 'rm -f "$COVERAGE_OUTPUT"' EXIT
 
 # Run make coverage and capture output
-if ! make coverage 2>&1 | tee "$COVERAGE_OUTPUT"; then
+if ! make -C "$PROJECT_ROOT/packages/syntrix" coverage 2>&1 | tee "$COVERAGE_OUTPUT"; then
     echo ""
     echo "Push rejected: Tests failed"
     exit 1

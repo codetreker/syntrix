@@ -5,8 +5,8 @@ Status: proposed
 ## Problem
 
 Warmup, Rampup, and operation Rate are represented in the
-[configuration types](../../../../pkg/benchmark/types/types.go), but the
-[runner](../../../../pkg/benchmark/runner/runner.go) immediately starts every
+[configuration types](../../../../packages/syntrix/pkg/benchmark/types/types.go), but the
+[runner](../../../../packages/syntrix/pkg/benchmark/runner/runner.go) immediately starts every
 worker and stops accepting operations using `time.AfterFunc(config.Duration, ...)`.
 Its loop applies no configured rate. The [design](../../../../docs/benchmark/DESIGN.md)
 requires warmup exclusion and gradual load growth. Consequently, accepted settings

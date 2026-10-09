@@ -5,7 +5,7 @@ Status: proposed
 ## Problem
 
 Operators can configure catch-up policies that do not govern subscriptions.
-[`Configuration`](../../../../internal/puller/config/puller.go) defines
+[`Configuration`](../../../../packages/syntrix/internal/puller/config/puller.go) defines
 `CatchUpThreshold` and `Consumer.CoalesceOnCatchUp`, but production usage stops
 at configuration initialization and validation. gRPC Subscribe passes the
 request's `coalesce_on_catch_up` value directly into its subscriber, and local

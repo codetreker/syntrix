@@ -4,12 +4,12 @@ Status: proposed
 
 ## Problem
 
-The public [service package](../../../../pkg/syntrix/service.go) declares an empty
+The public [service package](../../../../packages/syntrix/pkg/syntrix/service.go) declares an empty
 `type Service interface {}` and returns an empty implementation from NewService.
-Its [test](../../../../pkg/syntrix/service_test.go) only checks that the returned
+Its [test](../../../../packages/syntrix/pkg/syntrix/service_test.go) only checks that the returned
 value is non-nil. Repository import searches found no caller of this package.
-Meanwhile, the actual [server entry point](../../../../cmd/syntrix/main.go)
-constructs internal/services.Manager and invokes Init, Start, and Shutdown.
+Meanwhile, the actual [server entry point](../../../../packages/syntrix/cmd/syntrix/main.go)
+constructs packages/syntrix/internal/services.Manager and invokes Init, Start, and Shutdown.
 Server startup has an implementation; the unrelated public scaffold creates an
 unclear second service entry point without any usable contract.
 
