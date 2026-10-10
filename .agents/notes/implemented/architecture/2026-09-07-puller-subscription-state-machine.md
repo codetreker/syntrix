@@ -113,6 +113,11 @@ exclusion until they receive one.
   live event before closing the subscriber. Fixed delays cannot establish
   registration under concurrent test load. The test checks the cancellation
   status and removal from the subscriber registry after closure.
+- The shared runner's recovery test waits for recovered live entry before
+  canceling its context. A final Deliver callback can finish before replay ends;
+  cancellation during that interval legitimately suppresses the next live-entry
+  callback. A bounded callback barrier establishes the transition under test
+  while retaining event-order, Ready-once, live-entry-count, and cleanup assertions.
 - Iterator iteration and cleanup failures remain separately observable. This
   increases adapter responsibility because both errors may require reporting or
   logging even though only the primary failure determines the transport result.
