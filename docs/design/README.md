@@ -34,8 +34,9 @@ alternatives, trade-offs, and historical decisions belong in an
 
 Keep affected designs synchronized with implementation in the same change.
 Rewrite documents coherently and reconcile conflicting statements.
-Execution plans remain in `docs/plans/`, and the [task board](../tasks/BOARD.md)
-tracks work. Use [prose-standard](../../.agents/skills/prose-standard/SKILL.md)
+Local execution plans remain in the gitignored `docs/plans/` directory.
+Existing task reports retain validation history.
+Use [prose-standard](../../.agents/skills/prose-standard/SKILL.md)
 when editing prose and preserve the complete behavior being described.
 
 ## Instance Runtime Overview

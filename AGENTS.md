@@ -38,7 +38,7 @@ available.
 | `docs/design/` | Requirements, architecture, and design discussions |
 | `docs/reference/` | API and SDK behavior |
 | `docs/plans/` | Task execution plans |
-| `docs/tasks/` | Task tracking |
+| `docs/tasks/` | Retained task and validation reports |
 | `.agents/notes/` | Durable decisions, proposals, alternatives, and consequences |
 | `.agents/skills/` | Repository-local skills shared by agent tools |
 
@@ -83,9 +83,10 @@ decision-note requirement.
    owner and resolve supersession. Update current facts without rewriting the
    historical reason for an earlier decision.
 
-Plans describe execution, the task board tracks work, and notes preserve
-decisions. Link them when they describe the same work; do not duplicate their
-contents or replace the existing planning directories.
+Local plans describe execution, and notes preserve decisions. Existing task
+reports retain validation history; they are not a task-status board. Link the
+relevant records when they describe the same work without duplicating their
+contents or replacing the existing planning directories.
 
 ## Writing and documentation
 

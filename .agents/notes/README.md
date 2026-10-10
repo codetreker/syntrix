@@ -9,14 +9,14 @@ choice was made, the alternatives considered, and what the choice costs.
 |---|---|
 | `docs/design/` | Requirements and architecture; explain How and the Why needed to understand it |
 | `docs/reference/` | Observable API and SDK behavior |
-| `docs/plans/` | Execution steps for an authorized task |
-| `docs/tasks/` | Task status and ownership |
+| `docs/plans/` | Local, gitignored execution steps for an authorized task |
+| `docs/tasks/` | Retained task and validation reports |
 | `.agents/notes/` | Durable decisions, detailed alternatives, consequences, and conditions for reconsideration |
 
 Use the confirmed task and the relevant existing documents as requirements.
 Notes do not introduce a separate requirements hierarchy. Keep concise rationale
 beside the mechanism in design discussions, and link to the note for the full
-decision. A note does not replace an execution plan or task-board entry.
+decision. A note does not replace an execution plan or validation evidence.
 
 ## Paths and lifecycle
 

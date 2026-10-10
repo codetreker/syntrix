@@ -25,7 +25,8 @@ Add or restore prose when code, types, and structure do not communicate a requir
 |---|---|
 | `docs/design/` | Requirements, structure, component contracts, data flows, and costs appropriate to the document. Keep a concise Why alongside How and link to the durable decision note for full alternatives and rationale. Clearly distinguish delivered behavior from proposals. |
 | `docs/reference/` | Consumer-visible APIs, configuration, guarantees, limits, and failure behavior. Separate supported behavior from intended behavior. |
-| `docs/plans/`, `docs/tasks/` | Confirmed scope, remaining work, dependencies, and observable acceptance or completion evidence. Keep active status accurate. |
+| Local `docs/plans/` | Confirmed scope, remaining work, dependencies, and observable acceptance or completion evidence. Keep the execution plan accurate. |
+| Existing `docs/tasks/` reports | Retained task and validation history; preserve the recorded context and outcomes. |
 | README documents | Purpose, supported usage, operational prerequisites, and links to owning documentation. Preserve the local contract needed to use the component. |
 | `.agents/notes/` | Unique rationale, mechanisms, real alternatives, consequences, and named gaps. Active implemented notes keep current facts accurate while preserving historical decision context. |
 | Research and evidence documents | Resolvable sources, dates or revisions when material, methods, observed results, and the distinction between evidence and inference. Synchronize active documents; only explicit historical archives are frozen. |
