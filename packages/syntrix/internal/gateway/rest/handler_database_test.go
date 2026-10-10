@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/codetreker/syntrix/internal/core/database"
-	"github.com/codetreker/syntrix/internal/core/identity"
+	"github.com/codetreker/syntrix/internal/ctxkeys"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -188,10 +188,11 @@ func TestHandler_handleCreateDatabase(t *testing.T) {
 
 			body, _ := json.Marshal(tt.body)
 			req := httptest.NewRequest("POST", "/api/v1/databases", bytes.NewReader(body))
+			req.Header.Set("Authorization", "Bearer test")
 			req.Header.Set("Content-Type", "application/json")
 
 			// Add user context
-			ctx := context.WithValue(req.Context(), identity.ContextKeyUserID, "user-123")
+			ctx := context.WithValue(req.Context(), ctxkeys.KeyUserID, "user-123")
 			req = req.WithContext(ctx)
 
 			rec := httptest.NewRecorder()
@@ -289,7 +290,8 @@ func TestHandler_handleListDatabases(t *testing.T) {
 			h := newTestHandlerWithDB(mockService)
 
 			req := httptest.NewRequest("GET", "/api/v1/databases"+tt.query, nil)
-			ctx := context.WithValue(req.Context(), identity.ContextKeyUserID, "user-123")
+			req.Header.Set("Authorization", "Bearer test")
+			ctx := context.WithValue(req.Context(), ctxkeys.KeyUserID, "user-123")
 			req = req.WithContext(ctx)
 
 			rec := httptest.NewRecorder()
@@ -306,7 +308,8 @@ func TestHandler_handleListDatabases(t *testing.T) {
 		h := newTestHandlerWithDB(nil)
 
 		req := httptest.NewRequest("GET", "/api/v1/databases", nil)
-		ctx := context.WithValue(req.Context(), identity.ContextKeyUserID, "user-123")
+		req.Header.Set("Authorization", "Bearer test")
+		ctx := context.WithValue(req.Context(), ctxkeys.KeyUserID, "user-123")
 		req = req.WithContext(ctx)
 
 		rec := httptest.NewRecorder()
@@ -320,6 +323,7 @@ func TestHandler_handleListDatabases(t *testing.T) {
 		h := newTestHandlerWithDB(mockService)
 
 		req := httptest.NewRequest("GET", "/api/v1/databases", nil)
+		req.Header.Set("Authorization", "Bearer test")
 		// No user ID in context
 
 		rec := httptest.NewRecorder()
@@ -403,8 +407,9 @@ func TestHandler_handleGetDatabase(t *testing.T) {
 			h := newTestHandlerWithDB(mockService)
 
 			req := httptest.NewRequest("GET", "/api/v1/databases/"+tt.identifier, nil)
+			req.Header.Set("Authorization", "Bearer test")
 			req.SetPathValue("identifier", tt.identifier)
-			ctx := context.WithValue(req.Context(), identity.ContextKeyUserID, "user-123")
+			ctx := context.WithValue(req.Context(), ctxkeys.KeyUserID, "user-123")
 			req = req.WithContext(ctx)
 
 			rec := httptest.NewRecorder()
@@ -418,8 +423,9 @@ func TestHandler_handleGetDatabase(t *testing.T) {
 		h := newTestHandlerWithDB(nil)
 
 		req := httptest.NewRequest("GET", "/api/v1/databases/test-db", nil)
+		req.Header.Set("Authorization", "Bearer test")
 		req.SetPathValue("identifier", "test-db")
-		ctx := context.WithValue(req.Context(), identity.ContextKeyUserID, "user-123")
+		ctx := context.WithValue(req.Context(), ctxkeys.KeyUserID, "user-123")
 		req = req.WithContext(ctx)
 
 		rec := httptest.NewRecorder()
@@ -506,9 +512,10 @@ func TestHandler_handleUpdateDatabase(t *testing.T) {
 
 			body, _ := json.Marshal(tt.body)
 			req := httptest.NewRequest("PATCH", "/api/v1/databases/"+tt.identifier, bytes.NewReader(body))
+			req.Header.Set("Authorization", "Bearer test")
 			req.SetPathValue("identifier", tt.identifier)
 			req.Header.Set("Content-Type", "application/json")
-			ctx := context.WithValue(req.Context(), identity.ContextKeyUserID, "user-123")
+			ctx := context.WithValue(req.Context(), ctxkeys.KeyUserID, "user-123")
 			req = req.WithContext(ctx)
 
 			rec := httptest.NewRecorder()
@@ -523,9 +530,10 @@ func TestHandler_handleUpdateDatabase(t *testing.T) {
 
 		body, _ := json.Marshal(UpdateDatabaseRequest{DisplayName: ptr("Test")})
 		req := httptest.NewRequest("PATCH", "/api/v1/databases/test-db", bytes.NewReader(body))
+		req.Header.Set("Authorization", "Bearer test")
 		req.SetPathValue("identifier", "test-db")
 		req.Header.Set("Content-Type", "application/json")
-		ctx := context.WithValue(req.Context(), identity.ContextKeyUserID, "user-123")
+		ctx := context.WithValue(req.Context(), ctxkeys.KeyUserID, "user-123")
 		req = req.WithContext(ctx)
 
 		rec := httptest.NewRecorder()
@@ -623,8 +631,9 @@ func TestHandler_handleDeleteDatabase(t *testing.T) {
 			h := newTestHandlerWithDB(mockService)
 
 			req := httptest.NewRequest("DELETE", "/api/v1/databases/"+tt.identifier, nil)
+			req.Header.Set("Authorization", "Bearer test")
 			req.SetPathValue("identifier", tt.identifier)
-			ctx := context.WithValue(req.Context(), identity.ContextKeyUserID, "user-123")
+			ctx := context.WithValue(req.Context(), ctxkeys.KeyUserID, "user-123")
 			req = req.WithContext(ctx)
 
 			rec := httptest.NewRecorder()
@@ -638,8 +647,9 @@ func TestHandler_handleDeleteDatabase(t *testing.T) {
 		h := newTestHandlerWithDB(nil)
 
 		req := httptest.NewRequest("DELETE", "/api/v1/databases/test-db", nil)
+		req.Header.Set("Authorization", "Bearer test")
 		req.SetPathValue("identifier", "test-db")
-		ctx := context.WithValue(req.Context(), identity.ContextKeyUserID, "user-123")
+		ctx := context.WithValue(req.Context(), ctxkeys.KeyUserID, "user-123")
 		req = req.WithContext(ctx)
 
 		rec := httptest.NewRecorder()
@@ -737,6 +747,7 @@ func TestHandler_parseListOptions(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			req := httptest.NewRequest("GET", "/api/v1/databases"+tt.query, nil)
+			req.Header.Set("Authorization", "Bearer test")
 			opts := h.parseListOptions(req)
 
 			assert.Equal(t, tt.expectedLimit, opts.Limit)
@@ -751,7 +762,8 @@ func TestHandler_getUserID(t *testing.T) {
 
 	t.Run("user ID present", func(t *testing.T) {
 		req := httptest.NewRequest("GET", "/", nil)
-		ctx := context.WithValue(req.Context(), identity.ContextKeyUserID, "user-123")
+		req.Header.Set("Authorization", "Bearer test")
+		ctx := context.WithValue(req.Context(), ctxkeys.KeyUserID, "user-123")
 		req = req.WithContext(ctx)
 
 		userID := h.getUserID(req)
@@ -760,6 +772,7 @@ func TestHandler_getUserID(t *testing.T) {
 
 	t.Run("user ID missing", func(t *testing.T) {
 		req := httptest.NewRequest("GET", "/", nil)
+		req.Header.Set("Authorization", "Bearer test")
 		userID := h.getUserID(req)
 		assert.Equal(t, "", userID)
 	})
@@ -804,6 +817,7 @@ func TestHandler_withDatabaseValidation(t *testing.T) {
 		})
 
 		req := httptest.NewRequest("GET", "/test", nil)
+		req.Header.Set("Authorization", "Bearer test")
 		req.SetPathValue("database", "test-db")
 		rec := httptest.NewRecorder()
 
@@ -822,6 +836,7 @@ func TestHandler_withDatabaseValidation(t *testing.T) {
 		})
 
 		req := httptest.NewRequest("GET", "/test", nil)
+		req.Header.Set("Authorization", "Bearer test")
 		rec := httptest.NewRecorder()
 
 		handler.ServeHTTP(rec, req)

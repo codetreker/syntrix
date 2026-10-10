@@ -2,8 +2,6 @@ package authn
 
 import (
 	"context"
-	"net/http"
-	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -51,7 +49,7 @@ func TestSignUp_TableDriven(t *testing.T) {
 			}
 			svc, err := NewAuthService(cfg, mockStorage, mockStorage)
 			require.NoError(t, err)
-			authService := svc.(*AuthService)
+			authService := svc
 
 			if tc.mockSetup != nil {
 				tc.mockSetup(mockStorage)
@@ -212,7 +210,7 @@ func TestSignIn_TableDriven(t *testing.T) {
 			}
 			svc, err := NewAuthService(cfg, mockStorage, mockStorage)
 			require.NoError(t, err)
-			authService := svc.(*AuthService)
+			authService := svc
 
 			if tc.mockSetup != nil {
 				tc.mockSetup(mockStorage)
@@ -245,14 +243,14 @@ func TestRefresh_TableDriven(t *testing.T) {
 
 	tests := []struct {
 		name        string
-		setupToken  func(t *testing.T, svc Service, m *MockStorage) string
+		setupToken  func(t *testing.T, svc *AuthService, m *MockStorage) string
 		mockSetup   func(*MockStorage)
 		expectError bool
 		errorIs     error
 	}{
 		{
 			name: "Success",
-			setupToken: func(t *testing.T, svc Service, m *MockStorage) string {
+			setupToken: func(t *testing.T, svc *AuthService, m *MockStorage) string {
 				// Mock SignUp to get a token
 				m.On("GetUserByUsername", mock.Anything, "refreshuser").Return(nil, ErrUserNotFound).Once()
 				m.On("CreateUser", mock.Anything, mock.Anything).Return(nil).Once()
@@ -272,7 +270,7 @@ func TestRefresh_TableDriven(t *testing.T) {
 		},
 		{
 			name: "Invalid Token",
-			setupToken: func(t *testing.T, svc Service, m *MockStorage) string {
+			setupToken: func(t *testing.T, svc *AuthService, m *MockStorage) string {
 				return "invalid-token"
 			},
 			mockSetup:   func(m *MockStorage) {},
@@ -321,13 +319,13 @@ func TestLogout_TableDriven(t *testing.T) {
 
 	tests := []struct {
 		name        string
-		setupToken  func(t *testing.T, svc Service, m *MockStorage) string
+		setupToken  func(t *testing.T, svc *AuthService, m *MockStorage) string
 		mockSetup   func(*MockStorage)
 		expectError bool
 	}{
 		{
 			name: "Success",
-			setupToken: func(t *testing.T, svc Service, m *MockStorage) string {
+			setupToken: func(t *testing.T, svc *AuthService, m *MockStorage) string {
 				m.On("GetUserByUsername", mock.Anything, "logoutuser").Return(nil, ErrUserNotFound).Once()
 				m.On("CreateUser", mock.Anything, mock.Anything).Return(nil).Once()
 				resp, err := svc.SignUp(context.Background(), SignupRequest{
@@ -364,169 +362,6 @@ func TestLogout_TableDriven(t *testing.T) {
 			} else {
 				assert.NoError(t, err)
 			}
-		})
-	}
-}
-
-func TestMiddleware_TableDriven(t *testing.T) {
-	t.Parallel()
-	cfg := config.AuthNConfig{
-		PrivateKeyFile:  getTestKeyPath(t),
-		AccessTokenTTL:  15 * time.Minute,
-		RefreshTokenTTL: 24 * time.Hour,
-	}
-
-	tests := []struct {
-		name           string
-		setupAuth      func(t *testing.T, svc Service, m *MockStorage) string
-		headerValue    string
-		expectedStatus int
-	}{
-		{
-			name: "Valid Token",
-			setupAuth: func(t *testing.T, svc Service, m *MockStorage) string {
-				m.On("GetUserByUsername", mock.Anything, "mwuser").Return(nil, ErrUserNotFound).Once()
-				m.On("CreateUser", mock.Anything, mock.Anything).Return(nil).Once()
-				resp, err := svc.SignUp(context.Background(), SignupRequest{
-					Username: "mwuser", Password: "Password12345!",
-				})
-				require.NoError(t, err)
-				return resp.AccessToken
-			},
-			expectedStatus: http.StatusOK,
-		},
-		{
-			name: "Missing Header",
-			setupAuth: func(t *testing.T, svc Service, m *MockStorage) string {
-				return ""
-			},
-			headerValue:    "",
-			expectedStatus: http.StatusUnauthorized,
-		},
-		{
-			name: "Invalid Format",
-			setupAuth: func(t *testing.T, svc Service, m *MockStorage) string {
-				return ""
-			},
-			headerValue:    "InvalidFormat",
-			expectedStatus: http.StatusUnauthorized,
-		},
-	}
-
-	for _, tt := range tests {
-		tt := tt
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			mockStorage := new(MockStorage)
-			// Mock IsRevoked for Middleware check
-			// Note: Middleware calls ValidateToken which checks signature.
-			// It doesn't call IsRevoked unless we add that check in Middleware (which is not in the code I read).
-			// Wait, let me check Middleware code again.
-			// It calls s.tokenService.ValidateToken(tokenString).
-			// It does NOT call IsRevoked.
-
-			svc, err := NewAuthService(cfg, mockStorage, mockStorage)
-			require.NoError(t, err)
-
-			token := tt.setupAuth(t, svc, mockStorage)
-
-			handler := svc.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				w.WriteHeader(http.StatusOK)
-			}))
-
-			req := httptest.NewRequest("GET", "/", nil)
-			if tt.headerValue != "" {
-				req.Header.Set("Authorization", tt.headerValue)
-			} else if token != "" {
-				req.Header.Set("Authorization", "Bearer "+token)
-			}
-
-			w := httptest.NewRecorder()
-			handler.ServeHTTP(w, req)
-
-			assert.Equal(t, tt.expectedStatus, w.Code)
-		})
-	}
-}
-
-func TestMiddlewareOptional_TableDriven(t *testing.T) {
-	t.Parallel()
-	cfg := config.AuthNConfig{
-		PrivateKeyFile:  getTestKeyPath(t),
-		AccessTokenTTL:  15 * time.Minute,
-		RefreshTokenTTL: 24 * time.Hour,
-	}
-
-	tests := []struct {
-		name           string
-		setupAuth      func(t *testing.T, svc Service, m *MockStorage) string
-		headerValue    string
-		expectedStatus int
-	}{
-		{
-			name: "Valid Token",
-			setupAuth: func(t *testing.T, svc Service, m *MockStorage) string {
-				m.On("GetUserByUsername", mock.Anything, "optuser").Return(nil, ErrUserNotFound).Once()
-				m.On("CreateUser", mock.Anything, mock.Anything).Return(nil).Once()
-				resp, err := svc.SignUp(context.Background(), SignupRequest{
-					Username: "optuser", Password: "Password12345!",
-				})
-				require.NoError(t, err)
-				return resp.AccessToken
-			},
-			expectedStatus: http.StatusOK,
-		},
-		{
-			name: "Missing Header",
-			setupAuth: func(t *testing.T, svc Service, m *MockStorage) string {
-				return ""
-			},
-			headerValue:    "",
-			expectedStatus: http.StatusOK, // Should pass through
-		},
-		{
-			name: "Invalid Format",
-			setupAuth: func(t *testing.T, svc Service, m *MockStorage) string {
-				return ""
-			},
-			headerValue:    "InvalidFormat",
-			expectedStatus: http.StatusUnauthorized, // If header is present, it must be valid
-		},
-		{
-			name: "Invalid Token",
-			setupAuth: func(t *testing.T, svc Service, m *MockStorage) string {
-				return "invalid-token"
-			},
-			headerValue:    "Bearer invalid-token",
-			expectedStatus: http.StatusUnauthorized, // If header is present, it must be valid
-		},
-	}
-
-	for _, tt := range tests {
-		tt := tt
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			mockStorage := new(MockStorage)
-			svc, err := NewAuthService(cfg, mockStorage, mockStorage)
-			require.NoError(t, err)
-
-			token := tt.setupAuth(t, svc, mockStorage)
-
-			handler := svc.MiddlewareOptional(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				w.WriteHeader(http.StatusOK)
-			}))
-
-			req := httptest.NewRequest("GET", "/", nil)
-			if tt.headerValue != "" {
-				req.Header.Set("Authorization", tt.headerValue)
-			} else if token != "" {
-				req.Header.Set("Authorization", "Bearer "+token)
-			}
-
-			w := httptest.NewRecorder()
-			handler.ServeHTTP(w, req)
-
-			assert.Equal(t, tt.expectedStatus, w.Code)
 		})
 	}
 }

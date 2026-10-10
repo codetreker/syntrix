@@ -9,8 +9,10 @@ import (
 	"time"
 
 	"github.com/codetreker/syntrix/internal/core/database"
-	"github.com/codetreker/syntrix/internal/core/identity"
 	"github.com/codetreker/syntrix/internal/core/storage"
+	"github.com/codetreker/syntrix/internal/ctxkeys"
+	"github.com/codetreker/syntrix/internal/identity"
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
@@ -21,16 +23,6 @@ type pullRouteAuth struct {
 	uid           string
 	roles, grants []string
 	calls         int
-}
-
-func (auth *pullRouteAuth) Middleware(next http.Handler) http.Handler {
-	auth.calls++
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ctx := context.WithValue(r.Context(), identity.ContextKeyUserID, auth.uid)
-		ctx = context.WithValue(ctx, identity.ContextKeyRoles, auth.roles)
-		ctx = context.WithValue(ctx, identity.ContextKeyDBAdmin, auth.grants)
-		next.ServeHTTP(w, r.WithContext(ctx))
-	})
 }
 
 func TestPullRouteFullScopeAuthorization(t *testing.T) {
@@ -51,12 +43,12 @@ func TestPullRouteFullScopeAuthorization(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			source := new(MockQueryService)
 			auth := &pullRouteAuth{MockAuthService: new(MockAuthService), uid: tc.uid, roles: tc.roles, grants: tc.grants}
-			handler, err := NewHandler(source, auth, new(AllowAllAuthzService))
+			handler, err := NewHandler(source, auth, auth, new(AllowAllAuthzService))
 			require.NoError(t, err)
 			slug := "friendly-name"
 			handler.SetDatabaseService(&mockDatabaseService{resolveFunc: func(ctx context.Context, identifier string) (*database.Database, error) {
 				assert.Equal(t, "id:canonical-id", identifier)
-				assert.Equal(t, tc.uid, ctx.Value(identity.ContextKeyUserID))
+				assert.Equal(t, tc.uid, ctx.Value(ctxkeys.KeyUserID))
 				return &database.Database{ID: "canonical-id", Slug: &slug, OwnerID: "owner", Status: database.StatusActive}, nil
 			}})
 			if tc.status == 200 {
@@ -69,6 +61,7 @@ func TestPullRouteFullScopeAuthorization(t *testing.T) {
 			mux := http.NewServeMux()
 			handler.RegisterRoutes(mux)
 			request := httptest.NewRequest(http.MethodPost, "/replication/v1/databases/id:canonical-id/pull", strings.NewReader(`{"collection":"users"}`))
+			request.Header.Set("Authorization", "Bearer test")
 			rr := newPullRecorder()
 			mux.ServeHTTP(rr, request)
 			assert.Equal(t, tc.status, rr.Code, rr.Body.String())
@@ -98,7 +91,17 @@ func TestPullAuthorizationRequiresValidatedScope(t *testing.T) {
 	auth := &pullRouteAuth{MockAuthService: new(MockAuthService), uid: "user", grants: []string{"canonical-id"}}
 	server := createTestServer(source, auth, nil)
 	rr := newPullRecorder()
-	server.ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/replication/v1/databases/canonical-id/pull", strings.NewReader(`{"collection":"users"}`)))
+	request := httptest.NewRequest(http.MethodPost, "/replication/v1/databases/canonical-id/pull", strings.NewReader(`{"collection":"users"}`))
+	request.Header.Set("Authorization", "Bearer test")
+	server.ServeHTTP(rr, request)
 	assert.Equal(t, http.StatusInternalServerError, rr.Code)
 	source.AssertNotCalled(t, "Pull", mock.Anything, mock.Anything, mock.Anything)
+}
+
+func (auth *pullRouteAuth) VerifyToken(token string) (*identity.VerifiedIdentity, error) {
+	auth.calls++
+	v, _ := identity.NewVerifier(func(string) (*identity.Claims, error) {
+		return &identity.Claims{Roles: auth.roles, DBAdmin: auth.grants, RegisteredClaims: jwt.RegisteredClaims{Subject: auth.uid}}, nil
+	})
+	return v.VerifyToken(token)
 }

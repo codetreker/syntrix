@@ -9,8 +9,9 @@ import (
 	"time"
 
 	"github.com/codetreker/syntrix/internal/core/database"
-	"github.com/codetreker/syntrix/internal/core/identity"
+	"github.com/codetreker/syntrix/internal/gateway/authentication"
 	"github.com/codetreker/syntrix/internal/gateway/config"
+	"github.com/codetreker/syntrix/internal/identity"
 	"github.com/codetreker/syntrix/internal/query"
 	"github.com/codetreker/syntrix/internal/streamer"
 )
@@ -20,13 +21,13 @@ type Server struct {
 	queryService   query.Service
 	streamer       streamer.Service
 	dataCollection string
-	auth           identity.AuthN
+	auth           identity.TokenVerifier
 	cfg            config.RealtimeConfig
 	database       database.Service
 	replicaBudget  *replicaBudget
 }
 
-func NewServer(qs query.Service, str streamer.Service, dataCollection string, auth identity.AuthN, cfg config.RealtimeConfig) *Server {
+func NewServer(qs query.Service, str streamer.Service, dataCollection string, auth identity.TokenVerifier, cfg config.RealtimeConfig) *Server {
 	cfg.Replica.ApplyDefaults()
 	h := NewHub()
 	budget := newReplicaBudget(cfg.Replica)
@@ -72,13 +73,13 @@ func (s *Server) wrapWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.auth.MiddlewareOptional(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	authentication.New(s.auth).MiddlewareOptional(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ServeWs(s.hub, s.queryService, s.auth, s.cfg, w, r)
 	})).ServeHTTP(w, r)
 }
 
 func (s *Server) wrapSSE(w http.ResponseWriter, r *http.Request) {
-	s.auth.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	authentication.New(s.auth).Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ServeSSE(s.hub, s.queryService, s.auth, s.cfg, w, r)
 	})).ServeHTTP(w, r)
 }

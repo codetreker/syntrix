@@ -386,6 +386,7 @@ func TestDocumentHandlers_TableDriven(t *testing.T) {
 			}
 
 			req, _ := http.NewRequest(tt.method, tt.path, reqBody)
+			req.Header.Set("Authorization", "Bearer test")
 			rr := httptest.NewRecorder()
 
 			server.ServeHTTP(rr, req)

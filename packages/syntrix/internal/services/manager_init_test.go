@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net/http"
 	"os"
 	"path/filepath"
 	"testing"
@@ -13,12 +12,12 @@ import (
 
 	"github.com/codetreker/syntrix/internal/config"
 	"github.com/codetreker/syntrix/internal/core/database"
-	"github.com/codetreker/syntrix/internal/core/identity"
 	"github.com/codetreker/syntrix/internal/core/pubsub"
 	pubsubtesting "github.com/codetreker/syntrix/internal/core/pubsub/testing"
 	"github.com/codetreker/syntrix/internal/core/storage"
 	"github.com/codetreker/syntrix/internal/gateway"
 	"github.com/codetreker/syntrix/internal/gateway/authorization"
+	"github.com/codetreker/syntrix/internal/identity"
 	"github.com/codetreker/syntrix/internal/indexer"
 	indexer_config "github.com/codetreker/syntrix/internal/indexer/config"
 	"github.com/codetreker/syntrix/internal/puller"
@@ -28,7 +27,6 @@ import (
 	"github.com/codetreker/syntrix/internal/trigger/delivery"
 	"github.com/codetreker/syntrix/internal/trigger/evaluator"
 	"github.com/codetreker/syntrix/pkg/model"
-
 	"github.com/stretchr/testify/assert"
 	"go.mongodb.org/mongo-driver/mongo"
 )
@@ -38,7 +36,7 @@ func TestManager_AuthServiceGetter(t *testing.T) {
 	cfg := config.LoadConfig()
 	mgr := NewManager(cfg, Options{})
 
-	assert.Nil(t, mgr.AuthService())
+	assert.Nil(t, mgr.SystemTokenIssuer())
 }
 
 func TestManager_Init_StorageError(t *testing.T) {
@@ -526,8 +524,6 @@ func (f *fakeStorageFactory) Close() error { return nil }
 
 type stubAuthN struct{}
 
-func (s *stubAuthN) Middleware(next http.Handler) http.Handler         { return next }
-func (s *stubAuthN) MiddlewareOptional(next http.Handler) http.Handler { return next }
 func (s *stubAuthN) SignIn(ctx context.Context, req identity.LoginRequest) (*identity.TokenPair, error) {
 	return nil, nil
 }
@@ -537,15 +533,17 @@ func (s *stubAuthN) SignUp(ctx context.Context, req identity.SignupRequest) (*id
 func (s *stubAuthN) Refresh(ctx context.Context, req identity.RefreshRequest) (*identity.TokenPair, error) {
 	return nil, nil
 }
-func (s *stubAuthN) ListUsers(ctx context.Context, limit int, offset int) ([]*identity.User, error) {
+func (s *stubAuthN) ListUsers(ctx context.Context, actor *identity.VerifiedIdentity, limit int, offset int) ([]*identity.User, error) {
 	return nil, nil
 }
-func (s *stubAuthN) UpdateUser(ctx context.Context, id string, roles []string, dbAdmin []string, disabled bool) error {
+func (s *stubAuthN) UpdateUser(ctx context.Context, actor *identity.VerifiedIdentity, id string, roles []string, dbAdmin []string, disabled bool) error {
 	return nil
 }
-func (s *stubAuthN) Logout(ctx context.Context, refreshToken string) error      { return nil }
-func (s *stubAuthN) GenerateSystemToken(serviceName string) (string, error)     { return "", nil }
-func (s *stubAuthN) ValidateToken(tokenString string) (*identity.Claims, error) { return nil, nil }
+func (s *stubAuthN) Logout(ctx context.Context, refreshToken string) error  { return nil }
+func (s *stubAuthN) GenerateSystemToken(serviceName string) (string, error) { return "", nil }
+func (s *stubAuthN) VerifyToken(string) (*identity.VerifiedIdentity, error) {
+	return nil, identity.ErrInvalidToken
+}
 
 // stubAuthZ is a minimal AuthZ implementation for testing
 type stubAuthZ struct{}
@@ -1612,7 +1610,7 @@ func TestManager_initDatabaseService_WithGatewayServer(t *testing.T) {
 	mockQuery := &stubQueryService{}
 	mockAuth := &stubAuthN{}
 	mockAuthz := &stubAuthZ{}
-	mgr.gatewayServer, err = gateway.NewServer(mockQuery, mockAuth, mockAuthz, nil)
+	mgr.gatewayServer, err = gateway.NewServer(mockQuery, mockAuth, mockAuth, mockAuthz, nil)
 	assert.NoError(t, err)
 
 	// Call initDatabaseService

@@ -6,11 +6,10 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/codetreker/syntrix/internal/core/identity"
 	"github.com/codetreker/syntrix/internal/core/storage"
+	"github.com/codetreker/syntrix/internal/identity"
 	"github.com/codetreker/syntrix/pkg/model"
 	"github.com/go-playground/validator/v10"
-
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

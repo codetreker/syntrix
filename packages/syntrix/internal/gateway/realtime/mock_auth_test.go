@@ -2,67 +2,15 @@ package realtime
 
 import (
 	"context"
-	"net/http"
 
-	"github.com/codetreker/syntrix/internal/core/identity"
+	"github.com/codetreker/syntrix/internal/ctxkeys"
+	"github.com/codetreker/syntrix/internal/identity"
 )
 
-// mockAuthService is a minimal AuthN stub for realtime tests.
+// mockAuthService validates the realtime test token.
 type mockAuthService struct{}
 
-func (m *mockAuthService) Middleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Authorization") != "Bearer good" {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
-			return
-		}
-		ctx := withRoles(r.Context(), []string{"user"})
-		next.ServeHTTP(w, r.WithContext(ctx))
-	})
-}
-
-func (m *mockAuthService) MiddlewareOptional(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Authorization") == "" {
-			next.ServeHTTP(w, r)
-			return
-		}
-		if r.Header.Get("Authorization") != "Bearer good" {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
-			return
-		}
-		ctx := withRoles(r.Context(), []string{"user"})
-		next.ServeHTTP(w, r.WithContext(ctx))
-	})
-}
-
-func (m *mockAuthService) SignIn(ctx context.Context, req identity.LoginRequest) (*identity.TokenPair, error) {
-	return nil, nil
-}
-
-func (m *mockAuthService) SignUp(ctx context.Context, req identity.SignupRequest) (*identity.TokenPair, error) {
-	return nil, nil
-}
-
-func (m *mockAuthService) Refresh(ctx context.Context, req identity.RefreshRequest) (*identity.TokenPair, error) {
-	return nil, nil
-}
-
-func (m *mockAuthService) ListUsers(ctx context.Context, limit int, offset int) ([]*identity.User, error) {
-	return nil, nil
-}
-
-func (m *mockAuthService) UpdateUser(ctx context.Context, id string, roles []string, dbAdmin []string, disabled bool) error {
-	return nil
-}
-
-func (m *mockAuthService) Logout(ctx context.Context, refreshToken string) error {
-	return nil
-}
-
-func (m *mockAuthService) GenerateSystemToken(serviceName string) (string, error) { return "", nil }
-
-func (m *mockAuthService) ValidateToken(tokenString string) (*identity.Claims, error) {
+func (m *mockAuthService) validateClaims(tokenString string) (*identity.Claims, error) {
 	if tokenString != "good" {
 		return nil, identity.ErrInvalidToken
 	}
@@ -71,6 +19,11 @@ func (m *mockAuthService) ValidateToken(tokenString string) (*identity.Claims, e
 }
 
 func withRoles(ctx context.Context, roles []string) context.Context {
-	ctx = context.WithValue(ctx, identity.ContextKeyRoles, roles)
+	ctx = context.WithValue(ctx, ctxkeys.KeyRoles, roles)
 	return ctx
+}
+
+func (m *mockAuthService) VerifyToken(token string) (*identity.VerifiedIdentity, error) {
+	verifier, _ := identity.NewVerifier(m.validateClaims)
+	return verifier.VerifyToken(token)
 }

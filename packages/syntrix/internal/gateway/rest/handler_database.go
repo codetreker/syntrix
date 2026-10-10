@@ -7,7 +7,7 @@ import (
 	"strconv"
 
 	"github.com/codetreker/syntrix/internal/core/database"
-	"github.com/codetreker/syntrix/internal/core/identity"
+	"github.com/codetreker/syntrix/internal/ctxkeys"
 )
 
 // Database API error codes
@@ -196,7 +196,7 @@ func (h *Handler) handleDeleteDatabase(w http.ResponseWriter, r *http.Request) {
 
 // getUserID extracts the user ID from the request context
 func (h *Handler) getUserID(r *http.Request) string {
-	if uid, ok := r.Context().Value(identity.ContextKeyUserID).(string); ok {
+	if uid, ok := r.Context().Value(ctxkeys.KeyUserID).(string); ok {
 		return uid
 	}
 	return ""

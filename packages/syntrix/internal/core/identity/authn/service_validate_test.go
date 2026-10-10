@@ -20,19 +20,20 @@ func TestValidateToken(t *testing.T) {
 	}
 	svc, err := NewAuthService(cfg, mockStorage, mockStorage)
 	require.NoError(t, err)
-	authService := svc.(*AuthService)
+	authService := svc
 
 	// Generate a token
 	token, err := authService.GenerateSystemToken("test-service")
 	require.NoError(t, err)
 
 	// Validate valid token
-	claims, err := authService.ValidateToken(token)
+	actor, err := authService.VerifyToken(token)
 	assert.NoError(t, err)
+	claims := actor.Claims()
 	assert.Equal(t, "system:test-service", claims.Subject)
 
 	// Validate invalid token
-	_, err = authService.ValidateToken("invalid-token")
+	_, err = authService.VerifyToken("invalid-token")
 	assert.Error(t, err)
 }
 

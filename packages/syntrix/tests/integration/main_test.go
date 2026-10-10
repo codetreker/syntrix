@@ -677,7 +677,7 @@ func (e *GlobalTestEnv) Shutdown() {
 
 // GenerateSystemToken generates a system token for admin operations
 func (e *GlobalTestEnv) GenerateSystemToken() (string, error) {
-	authService := e.Manager.AuthService()
+	authService := e.Manager.SystemTokenIssuer()
 	return authService.GenerateSystemToken("system-worker")
 }
 

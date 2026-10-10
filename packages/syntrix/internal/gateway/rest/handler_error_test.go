@@ -8,7 +8,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/codetreker/syntrix/internal/core/identity"
+	"github.com/codetreker/syntrix/internal/identity"
 	"github.com/codetreker/syntrix/pkg/model"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
@@ -135,10 +135,10 @@ func TestAdminHandlerErrors(t *testing.T) {
 	server := createTestServer(nil, mockAuth, mockAuthz)
 
 	t.Run("ListUsers_Error", func(t *testing.T) {
-		mockAuth.On("ListUsers", mock.Anything, 50, 0).Return(nil, errors.New("db error")).Once()
+		mockAuth.On("ListUsers", mock.Anything, mock.Anything, 50, 0).Return(nil, errors.New("db error")).Once()
 
 		req := httptest.NewRequest("GET", "/admin/users", nil)
-		req.Header.Set("X-Role", "admin")
+		req.Header.Set("Authorization", "Bearer admin")
 		w := httptest.NewRecorder()
 
 		server.ServeHTTP(w, req)
@@ -148,7 +148,7 @@ func TestAdminHandlerErrors(t *testing.T) {
 
 	t.Run("UpdateUser_InvalidBody", func(t *testing.T) {
 		req := httptest.NewRequest("PATCH", "/admin/users/123", bytes.NewReader([]byte("invalid")))
-		req.Header.Set("X-Role", "admin")
+		req.Header.Set("Authorization", "Bearer admin")
 		w := httptest.NewRecorder()
 
 		server.ServeHTTP(w, req)
@@ -158,11 +158,11 @@ func TestAdminHandlerErrors(t *testing.T) {
 
 	t.Run("UpdateUser_Error", func(t *testing.T) {
 		reqBody := UpdateUserRequest{Roles: []string{"admin"}, Disabled: true}
-		mockAuth.On("UpdateUser", mock.Anything, "123", reqBody.Roles, []string(nil), reqBody.Disabled).Return(errors.New("db error")).Once()
+		mockAuth.On("UpdateUser", mock.Anything, mock.Anything, "123", reqBody.Roles, []string(nil), reqBody.Disabled).Return(errors.New("db error")).Once()
 
 		body, _ := json.Marshal(reqBody)
 		req := httptest.NewRequest("PATCH", "/admin/users/123", bytes.NewReader(body))
-		req.Header.Set("X-Role", "admin")
+		req.Header.Set("Authorization", "Bearer admin")
 		w := httptest.NewRecorder()
 
 		server.ServeHTTP(w, req)
@@ -175,7 +175,7 @@ func TestAdminHandlerErrors(t *testing.T) {
 		mockAuthz.On("UpdateRules", "default", rules).Return(errors.New("parse error")).Once()
 
 		req := httptest.NewRequest("POST", "/admin/rules/push?database=default", bytes.NewReader(rules))
-		req.Header.Set("X-Role", "admin")
+		req.Header.Set("Authorization", "Bearer admin")
 		w := httptest.NewRecorder()
 
 		server.ServeHTTP(w, req)
@@ -194,6 +194,7 @@ func TestDocumentHandlerErrors(t *testing.T) {
 		mockService.On("GetDocument", mock.Anything, "default", "rooms").Return(nil, model.ErrNotFound).Maybe()
 
 		req, _ := http.NewRequest("GET", "/api/v1/databases/default/documents/rooms", nil)
+		req.Header.Set("Authorization", "Bearer test")
 		rr := httptest.NewRecorder()
 		server.ServeHTTP(rr, req)
 		assert.Equal(t, http.StatusBadRequest, rr.Code)
@@ -206,6 +207,7 @@ func TestDocumentHandlerErrors(t *testing.T) {
 
 		body := []byte(`{"id":"msg-1", "name": "Bob"}`)
 		req, _ := http.NewRequest("POST", "/api/v1/databases/default/documents/rooms/room-1/messages", bytes.NewBuffer(body))
+		req.Header.Set("Authorization", "Bearer test")
 		rr := httptest.NewRecorder()
 
 		mockService.On("CreateDocument", mock.Anything, "default", mock.Anything).Return(errors.New("db error")).Once()
@@ -223,6 +225,7 @@ func TestDocumentHandlerErrors(t *testing.T) {
 
 		body := []byte(`{"doc":{"name": "Bob"}}`)
 		req, _ := http.NewRequest("PUT", "/api/v1/databases/default/documents/rooms/room-1/messages/msg-1", bytes.NewBuffer(body))
+		req.Header.Set("Authorization", "Bearer test")
 		rr := httptest.NewRecorder()
 
 		// Mock GetDocument for authorization check
@@ -246,6 +249,7 @@ func TestDocumentHandlerErrors(t *testing.T) {
 
 		body := []byte(`{invalid-json}`)
 		req, _ := http.NewRequest("DELETE", "/api/v1/databases/default/documents/rooms/room-1/messages/msg-1", bytes.NewBuffer(body))
+		req.Header.Set("Authorization", "Bearer test")
 		rr := httptest.NewRecorder()
 		server.ServeHTTP(rr, req)
 		assert.Equal(t, http.StatusBadRequest, rr.Code)
@@ -258,6 +262,7 @@ func TestDocumentHandlerErrors(t *testing.T) {
 		server := createTestServer(mockService, mockAuth, nil)
 
 		req, _ := http.NewRequest("DELETE", "/api/v1/databases/default/documents/rooms/room-1/messages/msg-1", nil)
+		req.Header.Set("Authorization", "Bearer test")
 		rr := httptest.NewRecorder()
 
 		// Mock GetDocument for authorization check
@@ -278,6 +283,7 @@ func TestDocumentHandlerErrors(t *testing.T) {
 		mockService.On("GetDocument", mock.Anything, "default", "rooms").Return(nil, model.ErrNotFound).Maybe()
 
 		req, _ := http.NewRequest("DELETE", "/api/v1/databases/default/documents/rooms", nil)
+		req.Header.Set("Authorization", "Bearer test")
 		rr := httptest.NewRecorder()
 		server.ServeHTTP(rr, req)
 		assert.Equal(t, http.StatusBadRequest, rr.Code)
@@ -291,6 +297,7 @@ func TestDocumentHandlerErrors(t *testing.T) {
 		mockService.On("GetDocument", mock.Anything, "default", "rooms/room-1/messages").Return(nil, model.ErrNotFound).Maybe()
 
 		req, _ := http.NewRequest("PATCH", "/api/v1/databases/default/documents/rooms/room-1/messages", bytes.NewBuffer([]byte("{}")))
+		req.Header.Set("Authorization", "Bearer test")
 		rr := httptest.NewRecorder()
 		server.ServeHTTP(rr, req)
 		assert.Equal(t, http.StatusBadRequest, rr.Code)
@@ -303,20 +310,6 @@ type FailAuthService struct {
 	*MockAuthService
 }
 
-func (m *FailAuthService) Middleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Do not set database in context
-		next.ServeHTTP(w, r)
-	})
-}
-
-func (m *FailAuthService) MiddlewareOptional(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Do not set database in context
-		next.ServeHTTP(w, r)
-	})
-}
-
 func TestDocumentHandler_DatabaseError(t *testing.T) {
 	mockService := new(MockQueryService)
 	mockAuth := &FailAuthService{MockAuthService: new(MockAuthService)}
@@ -326,6 +319,7 @@ func TestDocumentHandler_DatabaseError(t *testing.T) {
 	// Request with old URL format (without database in path) should get 404
 	// because the new routes require /api/v1/databases/{database}/documents/{path}
 	req, _ := http.NewRequest("GET", "/api/v1/rooms/room-1/messages/msg-1", nil)
+	req.Header.Set("Authorization", "Bearer test")
 	rr := httptest.NewRecorder()
 
 	server.ServeHTTP(rr, req)

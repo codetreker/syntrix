@@ -9,7 +9,6 @@ import (
 	"testing"
 
 	"github.com/codetreker/syntrix/pkg/model"
-
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
@@ -32,6 +31,7 @@ func TestHandleTriggerGet(t *testing.T) {
 	}
 	body, _ := json.Marshal(reqBody)
 	req := httptest.NewRequest("POST", "/trigger/v1/databases/default/get", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer test")
 	w := httptest.NewRecorder()
 
 	// Execute
@@ -55,6 +55,7 @@ func TestHandleTriggerGet_EmptyPaths(t *testing.T) {
 	reqBody := TriggerGetRequest{Paths: []string{}}
 	body, _ := json.Marshal(reqBody)
 	req := httptest.NewRequest("POST", "/trigger/v1/databases/default/get", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer test")
 	w := httptest.NewRecorder()
 
 	server.ServeHTTP(w, req)
@@ -67,6 +68,7 @@ func TestHandleTriggerGet_BadJSON(t *testing.T) {
 	server := createTestServer(mockEngine, nil, nil)
 
 	req := httptest.NewRequest("POST", "/trigger/v1/databases/default/get", bytes.NewReader([]byte("{bad")))
+	req.Header.Set("Authorization", "Bearer test")
 	w := httptest.NewRecorder()
 
 	server.ServeHTTP(w, req)
@@ -85,6 +87,7 @@ func TestHandleTriggerGet_SkipNotFound(t *testing.T) {
 	reqBody := TriggerGetRequest{Paths: []string{"users/missing", "users/bob"}}
 	body, _ := json.Marshal(reqBody)
 	req := httptest.NewRequest("POST", "/trigger/v1/databases/default/get", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer test")
 	w := httptest.NewRecorder()
 
 	server.ServeHTTP(w, req)
@@ -106,6 +109,7 @@ func TestHandleTriggerGet_EngineError(t *testing.T) {
 	reqBody := TriggerGetRequest{Paths: []string{"users/alice"}}
 	body, _ := json.Marshal(reqBody)
 	req := httptest.NewRequest("POST", "/trigger/v1/databases/default/get", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer test")
 	w := httptest.NewRecorder()
 
 	server.ServeHTTP(w, req)
@@ -139,6 +143,7 @@ func TestHandleTriggerWrite(t *testing.T) {
 	}
 	body, _ := json.Marshal(reqBody)
 	req := httptest.NewRequest("POST", "/trigger/v1/databases/default/write", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer test")
 	w := httptest.NewRecorder()
 
 	// Execute
@@ -160,6 +165,7 @@ func TestHandleTriggerWrite_UpdateError(t *testing.T) {
 	}
 	body, _ := json.Marshal(reqBody)
 	req := httptest.NewRequest("POST", "/trigger/v1/databases/default/write", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer test")
 	w := httptest.NewRecorder()
 
 	server.ServeHTTP(w, req)
@@ -177,6 +183,7 @@ func TestHandleTriggerWrite_ReplacePathInvalid(t *testing.T) {
 	}
 	body, _ := json.Marshal(reqBody)
 	req := httptest.NewRequest("POST", "/trigger/v1/databases/default/write", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer test")
 	w := httptest.NewRecorder()
 
 	server.ServeHTTP(w, req)
@@ -195,6 +202,7 @@ func TestHandleTriggerWrite_ReplaceError(t *testing.T) {
 	}
 	body, _ := json.Marshal(reqBody)
 	req := httptest.NewRequest("POST", "/trigger/v1/databases/default/write", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer test")
 	w := httptest.NewRecorder()
 
 	server.ServeHTTP(w, req)
@@ -214,6 +222,7 @@ func TestHandleTriggerWrite_DeleteNotFound(t *testing.T) {
 	}
 	body, _ := json.Marshal(reqBody)
 	req := httptest.NewRequest("POST", "/trigger/v1/databases/default/write", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer test")
 	w := httptest.NewRecorder()
 
 	server.ServeHTTP(w, req)
@@ -227,6 +236,7 @@ func TestHandleTriggerWrite_BadJSON(t *testing.T) {
 	server := createTestServer(mockEngine, nil, nil)
 
 	req := httptest.NewRequest("POST", "/trigger/v1/databases/default/write", bytes.NewReader([]byte("{bad")))
+	req.Header.Set("Authorization", "Bearer test")
 	w := httptest.NewRecorder()
 
 	server.ServeHTTP(w, req)
@@ -243,6 +253,7 @@ func TestHandleTriggerWrite_InvalidType(t *testing.T) {
 	}
 	body, _ := json.Marshal(reqBody)
 	req := httptest.NewRequest("POST", "/trigger/v1/databases/default/write", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer test")
 	w := httptest.NewRecorder()
 
 	server.ServeHTTP(w, req)
@@ -259,6 +270,7 @@ func TestHandleTriggerWrite_InvalidPath(t *testing.T) {
 	}
 	body, _ := json.Marshal(reqBody)
 	req := httptest.NewRequest("POST", "/trigger/v1/databases/default/write", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer test")
 	w := httptest.NewRecorder()
 
 	server.ServeHTTP(w, req)
@@ -277,6 +289,7 @@ func TestHandleTriggerWrite_CreateExists(t *testing.T) {
 	}
 	body, _ := json.Marshal(reqBody)
 	req := httptest.NewRequest("POST", "/trigger/v1/databases/default/write", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer test")
 	w := httptest.NewRecorder()
 
 	server.ServeHTTP(w, req)
@@ -292,6 +305,7 @@ func TestHandleTriggerWrite_EmptyWrites(t *testing.T) {
 	reqBody := TriggerWriteRequest{Writes: []TriggerWriteOp{}}
 	body, _ := json.Marshal(reqBody)
 	req := httptest.NewRequest("POST", "/trigger/v1/databases/default/write", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer test")
 	w := httptest.NewRecorder()
 
 	server.ServeHTTP(w, req)
@@ -313,6 +327,7 @@ func TestHandleTriggerQuery(t *testing.T) {
 	q := model.Query{Collection: "users"}
 	body, _ := json.Marshal(q)
 	req := httptest.NewRequest("POST", "/trigger/v1/databases/default/query", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer test")
 	w := httptest.NewRecorder()
 
 	// Execute
@@ -345,6 +360,7 @@ func TestHandleTriggerQuery_BadJSON(t *testing.T) {
 	server := createTestServer(mockEngine, nil, nil)
 
 	req := httptest.NewRequest("POST", "/trigger/v1/databases/default/query", bytes.NewReader([]byte("{bad")))
+	req.Header.Set("Authorization", "Bearer test")
 	w := httptest.NewRecorder()
 
 	server.ServeHTTP(w, req)
@@ -359,6 +375,7 @@ func TestHandleTriggerQuery_ValidateError(t *testing.T) {
 	q := model.Query{Collection: ""} // invalid
 	body, _ := json.Marshal(q)
 	req := httptest.NewRequest("POST", "/trigger/v1/databases/default/query", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer test")
 	w := httptest.NewRecorder()
 
 	server.ServeHTTP(w, req)
@@ -375,6 +392,7 @@ func TestHandleTriggerQuery_Error(t *testing.T) {
 
 	body, _ := json.Marshal(q)
 	req := httptest.NewRequest("POST", "/trigger/v1/databases/default/query", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer test")
 	w := httptest.NewRecorder()
 
 	server.ServeHTTP(w, req)
@@ -394,6 +412,7 @@ func TestHandleTriggerWrite_UnexpectedError(t *testing.T) {
 	}
 	body, _ := json.Marshal(reqBody)
 	req := httptest.NewRequest("POST", "/trigger/v1/databases/default/write", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer test")
 	w := httptest.NewRecorder()
 
 	server.ServeHTTP(w, req)

@@ -15,7 +15,6 @@ import (
 	"time"
 
 	databasecore "github.com/codetreker/syntrix/internal/core/database"
-	"github.com/codetreker/syntrix/internal/core/identity"
 	"github.com/codetreker/syntrix/internal/core/storage"
 	storagetypes "github.com/codetreker/syntrix/internal/core/storage/types"
 	"github.com/codetreker/syntrix/internal/ctxkeys"
@@ -102,7 +101,7 @@ func TestPullOverridesHTTPWriteTimeout(t *testing.T) {
 	handler := pullHandler(service)
 	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		r.SetPathValue("database", "friendly-name")
-		ctx := context.WithValue(r.Context(), identity.ContextKeyUserID, "pull-owner")
+		ctx := context.WithValue(r.Context(), ctxkeys.KeyUserID, "pull-owner")
 		r = r.WithContext(databasecore.WithDatabase(ctx, &databasecore.Database{ID: "canonical-id", OwnerID: "pull-owner"}))
 		handler.handlePull(w, r)
 	}))
@@ -124,8 +123,9 @@ func TestPullOverridesHTTPWriteTimeout(t *testing.T) {
 
 func pullRequest(ctx context.Context, body string) *http.Request {
 	req := httptest.NewRequest(http.MethodPost, "/replication/v1/databases/friendly-name/pull", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer test")
 	req.SetPathValue("database", "friendly-name")
-	ctx = context.WithValue(ctx, identity.ContextKeyUserID, "pull-owner")
+	ctx = context.WithValue(ctx, ctxkeys.KeyUserID, "pull-owner")
 	ctx = databasecore.WithDatabase(ctx, &databasecore.Database{ID: "canonical-id", OwnerID: "pull-owner"})
 	return req.WithContext(ctx)
 }

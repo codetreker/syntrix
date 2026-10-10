@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/codetreker/syntrix/internal/core/identity/types"
+	"github.com/codetreker/syntrix/internal/ctxkeys"
 	"github.com/codetreker/syntrix/pkg/model"
 )
 
@@ -99,5 +99,5 @@ type DeleteDocumentRequest struct {
 }
 
 var (
-	ContextKeyDBAdmin = types.ContextKeyDBAdmin
+	ContextKeyDBAdmin = ctxkeys.KeyDBAdmin
 )

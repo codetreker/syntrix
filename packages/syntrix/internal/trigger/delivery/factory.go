@@ -4,9 +4,9 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/codetreker/syntrix/internal/core/identity"
 	"github.com/codetreker/syntrix/internal/core/pubsub"
 	natspubsub "github.com/codetreker/syntrix/internal/core/pubsub/nats"
+	"github.com/codetreker/syntrix/internal/identity"
 	"github.com/codetreker/syntrix/internal/trigger/delivery/worker"
 	"github.com/codetreker/syntrix/internal/trigger/types"
 	"github.com/nats-io/nats.go"
@@ -15,7 +15,7 @@ import (
 // Dependencies contains external dependencies for the delivery service.
 type Dependencies struct {
 	Consumer pubsub.Consumer
-	Auth     identity.AuthN
+	Auth     identity.SystemTokenIssuer
 	Secrets  types.SecretProvider
 	Metrics  types.Metrics
 }

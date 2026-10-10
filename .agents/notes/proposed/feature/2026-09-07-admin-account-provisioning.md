@@ -14,9 +14,12 @@ The current [REST routes](../../../../packages/syntrix/internal/gateway/rest/han
 `GET /admin/users` and `PATCH /admin/users/{id}`; the latter changes roles,
 database administration, and disabled state through
 [admin handlers](../../../../packages/syntrix/internal/gateway/rest/handler_admin.go). Public signup
-already creates accounts. These operations use the current instance-wide user
-and role model, without project isolation. An authorized administrative
-creation/credential-recovery operation and its project-scoped authority are absent.
+already creates accounts. Existing list/update now requires an opaque verified
+identity from the account service's own verifier and the current exact admin/system
+policy. Account responses use safe noncredential views; REST retains its blank
+credential fields. These operations still use the instance-wide user and role
+model without project isolation. An authorized administrative creation/credential
+recovery operation and its project-scoped authority are absent.
 
 ## Proposal
 

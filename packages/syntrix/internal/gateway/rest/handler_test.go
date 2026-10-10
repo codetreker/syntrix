@@ -9,8 +9,9 @@ import (
 	"testing"
 
 	"github.com/codetreker/syntrix/internal/core/database"
-	"github.com/codetreker/syntrix/internal/core/identity"
+	"github.com/codetreker/syntrix/internal/ctxkeys"
 	"github.com/codetreker/syntrix/internal/gateway/authorization"
+	"github.com/codetreker/syntrix/internal/identity"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
@@ -22,7 +23,7 @@ func TestAuthorized_GetDocumentError(t *testing.T) {
 	mockAuth := new(MockAuthService)
 	mockAuthz := new(MockAuthzService)
 
-	handler, _ := NewHandler(mockService, mockAuth, mockAuthz)
+	handler, _ := NewHandler(mockService, mockAuth, mockAuth, mockAuthz)
 
 	// We need to wrap a dummy handler with authorized
 	target := handler.authorized(func(w http.ResponseWriter, r *http.Request) {
@@ -33,6 +34,7 @@ func TestAuthorized_GetDocumentError(t *testing.T) {
 	mockService.On("GetDocument", mock.Anything, "default", "col/doc").Return(nil, errors.New("db error"))
 
 	req, _ := http.NewRequest("PUT", "/api/v1/databases/default/documents/col/doc", nil)
+	req.Header.Set("Authorization", "Bearer test")
 	req.SetPathValue("database", "default")
 	req.SetPathValue("path", "col/doc")
 
@@ -48,53 +50,44 @@ func TestAuthorized_GetDocumentError(t *testing.T) {
 	assert.Contains(t, rr.Body.String(), "Failed to check resource")
 }
 
-// MockAuthService_NoContext is a mock that calls next but doesn't set any context
-type MockAuthService_NoContext struct {
+// MockAuthService_NoRoles verifies identities without role grants.
+type MockAuthService_NoRoles struct {
 	mock.Mock
 }
 
-func (m *MockAuthService_NoContext) Middleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		next.ServeHTTP(w, r)
-	})
-}
-func (m *MockAuthService_NoContext) MiddlewareOptional(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		next.ServeHTTP(w, r)
-	})
-}
-func (m *MockAuthService_NoContext) SignIn(ctx context.Context, req identity.LoginRequest) (*identity.TokenPair, error) {
+func (m *MockAuthService_NoRoles) SignIn(ctx context.Context, req identity.LoginRequest) (*identity.TokenPair, error) {
 	return nil, nil
 }
-func (m *MockAuthService_NoContext) SignUp(ctx context.Context, req identity.SignupRequest) (*identity.TokenPair, error) {
+func (m *MockAuthService_NoRoles) SignUp(ctx context.Context, req identity.SignupRequest) (*identity.TokenPair, error) {
 	return nil, nil
 }
-func (m *MockAuthService_NoContext) Refresh(ctx context.Context, req identity.RefreshRequest) (*identity.TokenPair, error) {
+func (m *MockAuthService_NoRoles) Refresh(ctx context.Context, req identity.RefreshRequest) (*identity.TokenPair, error) {
 	return nil, nil
 }
-func (m *MockAuthService_NoContext) ListUsers(ctx context.Context, limit int, offset int) ([]*identity.User, error) {
+func (m *MockAuthService_NoRoles) ListUsers(ctx context.Context, actor *identity.VerifiedIdentity, limit int, offset int) ([]*identity.User, error) {
 	return nil, nil
 }
-func (m *MockAuthService_NoContext) UpdateUser(ctx context.Context, id string, roles []string, dbAdmin []string, disabled bool) error {
+func (m *MockAuthService_NoRoles) UpdateUser(ctx context.Context, actor *identity.VerifiedIdentity, id string, roles []string, dbAdmin []string, disabled bool) error {
 	return nil
 }
-func (m *MockAuthService_NoContext) Logout(ctx context.Context, refreshToken string) error {
+func (m *MockAuthService_NoRoles) Logout(ctx context.Context, refreshToken string) error {
 	return nil
 }
-func (m *MockAuthService_NoContext) GenerateSystemToken(serviceName string) (string, error) {
+func (m *MockAuthService_NoRoles) GenerateSystemToken(serviceName string) (string, error) {
 	return "", nil
 }
-func (m *MockAuthService_NoContext) ValidateToken(tokenString string) (*identity.Claims, error) {
-	return nil, nil
+func (m *MockAuthService_NoRoles) VerifyToken(token string) (*identity.VerifiedIdentity, error) {
+	v, _ := identity.NewVerifier(func(string) (*identity.Claims, error) { return &identity.Claims{}, nil })
+	return v.VerifyToken(token)
 }
 
-// TestTriggerProtected_NoRoles covers the case where ContextKeyRoles is missing
+// TestTriggerProtected_NoRoles rejects identities without a system role.
 func TestTriggerProtected_NoRoles(t *testing.T) {
 	mockService := new(MockQueryService)
-	mockAuth := new(MockAuthService_NoContext) // Use the no-context mock
+	mockAuth := new(MockAuthService_NoRoles)
 	mockAuthz := new(AllowAllAuthzService)
 
-	handler, _ := NewHandler(mockService, mockAuth, mockAuthz)
+	handler, _ := NewHandler(mockService, mockAuth, mockAuth, mockAuthz)
 
 	// Wrap a dummy handler
 	target := handler.triggerProtected(func(w http.ResponseWriter, r *http.Request) {
@@ -102,21 +95,22 @@ func TestTriggerProtected_NoRoles(t *testing.T) {
 	})
 
 	req, _ := http.NewRequest("POST", "/trigger/v1/databases/default/write", nil)
+	req.Header.Set("Authorization", "Bearer test")
 	rr := httptest.NewRecorder()
 
 	target(rr, req)
 
 	assert.Equal(t, http.StatusForbidden, rr.Code)
-	assert.Contains(t, rr.Body.String(), "Access denied")
+	assert.Contains(t, rr.Body.String(), "System access required")
 }
 
-// TestAdminOnly_NoRoles covers the case where ContextKeyRoles is missing
+// TestAdminOnly_NoRoles rejects identities without an admin or system role.
 func TestAdminOnly_NoRoles(t *testing.T) {
 	mockService := new(MockQueryService)
-	mockAuth := new(MockAuthService_NoContext) // Use the no-context mock
+	mockAuth := new(MockAuthService_NoRoles)
 	mockAuthz := new(AllowAllAuthzService)
 
-	handler, _ := NewHandler(mockService, mockAuth, mockAuthz)
+	handler, _ := NewHandler(mockService, mockAuth, mockAuth, mockAuthz)
 
 	// Wrap a dummy handler
 	target := handler.adminOnly(func(w http.ResponseWriter, r *http.Request) {
@@ -124,12 +118,13 @@ func TestAdminOnly_NoRoles(t *testing.T) {
 	})
 
 	req, _ := http.NewRequest("GET", "/admin/users", nil)
+	req.Header.Set("Authorization", "Bearer test")
 	rr := httptest.NewRecorder()
 
 	target(rr, req)
 
 	assert.Equal(t, http.StatusForbidden, rr.Code)
-	assert.Contains(t, rr.Body.String(), "Access denied")
+	assert.Contains(t, rr.Body.String(), "Admin access required")
 }
 
 func TestClaimsToMap_NilDates(t *testing.T) {
@@ -151,7 +146,7 @@ func TestAuthorized_InvalidJSONBody(t *testing.T) {
 	mockAuth := new(MockAuthService)
 	mockAuthz := new(MockAuthzService)
 
-	handler, _ := NewHandler(mockService, mockAuth, mockAuthz)
+	handler, _ := NewHandler(mockService, mockAuth, mockAuth, mockAuthz)
 
 	// We need to verify that Evaluate is called with nil Resource (or Resource with nil Data)
 	// when body is invalid JSON.
@@ -167,6 +162,7 @@ func TestAuthorized_InvalidJSONBody(t *testing.T) {
 	}, "create")
 
 	req, _ := http.NewRequest("POST", "/api/v1/databases/default/documents/col/doc", bytes.NewBufferString("{invalid-json"))
+	req.Header.Set("Authorization", "Bearer test")
 	req.SetPathValue("database", "default")
 	req.SetPathValue("path", "col/doc")
 
@@ -190,7 +186,7 @@ func TestAuthorized_OwnerImplicitDBAdmin_SlugMatch(t *testing.T) {
 	mockAuth := new(MockAuthService)
 	mockAuthz := new(MockAuthzService)
 
-	handler, _ := NewHandler(mockService, mockAuth, mockAuthz)
+	handler, _ := NewHandler(mockService, mockAuth, mockAuth, mockAuthz)
 
 	// Set up authz to allow the request
 	mockAuthz.On("Evaluate", mock.Anything, "db-123", "col/doc", "create", mock.MatchedBy(func(req authorization.Request) bool {
@@ -211,6 +207,7 @@ func TestAuthorized_OwnerImplicitDBAdmin_SlugMatch(t *testing.T) {
 	}, "create")
 
 	req, _ := http.NewRequest("POST", "/api/v1/databases/db-123/documents/col/doc", bytes.NewBufferString(`{"name":"test"}`))
+	req.Header.Set("Authorization", "Bearer test")
 	req.SetPathValue("database", "db-123")
 	req.SetPathValue("path", "col/doc")
 
@@ -226,10 +223,10 @@ func TestAuthorized_OwnerImplicitDBAdmin_SlugMatch(t *testing.T) {
 	ctx := database.WithDatabase(req.Context(), db)
 
 	// Add user ID (matches owner)
-	ctx = context.WithValue(ctx, identity.ContextKeyUserID, "user-123")
+	ctx = context.WithValue(ctx, ctxkeys.KeyUserID, "user-123")
 
 	// Add DBAdmin list that already contains the slug
-	ctx = context.WithValue(ctx, identity.ContextKeyDBAdmin, []string{"my-slug"})
+	ctx = context.WithValue(ctx, ctxkeys.KeyDBAdmin, []string{"my-slug"})
 
 	req = req.WithContext(ctx)
 
@@ -247,7 +244,7 @@ func TestAuthorized_OwnerImplicitDBAdmin_IDMatch(t *testing.T) {
 	mockAuth := new(MockAuthService)
 	mockAuthz := new(MockAuthzService)
 
-	handler, _ := NewHandler(mockService, mockAuth, mockAuthz)
+	handler, _ := NewHandler(mockService, mockAuth, mockAuth, mockAuthz)
 
 	// Set up authz to allow the request
 	mockAuthz.On("Evaluate", mock.Anything, "db-123", "col/doc", "create", mock.MatchedBy(func(req authorization.Request) bool {
@@ -266,6 +263,7 @@ func TestAuthorized_OwnerImplicitDBAdmin_IDMatch(t *testing.T) {
 	}, "create")
 
 	req, _ := http.NewRequest("POST", "/api/v1/databases/db-123/documents/col/doc", bytes.NewBufferString(`{"name":"test"}`))
+	req.Header.Set("Authorization", "Bearer test")
 	req.SetPathValue("database", "db-123")
 	req.SetPathValue("path", "col/doc")
 
@@ -281,10 +279,10 @@ func TestAuthorized_OwnerImplicitDBAdmin_IDMatch(t *testing.T) {
 	ctx := database.WithDatabase(req.Context(), db)
 
 	// Add user ID (matches owner)
-	ctx = context.WithValue(ctx, identity.ContextKeyUserID, "user-123")
+	ctx = context.WithValue(ctx, ctxkeys.KeyUserID, "user-123")
 
 	// Add DBAdmin list that already contains the ID
-	ctx = context.WithValue(ctx, identity.ContextKeyDBAdmin, []string{"db-123"})
+	ctx = context.WithValue(ctx, ctxkeys.KeyDBAdmin, []string{"db-123"})
 
 	req = req.WithContext(ctx)
 
@@ -302,7 +300,7 @@ func TestAuthorized_OwnerImplicitDBAdmin_NotInList(t *testing.T) {
 	mockAuth := new(MockAuthService)
 	mockAuthz := new(MockAuthzService)
 
-	handler, _ := NewHandler(mockService, mockAuth, mockAuthz)
+	handler, _ := NewHandler(mockService, mockAuth, mockAuth, mockAuthz)
 
 	// Set up authz to allow the request
 	mockAuthz.On("Evaluate", mock.Anything, "db-123", "col/doc", "create", mock.MatchedBy(func(req authorization.Request) bool {
@@ -320,6 +318,7 @@ func TestAuthorized_OwnerImplicitDBAdmin_NotInList(t *testing.T) {
 	}, "create")
 
 	req, _ := http.NewRequest("POST", "/api/v1/databases/db-123/documents/col/doc", bytes.NewBufferString(`{"name":"test"}`))
+	req.Header.Set("Authorization", "Bearer test")
 	req.SetPathValue("database", "db-123")
 	req.SetPathValue("path", "col/doc")
 
@@ -335,10 +334,10 @@ func TestAuthorized_OwnerImplicitDBAdmin_NotInList(t *testing.T) {
 	ctx := database.WithDatabase(req.Context(), db)
 
 	// Add user ID (matches owner)
-	ctx = context.WithValue(ctx, identity.ContextKeyUserID, "user-123")
+	ctx = context.WithValue(ctx, ctxkeys.KeyUserID, "user-123")
 
 	// Add DBAdmin list that does NOT contain the database
-	ctx = context.WithValue(ctx, identity.ContextKeyDBAdmin, []string{"other-db"})
+	ctx = context.WithValue(ctx, ctxkeys.KeyDBAdmin, []string{"other-db"})
 
 	req = req.WithContext(ctx)
 
@@ -355,7 +354,7 @@ func TestWithAuthRateLimit_NoLimiter(t *testing.T) {
 	mockAuth := new(MockAuthService)
 	mockAuthz := new(MockAuthzService)
 
-	handler, _ := NewHandler(mockService, mockAuth, mockAuthz)
+	handler, _ := NewHandler(mockService, mockAuth, mockAuth, mockAuthz)
 	// No auth rate limiter set - should pass through
 
 	called := false
@@ -390,7 +389,7 @@ func TestWithAuthRateLimit_Allowed(t *testing.T) {
 	mockAuth := new(MockAuthService)
 	mockAuthz := new(MockAuthzService)
 
-	handler, _ := NewHandler(mockService, mockAuth, mockAuthz)
+	handler, _ := NewHandler(mockService, mockAuth, mockAuth, mockAuthz)
 	handler.SetAuthRateLimiter(&mockRateLimiter{allowResult: true}, 60000000000) // 1 minute
 
 	called := false
@@ -413,7 +412,7 @@ func TestWithAuthRateLimit_Denied(t *testing.T) {
 	mockAuth := new(MockAuthService)
 	mockAuthz := new(MockAuthzService)
 
-	handler, _ := NewHandler(mockService, mockAuth, mockAuthz)
+	handler, _ := NewHandler(mockService, mockAuth, mockAuth, mockAuthz)
 	handler.SetAuthRateLimiter(&mockRateLimiter{allowResult: false}, 60000000000) // 1 minute
 
 	called := false
@@ -442,7 +441,7 @@ func TestNewHandler_WithOptions(t *testing.T) {
 	t.Run("WithDatabaseService option", func(t *testing.T) {
 		// Using a stub that satisfies database.Service interface
 		mockDB := &stubDatabaseService{}
-		handler, err := NewHandler(mockService, mockAuth, mockAuthz,
+		handler, err := NewHandler(mockService, mockAuth, mockAuth, mockAuthz,
 			WithDatabaseService(mockDB))
 
 		assert.NoError(t, err)
@@ -453,7 +452,7 @@ func TestNewHandler_WithOptions(t *testing.T) {
 
 	t.Run("WithAuthRateLimiter option", func(t *testing.T) {
 		limiter := &mockRateLimiter{allowResult: true}
-		handler, err := NewHandler(mockService, mockAuth, mockAuthz,
+		handler, err := NewHandler(mockService, mockAuth, mockAuth, mockAuthz,
 			WithAuthRateLimiter(limiter, 60000000000))
 
 		assert.NoError(t, err)
@@ -464,7 +463,7 @@ func TestNewHandler_WithOptions(t *testing.T) {
 	t.Run("Multiple options", func(t *testing.T) {
 		mockDB := &stubDatabaseService{}
 		limiter := &mockRateLimiter{allowResult: true}
-		handler, err := NewHandler(mockService, mockAuth, mockAuthz,
+		handler, err := NewHandler(mockService, mockAuth, mockAuth, mockAuthz,
 			WithDatabaseService(mockDB),
 			WithAuthRateLimiter(limiter, 60000000000))
 
@@ -475,7 +474,7 @@ func TestNewHandler_WithOptions(t *testing.T) {
 	})
 
 	t.Run("Nil database service does not create validator", func(t *testing.T) {
-		handler, err := NewHandler(mockService, mockAuth, mockAuthz,
+		handler, err := NewHandler(mockService, mockAuth, mockAuth, mockAuthz,
 			WithDatabaseService(nil))
 
 		assert.NoError(t, err)

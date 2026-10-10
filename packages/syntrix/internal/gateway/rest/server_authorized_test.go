@@ -9,10 +9,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/codetreker/syntrix/internal/core/identity"
+	"github.com/codetreker/syntrix/internal/ctxkeys"
 	"github.com/codetreker/syntrix/internal/gateway/authorization"
 	"github.com/codetreker/syntrix/pkg/model"
-
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 )
@@ -26,10 +25,11 @@ func TestAuthorized_EvaluateError(t *testing.T) {
 	authzSvc.On("Evaluate", mock.Anything, "default", "col/doc", "read", mock.Anything, (*authorization.Resource)(nil)).Return(false, errors.New("eval error"))
 
 	req := httptest.NewRequest("GET", "/api/v1/databases/default/documents/foo", nil)
+	req.Header.Set("Authorization", "Bearer test")
 	req.SetPathValue("database", "default")
 	req.SetPathValue("path", "col/doc")
-	ctx := context.WithValue(req.Context(), identity.ContextKeyUserID, "user-1")
-	ctx = context.WithValue(ctx, identity.ContextKeyRoles, []string{"admin", "user"})
+	ctx := context.WithValue(req.Context(), ctxkeys.KeyUserID, "user-1")
+	ctx = context.WithValue(ctx, ctxkeys.KeyRoles, []string{"admin", "user"})
 	req = req.WithContext(ctx)
 
 	w := httptest.NewRecorder()
@@ -49,6 +49,7 @@ func TestAuthorized_Denied(t *testing.T) {
 	authzSvc.On("Evaluate", mock.Anything, "default", "col/doc", "read", mock.Anything, (*authorization.Resource)(nil)).Return(false, nil)
 
 	req := httptest.NewRequest("GET", "/api/v1/databases/default/documents/foo", nil)
+	req.Header.Set("Authorization", "Bearer test")
 	req.SetPathValue("database", "default")
 	req.SetPathValue("path", "col/doc")
 	w := httptest.NewRecorder()
@@ -84,10 +85,11 @@ func TestAuthorized_AllowedWithExistingAndNewData(t *testing.T) {
 	})).Return(true, nil)
 
 	req := httptest.NewRequest("PUT", "/api/v1/databases/default/documents/col/doc", strings.NewReader(`{"field":"new"}`))
+	req.Header.Set("Authorization", "Bearer test")
 	req.SetPathValue("database", "default")
 	req.SetPathValue("path", "col/doc")
-	ctx := context.WithValue(req.Context(), identity.ContextKeyUserID, "user-1")
-	ctx = context.WithValue(ctx, identity.ContextKeyRoles, []string{"admin"})
+	ctx := context.WithValue(req.Context(), ctxkeys.KeyUserID, "user-1")
+	ctx = context.WithValue(ctx, ctxkeys.KeyRoles, []string{"admin"})
 	req = req.WithContext(ctx)
 
 	w := httptest.NewRecorder()

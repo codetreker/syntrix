@@ -135,7 +135,7 @@ func TestQuerySourcePullAcrossLocalAndRemoteGateways(t *testing.T) {
 	gateways := make([]*http.ServeMux, 0, 2)
 	for _, service := range []query.Service{core.New(querySourceRouteStore{}, nil), remote} {
 		auth := &pullRouteAuth{MockAuthService: new(MockAuthService), uid: "owner"}
-		handler, err := NewHandler(service, auth, new(AllowAllAuthzService))
+		handler, err := NewHandler(service, auth, auth, new(AllowAllAuthzService))
 		require.NoError(t, err)
 		handler.SetDatabaseService(querySourceRouteDatabase{})
 		mux := http.NewServeMux()
@@ -156,6 +156,7 @@ func TestQuerySourcePullAcrossLocalAndRemoteGateways(t *testing.T) {
 		})
 		require.NoError(t, err)
 		r := httptest.NewRequest(http.MethodPost, "/replication/v1/databases/app/pull", strings.NewReader(string(body))).WithContext(ctx)
+		r.Header.Set("Authorization", "Bearer test")
 		if page > 0 {
 			r.Header.Set("X-Syntrix-Expected-Database-Identity", "0123456789abcdef")
 		}

@@ -167,7 +167,7 @@ queue. Go requires the version declared by `packages/syntrix/go.mod`.
 |---|---|---|
 | Platform Management | A cluster-control proposal exists; the Go Manager provides process composition | Employee-facing platform scheduling, monitoring, and resource management |
 | Console | `packages/console` is an instance administration frontend currently served by Gateway at `/console/` | A developer-facing service managing developer-owned instances |
-| Identity | Embedded `core/identity` with custom username/password JSON authentication and JWTs | A peer instance Identity module with project-scoped accounts and both OAuth/OIDC roles |
+| Identity | Transport-free `internal/identity` contracts with embedded `core/identity/authn` username/password/JWT implementation and Gateway HTTP adapters | A peer instance Identity module with project-scoped accounts and both OAuth/OIDC roles |
 | Account scope | One runtime-global user model combines roles and database administration | Separate platform employee, Console developer, and project end-user domains |
 | System storage | PostgreSQL stores users and database metadata; revocation currently uses MongoDB | Instance system data, including identity/OAuth/session state, belongs in PostgreSQL |
 | Project hierarchy | Existing database metadata and APIs have no project identity realm | Instance-owned projects, project-owned identity realms, and multiple databases per project |
@@ -183,8 +183,15 @@ from Identity's account/token implementation. Manager constructs the evaluator
 with Query and `GatewayConfig.AuthZ`. Module configurations own their settings
 and lifecycle; rule configuration uses YAML `gateway.authz.rules_path`.
 The [ownership decision](../.agents/notes/implemented/architecture/2026-10-10-gateway-document-authorization.md)
-records the implemented separation. The remaining Identity extraction and
-project/OAuth capabilities stay distinct from that delivered boundary.
+records the implemented document-policy separation.
+
+[Identity contracts and Gateway authentication](../.agents/notes/implemented/architecture/2026-10-10-identity-contracts-and-gateway-authentication.md)
+separate account operations, token verification, and service-token issuance from
+HTTP Bearer/context handling. The account service validates opaque verified
+actor provenance for administrative list/update while returning noncredential
+user views. REST retains its existing blank credential JSON fields and current
+admin/system permissions. Concrete key/repository/runtime extraction and the
+project/OAuth capabilities remain distinct from these delivered boundaries.
 
 The existing database metadata ID and document namespace are also distinct in
 parts of the runtime. A project binding or module extraction must not silently

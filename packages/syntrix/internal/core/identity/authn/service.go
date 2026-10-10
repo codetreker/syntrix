@@ -4,48 +4,32 @@ import (
 	"context"
 	"errors"
 	"log/slog"
-	"net/http"
-	"strings"
 	"time"
 
 	"github.com/codetreker/syntrix/internal/core/identity/config"
 	"github.com/codetreker/syntrix/internal/core/storage"
+	"github.com/codetreker/syntrix/internal/identity"
 	"github.com/google/uuid"
-)
-
-var (
-	ErrInvalidCredentials = errors.New("invalid credentials")
-	ErrAccountDisabled    = errors.New("account disabled")
-	ErrAccountLocked      = errors.New("account locked")
-	ErrInvalidToken       = errors.New("invalid token")
 )
 
 type UserStore = storage.UserStore
 type TokenRevocationStore = storage.TokenRevocationStore
 
-type Service interface {
-	Middleware(next http.Handler) http.Handler
-	MiddlewareOptional(next http.Handler) http.Handler
-	SignIn(ctx context.Context, req LoginRequest) (*TokenPair, error)
-	SignUp(ctx context.Context, req SignupRequest) (*TokenPair, error)
-	Refresh(ctx context.Context, req RefreshRequest) (*TokenPair, error)
-	ListUsers(ctx context.Context, limit int, offset int) ([]*User, error)
-	UpdateUser(ctx context.Context, id string, roles []string, dbAdmin []string, disabled bool) error
-	Logout(ctx context.Context, refreshToken string) error
-	GenerateSystemToken(serviceName string) (string, error)
-	ValidateToken(tokenString string) (*Claims, error)
-}
-
 type AuthService struct {
 	users             UserStore
 	revocations       TokenRevocationStore
 	tokenService      *TokenService
+	verifier          *identity.Verifier
 	passwordValidator *PasswordValidator
 	adminUsername     string // Configurable admin username
 }
 
-func NewAuthService(cfg config.AuthNConfig, users UserStore, revocations TokenRevocationStore) (Service, error) {
+func NewAuthService(cfg config.AuthNConfig, users UserStore, revocations TokenRevocationStore) (*AuthService, error) {
 	tokenService, err := NewTokenService(cfg)
+	if err != nil {
+		return nil, err
+	}
+	verifier, err := identity.NewVerifier(tokenService.ValidateToken)
 	if err != nil {
 		return nil, err
 	}
@@ -53,13 +37,14 @@ func NewAuthService(cfg config.AuthNConfig, users UserStore, revocations TokenRe
 		users:             users,
 		revocations:       revocations,
 		tokenService:      tokenService,
+		verifier:          verifier,
 		passwordValidator: NewPasswordValidator(cfg.PasswordPolicy),
 		adminUsername:     cfg.AdminUsername,
 	}, nil
 }
 
-func (s *AuthService) ValidateToken(tokenString string) (*Claims, error) {
-	return s.tokenService.ValidateToken(tokenString)
+func (s *AuthService) VerifyToken(tokenString string) (*identity.VerifiedIdentity, error) {
+	return s.verifier.VerifyToken(tokenString)
 }
 
 func (s *AuthService) SignIn(ctx context.Context, req LoginRequest) (*TokenPair, error) {
@@ -200,75 +185,28 @@ func (s *AuthService) GenerateSystemToken(serviceName string) (string, error) {
 	return s.tokenService.GenerateSystemToken(serviceName)
 }
 
-func (s *AuthService) Middleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		authHeader := r.Header.Get("Authorization")
-		if authHeader == "" {
-			http.Error(w, "Authorization header required", http.StatusUnauthorized)
-			return
-		}
-
-		parts := strings.Split(authHeader, " ")
-		if len(parts) != 2 || parts[0] != "Bearer" {
-			http.Error(w, "Invalid authorization header format", http.StatusUnauthorized)
-			return
-		}
-
-		tokenString := parts[1]
-		claims, err := s.tokenService.ValidateToken(tokenString)
-		if err != nil {
-			http.Error(w, "Invalid or expired token", http.StatusUnauthorized)
-			return
-		}
-
-		// Add user info to context (database is now extracted from URL, not token)
-		ctx := context.WithValue(r.Context(), ContextKeyUserID, claims.Subject)
-		ctx = context.WithValue(ctx, ContextKeyUsername, claims.Username)
-		ctx = context.WithValue(ctx, ContextKeyRoles, claims.Roles)
-		ctx = context.WithValue(ctx, ContextKeyClaims, claims)
-		ctx = context.WithValue(ctx, ContextKeyDBAdmin, claims.DBAdmin)
-
-		next.ServeHTTP(w, r.WithContext(ctx))
-	})
+func (s *AuthService) ListUsers(ctx context.Context, actor *identity.VerifiedIdentity, limit int, offset int) ([]*identity.User, error) {
+	if err := s.verifier.AuthorizeAdmin(actor); err != nil {
+		return nil, err
+	}
+	users, err := s.users.ListUsers(ctx, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	if users == nil {
+		return nil, nil
+	}
+	views := make([]*identity.User, len(users))
+	for i, user := range users {
+		views[i] = userView(user)
+	}
+	return views, nil
 }
 
-func (s *AuthService) MiddlewareOptional(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		authHeader := r.Header.Get("Authorization")
-		if authHeader == "" {
-			next.ServeHTTP(w, r)
-			return
-		}
-
-		parts := strings.Split(authHeader, " ")
-		if len(parts) != 2 || parts[0] != "Bearer" {
-			http.Error(w, "Invalid authorization header format", http.StatusUnauthorized)
-			return
-		}
-
-		tokenString := parts[1]
-		claims, err := s.tokenService.ValidateToken(tokenString)
-		if err != nil {
-			http.Error(w, "Invalid or expired token", http.StatusUnauthorized)
-			return
-		}
-
-		// Add user info to context (database is now extracted from URL, not token)
-		ctx := context.WithValue(r.Context(), ContextKeyUserID, claims.Subject)
-		ctx = context.WithValue(ctx, ContextKeyUsername, claims.Username)
-		ctx = context.WithValue(ctx, ContextKeyRoles, claims.Roles)
-		ctx = context.WithValue(ctx, ContextKeyClaims, claims)
-		ctx = context.WithValue(ctx, ContextKeyDBAdmin, claims.DBAdmin)
-
-		next.ServeHTTP(w, r.WithContext(ctx))
-	})
-}
-
-func (s *AuthService) ListUsers(ctx context.Context, limit int, offset int) ([]*User, error) {
-	return s.users.ListUsers(ctx, limit, offset)
-}
-
-func (s *AuthService) UpdateUser(ctx context.Context, id string, roles []string, dbAdmin []string, disabled bool) error {
+func (s *AuthService) UpdateUser(ctx context.Context, actor *identity.VerifiedIdentity, id string, roles []string, dbAdmin []string, disabled bool) error {
+	if err := s.verifier.AuthorizeAdmin(actor); err != nil {
+		return err
+	}
 	user, err := s.users.GetUserByID(ctx, id)
 	if err != nil {
 		return err

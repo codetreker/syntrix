@@ -116,7 +116,7 @@ func TestSignUp_Coverage(t *testing.T) {
 			}
 			svc, err := NewAuthService(cfg, mockStorage, mockStorage)
 			require.NoError(t, err)
-			authService := svc.(*AuthService)
+			authService := svc
 
 			if tc.mockSetup != nil {
 				tc.mockSetup(mockStorage)
@@ -149,14 +149,14 @@ func TestRefresh_Coverage(t *testing.T) {
 
 	tests := []struct {
 		name        string
-		setupToken  func(t *testing.T, svc Service, m *MockStorage) string
+		setupToken  func(t *testing.T, svc *AuthService, m *MockStorage) string
 		mockSetup   func(*MockStorage)
 		expectError bool
 		errorIs     error
 	}{
 		{
 			name: "Revoked Token",
-			setupToken: func(t *testing.T, svc Service, m *MockStorage) string {
+			setupToken: func(t *testing.T, svc *AuthService, m *MockStorage) string {
 				m.On("GetUserByUsername", mock.Anything, "revoked").Return(nil, ErrUserNotFound).Once()
 				m.On("CreateUser", mock.Anything, mock.Anything).Return(nil).Once()
 				resp, err := svc.SignUp(context.Background(), SignupRequest{
@@ -174,7 +174,7 @@ func TestRefresh_Coverage(t *testing.T) {
 		},
 		{
 			name: "Revocation Check Error",
-			setupToken: func(t *testing.T, svc Service, m *MockStorage) string {
+			setupToken: func(t *testing.T, svc *AuthService, m *MockStorage) string {
 				m.On("GetUserByUsername", mock.Anything, "reverr").Return(nil, ErrUserNotFound).Once()
 				m.On("CreateUser", mock.Anything, mock.Anything).Return(nil).Once()
 				resp, err := svc.SignUp(context.Background(), SignupRequest{
@@ -191,7 +191,7 @@ func TestRefresh_Coverage(t *testing.T) {
 		},
 		{
 			name: "User Not Found",
-			setupToken: func(t *testing.T, svc Service, m *MockStorage) string {
+			setupToken: func(t *testing.T, svc *AuthService, m *MockStorage) string {
 				m.On("GetUserByUsername", mock.Anything, "missing").Return(nil, ErrUserNotFound).Once()
 				m.On("CreateUser", mock.Anything, mock.Anything).Return(nil).Once()
 				resp, err := svc.SignUp(context.Background(), SignupRequest{
@@ -209,7 +209,7 @@ func TestRefresh_Coverage(t *testing.T) {
 		},
 		{
 			name: "User Disabled",
-			setupToken: func(t *testing.T, svc Service, m *MockStorage) string {
+			setupToken: func(t *testing.T, svc *AuthService, m *MockStorage) string {
 				m.On("GetUserByUsername", mock.Anything, "disabled").Return(nil, ErrUserNotFound).Once()
 				m.On("CreateUser", mock.Anything, mock.Anything).Return(nil).Once()
 				resp, err := svc.SignUp(context.Background(), SignupRequest{

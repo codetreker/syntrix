@@ -5,12 +5,13 @@ import (
 	"errors"
 	"time"
 
+	"github.com/codetreker/syntrix/internal/identity"
 	"github.com/codetreker/syntrix/pkg/model"
 )
 
 var (
-	ErrUserNotFound = errors.New("user not found")
-	ErrUserExists   = errors.New("user already exists")
+	ErrUserNotFound = identity.ErrUserNotFound
+	ErrUserExists   = identity.ErrUserExists
 )
 
 // User represents a user in the system

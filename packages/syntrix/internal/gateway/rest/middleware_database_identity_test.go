@@ -9,7 +9,7 @@ import (
 	"testing"
 
 	"github.com/codetreker/syntrix/internal/core/database"
-	"github.com/codetreker/syntrix/internal/core/identity"
+	"github.com/codetreker/syntrix/internal/ctxkeys"
 	"github.com/codetreker/syntrix/internal/gateway/authorization"
 	authorizationconfig "github.com/codetreker/syntrix/internal/gateway/authorization/config"
 	"github.com/codetreker/syntrix/pkg/model"
@@ -77,11 +77,12 @@ func TestBoundRoutesRejectReassignedSlugAcrossCachedGateways(t *testing.T) {
 		} {
 			source := new(MockQueryService)
 			auth := &pullRouteAuth{MockAuthService: new(MockAuthService), uid: "owner"}
-			h, err := NewHandler(source, auth, new(AllowAllAuthzService), WithDatabaseService(svc))
+			h, err := NewHandler(source, auth, auth, new(AllowAllAuthzService), WithDatabaseService(svc))
 			require.NoError(t, err)
 			mux := http.NewServeMux()
 			h.RegisterRoutes(mux)
 			r := httptest.NewRequest(route.method, route.path, strings.NewReader(route.body))
+			r.Header.Set("Authorization", "Bearer test")
 			r.Header.Set(ExpectedDatabaseIdentityHeader, oldID)
 			w := newPullRecorder()
 			mux.ServeHTTP(w, r)
@@ -113,12 +114,13 @@ func TestBoundIdentityUsesFreshStatusAndAuthorization(t *testing.T) {
 			store.db, store.err = tc.current, tc.err
 			h := &Handler{database: svc}
 			r := httptest.NewRequest(http.MethodGet, "/", nil)
+			r.Header.Set("Authorization", "Bearer test")
 			r.SetPathValue("database", "id:1111111111111111")
 			if tc.name == "owner changed" {
 				r.SetPathValue("database", "friendly-name")
 			}
 			r.Header.Set(ExpectedDatabaseIdentityHeader, "1111111111111111")
-			r = r.WithContext(context.WithValue(r.Context(), identity.ContextKeyUserID, "owner"))
+			r = r.WithContext(context.WithValue(r.Context(), ctxkeys.KeyUserID, "owner"))
 			w := httptest.NewRecorder()
 			_, ok := h.resolveReplicationDatabase(w, r, true)
 			require.False(t, ok)
@@ -132,6 +134,7 @@ func TestBoundIdentityUsesFreshStatusAndAuthorization(t *testing.T) {
 func TestExpectedDatabaseIdentityHeaderValidation(t *testing.T) {
 	for _, values := range [][]string{nil, {""}, {"ABCDEF0123456789"}, {"abcdef012345678"}, {"abcdef0123456789,abcdef0123456789"}, {"abcdef0123456789", "abcdef0123456789"}, {" abcdef0123456789"}} {
 		r := httptest.NewRequest(http.MethodGet, "/", nil)
+		r.Header.Set("Authorization", "Bearer test")
 		r.Header[http.CanonicalHeaderKey(ExpectedDatabaseIdentityHeader)] = values
 		_, present, err := expectedDatabaseIdentity(r)
 		require.True(t, present)
@@ -142,6 +145,7 @@ func TestExpectedDatabaseIdentityHeaderValidation(t *testing.T) {
 		require.Equal(t, 400, w.Code)
 	}
 	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.Header.Set("Authorization", "Bearer test")
 	_, present, err := expectedDatabaseIdentity(r)
 	require.NoError(t, err)
 	require.False(t, present)
@@ -156,8 +160,9 @@ func TestIdentityGatePreservesNamespaceAndUsesFreshObject(t *testing.T) {
 	h := &Handler{database: svc}
 	for _, namespace := range []string{"friendly-name", "id:2222222222222222"} {
 		r := httptest.NewRequest(http.MethodPost, "/", nil)
+		r.Header.Set("Authorization", "Bearer test")
 		r.SetPathValue("database", namespace)
-		r = r.WithContext(context.WithValue(r.Context(), identity.ContextKeyUserID, "new-owner"))
+		r = r.WithContext(context.WithValue(r.Context(), ctxkeys.KeyUserID, "new-owner"))
 		w := httptest.NewRecorder()
 		resolved, ok := h.resolveReplicationDatabase(w, r, true)
 		require.True(t, ok, w.Body.String())
@@ -168,6 +173,7 @@ func TestIdentityGatePreservesNamespaceAndUsesFreshObject(t *testing.T) {
 	}
 	reads := store.reads
 	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.Header.Set("Authorization", "Bearer test")
 	r.SetPathValue("database", "friendly-name")
 	w := httptest.NewRecorder()
 	_, ok := h.resolveReplicationDatabase(w, r, true)
@@ -191,11 +197,12 @@ func TestBoundQueryDispatchesOnlyTheValidatedIdentityAndOriginalNamespace(t *tes
 			require.True(t, ok)
 			require.Equal(t, id, db.ID)
 		}).Return(model.QueryPage{}, nil).Once()
-		h, err := NewHandler(source, auth, new(AllowAllAuthzService), WithDatabaseService(database.NewService(store, database.DefaultServiceConfig(), nil)))
+		h, err := NewHandler(source, auth, auth, new(AllowAllAuthzService), WithDatabaseService(database.NewService(store, database.DefaultServiceConfig(), nil)))
 		require.NoError(t, err)
 		mux := http.NewServeMux()
 		h.RegisterRoutes(mux)
 		r := httptest.NewRequest(http.MethodPost, "/api/v1/databases/friendly-name/query", strings.NewReader(`{"collection":"users"}`))
+		r.Header.Set("Authorization", "Bearer test")
 		r.Header.Set(ExpectedDatabaseIdentityHeader, id)
 		w := httptest.NewRecorder()
 		mux.ServeHTTP(w, r)
@@ -225,11 +232,12 @@ func TestBoundGetUsesFullScopeAuthorizationWithActualAuthZ(t *testing.T) {
 				}
 				authz, err := authorization.NewEngine(authorizationconfig.Config{}, source)
 				require.NoError(t, err)
-				h, err := NewHandler(source, auth, authz, WithDatabaseService(database.NewService(store, database.DefaultServiceConfig(), nil)))
+				h, err := NewHandler(source, auth, auth, authz, WithDatabaseService(database.NewService(store, database.DefaultServiceConfig(), nil)))
 				require.NoError(t, err)
 				mux := http.NewServeMux()
 				h.RegisterRoutes(mux)
 				r := httptest.NewRequest(http.MethodGet, "/api/v1/databases/"+namespace+"/documents/users/alice", nil)
+				r.Header.Set("Authorization", "Bearer test")
 				r.Header.Set(ExpectedDatabaseIdentityHeader, id)
 				w := httptest.NewRecorder()
 				mux.ServeHTTP(w, r)
@@ -254,7 +262,8 @@ func TestReplicationAuthorizationRequiresAuthenticatedValidatedDatabase(t *testi
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r := httptest.NewRequest(http.MethodGet, "/", nil)
-			ctx := context.WithValue(r.Context(), identity.ContextKeyUserID, tc.uid)
+			r.Header.Set("Authorization", "Bearer test")
+			ctx := context.WithValue(r.Context(), ctxkeys.KeyUserID, tc.uid)
 			r.SetPathValue("database", "friendly-name")
 			handler := &Handler{database: &mockDatabaseService{resolveFunc: func(context.Context, string) (*database.Database, error) {
 				return tc.db, nil

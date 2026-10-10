@@ -1,7 +1,7 @@
 package trigger
 
 import (
-	"github.com/codetreker/syntrix/internal/core/identity"
+	"github.com/codetreker/syntrix/internal/identity"
 	"github.com/codetreker/syntrix/internal/trigger/delivery/worker"
 )
 
@@ -9,6 +9,6 @@ import (
 type DeliveryWorker = worker.DeliveryWorker
 
 // NewDeliveryWorker creates a new DeliveryWorker.
-func NewDeliveryWorker(auth identity.AuthN) DeliveryWorker {
+func NewDeliveryWorker(auth identity.SystemTokenIssuer) DeliveryWorker {
 	return worker.NewDeliveryWorker(auth, nil, worker.HTTPClientOptions{}, nil)
 }

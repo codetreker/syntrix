@@ -13,9 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codetreker/syntrix/internal/core/identity"
 	"github.com/codetreker/syntrix/internal/trigger/types"
-
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
@@ -25,29 +23,10 @@ type MockAuthN struct {
 	mock.Mock
 }
 
-func (m *MockAuthN) Middleware(next http.Handler) http.Handler         { return next }
-func (m *MockAuthN) MiddlewareOptional(next http.Handler) http.Handler { return next }
-func (m *MockAuthN) SignIn(ctx context.Context, req identity.LoginRequest) (*identity.TokenPair, error) {
-	return nil, nil
-}
-func (m *MockAuthN) SignUp(ctx context.Context, req identity.SignupRequest) (*identity.TokenPair, error) {
-	return nil, nil
-}
-func (m *MockAuthN) Refresh(ctx context.Context, req identity.RefreshRequest) (*identity.TokenPair, error) {
-	return nil, nil
-}
-func (m *MockAuthN) ListUsers(ctx context.Context, limit int, offset int) ([]*identity.User, error) {
-	return nil, nil
-}
-func (m *MockAuthN) UpdateUser(ctx context.Context, id string, roles []string, dbAdmin []string, disabled bool) error {
-	return nil
-}
-func (m *MockAuthN) Logout(ctx context.Context, refreshToken string) error { return nil }
 func (m *MockAuthN) GenerateSystemToken(serviceName string) (string, error) {
 	args := m.Called(serviceName)
 	return args.String(0), args.Error(1)
 }
-func (m *MockAuthN) ValidateToken(tokenString string) (*identity.Claims, error) { return nil, nil }
 
 func TestDeliveryWorker_ProcessTask(t *testing.T) {
 	// 1. Setup Mock Server

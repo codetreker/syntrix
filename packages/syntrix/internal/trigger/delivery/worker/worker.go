@@ -15,7 +15,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/codetreker/syntrix/internal/core/identity"
+	"github.com/codetreker/syntrix/internal/identity"
 	"github.com/codetreker/syntrix/internal/trigger/types"
 )
 
@@ -28,13 +28,13 @@ type HTTPClientOptions struct {
 // HTTPWorker handles the execution of delivery tasks via HTTP.
 type HTTPWorker struct {
 	client  *http.Client
-	auth    identity.AuthN
+	auth    identity.SystemTokenIssuer
 	secrets SecretProvider
 	metrics types.Metrics
 }
 
 // NewDeliveryWorker creates a new HTTPWorker.
-func NewDeliveryWorker(auth identity.AuthN, secrets SecretProvider, opts HTTPClientOptions, metrics types.Metrics) DeliveryWorker {
+func NewDeliveryWorker(auth identity.SystemTokenIssuer, secrets SecretProvider, opts HTTPClientOptions, metrics types.Metrics) DeliveryWorker {
 	if metrics == nil {
 		metrics = &types.NoopMetrics{}
 	}

@@ -86,7 +86,7 @@ func TestPullHTTPGRPCMongo(t *testing.T) {
 		return current.Load(), nil
 	}}
 	auth := &pullRouteAuth{MockAuthService: new(MockAuthService), uid: "owner"}
-	handler, err := NewHandler(remote, auth, new(AllowAllAuthzService), WithDatabaseService(databaseService))
+	handler, err := NewHandler(remote, auth, auth, new(AllowAllAuthzService), WithDatabaseService(databaseService))
 	require.NoError(t, err)
 	mux := http.NewServeMux()
 	handler.RegisterRoutes(mux)
@@ -104,6 +104,7 @@ func TestPullHTTPGRPCMongo(t *testing.T) {
 		body, err := json.Marshal(map[string]any{"collection": "users", "checkpoint": position, "limit": 1})
 		require.NoError(t, err)
 		request, err := http.NewRequestWithContext(ctx, http.MethodPost, httpServer.URL+"/replication/v1/databases/"+namespace+"/pull", bytes.NewReader(body))
+		request.Header.Set("Authorization", "Bearer test")
 		require.NoError(t, err)
 		request.Header.Set("Content-Type", "application/json")
 		response, err := httpClient.Do(request)

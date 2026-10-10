@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codetreker/syntrix/internal/core/identity"
+	"github.com/codetreker/syntrix/internal/ctxkeys"
 	api_config "github.com/codetreker/syntrix/internal/gateway/config"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -72,7 +72,7 @@ func TestHasSystemRole_NilContext(t *testing.T) {
 }
 
 func TestHasSystemRole_NoSystemRole(t *testing.T) {
-	ctx := context.WithValue(context.Background(), identity.ContextKeyRoles, []string{"user", "admin"})
+	ctx := context.WithValue(context.Background(), ctxkeys.KeyRoles, []string{"user", "admin"})
 	assert.False(t, hasSystemRole(ctx))
 }
 

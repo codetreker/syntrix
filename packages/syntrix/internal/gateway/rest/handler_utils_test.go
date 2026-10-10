@@ -5,7 +5,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/codetreker/syntrix/internal/core/identity"
+	"github.com/codetreker/syntrix/internal/identity"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -13,12 +13,15 @@ func TestNewHandler_NilArgs(t *testing.T) {
 	mockAuthz := new(AllowAllAuthzService)
 
 	// Test error when auth is nil
-	_, err := NewHandler(&MockQueryService{}, nil, mockAuthz)
+	_, err := NewHandler(&MockQueryService{}, nil, nil, mockAuthz)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "authn service cannot be nil")
 
+	_, err = NewHandler(&MockQueryService{}, new(MockAuthService), nil, mockAuthz)
+	assert.EqualError(t, err, "token verifier cannot be nil")
+
 	// Test error when authz is nil
-	_, err = NewHandler(&MockQueryService{}, new(MockAuthService), nil)
+	_, err = NewHandler(&MockQueryService{}, new(MockAuthService), new(MockAuthService), nil)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "authz service cannot be nil")
 }

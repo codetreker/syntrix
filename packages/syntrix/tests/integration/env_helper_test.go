@@ -89,7 +89,7 @@ func setupServiceEnvWithOptions(t *testing.T, rulesContent string, configModifie
 }
 
 func (e *ServiceEnv) GenerateSystemToken(t *testing.T) string {
-	authService := e.Manager.AuthService()
+	authService := e.Manager.SystemTokenIssuer()
 	token, err := authService.GenerateSystemToken("system-worker")
 	require.NoError(t, err)
 	return token

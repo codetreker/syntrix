@@ -52,7 +52,7 @@ type ServiceOptions struct {
 // Dependencies contains external dependencies for the delivery service.
 type Dependencies struct {
     Nats    *nats.Conn
-    Auth    identity.AuthN        // For system token generation
+    Auth    identity.SystemTokenIssuer // For system token generation
     Secrets types.SecretProvider  // For resolving SecretsRef
     Metrics types.Metrics
 }
@@ -82,7 +82,10 @@ Processes tasks with configurable concurrency.
 
 ### 3. HTTP Delivery Worker
 
-Executes webhook HTTP requests.
+Executes webhook HTTP requests. Its Identity dependency is the transport-free
+`SystemTokenIssuer`; account management and verification are separate capabilities.
+Generated credentials are embedded in `DeliveryTask.PreIssuedToken` for the
+receiving handler, while configured HTTP headers retain their existing behavior.
 
 **Key behaviors:**
 - Builds HTTP request from DeliveryTask

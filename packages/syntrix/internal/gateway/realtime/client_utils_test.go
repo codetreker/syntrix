@@ -5,8 +5,9 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/codetreker/syntrix/internal/core/identity"
+	"github.com/codetreker/syntrix/internal/ctxkeys"
 	api_config "github.com/codetreker/syntrix/internal/gateway/config"
+	"github.com/codetreker/syntrix/internal/identity"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -124,7 +125,7 @@ func TestDatabaseFromContext(t *testing.T) {
 
 	// Case 3: System role in claims makes allowAll true
 	claimsSystem := &identity.Claims{Roles: []string{"system"}}
-	ctx2 := context.WithValue(context.Background(), identity.ContextKeyClaims, claimsSystem)
+	ctx2 := context.WithValue(context.Background(), ctxkeys.KeyClaims, claimsSystem)
 	ctx2 = context.WithValue(ctx2, contextKeyDatabase, "database2")
 	database, allowAll = databaseFromContext(ctx2)
 	assert.Equal(t, "database2", database)

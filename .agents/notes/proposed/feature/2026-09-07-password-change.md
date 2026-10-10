@@ -6,9 +6,11 @@ Status: proposed
 
 The [authentication design](../../../../docs/design/server/core/identity/02.authentication.md)
 requires old-password verification and token rotation. The current
-[authentication service](../../../../packages/syntrix/internal/core/identity/authn/service.go)
-implements explicit signup, signin, refresh, and logout; its interface has no
-password-change operation. The [PostgreSQL user update](../../../../packages/syntrix/internal/core/storage/postgres/user_store.go)
+[authentication implementation](../../../../packages/syntrix/internal/core/identity/authn/service.go)
+implements explicit signup, signin, refresh, and logout. The public account
+contract in `internal/identity` has no password-change operation. Transport-free
+contracts and verified administrative actor provenance do not add that capability.
+The [PostgreSQL user update](../../../../packages/syntrix/internal/core/storage/postgres/user_store.go)
 changes roles, database administration, and disabled state, without updating
 credentials. Existing token revocation targets individual token identifiers.
 Static inspection therefore finds an absent account capability, not an absent

@@ -22,11 +22,11 @@ func TestValidateToken_ErrorPaths(t *testing.T) {
 	}
 	svc, err := NewAuthService(cfg, mockStorage, mockStorage)
 	require.NoError(t, err)
-	authService := svc.(*AuthService)
+	authService := svc
 
 	t.Run("Invalid Token Format", func(t *testing.T) {
 		t.Parallel()
-		_, err := authService.ValidateToken("invalid-token-string")
+		_, err := authService.VerifyToken("invalid-token-string")
 		assert.Error(t, err)
 	})
 
@@ -37,7 +37,7 @@ func TestValidateToken_ErrorPaths(t *testing.T) {
 		tokenString, err := token.SignedString([]byte("secret"))
 		require.NoError(t, err)
 
-		_, err = authService.ValidateToken(tokenString)
+		_, err = authService.VerifyToken(tokenString)
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "unexpected signing method")
 	})
