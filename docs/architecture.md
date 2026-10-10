@@ -190,7 +190,14 @@ separate account operations, token verification, and service-token issuance from
 HTTP Bearer/context handling. The account service validates opaque verified
 actor provenance for administrative list/update while returning noncredential
 user views. REST retains its existing blank credential JSON fields and current
-admin/system permissions. Concrete key/repository/runtime extraction and the
+admin/system permissions.
+
+[Identity token capabilities](../.agents/notes/implemented/architecture/2026-10-10-identity-token-capabilities.md)
+separate the concrete account service, user-token signer, system-token issuer,
+and public-key verifier. The verifier holds only a detached public key; Manager
+shares it with Gateway and administrative account operations. Current local
+API/Trigger Worker composition still loads the configured private key for
+issuing capabilities. Repository/runtime extraction, key distribution, and
 project/OAuth capabilities remain distinct from these delivered boundaries.
 
 The existing database metadata ID and document namespace are also distinct in

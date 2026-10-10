@@ -40,8 +40,11 @@ boundary within the broader [instance architecture](../../proposed/architecture/
 The [Identity contract decision](2026-10-10-identity-contracts-and-gateway-authentication.md)
 owns the later account/verifier/issuer capability separation, safe user views,
 and Gateway authentication adapter. The broader proposal remains active for
-concrete signing/public-key verification separation, repository/runtime
-composition, project realms, sessions, deployment, and both OAuth roles.
+repository/runtime composition, verification-key distribution, project realms,
+sessions, deployment, and both OAuth roles. The
+[token capability decision](2026-10-10-identity-token-capabilities.md) owns the
+later concrete signer/issuer/public-verifier separation; current process
+assembly still loads private keys for local issuing capabilities.
 
 ## Alternatives
 
@@ -72,5 +75,6 @@ that ownership.
   Configuration values/defaults retain their meaning under the module-owned
   YAML layout; deployment overrides require the documented rule-path move.
   Account contracts and the Gateway authentication adapter follow the Identity
-  contract decision; concrete token/store/runtime separation and new Identity
-  capabilities retain separate delivery gates.
+  contract decision; concrete token capabilities follow their own decision.
+  Store/runtime separation, key distribution, and new Identity capabilities
+  retain separate delivery gates.

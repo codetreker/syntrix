@@ -493,6 +493,40 @@ func TestRunSubscriptionRechecksTerminationBeforeReady(t *testing.T) {
 	require.Zero(t, readyCalls)
 }
 
+func TestRunSubscriptionReadyFailure(t *testing.T) {
+	readyErr := errors.New("ready publication failed")
+	for _, tc := range []struct {
+		name   string
+		cancel bool
+		kind   SubscriptionExitKind
+		cause  error
+	}{
+		{name: "publication", kind: SubscriptionExitReadyFailed, cause: readyErr},
+		{name: "cancellation", cancel: true, kind: SubscriptionExitContextCanceled, cause: context.Canceled},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			sub := testSubscriber(t, "runner", nil, false, 1)
+			calls := 0
+			exit := RunSubscription(ctx, sub, false, SubscriptionDriver{
+				Ready: func(context.Context, string) error {
+					calls++
+					if tc.cancel {
+						cancel()
+					}
+					return readyErr
+				},
+			})
+			require.Equal(t, tc.kind, exit.Kind)
+			require.Equal(t, SubscriptionPhaseReady, exit.Phase)
+			require.ErrorIs(t, exit.Err, tc.cause)
+			require.Nil(t, exit.CleanupErr)
+			require.Equal(t, 1, calls)
+		})
+	}
+}
+
 func queueRecovery(t *testing.T, sub *Subscriber) {
 	t.Helper()
 	admitted, recoveryStarted := sub.enqueue(subscriptionEvent(1))

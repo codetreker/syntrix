@@ -20,13 +20,13 @@ func TestValidateToken_ErrorPaths(t *testing.T) {
 		PrivateKeyFile: getTestKeyPath(t),
 		AccessTokenTTL: time.Minute,
 	}
-	svc, err := NewAuthService(cfg, mockStorage, mockStorage)
+	svc, err := newTestAccountService(cfg, mockStorage, mockStorage)
 	require.NoError(t, err)
 	authService := svc
 
 	t.Run("Invalid Token Format", func(t *testing.T) {
 		t.Parallel()
-		_, err := authService.VerifyToken("invalid-token-string")
+		_, err := authService.verifier.VerifyToken("invalid-token-string")
 		assert.Error(t, err)
 	})
 
@@ -37,7 +37,7 @@ func TestValidateToken_ErrorPaths(t *testing.T) {
 		tokenString, err := token.SignedString([]byte("secret"))
 		require.NoError(t, err)
 
-		_, err = authService.VerifyToken(tokenString)
+		_, err = authService.verifier.VerifyToken(tokenString)
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "unexpected signing method")
 	})
@@ -50,7 +50,7 @@ func TestSignIn_ErrorPaths(t *testing.T) {
 	cfg := config.AuthNConfig{
 		PrivateKeyFile: getTestKeyPath(t),
 	}
-	svc, err := NewAuthService(cfg, mockStorage, mockStorage)
+	svc, err := newTestAccountService(cfg, mockStorage, mockStorage)
 	require.NoError(t, err)
 
 	t.Run("VerifyPassword Error", func(t *testing.T) {
@@ -80,7 +80,7 @@ func TestRefresh_ErrorPaths_Extended(t *testing.T) {
 		AccessTokenTTL:  time.Minute,
 		RefreshTokenTTL: time.Hour,
 	}
-	svc, err := NewAuthService(cfg, mockStorage, mockStorage)
+	svc, err := newTestAccountService(cfg, mockStorage, mockStorage)
 	require.NoError(t, err)
 
 	// Helper to get a valid refresh token

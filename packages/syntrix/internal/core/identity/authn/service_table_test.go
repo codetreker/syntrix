@@ -47,7 +47,7 @@ func TestSignUp_TableDriven(t *testing.T) {
 				RefreshTokenTTL: 7 * 24 * time.Hour,
 				AuthCodeTTL:     2 * time.Minute,
 			}
-			svc, err := NewAuthService(cfg, mockStorage, mockStorage)
+			svc, err := newTestAccountService(cfg, mockStorage, mockStorage)
 			require.NoError(t, err)
 			authService := svc
 
@@ -208,7 +208,7 @@ func TestSignIn_TableDriven(t *testing.T) {
 				RefreshTokenTTL: 7 * 24 * time.Hour,
 				AuthCodeTTL:     2 * time.Minute,
 			}
-			svc, err := NewAuthService(cfg, mockStorage, mockStorage)
+			svc, err := newTestAccountService(cfg, mockStorage, mockStorage)
 			require.NoError(t, err)
 			authService := svc
 
@@ -243,14 +243,14 @@ func TestRefresh_TableDriven(t *testing.T) {
 
 	tests := []struct {
 		name        string
-		setupToken  func(t *testing.T, svc *AuthService, m *MockStorage) string
+		setupToken  func(t *testing.T, svc *accountService, m *MockStorage) string
 		mockSetup   func(*MockStorage)
 		expectError bool
 		errorIs     error
 	}{
 		{
 			name: "Success",
-			setupToken: func(t *testing.T, svc *AuthService, m *MockStorage) string {
+			setupToken: func(t *testing.T, svc *accountService, m *MockStorage) string {
 				// Mock SignUp to get a token
 				m.On("GetUserByUsername", mock.Anything, "refreshuser").Return(nil, ErrUserNotFound).Once()
 				m.On("CreateUser", mock.Anything, mock.Anything).Return(nil).Once()
@@ -270,7 +270,7 @@ func TestRefresh_TableDriven(t *testing.T) {
 		},
 		{
 			name: "Invalid Token",
-			setupToken: func(t *testing.T, svc *AuthService, m *MockStorage) string {
+			setupToken: func(t *testing.T, svc *accountService, m *MockStorage) string {
 				return "invalid-token"
 			},
 			mockSetup:   func(m *MockStorage) {},
@@ -284,7 +284,7 @@ func TestRefresh_TableDriven(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			mockStorage := new(MockStorage)
-			svc, err := NewAuthService(cfg, mockStorage, mockStorage)
+			svc, err := newTestAccountService(cfg, mockStorage, mockStorage)
 			require.NoError(t, err)
 
 			token := tt.setupToken(t, svc, mockStorage)
@@ -319,13 +319,13 @@ func TestLogout_TableDriven(t *testing.T) {
 
 	tests := []struct {
 		name        string
-		setupToken  func(t *testing.T, svc *AuthService, m *MockStorage) string
+		setupToken  func(t *testing.T, svc *accountService, m *MockStorage) string
 		mockSetup   func(*MockStorage)
 		expectError bool
 	}{
 		{
 			name: "Success",
-			setupToken: func(t *testing.T, svc *AuthService, m *MockStorage) string {
+			setupToken: func(t *testing.T, svc *accountService, m *MockStorage) string {
 				m.On("GetUserByUsername", mock.Anything, "logoutuser").Return(nil, ErrUserNotFound).Once()
 				m.On("CreateUser", mock.Anything, mock.Anything).Return(nil).Once()
 				resp, err := svc.SignUp(context.Background(), SignupRequest{
@@ -346,7 +346,7 @@ func TestLogout_TableDriven(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			mockStorage := new(MockStorage)
-			svc, err := NewAuthService(cfg, mockStorage, mockStorage)
+			svc, err := newTestAccountService(cfg, mockStorage, mockStorage)
 			require.NoError(t, err)
 
 			token := tt.setupToken(t, svc, mockStorage)

@@ -13,9 +13,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestTokenService_ErrorPaths(t *testing.T) {
+func TestTokenCapabilities_ErrorPaths(t *testing.T) {
 	t.Parallel()
-	t.Run("NewTokenService_InvalidKeyPath", func(t *testing.T) {
+	t.Run("NewSystemTokenIssuer_InvalidKeyPath", func(t *testing.T) {
 		// Use a path that cannot be written to (e.g., under a file treated as dir)
 		tmpDir := t.TempDir()
 		dummyFile := filepath.Join(tmpDir, "file")
@@ -24,7 +24,7 @@ func TestTokenService_ErrorPaths(t *testing.T) {
 		cfg := config.AuthNConfig{
 			PrivateKeyFile: filepath.Join(dummyFile, "key.pem"),
 		}
-		_, err := NewTokenService(cfg)
+		_, err := NewSystemTokenIssuer(cfg)
 		assert.Error(t, err)
 	})
 
@@ -53,9 +53,9 @@ func TestTokenService_ErrorPaths(t *testing.T) {
 
 		keyFile := getTestKeyPath(t)
 		cfg := config.AuthNConfig{PrivateKeyFile: keyFile}
-		ts, _ := NewTokenService(cfg)
+		_, verifier := tokenCapabilitiesForTest(t, cfg)
 
-		_, err := ts.ValidateToken(tokenString)
+		_, err := verifier.VerifyToken(tokenString)
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "unexpected signing method")
 	})
@@ -63,9 +63,9 @@ func TestTokenService_ErrorPaths(t *testing.T) {
 	t.Run("ValidateToken_MalformedToken", func(t *testing.T) {
 		keyFile := getTestKeyPath(t)
 		cfg := config.AuthNConfig{PrivateKeyFile: keyFile}
-		ts, _ := NewTokenService(cfg)
+		_, verifier := tokenCapabilitiesForTest(t, cfg)
 
-		_, err := ts.ValidateToken("not.a.token")
+		_, err := verifier.VerifyToken("not.a.token")
 		assert.Error(t, err)
 	})
 }
@@ -105,32 +105,22 @@ func TestEnsurePrivateKey_GenerateError(t *testing.T) {
 	assert.Contains(t, err.Error(), "failed to generate key")
 }
 
-func TestTokenService_GenerateTokenPair_SigningError(t *testing.T) {
-	// It's hard to force a signing error with valid RSA keys using standard library.
-	// However, we can test that if private key is somehow invalid (though NewTokenService ensures it's valid).
-	// Or we can mock the private key if we change the struct to use an interface, but that's too invasive.
-	// We'll skip forcing signing error as it requires invalid key state which is hard to reach.
-
-	// Instead, let's verify RefreshOverlap getter
-	ts := &TokenService{refreshOverlap: 5 * time.Minute}
-	assert.Equal(t, 5*time.Minute, ts.RefreshOverlap())
-}
-
-func TestTokenService_GenerateTokenPair_ValidToken(t *testing.T) {
+func TestTokenCapabilities_GenerateTokenPair_ValidToken(t *testing.T) {
 	keyFile := getTestKeyPath(t)
 	cfg := config.AuthNConfig{
 		PrivateKeyFile: keyFile,
 		AccessTokenTTL: 1 * time.Hour, // Ensure token doesn't expire immediately
 	}
-	ts, _ := NewTokenService(cfg)
+	signer, verifier := tokenCapabilitiesForTest(t, cfg)
 
 	user := &User{ID: "u1", Username: "user", Roles: []string{"user"}}
-	pair, err := ts.GenerateTokenPair(user)
+	pair, err := signer.generateTokenPair(user)
 	require.NoError(t, err)
 
-	claims, err := ts.ValidateToken(pair.AccessToken)
+	actor, err := verifier.VerifyToken(pair.AccessToken)
 	require.NoError(t, err)
 	// Database is no longer in claims, but we can verify roles and user ID
+	claims := actor.Claims()
 	assert.Equal(t, "u1", claims.Subject)
 	assert.Contains(t, claims.Roles, "user")
 }

@@ -55,12 +55,6 @@ type deletionWorkerService interface {
 	Stop(ctx context.Context) error
 }
 
-type identityService interface {
-	identity.AccountService
-	identity.TokenVerifier
-	identity.SystemTokenIssuer
-}
-
 type Manager struct {
 	cfg  *config.Config
 	opts Options
@@ -69,7 +63,9 @@ type Manager struct {
 	storageFactoryOnce sync.Once
 	storageFactoryErr  error
 
-	authService           identityService
+	accountService        identity.AccountService
+	tokenVerifier         identity.TokenVerifier
+	systemTokenIssuer     identity.SystemTokenIssuer
 	gatewayServer         *gateway.Server
 	rtServer              *realtime.Server
 	streamerService       streamer.StreamerServer // local Streamer service (when RunStreamer=true)
@@ -105,7 +101,7 @@ func NewManager(cfg *config.Config, opts Options) *Manager {
 }
 
 func (m *Manager) SystemTokenIssuer() identity.SystemTokenIssuer {
-	return m.authService
+	return m.systemTokenIssuer
 }
 
 func (m *Manager) DatabaseService() database.Service {

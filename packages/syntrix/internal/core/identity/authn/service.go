@@ -15,39 +15,38 @@ import (
 type UserStore = storage.UserStore
 type TokenRevocationStore = storage.TokenRevocationStore
 
-type AuthService struct {
+type accountService struct {
 	users             UserStore
 	revocations       TokenRevocationStore
-	tokenService      *TokenService
+	signer            *userTokenSigner
+	refreshOverlap    time.Duration
 	verifier          *identity.Verifier
 	passwordValidator *PasswordValidator
 	adminUsername     string // Configurable admin username
 }
 
-func NewAuthService(cfg config.AuthNConfig, users UserStore, revocations TokenRevocationStore) (*AuthService, error) {
-	tokenService, err := NewTokenService(cfg)
+// NewServices loads the signing key once and returns separate account, public
+// verification, and system-signing capabilities. Account commands accept actors
+// from the returned verifier; initialization failure returns no capabilities.
+func NewServices(cfg config.AuthNConfig, users UserStore, revocations TokenRevocationStore) (identity.AccountService, *identity.Verifier, identity.SystemTokenIssuer, error) {
+	key, err := EnsurePrivateKey(cfg.PrivateKeyFile)
 	if err != nil {
-		return nil, err
+		return nil, nil, nil, err
 	}
-	verifier, err := identity.NewVerifier(tokenService.ValidateToken)
+	verifier, err := identity.NewPublicTokenVerifier(&key.PublicKey)
 	if err != nil {
-		return nil, err
+		return nil, nil, nil, err
 	}
-	return &AuthService{
-		users:             users,
-		revocations:       revocations,
-		tokenService:      tokenService,
-		verifier:          verifier,
-		passwordValidator: NewPasswordValidator(cfg.PasswordPolicy),
-		adminUsername:     cfg.AdminUsername,
-	}, nil
+	accounts := &accountService{
+		users: users, revocations: revocations,
+		signer:   &userTokenSigner{privateKey: key, accessTTL: cfg.AccessTokenTTL, refreshTTL: cfg.RefreshTokenTTL},
+		verifier: verifier, refreshOverlap: cfg.AuthCodeTTL,
+		passwordValidator: NewPasswordValidator(cfg.PasswordPolicy), adminUsername: cfg.AdminUsername,
+	}
+	return accounts, verifier, &systemTokenIssuer{privateKey: key, accessTTL: cfg.AccessTokenTTL}, nil
 }
 
-func (s *AuthService) VerifyToken(tokenString string) (*identity.VerifiedIdentity, error) {
-	return s.verifier.VerifyToken(tokenString)
-}
-
-func (s *AuthService) SignIn(ctx context.Context, req LoginRequest) (*TokenPair, error) {
+func (s *accountService) SignIn(ctx context.Context, req LoginRequest) (*TokenPair, error) {
 	user, err := s.users.GetUserByUsername(ctx, req.Username)
 	if err != nil {
 		return nil, err
@@ -95,10 +94,10 @@ func (s *AuthService) SignIn(ctx context.Context, req LoginRequest) (*TokenPair,
 		)
 	}
 
-	return s.tokenService.GenerateTokenPair(user)
+	return s.signer.generateTokenPair(user)
 }
 
-func (s *AuthService) SignUp(ctx context.Context, req SignupRequest) (*TokenPair, error) {
+func (s *accountService) SignUp(ctx context.Context, req SignupRequest) (*TokenPair, error) {
 	// Check if user already exists
 	_, err := s.users.GetUserByUsername(ctx, req.Username)
 	if err == nil {
@@ -140,18 +139,19 @@ func (s *AuthService) SignUp(ctx context.Context, req SignupRequest) (*TokenPair
 		return nil, err
 	}
 
-	return s.tokenService.GenerateTokenPair(user)
+	return s.signer.generateTokenPair(user)
 }
 
-func (s *AuthService) Refresh(ctx context.Context, req RefreshRequest) (*TokenPair, error) {
-	claims, err := s.tokenService.ValidateToken(req.RefreshToken)
+func (s *accountService) Refresh(ctx context.Context, req RefreshRequest) (*TokenPair, error) {
+	actor, err := s.verifier.VerifyToken(req.RefreshToken)
 	if err != nil {
 		return nil, ErrInvalidToken
 	}
 
+	claims := actor.Claims()
 	// Atomically check and revoke token to prevent race conditions
 	// This ensures only one concurrent refresh request can succeed
-	gracePeriod := s.tokenService.RefreshOverlap()
+	gracePeriod := s.refreshOverlap
 	if err := s.revocations.RevokeTokenIfNotRevoked(ctx, claims.ID, claims.ExpiresAt.Time, gracePeriod); err != nil {
 		if errors.Is(err, storage.ErrTokenAlreadyRevoked) {
 			return nil, ErrInvalidToken
@@ -169,23 +169,20 @@ func (s *AuthService) Refresh(ctx context.Context, req RefreshRequest) (*TokenPa
 	}
 
 	// Issue new pair
-	return s.tokenService.GenerateTokenPair(user)
+	return s.signer.generateTokenPair(user)
 }
 
-func (s *AuthService) Logout(ctx context.Context, refreshToken string) error {
-	claims, err := s.tokenService.ValidateToken(refreshToken)
+func (s *accountService) Logout(ctx context.Context, refreshToken string) error {
+	actor, err := s.verifier.VerifyToken(refreshToken)
 	if err != nil {
 		return ErrInvalidToken
 	}
 
+	claims := actor.Claims()
 	return s.revocations.RevokeTokenImmediate(ctx, claims.ID, claims.ExpiresAt.Time)
 }
 
-func (s *AuthService) GenerateSystemToken(serviceName string) (string, error) {
-	return s.tokenService.GenerateSystemToken(serviceName)
-}
-
-func (s *AuthService) ListUsers(ctx context.Context, actor *identity.VerifiedIdentity, limit int, offset int) ([]*identity.User, error) {
+func (s *accountService) ListUsers(ctx context.Context, actor *identity.VerifiedIdentity, limit int, offset int) ([]*identity.User, error) {
 	if err := s.verifier.AuthorizeAdmin(actor); err != nil {
 		return nil, err
 	}
@@ -203,7 +200,7 @@ func (s *AuthService) ListUsers(ctx context.Context, actor *identity.VerifiedIde
 	return views, nil
 }
 
-func (s *AuthService) UpdateUser(ctx context.Context, actor *identity.VerifiedIdentity, id string, roles []string, dbAdmin []string, disabled bool) error {
+func (s *accountService) UpdateUser(ctx context.Context, actor *identity.VerifiedIdentity, id string, roles []string, dbAdmin []string, disabled bool) error {
 	if err := s.verifier.AuthorizeAdmin(actor); err != nil {
 		return err
 	}

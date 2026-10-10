@@ -101,7 +101,7 @@ func (m *MockTokenRevocationStore) RevokeTokenIfNotRevoked(ctx context.Context, 
 	return args.Error(0)
 }
 
-func TestNewAuthService(t *testing.T) {
+func TestNewServices(t *testing.T) {
 	// Create a temporary file for the private key
 	tmpFile := t.TempDir() + "/private.pem"
 
@@ -114,9 +114,11 @@ func TestNewAuthService(t *testing.T) {
 	mockUsers := new(MockUserStore)
 	mockRevocations := new(MockTokenRevocationStore)
 
-	authn, err := NewAuthService(cfg, mockUsers, mockRevocations)
+	accounts, verifier, issuer, err := NewServices(cfg, mockUsers, mockRevocations)
 	assert.NoError(t, err)
-	assert.NotNil(t, authn)
+	assert.NotNil(t, accounts)
+	assert.NotNil(t, verifier)
+	assert.NotNil(t, issuer)
 
 	// Verify that the private key file was created
 	_, err = os.Stat(tmpFile)

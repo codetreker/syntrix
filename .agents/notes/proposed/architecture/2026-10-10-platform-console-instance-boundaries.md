@@ -40,11 +40,15 @@ behavior, enforcement, and storage retain their contracts.
 [Identity contracts and Gateway authentication](../../implemented/architecture/2026-10-10-identity-contracts-and-gateway-authentication.md)
 provide transport-free account/verifier/issuer capabilities, safe user views,
 opaque verified actor provenance, and Gateway-owned HTTP/context adapters.
-The current implementation remains under `core/identity/authn`; concrete
-signing/public-key verification separation and account/revocation repository
-composition are still structural work. Project realms, sessions, independent
-deployment, and both OAuth roles remain unimplemented capabilities. This note
-retains proposed status for those architectural responsibilities.
+[Token capabilities](../../implemented/architecture/2026-10-10-identity-token-capabilities.md)
+separate concrete user signing, system issuance, and public-material-only
+verification while sharing verifier provenance with account administration and
+Gateway. Current implementation remains under `core/identity/authn`, and
+API/Trigger Worker assembly still loads private keys for local issuance.
+Account/revocation repository and runtime composition, verification-key
+distribution, project realms, sessions, independent deployment, and both OAuth
+roles remain unimplemented responsibilities. This note retains proposed status
+for them.
 
 Instance PostgreSQL stores projects, application users, credentials, OAuth/OIDC
 state, sessions, and logical-database configuration and metadata. Syntrix
@@ -107,6 +111,13 @@ alone. Implementation needs an explicit account classification, project binding,
 and session transition. Metadata IDs and data namespaces cannot be rewritten
 silently during extraction. Existing business references and SDK replica identity
 must be accounted for by the migration design.
+
+Repository/runtime extraction must preserve initialization, connection ownership,
+and current capability behavior. Until verification-key distribution and process
+composition are designed, local API/Trigger Worker startup still loads private
+keys despite the verifier object's public-only ownership. Project/session/OAuth
+work must adopt those boundaries without reintroducing signing access into
+verification-only consumers.
 
 Provisioning, deletion coordination, public issuer configuration, token
 revocation deadlines, platform storage backends, and service-to-service

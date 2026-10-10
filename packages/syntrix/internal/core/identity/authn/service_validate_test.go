@@ -18,22 +18,22 @@ func TestValidateToken(t *testing.T) {
 		RefreshTokenTTL: 7 * 24 * time.Hour,
 		AuthCodeTTL:     2 * time.Minute,
 	}
-	svc, err := NewAuthService(cfg, mockStorage, mockStorage)
+	svc, err := newTestAccountService(cfg, mockStorage, mockStorage)
 	require.NoError(t, err)
 	authService := svc
 
 	// Generate a token
-	token, err := authService.GenerateSystemToken("test-service")
+	token, err := (&systemTokenIssuer{privateKey: authService.signer.privateKey, accessTTL: authService.signer.accessTTL}).GenerateSystemToken("test-service")
 	require.NoError(t, err)
 
 	// Validate valid token
-	actor, err := authService.VerifyToken(token)
+	actor, err := authService.verifier.VerifyToken(token)
 	assert.NoError(t, err)
 	claims := actor.Claims()
 	assert.Equal(t, "system:test-service", claims.Subject)
 
 	// Validate invalid token
-	_, err = authService.VerifyToken("invalid-token")
+	_, err = authService.verifier.VerifyToken("invalid-token")
 	assert.Error(t, err)
 }
 

@@ -9,11 +9,12 @@ import (
 	"time"
 
 	"github.com/codetreker/syntrix/internal/core/identity/config"
+	"github.com/codetreker/syntrix/internal/identity"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-func TestTokenService_GenerateAndValidate(t *testing.T) {
+func TestTokenCapabilities_GenerateAndValidate(t *testing.T) {
 	keyFile := getTestKeyPath(t)
 	cfg := config.AuthNConfig{
 		PrivateKeyFile:  keyFile,
@@ -22,38 +23,56 @@ func TestTokenService_GenerateAndValidate(t *testing.T) {
 		AuthCodeTTL:     2 * time.Minute,
 	}
 
-	ts, err := NewTokenService(cfg)
-	require.NoError(t, err)
+	signer, verifier := tokenCapabilitiesForTest(t, cfg)
 
 	user := &User{
 		ID:       "user-123",
 		Username: "testuser",
 		Roles:    []string{"admin"},
-		Disabled: false,
+		DBAdmin:  []string{"db1"},
+		Disabled: true,
 	}
 
 	// Generate
-	pair, err := ts.GenerateTokenPair(user)
+	pair, err := signer.generateTokenPair(user)
 	require.NoError(t, err)
 	assert.NotEmpty(t, pair.AccessToken)
 	assert.NotEmpty(t, pair.RefreshToken)
 	assert.Equal(t, 900, pair.ExpiresIn) // 15 minutes in seconds
 
 	// Validate Access Token
-	claims, err := ts.ValidateToken(pair.AccessToken)
+	actor, err := verifier.VerifyToken(pair.AccessToken)
 	require.NoError(t, err)
+	claims := actor.Claims()
 	assert.Equal(t, user.ID, claims.Subject)
 	assert.Equal(t, user.Username, claims.Username)
 	assert.Equal(t, user.Roles, claims.Roles)
+	assert.Equal(t, user.ID, claims.UserID)
+	assert.Equal(t, user.DBAdmin, claims.DBAdmin)
+	assert.Equal(t, user.Disabled, claims.Disabled)
+	assert.Equal(t, cfg.AccessTokenTTL, claims.ExpiresAt.Time.Sub(claims.IssuedAt.Time))
+	assert.Equal(t, claims.IssuedAt, claims.NotBefore)
+	assert.Empty(t, claims.Issuer)
+	assert.Nil(t, claims.Audience)
 
 	// Validate Refresh Token
-	refreshClaims, err := ts.ValidateToken(pair.RefreshToken)
+	refreshActor, err := verifier.VerifyToken(pair.RefreshToken)
 	require.NoError(t, err)
+	refreshClaims := refreshActor.Claims()
 	assert.Equal(t, user.ID, refreshClaims.Subject)
 	assert.Equal(t, user.Username, refreshClaims.Username)
+	assert.Equal(t, user.ID, refreshClaims.UserID)
+	assert.Equal(t, user.DBAdmin, refreshClaims.DBAdmin)
+	assert.Nil(t, refreshClaims.Roles)
+	assert.False(t, refreshClaims.Disabled)
+	assert.Equal(t, cfg.RefreshTokenTTL, refreshClaims.ExpiresAt.Time.Sub(refreshClaims.IssuedAt.Time))
+	assert.Equal(t, refreshClaims.IssuedAt, refreshClaims.NotBefore)
+	assert.NotEmpty(t, claims.ID)
+	assert.NotEmpty(t, refreshClaims.ID)
+	assert.NotEqual(t, claims.ID, refreshClaims.ID)
 }
 
-func TestTokenService_ExpiredToken(t *testing.T) {
+func TestTokenCapabilities_ExpiredToken(t *testing.T) {
 	// Create service with very short TTL
 	keyFile := getTestKeyPath(t)
 	cfg := config.AuthNConfig{
@@ -61,30 +80,29 @@ func TestTokenService_ExpiredToken(t *testing.T) {
 		AccessTokenTTL:  1 * time.Millisecond,
 		RefreshTokenTTL: 1 * time.Millisecond,
 	}
-	ts, err := NewTokenService(cfg)
-	require.NoError(t, err)
+	signer, verifier := tokenCapabilitiesForTest(t, cfg)
 
 	user := &User{ID: "user-1", Username: "user"}
-	pair, err := ts.GenerateTokenPair(user)
+	pair, err := signer.generateTokenPair(user)
 	require.NoError(t, err)
 
 	// Wait for expiration
 	time.Sleep(2 * time.Millisecond)
 
 	// Validate
-	_, err = ts.ValidateToken(pair.AccessToken)
+	_, err = verifier.VerifyToken(pair.AccessToken)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "token is expired")
 }
 
-func TestTokenService_InvalidSignature(t *testing.T) {
+func TestTokenCapabilities_InvalidSignature(t *testing.T) {
 	keyFile1 := getTestKeyPath(t)
 	cfg1 := config.AuthNConfig{
 		PrivateKeyFile:  keyFile1,
 		AccessTokenTTL:  1 * time.Hour,
 		RefreshTokenTTL: 1 * time.Hour,
 	}
-	ts1, _ := NewTokenService(cfg1)
+	signer1, _ := tokenCapabilitiesForTest(t, cfg1)
 
 	keyFile2 := filepath.Join(t.TempDir(), "key2.pem")
 	cfg2 := config.AuthNConfig{
@@ -92,18 +110,18 @@ func TestTokenService_InvalidSignature(t *testing.T) {
 		AccessTokenTTL:  1 * time.Hour,
 		RefreshTokenTTL: 1 * time.Hour,
 	}
-	ts2, _ := NewTokenService(cfg2) // Different keys
+	_, verifier2 := tokenCapabilitiesForTest(t, cfg2)
 
 	user := &User{ID: "user-1", Username: "user"}
-	pair, _ := ts1.GenerateTokenPair(user)
+	pair, _ := signer1.generateTokenPair(user)
 
-	// Try to validate with ts2 (different public key)
-	_, err := ts2.ValidateToken(pair.AccessToken)
+	// Validation uses a different public key.
+	_, err := verifier2.VerifyToken(pair.AccessToken)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "verification error")
 }
 
-func TestTokenService_SaveAndLoadPrivateKey(t *testing.T) {
+func TestTokenCapabilities_SaveAndLoadPrivateKey(t *testing.T) {
 	key, err := GeneratePrivateKey()
 	require.NoError(t, err)
 
@@ -115,7 +133,7 @@ func TestTokenService_SaveAndLoadPrivateKey(t *testing.T) {
 	assert.Equal(t, key.PublicKey.N, loaded.PublicKey.N)
 }
 
-func TestTokenService_GenerateSystemToken(t *testing.T) {
+func TestTokenCapabilities_GenerateSystemToken(t *testing.T) {
 	keyFile := getTestKeyPath(t)
 	cfg := config.AuthNConfig{
 		PrivateKeyFile:  keyFile,
@@ -123,14 +141,16 @@ func TestTokenService_GenerateSystemToken(t *testing.T) {
 		RefreshTokenTTL: 1 * time.Hour,
 		AuthCodeTTL:     2 * time.Minute,
 	}
-	ts, err := NewTokenService(cfg)
+	_, verifier := tokenCapabilitiesForTest(t, cfg)
+	issuer, err := NewSystemTokenIssuer(cfg)
 	require.NoError(t, err)
 
-	token, err := ts.GenerateSystemToken("worker")
+	token, err := issuer.GenerateSystemToken("worker")
 	require.NoError(t, err)
 
-	claims, err := ts.ValidateToken(token)
+	actor, err := verifier.VerifyToken(token)
 	require.NoError(t, err)
+	claims := actor.Claims()
 	assert.Equal(t, "system:worker", claims.Subject)
 	assert.Contains(t, claims.Roles, "system")
 	assert.Contains(t, claims.Roles, "service:worker")
@@ -198,4 +218,11 @@ func TestEnsurePrivateKey(t *testing.T) {
 
 	_, err = EnsurePrivateKey(invalidPath)
 	assert.Error(t, err)
+}
+
+func tokenCapabilitiesForTest(t *testing.T, cfg config.AuthNConfig) (*userTokenSigner, *identity.Verifier) {
+	t.Helper()
+	accounts, verifier, _, err := NewServices(cfg, nil, nil)
+	require.NoError(t, err)
+	return accounts.(*accountService).signer, verifier
 }
