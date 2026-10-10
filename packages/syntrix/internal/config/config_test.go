@@ -5,12 +5,12 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
-	identity "github.com/codetreker/syntrix/internal/core/identity/config"
-	"github.com/codetreker/syntrix/internal/gateway/authorization"
 	services_config "github.com/codetreker/syntrix/internal/services/config"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gopkg.in/yaml.v3"
 )
 
 func TestLoadConfig_Defaults(t *testing.T) {
@@ -90,33 +90,70 @@ gateway:
 	assert.Equal(t, "filedb", cfg.Storage.Backends["default_mongo"].Mongo.DatabaseName)
 }
 
-func TestServiceConfig_ResolvePaths(t *testing.T) {
-	// Test that relative paths are resolved correctly
-	// The ResolvePaths function is now part of each service config
+func TestLoadConfig_ModuleSectionsAndOverlay(t *testing.T) {
+	for _, mode := range []services_config.DeploymentMode{services_config.ModeStandalone, services_config.ModeDistributed} {
+		t.Run(string(mode), func(t *testing.T) {
+			configDir := t.TempDir()
+			require.NoError(t, os.WriteFile(filepath.Join(configDir, "config.yml"), []byte(`deployment:
+  mode: `+string(mode)+`
+identity:
+  authn:
+    access_token_ttl: 20m
+    private_key_file: keys/custom.pem
+    password_policy:
+      min_length: 16
+      require_uppercase: false
+      require_lowercase: false
+  admin:
+    username: operator
+    password: configured-password
+gateway:
+  authz:
+    rules_path: base_rules
+`), 0600))
+			require.NoError(t, os.WriteFile(filepath.Join(configDir, "config.local.yml"), []byte(`identity:
+  authn:
+    refresh_token_ttl: 48h
+    password_policy:
+      require_digit: false
+gateway:
+  authz:
+    rules_path: local_rules
+`), 0600))
 
-	// Test with identity config
-	identityCfg := IdentityConfig{
-		AuthZ:  authorization.Config{RulesPath: "security.yaml"},
-		Config: identity.Config{AuthN: identity.AuthNConfig{PrivateKeyFile: "keys/auth.pem"}},
-	}
-	identityCfg.ResolvePaths("configs", "data")
-	assert.Equal(t, filepath.Join("configs", "security.yaml"), identityCfg.AuthZ.RulesPath)
-	assert.Equal(t, filepath.Join("configs", "keys/auth.pem"), identityCfg.AuthN.PrivateKeyFile)
+			cfg := LoadConfigFrom(configDir)
+			assert.Equal(t, mode, cfg.Deployment.Mode)
+			assert.Equal(t, 20*time.Minute, cfg.Identity.AuthN.AccessTokenTTL)
+			assert.Equal(t, 48*time.Hour, cfg.Identity.AuthN.RefreshTokenTTL)
+			assert.Equal(t, 2*time.Minute, cfg.Identity.AuthN.AuthCodeTTL)
+			assert.Equal(t, filepath.Join(configDir, "keys/custom.pem"), cfg.Identity.AuthN.PrivateKeyFile)
+			assert.Equal(t, 16, cfg.Identity.AuthN.PasswordPolicy.MinLength)
+			assert.False(t, cfg.Identity.AuthN.PasswordPolicy.RequireUppercase)
+			assert.False(t, cfg.Identity.AuthN.PasswordPolicy.RequireLowercase)
+			assert.False(t, cfg.Identity.AuthN.PasswordPolicy.RequireDigit)
+			assert.True(t, cfg.Identity.AuthN.PasswordPolicy.RequireSpecial)
+			assert.Equal(t, filepath.Join(configDir, "local_rules"), cfg.Gateway.AuthZ.RulesPath)
+			assert.Equal(t, "operator", cfg.Identity.Admin.Username)
+			assert.Equal(t, "configured-password", cfg.Identity.Admin.Password)
 
-	// Test with absolute path - should not be modified
-	absPath := filepath.Join(t.TempDir(), "absolute", "path", "to", "file")
-	identityCfg2 := IdentityConfig{
-		AuthZ: authorization.Config{RulesPath: absPath},
+			encoded, err := yaml.Marshal(map[string]any{"identity": cfg.Identity, "gateway": cfg.Gateway})
+			require.NoError(t, err)
+			var sections map[string]any
+			require.NoError(t, yaml.Unmarshal(encoded, &sections))
+			identitySection, ok := sections["identity"].(map[string]any)
+			require.True(t, ok)
+			require.Len(t, identitySection, 2)
+			assert.Contains(t, identitySection, "authn")
+			assert.Contains(t, identitySection, "admin")
+			gatewaySection, ok := sections["gateway"].(map[string]any)
+			require.True(t, ok)
+			assert.Equal(t, map[string]any{"rules_path": filepath.Join(configDir, "local_rules")}, gatewaySection["authz"])
+			var decoded Config
+			require.NoError(t, yaml.Unmarshal(encoded, &decoded))
+			assert.Equal(t, cfg.Identity, decoded.Identity)
+			assert.Equal(t, cfg.Gateway, decoded.Gateway)
+		})
 	}
-	identityCfg2.ResolvePaths("configs", "data")
-	assert.Equal(t, absPath, identityCfg2.AuthZ.RulesPath)
-
-	// Test with empty path - should remain empty
-	identityCfg3 := IdentityConfig{
-		AuthZ: authorization.Config{RulesPath: ""},
-	}
-	identityCfg3.ResolvePaths("configs", "data")
-	assert.Equal(t, "", identityCfg3.AuthZ.RulesPath)
 }
 
 func TestDeploymentMode_IsStandalone_ViaConfig(t *testing.T) {

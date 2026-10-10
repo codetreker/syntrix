@@ -73,7 +73,7 @@ func TestManager_Init_TokenServiceError(t *testing.T) {
 
 func TestManager_Init_AuthzRulesLoadError(t *testing.T) {
 	cfg := config.LoadConfig()
-	cfg.Identity.AuthZ.RulesPath = "__missing_rules_file__"
+	cfg.Gateway.AuthZ.RulesPath = "__missing_rules_file__"
 	opts := Options{RunAPI: true}
 	mgr := NewManager(cfg, opts)
 
@@ -123,7 +123,7 @@ func TestManager_InitAPIServer_WithRules(t *testing.T) {
 	assert.NoError(t, os.MkdirAll(rulesDir, 0755))
 	rulesContent := "database: default\nmatch:\n  /databases/{database}/documents/{doc}:\n    allow:\n      get: \"true\"\n"
 	assert.NoError(t, os.WriteFile(filepath.Join(rulesDir, "default.yml"), []byte(rulesContent), 0644))
-	cfg.Identity.AuthZ.RulesPath = rulesDir
+	cfg.Gateway.AuthZ.RulesPath = rulesDir
 
 	mgr := NewManager(cfg, Options{})
 	mgr.authService = &stubAuthN{}
@@ -140,7 +140,7 @@ func TestManager_InitAPIServer_NoRules(t *testing.T) {
 
 	cfg := config.LoadConfig()
 	cfg.Server.HTTPPort = 0
-	cfg.Identity.AuthZ.RulesPath = ""
+	cfg.Gateway.AuthZ.RulesPath = ""
 
 	mgr := NewManager(cfg, Options{})
 	mgr.authService = &stubAuthN{}
@@ -157,7 +157,7 @@ func TestManager_InitAPIServer_WithRealtime(t *testing.T) {
 
 	cfg := config.LoadConfig()
 	cfg.Server.HTTPPort = 0
-	cfg.Identity.AuthZ.RulesPath = ""
+	cfg.Gateway.AuthZ.RulesPath = ""
 	mgr := NewManager(cfg, Options{})
 	mgr.authService = &stubAuthN{}
 
@@ -209,7 +209,7 @@ func TestManager_Init_RunAuthPath(t *testing.T) {
 	rulesDir := filepath.Join(t.TempDir(), "security_rules")
 	os.MkdirAll(rulesDir, 0755)
 	os.WriteFile(filepath.Join(rulesDir, "default.yml"), []byte("database: default\nmatch: {}"), 0644)
-	cfg.Identity.AuthZ.RulesPath = rulesDir
+	cfg.Gateway.AuthZ.RulesPath = rulesDir
 
 	mgr := NewManager(cfg, Options{RunAPI: true})
 
@@ -262,7 +262,7 @@ func TestManager_Init_RunRealtimePath(t *testing.T) {
 	cfg := config.LoadConfig()
 	cfg.Server.HTTPPort = 0
 
-	cfg.Identity.AuthZ.RulesPath = ""
+	cfg.Gateway.AuthZ.RulesPath = ""
 	mgr := NewManager(cfg, Options{RunAPI: true})
 
 	err := mgr.Init(context.Background())
@@ -574,7 +574,7 @@ func TestManager_Init_StandaloneMode(t *testing.T) {
 
 	cfg := config.LoadConfig()
 	cfg.Server.HTTPPort = 0
-	cfg.Identity.AuthZ.RulesPath = ""
+	cfg.Gateway.AuthZ.RulesPath = ""
 	cfg.Trigger.Evaluator.RulesPath = "" // Clear trigger rules for unit tests
 	cfg.Puller.Backends = nil            // Clear puller backends for unit tests
 	mgr := NewManager(cfg, Options{
@@ -610,7 +610,7 @@ func TestManager_Init_StandaloneMode_NoHTTPForCSP(t *testing.T) {
 
 	cfg := config.LoadConfig()
 	cfg.Server.HTTPPort = 0
-	cfg.Identity.AuthZ.RulesPath = ""
+	cfg.Gateway.AuthZ.RulesPath = ""
 	cfg.Trigger.Evaluator.RulesPath = ""
 	cfg.Puller.Backends = nil // Clear puller backends for unit tests
 	mgr := NewManager(cfg, Options{
@@ -703,7 +703,7 @@ func TestManager_initStandalone_APIServerError(t *testing.T) {
 
 	cfg := config.LoadConfig()
 	cfg.Server.HTTPPort = 0
-	cfg.Identity.AuthZ.RulesPath = "/nonexistent/rules/file.yaml"
+	cfg.Gateway.AuthZ.RulesPath = "/nonexistent/rules/file.yaml"
 	cfg.Puller.Backends = nil // Clear puller backends for unit tests
 	mgr := NewManager(cfg, Options{
 		Mode:      ModeStandalone,
@@ -735,7 +735,7 @@ func TestManager_initDistributed_APIServerError(t *testing.T) {
 
 	cfg := config.LoadConfig()
 	cfg.Server.HTTPPort = 0
-	cfg.Identity.AuthZ.RulesPath = "/nonexistent/rules/file.yaml"
+	cfg.Gateway.AuthZ.RulesPath = "/nonexistent/rules/file.yaml"
 	mgr := NewManager(cfg, Options{
 		Mode:   ModeDistributed,
 		RunAPI: true,
@@ -792,7 +792,7 @@ func TestManager_initDistributed_TriggerServicesError(t *testing.T) {
 
 	cfg := config.LoadConfig()
 	cfg.Server.HTTPPort = 0
-	cfg.Identity.AuthZ.RulesPath = ""
+	cfg.Gateway.AuthZ.RulesPath = ""
 	// Configure NATS to fail connection
 	cfg.Trigger.NatsURL = "nats://127.0.0.1:1"
 
@@ -872,7 +872,7 @@ func TestManager_initGateway(t *testing.T) {
 	cfg.Server.HTTPPort = 0
 	cfg.Gateway.QueryServiceURL = "localhost:50051"
 	cfg.Gateway.StreamerServiceURL = "localhost:50051"
-	cfg.Identity.AuthZ.RulesPath = ""
+	cfg.Gateway.AuthZ.RulesPath = ""
 
 	// Initialize the unified server first
 	server.InitDefault(cfg.Server, nil)
@@ -950,7 +950,7 @@ func TestManager_initDistributed_AllServices(t *testing.T) {
 	cfg.Gateway.QueryServiceURL = "localhost:50051"
 	cfg.Gateway.StreamerServiceURL = "localhost:50051"
 	cfg.Streamer.Server.PullerAddr = "localhost:50051"
-	cfg.Identity.AuthZ.RulesPath = ""
+	cfg.Gateway.AuthZ.RulesPath = ""
 
 	// Initialize the unified server first
 	server.InitDefault(cfg.Server, nil)
@@ -994,7 +994,7 @@ func TestManager_initStandalone_TriggerServicesError(t *testing.T) {
 
 	cfg := config.LoadConfig()
 	cfg.Server.HTTPPort = 0
-	cfg.Identity.AuthZ.RulesPath = ""
+	cfg.Gateway.AuthZ.RulesPath = ""
 	cfg.Puller.Backends = nil            // Clear puller backends for unit tests
 	cfg.Trigger.Evaluator.RulesPath = "" // No rules path to avoid file system dependency
 
@@ -1030,7 +1030,7 @@ func TestManager_initStandalone_WithPuller(t *testing.T) {
 
 	cfg := config.LoadConfig()
 	cfg.Server.HTTPPort = 0
-	cfg.Identity.AuthZ.RulesPath = ""
+	cfg.Gateway.AuthZ.RulesPath = ""
 	cfg.Trigger.Evaluator.RulesPath = ""
 	cfg.Puller.Buffer.Path = t.TempDir()
 	cfg.Puller.Backends = []puller_config.PullerBackendConfig{{Name: "default"}}
@@ -1168,7 +1168,7 @@ func TestManager_initStandalone_WithIndexer(t *testing.T) {
 
 	cfg := config.LoadConfig()
 	cfg.Server.HTTPPort = 0
-	cfg.Identity.AuthZ.RulesPath = ""
+	cfg.Gateway.AuthZ.RulesPath = ""
 	cfg.Indexer.TemplatePath = ""
 	cfg.Puller.Buffer.Path = t.TempDir()
 	cfg.Puller.Backends = []puller_config.PullerBackendConfig{{Name: "default"}}
@@ -1241,7 +1241,7 @@ func TestManager_initStandalone_IndexerError(t *testing.T) {
 
 	cfg := config.LoadConfig()
 	cfg.Server.HTTPPort = 0
-	cfg.Identity.AuthZ.RulesPath = ""
+	cfg.Gateway.AuthZ.RulesPath = ""
 	cfg.Puller.Backends = nil
 	// Use invalid storage mode to trigger indexer error
 	cfg.Indexer.StorageMode = "invalid_storage_mode"
@@ -1600,7 +1600,7 @@ func TestManager_initDatabaseService_WithGatewayServer(t *testing.T) {
 
 	cfg := config.LoadConfig()
 	cfg.Database.MaxDatabasesPerUser = 5
-	cfg.Identity.AuthZ.RulesPath = ""
+	cfg.Gateway.AuthZ.RulesPath = ""
 	mgr := NewManager(cfg, Options{RunAPI: true})
 
 	// Initialize storage factory first

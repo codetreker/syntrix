@@ -50,12 +50,17 @@ is an authorized instance/project configuration operation, not platform account
 administration. Persistent rule versioning and publication transactions remain
 to be designed.
 
-The runtime keeps the existing YAML `identity.authz.rules_path` setting, default
-`security_rules`, and configuration-directory path resolution. The root runtime
-configuration composes Identity account settings with Gateway authorization
-configuration; the rule configuration type and its lifecycle belong to
-`internal/gateway/authorization`. This layout changes Go ownership without
-changing the deployment configuration contract.
+Gateway owns YAML `gateway.authz.rules_path`, its `security_rules` default,
+and configuration-directory path resolution. `GatewayConfig.AuthZ` composes the
+configuration from `internal/gateway/authorization/config` and applies its
+default, environment, path, and validation lifecycle. Root runtime configuration
+references each module's configuration directly.
+
+Deployment files and local overrides must place rule settings under
+`gateway.authz`; `identity` contains account/authentication settings and admin
+bootstrap configuration. Move any custom `identity.authz.rules_path` value to
+`gateway.authz.rules_path` when adopting this layout. The former setting has no
+compatibility alias. Rule files and evaluation behavior retain their contracts.
 
 **Directory structure:**
 ```
@@ -144,7 +149,7 @@ match:
 ### 3.3 Construction
 
 - Current constructor: `authorization.NewEngine(config, queryService)` accepts
-  the Gateway-owned `authorization.Config` and returns `authorization.Engine`,
+  the Gateway-owned `authorization/config.Config` and returns `authorization.Engine`,
   keeping the CEL environment and program cache internal.
 - RuleSet, MatchBlock, Request, Authenticated, and Resource belong to the
   authorization package. Gateway projects the existing user ID, username,

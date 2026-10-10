@@ -1,4 +1,4 @@
-package authorization
+package config
 
 import (
 	"errors"
@@ -31,7 +31,7 @@ func (c *Config) ResolvePaths(configDir, _ string) {
 
 func (c *Config) Validate(_ services.DeploymentMode) error {
 	if c.RulesPath == "" {
-		return errors.New("identity.authz.rules_path is required")
+		return errors.New("gateway.authz.rules_path is required")
 	}
 	return nil
 }

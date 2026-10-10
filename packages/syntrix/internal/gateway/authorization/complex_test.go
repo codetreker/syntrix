@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	authorizationconfig "github.com/codetreker/syntrix/internal/gateway/authorization/config"
 	"github.com/codetreker/syntrix/pkg/model"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
@@ -283,7 +284,7 @@ match:
 				tc.mockSetup(mockQuery)
 			}
 
-			engine, err := NewEngine(Config{RulesPath: tmpDir}, mockQuery)
+			engine, err := NewEngine(authorizationconfig.Config{RulesPath: tmpDir}, mockQuery)
 			assert.NoError(t, err)
 
 			allowed, err := engine.Evaluate(context.Background(), "default", tc.path, tc.action, tc.req, tc.existingRes)

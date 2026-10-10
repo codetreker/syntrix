@@ -19,12 +19,18 @@ Gateway projects the existing user ID, username, roles, `db_admin`, and full cla
 into authorization inputs. Identity retains account/password/JWT implementation
 and its current user/revocation stores; it has no Query or rule dependency.
 
-Root runtime configuration composes Identity account settings and Gateway
-authorization settings. It retains `identity.authz.rules_path`, the `security_rules`
-default, config-directory path resolution, and existing validation behavior.
-Deployment files and public HTTP/rule formats do not change. There is one
-authorization implementation and type owner; the previous Identity AuthZ facade,
-type aliases, and package no longer exist.
+Each module owns its configuration type, defaults, path resolution, and
+validation. `internal/gateway/config.GatewayConfig.AuthZ` composes
+`internal/gateway/authorization/config.Config`; root runtime configuration
+references Identity and Gateway module configurations directly. Rule settings
+use YAML `gateway.authz.rules_path`, retaining the `security_rules` default and
+config-directory path resolution. Identity owns authentication and admin
+bootstrap settings. There is one authorization implementation and type owner.
+
+Deployment files and local overrides use the module-owned configuration layout.
+Custom rule-path values must move from `identity.authz.rules_path` to
+`gateway.authz.rules_path`; the former key has no compatibility alias. Public
+HTTP/rule formats and evaluation behavior remain unchanged.
 
 The [Gateway authorization design](../../../../docs/design/server/gateway/authorization.md)
 owns rule behavior and pending safeguards. This implements the document-policy
@@ -39,15 +45,16 @@ there would make authentication depend on Query/business-document access and
 potentially add an RPC to each policy lookup. Gateway already owns request and
 resource evaluation; moving only account authority later preserves that direction.
 
-**Change the rule configuration YAML path during extraction.** Renaming
-`identity.authz` would require a deployment configuration transition alongside the
-ownership refactor. Root composition preserves that external setting while giving
-the rule configuration its own Go owner. A future configuration change needs its
-own migration contract.
+**Preserve `identity.authz` through a root Identity wrapper.** A cross-module
+wrapper can preserve the old YAML shape, but places module-specific composition
+and lifecycle in `internal/config` and keeps the setting under the wrong owner.
+Module configuration belongs with its module. Gateway therefore composes its
+authorization settings and owns their YAML path; configured rule values move with
+that ownership.
 
 ## Consequences
 
-- Identity account/token code no longer depends on CEL, Query, or document-rule
+- Identity account/token code is independent of CEL, Query, or document-rule
   types. Gateway owns the evaluator and its Query-backed helper execution.
 - Existing matching, loading, publication, database-admin bypass, error behavior,
   and authorization enforcement points remain unchanged. Authenticated users do
@@ -56,6 +63,8 @@ own migration contract.
   publication durability, and resource-limit gaps remain documented. This change
   does not establish those proposed guarantees.
 - Public authentication APIs, JWTs, user IDs, catalog/document namespaces,
-  persistence, local process placement, and configuration inputs retain their
-  existing contracts. Subsequent account/transport/token/store extraction and
+  persistence, and local process placement retain their existing contracts.
+  Configuration values/defaults retain their meaning under the module-owned
+  YAML layout; deployment overrides require the documented rule-path move.
+  Subsequent account/transport/token/store extraction and
   new Identity capabilities retain separate delivery gates.

@@ -32,9 +32,10 @@ login. The process-level Go `services.Manager` retains dependency-composition
 and startup/shutdown ownership.
 
 Gateway [document authorization](../../implemented/architecture/2026-10-10-gateway-document-authorization.md)
-now owns the existing CEL evaluator, rule configuration, and evaluation types
-separately from account authentication. Current rule behavior, enforcement,
-configuration, and storage remain unchanged. The broader Identity extraction
+owns the existing CEL evaluator, rule configuration, and evaluation types
+separately from account authentication. Gateway's module configuration owns
+YAML `gateway.authz`, while Identity owns authentication/admin settings. Rule
+behavior, enforcement, and storage retain their contracts. The broader Identity extraction
 still needs transport-free account contracts, signing/verification separation,
 and account/revocation repository composition before adding project, session,
 deployment, and OAuth capabilities. This note remains proposed for those

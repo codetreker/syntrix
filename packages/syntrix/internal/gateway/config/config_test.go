@@ -2,9 +2,11 @@ package config
 
 import (
 	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 
+	authorization "github.com/codetreker/syntrix/internal/gateway/authorization/config"
 	services "github.com/codetreker/syntrix/internal/services/config"
 	"github.com/stretchr/testify/assert"
 )
@@ -53,6 +55,7 @@ func TestDefaultGatewayConfig(t *testing.T) {
 	assert.Equal(t, "localhost:9000", cfg.StreamerServiceURL)
 	assert.Equal(t, []string{"http://localhost:8080", "http://localhost:3000", "http://localhost:5173"}, cfg.Realtime.AllowedOrigins)
 	assert.True(t, cfg.Realtime.AllowDevOrigin)
+	assert.Equal(t, "security_rules", cfg.AuthZ.RulesPath)
 }
 
 func TestGatewayConfig_StructFields(t *testing.T) {
@@ -82,6 +85,7 @@ func TestGatewayConfig_ApplyDefaults(t *testing.T) {
 	assert.Equal(t, "localhost:9000", cfg.QueryServiceURL)
 	assert.Equal(t, "localhost:9000", cfg.StreamerServiceURL)
 	assert.Len(t, cfg.Realtime.AllowedOrigins, 3)
+	assert.Equal(t, "security_rules", cfg.AuthZ.RulesPath)
 }
 
 func TestGatewayConfig_ApplyEnvOverrides(t *testing.T) {
@@ -97,13 +101,14 @@ func TestGatewayConfig_ApplyEnvOverrides(t *testing.T) {
 func TestGatewayConfig_ResolvePaths(t *testing.T) {
 	cfg := DefaultGatewayConfig()
 	cfg.ResolvePaths("config", "data")
-	// No paths to resolve, just verify no panic
+	assert.Equal(t, filepath.Join("config", "security_rules"), cfg.AuthZ.RulesPath)
 }
 
 func TestGatewayConfig_ApplyDefaults_CustomValuesPreserved(t *testing.T) {
 	cfg := &GatewayConfig{
 		QueryServiceURL:    "custom:9001",
 		StreamerServiceURL: "custom:9002",
+		AuthZ:              authorization.Config{RulesPath: "custom_rules"},
 		Realtime: RealtimeConfig{
 			AllowedOrigins: []string{"https://prod.example.com"},
 			AllowDevOrigin: false,
@@ -115,6 +120,7 @@ func TestGatewayConfig_ApplyDefaults_CustomValuesPreserved(t *testing.T) {
 	assert.Equal(t, "custom:9002", cfg.StreamerServiceURL)
 	assert.Equal(t, []string{"https://prod.example.com"}, cfg.Realtime.AllowedOrigins)
 	assert.False(t, cfg.Realtime.AllowDevOrigin)
+	assert.Equal(t, "custom_rules", cfg.AuthZ.RulesPath)
 }
 
 func TestGatewayConfig_ApplyDefaults_PartialConfig(t *testing.T) {
@@ -151,7 +157,7 @@ func TestGatewayConfig_ApplyEnvOverrides_NoEnvVar(t *testing.T) {
 func TestGatewayConfig_Validate_EmptyConfig(t *testing.T) {
 	cfg := GatewayConfig{}
 	err := cfg.Validate(services.ModeStandalone)
-	assert.NoError(t, err)
+	assert.EqualError(t, err, "gateway.authz.rules_path is required")
 }
 
 func TestGatewayConfig_Validate_DistributedMode(t *testing.T) {
@@ -170,6 +176,7 @@ func TestGatewayConfig_Validate_DistributedMode(t *testing.T) {
 
 	// With both set, should pass
 	cfg.StreamerServiceURL = "streamer:9000"
+	cfg.AuthZ = authorization.DefaultConfig()
 	err = cfg.Validate(services.ModeDistributed)
 	assert.NoError(t, err)
 }

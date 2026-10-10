@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	authorizationconfig "github.com/codetreker/syntrix/internal/gateway/authorization/config"
 	"github.com/codetreker/syntrix/internal/query"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -17,7 +18,7 @@ type mockQueryService struct {
 
 func TestNewEngine_ErrorPaths(t *testing.T) {
 	t.Run("LoadRulesFromDir Error - Path Not Found", func(t *testing.T) {
-		cfg := Config{
+		cfg := authorizationconfig.Config{
 			RulesPath: "/non_existent_directory",
 		}
 		_, err := NewEngine(cfg, &mockQueryService{})
@@ -30,7 +31,7 @@ func TestNewEngine_ErrorPaths(t *testing.T) {
 		err := os.WriteFile(filepath.Join(tmpDir, "bad.yml"), []byte("database: test\ninvalid: yaml: content: :"), 0644)
 		require.NoError(t, err)
 
-		cfg := Config{
+		cfg := authorizationconfig.Config{
 			RulesPath: tmpDir,
 		}
 		_, err = NewEngine(cfg, &mockQueryService{})
@@ -50,7 +51,7 @@ match:
 		err := os.WriteFile(filepath.Join(tmpDir, "default.yml"), []byte(rulesContent), 0644)
 		require.NoError(t, err)
 
-		cfg := Config{
+		cfg := authorizationconfig.Config{
 			RulesPath: tmpDir,
 		}
 		_, err = NewEngine(cfg, &mockQueryService{})
@@ -63,7 +64,7 @@ func TestEvaluate_NoRulesLoaded(t *testing.T) {
 	// Empty directory means no rules
 	tmpDir := t.TempDir()
 
-	cfg := Config{
+	cfg := authorizationconfig.Config{
 		RulesPath: tmpDir,
 	}
 	engine, err := NewEngine(cfg, &mockQueryService{})

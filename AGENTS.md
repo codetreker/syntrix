@@ -106,6 +106,10 @@ contents or replacing the existing planning directories.
 
 ## Validation and engineering preferences
 
+- Module configuration types, defaults, path resolution, and validation belong
+  to the corresponding module's `config` package. `internal/config` loads and
+  composes those module types; it must not introduce module-specific wrappers
+  or lifecycle implementations.
 - Run tests after code changes. Run `make -C packages/syntrix coverage` from the
   repository root to evaluate Go coverage and address gaps within the authorized
   task.

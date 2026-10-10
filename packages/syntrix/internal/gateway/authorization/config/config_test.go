@@ -1,4 +1,4 @@
-package authorization
+package config
 
 import (
 	"path/filepath"
@@ -42,6 +42,6 @@ func TestConfig_EmptyPath(t *testing.T) {
 	cfg.ResolvePaths("configs", "data")
 	assert.Empty(t, cfg.RulesPath)
 	for _, mode := range []services.DeploymentMode{services.ModeStandalone, services.ModeDistributed} {
-		require.EqualError(t, cfg.Validate(mode), "identity.authz.rules_path is required")
+		require.EqualError(t, cfg.Validate(mode), "gateway.authz.rules_path is required")
 	}
 }

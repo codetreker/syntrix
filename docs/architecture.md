@@ -180,8 +180,9 @@ available in the current runtime.
 Current Gateway [document authorization](design/server/gateway/authorization.md)
 owns CEL evaluation, rule configuration, and request/resource types separately
 from Identity's account/token implementation. Manager constructs the evaluator
-with Query; runtime configuration preserves the existing YAML `identity.authz`
-setting. The [ownership decision](../.agents/notes/implemented/architecture/2026-10-10-gateway-document-authorization.md)
+with Query and `GatewayConfig.AuthZ`. Module configurations own their settings
+and lifecycle; rule configuration uses YAML `gateway.authz.rules_path`.
+The [ownership decision](../.agents/notes/implemented/architecture/2026-10-10-gateway-document-authorization.md)
 records the implemented separation. The remaining Identity extraction and
 project/OAuth capabilities stay distinct from that delivered boundary.
 

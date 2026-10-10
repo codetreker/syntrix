@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	authorizationconfig "github.com/codetreker/syntrix/internal/gateway/authorization/config"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -37,7 +38,7 @@ match:
 	err := os.WriteFile(filepath.Join(tmpDir, "default.yml"), []byte(rulesYAML), 0644)
 	require.NoError(t, err)
 
-	engine, err := NewEngine(Config{RulesPath: tmpDir}, nil)
+	engine, err := NewEngine(authorizationconfig.Config{RulesPath: tmpDir}, nil)
 	require.NoError(t, err)
 
 	ctx := context.Background()

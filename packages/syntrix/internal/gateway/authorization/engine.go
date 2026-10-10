@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 
+	authorizationconfig "github.com/codetreker/syntrix/internal/gateway/authorization/config"
 	"github.com/codetreker/syntrix/internal/query"
 	"github.com/codetreker/syntrix/pkg/model"
 
@@ -46,7 +47,7 @@ type ruleEngine struct {
 	mu         sync.RWMutex
 }
 
-func NewEngine(cfg Config, q query.Service) (Engine, error) {
+func NewEngine(cfg authorizationconfig.Config, q query.Service) (Engine, error) {
 	// Define CEL environment
 	env, err := cel.NewEnv(
 		cel.Declarations(

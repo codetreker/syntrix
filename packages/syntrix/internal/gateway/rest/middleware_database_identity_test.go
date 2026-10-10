@@ -11,6 +11,7 @@ import (
 	"github.com/codetreker/syntrix/internal/core/database"
 	"github.com/codetreker/syntrix/internal/core/identity"
 	"github.com/codetreker/syntrix/internal/gateway/authorization"
+	authorizationconfig "github.com/codetreker/syntrix/internal/gateway/authorization/config"
 	"github.com/codetreker/syntrix/pkg/model"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
@@ -222,7 +223,7 @@ func TestBoundGetUsesFullScopeAuthorizationWithActualAuthZ(t *testing.T) {
 					auth.uid = "grantee"
 					auth.grants = []string{grant}
 				}
-				authz, err := authorization.NewEngine(authorization.Config{}, source)
+				authz, err := authorization.NewEngine(authorizationconfig.Config{}, source)
 				require.NoError(t, err)
 				h, err := NewHandler(source, auth, authz, WithDatabaseService(database.NewService(store, database.DefaultServiceConfig(), nil)))
 				require.NoError(t, err)
