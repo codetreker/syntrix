@@ -31,6 +31,16 @@ client/provider state, Syntrix's OAuth/OIDC issuer role, and external-provider
 login. The process-level Go `services.Manager` retains dependency-composition
 and startup/shutdown ownership.
 
+Gateway [document authorization](../../implemented/architecture/2026-10-10-gateway-document-authorization.md)
+owns the existing CEL evaluator, rule configuration, and evaluation types
+separately from account authentication. Gateway's module configuration owns
+YAML `gateway.authz`, while Identity owns authentication/admin settings. Rule
+behavior, enforcement, and storage retain their contracts. The broader Identity extraction
+still needs transport-free account contracts, signing/verification separation,
+and account/revocation repository composition before adding project, session,
+deployment, and OAuth capabilities. This note remains proposed for those
+unimplemented architectural responsibilities.
+
 Instance PostgreSQL stores projects, application users, credentials, OAuth/OIDC
 state, sessions, and logical-database configuration and metadata. Syntrix
 databases are the developer-facing logical document product; MongoDB holds

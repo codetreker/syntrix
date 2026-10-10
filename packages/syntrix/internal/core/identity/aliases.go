@@ -9,11 +9,6 @@ type (
 	LoginRequest   = types.LoginRequest
 	SignupRequest  = types.SignupRequest
 	RefreshRequest = types.RefreshRequest
-	RuleSet        = types.RuleSet
-	MatchBlock     = types.MatchBlock
-	AuthzRequest   = types.AuthzRequest
-	Auth           = types.Authenticated
-	Resource       = types.Resource
 	User           = types.User
 )
 

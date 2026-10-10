@@ -74,6 +74,7 @@ func TestRunSubscriptionRecoveryReplaysBehindFenceAndAnnouncesReadyOnce(t *testi
 	readyCount := 0
 	enterLiveCount := 0
 	ready := make(chan struct{})
+	recoveredLive := make(chan struct{})
 	liveDelivery := make(chan struct{})
 	releaseLive := make(chan struct{})
 	deliveredAll := make(chan struct{})
@@ -114,6 +115,9 @@ func TestRunSubscriptionRecoveryReplaysBehindFenceAndAnnouncesReadyOnce(t *testi
 		EnterLive: func() {
 			mu.Lock()
 			enterLiveCount++
+			if enterLiveCount == 2 {
+				close(recoveredLive)
+			}
 			mu.Unlock()
 		},
 	}
@@ -145,6 +149,11 @@ func TestRunSubscriptionRecoveryReplaysBehindFenceAndAnnouncesReadyOnce(t *testi
 	case <-deliveredAll:
 	case <-time.After(time.Second):
 		t.Fatal("subscription did not complete retained recovery")
+	}
+	select {
+	case <-recoveredLive:
+	case <-time.After(time.Second):
+		t.Fatal("subscription did not return to live delivery after recovery")
 	}
 	cancel()
 	exit := <-exitCh

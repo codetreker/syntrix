@@ -1,4 +1,4 @@
-package authz
+package authorization
 
 import (
 	"context"
@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/codetreker/syntrix/internal/core/identity/config"
+	authorizationconfig "github.com/codetreker/syntrix/internal/gateway/authorization/config"
 	"github.com/codetreker/syntrix/pkg/model"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -20,7 +20,7 @@ func TestEmptyAndInvalidRules(t *testing.T) {
 
 	// Case 1: No rules loaded (empty directory)
 	emptyDir := t.TempDir()
-	engine, err := NewEngine(config.AuthZConfig{RulesPath: emptyDir}, mockQuery)
+	engine, err := NewEngine(authorizationconfig.Config{RulesPath: emptyDir}, mockQuery)
 	assert.NoError(t, err)
 
 	allowed, err := engine.Evaluate(context.Background(), "default", "/some/path", "read", Request{}, nil)
@@ -81,7 +81,7 @@ match:
 	require.NoError(t, err)
 
 	mockQuery := new(MockQueryService)
-	engine, err := NewEngine(config.AuthZConfig{RulesPath: tmpDir}, mockQuery)
+	engine, err := NewEngine(authorizationconfig.Config{RulesPath: tmpDir}, mockQuery)
 	assert.NoError(t, err)
 
 	ctx := context.Background()
@@ -131,7 +131,7 @@ match:
 	require.NoError(t, err)
 
 	mockQuery := new(MockQueryService)
-	engine, err := NewEngine(config.AuthZConfig{RulesPath: tmpDir}, mockQuery)
+	engine, err := NewEngine(authorizationconfig.Config{RulesPath: tmpDir}, mockQuery)
 	assert.NoError(t, err)
 
 	ctx := context.Background()
@@ -183,7 +183,7 @@ match:
 	require.NoError(t, err)
 
 	mockQuery := new(MockQueryService)
-	engine, err := NewEngine(config.AuthZConfig{RulesPath: tmpDir}, mockQuery)
+	engine, err := NewEngine(authorizationconfig.Config{RulesPath: tmpDir}, mockQuery)
 	assert.NoError(t, err)
 
 	ctx := context.Background()
@@ -228,7 +228,7 @@ match:
 	require.NoError(t, err)
 
 	mockQuery := new(MockQueryService)
-	engine, err := NewEngine(config.AuthZConfig{RulesPath: tmpDir}, mockQuery)
+	engine, err := NewEngine(authorizationconfig.Config{RulesPath: tmpDir}, mockQuery)
 	assert.NoError(t, err)
 
 	ctx := context.Background()

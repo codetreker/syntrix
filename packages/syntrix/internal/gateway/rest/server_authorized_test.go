@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/codetreker/syntrix/internal/core/identity"
+	"github.com/codetreker/syntrix/internal/gateway/authorization"
 	"github.com/codetreker/syntrix/pkg/model"
 
 	"github.com/stretchr/testify/assert"
@@ -22,7 +23,7 @@ func TestAuthorized_EvaluateError(t *testing.T) {
 	s := &Handler{engine: engine, authz: authzSvc}
 
 	engine.On("GetDocument", mock.Anything, "default", "col/doc").Return(nil, model.ErrNotFound)
-	authzSvc.On("Evaluate", mock.Anything, "default", "col/doc", "read", mock.Anything, (*identity.Resource)(nil)).Return(false, errors.New("eval error"))
+	authzSvc.On("Evaluate", mock.Anything, "default", "col/doc", "read", mock.Anything, (*authorization.Resource)(nil)).Return(false, errors.New("eval error"))
 
 	req := httptest.NewRequest("GET", "/api/v1/databases/default/documents/foo", nil)
 	req.SetPathValue("database", "default")
@@ -45,7 +46,7 @@ func TestAuthorized_Denied(t *testing.T) {
 	s := &Handler{engine: engine, authz: authzSvc}
 
 	engine.On("GetDocument", mock.Anything, "default", "col/doc").Return(nil, model.ErrNotFound)
-	authzSvc.On("Evaluate", mock.Anything, "default", "col/doc", "read", mock.Anything, (*identity.Resource)(nil)).Return(false, nil)
+	authzSvc.On("Evaluate", mock.Anything, "default", "col/doc", "read", mock.Anything, (*authorization.Resource)(nil)).Return(false, nil)
 
 	req := httptest.NewRequest("GET", "/api/v1/databases/default/documents/foo", nil)
 	req.SetPathValue("database", "default")
@@ -67,7 +68,7 @@ func TestAuthorized_AllowedWithExistingAndNewData(t *testing.T) {
 	existing := model.Document{"id": "123", "field": "old", "version": 1, "collection": "c"}
 	engine.On("GetDocument", mock.Anything, "default", "col/doc").Return(existing, nil)
 
-	authzSvc.On("Evaluate", mock.Anything, "default", "col/doc", "update", mock.MatchedBy(func(req identity.AuthzRequest) bool {
+	authzSvc.On("Evaluate", mock.Anything, "default", "col/doc", "update", mock.MatchedBy(func(req authorization.Request) bool {
 		if req.Auth.UID != "user-1" {
 			return false
 		}
@@ -78,7 +79,7 @@ func TestAuthorized_AllowedWithExistingAndNewData(t *testing.T) {
 			return false
 		}
 		return true
-	}), mock.MatchedBy(func(res *identity.Resource) bool {
+	}), mock.MatchedBy(func(res *authorization.Resource) bool {
 		return res != nil && res.ID == "123" && res.Data["field"] == "old" && res.Data["version"] == nil && res.Data["collection"] == nil
 	})).Return(true, nil)
 

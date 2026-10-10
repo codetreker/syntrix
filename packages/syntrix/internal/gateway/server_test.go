@@ -11,6 +11,7 @@ import (
 
 	"github.com/codetreker/syntrix/internal/core/database"
 	"github.com/codetreker/syntrix/internal/core/identity"
+	"github.com/codetreker/syntrix/internal/gateway/authorization"
 	api_config "github.com/codetreker/syntrix/internal/gateway/config"
 	"github.com/codetreker/syntrix/internal/gateway/realtime"
 	"github.com/codetreker/syntrix/internal/query"
@@ -54,10 +55,10 @@ func (m *MockAuthService) MiddlewareOptional(next http.Handler) http.Handler {
 
 type MockAuthzEngine struct {
 	mock.Mock
-	identity.AuthZ
+	authorization.Engine
 }
 
-func (m *MockAuthzEngine) Evaluate(ctx context.Context, database string, path string, action string, req identity.AuthzRequest, existingRes *identity.Resource) (bool, error) {
+func (m *MockAuthzEngine) Evaluate(ctx context.Context, database string, path string, action string, req authorization.Request, existingRes *authorization.Resource) (bool, error) {
 	args := m.Called(ctx, database, path, action, req, existingRes)
 	return args.Bool(0), args.Error(1)
 }

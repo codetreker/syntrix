@@ -54,13 +54,13 @@ identity:
     refresh_token_ttl: 168h # 7 days
     auth_code_ttl: 2m
     private_key_file: "keys/auth_private.pem"
-  authz:
-    rules_path: "security_rules"
   admin:
     username: "syntrix"
     password: "Changeme@123456!"  # Change this in production
 
 gateway:
+  authz:
+    rules_path: "security_rules"
   query_service_url: "localhost:9000"
   streamer_service_url: "localhost:9000"
   realtime:

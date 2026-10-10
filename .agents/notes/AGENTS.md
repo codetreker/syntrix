@@ -2,8 +2,9 @@
 
 Read [README.md](README.md) for the directory layout, English section names,
 lifecycle, and retention rules. Notes record durable rationale and consequences.
-Execution plans remain in `docs/plans/`, task tracking remains in `docs/tasks/`,
-and design discussions retain Why alongside How.
+Local execution plans remain in the gitignored `docs/plans/` directory, existing
+task reports retain validation history, and design discussions retain Why
+alongside How.
 
 Before creating a note, search for an existing owner. Update it for the same
 decision; write and cross-link a new note when the decision changes. Preserve

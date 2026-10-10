@@ -16,6 +16,7 @@ import (
 	"github.com/codetreker/syntrix/internal/core/database"
 	"github.com/codetreker/syntrix/internal/core/identity"
 	"github.com/codetreker/syntrix/internal/ctxkeys"
+	"github.com/codetreker/syntrix/internal/gateway/authorization"
 	"github.com/codetreker/syntrix/internal/query"
 	"github.com/codetreker/syntrix/internal/server"
 	"github.com/codetreker/syntrix/internal/server/ratelimit"
@@ -37,7 +38,7 @@ func getParsedBody(ctx context.Context) map[string]interface{} {
 type Handler struct {
 	engine          query.Service
 	auth            identity.AuthN
-	authz           identity.AuthZ
+	authz           authorization.Engine
 	database        database.Service
 	dbValidator     *DatabaseValidator
 	authRateLimiter ratelimit.Limiter // Stricter rate limiter for auth endpoints
@@ -66,7 +67,7 @@ func WithAuthRateLimiter(limiter ratelimit.Limiter, window time.Duration) Handle
 }
 
 // NewHandler creates a new Handler with required dependencies and optional configurations.
-func NewHandler(engine query.Service, auth identity.AuthN, authz identity.AuthZ, opts ...HandlerOption) (*Handler, error) {
+func NewHandler(engine query.Service, auth identity.AuthN, authz authorization.Engine, opts ...HandlerOption) (*Handler, error) {
 	if auth == nil {
 		return nil, errors.New("authn service cannot be nil")
 	}
@@ -347,7 +348,7 @@ func (h *Handler) authorized(handler http.HandlerFunc, action string) http.Handl
 		}
 
 		// Build Request Context
-		reqCtx := identity.AuthzRequest{
+		reqCtx := authorization.Request{
 			Time: time.Now(),
 		}
 
@@ -387,7 +388,7 @@ func (h *Handler) authorized(handler http.HandlerFunc, action string) http.Handl
 		}
 
 		// Fetch Existing Resource if needed
-		var existingRes *identity.Resource
+		var existingRes *authorization.Resource
 		if action != "create" {
 			doc, err := h.engine.GetDocument(r.Context(), databaseID, path)
 			if err == nil {
@@ -396,7 +397,7 @@ func (h *Handler) authorized(handler http.HandlerFunc, action string) http.Handl
 					data[k] = v
 				}
 				data.StripProtectedFields()
-				existingRes = &identity.Resource{
+				existingRes = &authorization.Resource{
 					Data: data,
 					ID:   doc.GetID(),
 				}
@@ -417,7 +418,7 @@ func (h *Handler) authorized(handler http.HandlerFunc, action string) http.Handl
 
 			var data map[string]interface{}
 			if err := json.Unmarshal(bodyBytes, &data); err == nil {
-				reqCtx.Resource = &identity.Resource{Data: data}
+				reqCtx.Resource = &authorization.Resource{Data: data}
 				// Cache parsed body in context to avoid double parsing in handlers
 				ctx := context.WithValue(r.Context(), contextKeyParsedBody, data)
 				r = r.WithContext(ctx)

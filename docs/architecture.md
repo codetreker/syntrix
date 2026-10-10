@@ -177,6 +177,15 @@ changes. Describing the accepted architecture does not make project-scoped
 endpoints, OAuth grants, a developer Console backend, or platform Management
 available in the current runtime.
 
+Current Gateway [document authorization](design/server/gateway/authorization.md)
+owns CEL evaluation, rule configuration, and request/resource types separately
+from Identity's account/token implementation. Manager constructs the evaluator
+with Query and `GatewayConfig.AuthZ`. Module configurations own their settings
+and lifecycle; rule configuration uses YAML `gateway.authz.rules_path`.
+The [ownership decision](../.agents/notes/implemented/architecture/2026-10-10-gateway-document-authorization.md)
+records the implemented separation. The remaining Identity extraction and
+project/OAuth capabilities stay distinct from that delivered boundary.
+
 The existing database metadata ID and document namespace are also distinct in
 parts of the runtime. A project binding or module extraction must not silently
 change stored document, index, replay, or SDK identity. The
@@ -188,6 +197,7 @@ those current contracts and their migration requirements.
 - [Developer Console](design/server/console/01.console.md)
 - [Platform Management](design/server/console/02.control_plane.md)
 - [Instance Identity](design/server/core/identity/01.architecture.md)
+- [Gateway Document Authorization](design/server/gateway/authorization.md)
 - [Instance Database Catalog and Lifecycle](design/server/core/database/01.architecture.md)
 - [Instance Storage](design/server/core/storage/01.architecture.md)
 - [Public API Reference](reference/api.md)

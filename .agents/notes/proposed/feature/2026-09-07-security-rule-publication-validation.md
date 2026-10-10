@@ -5,10 +5,10 @@ Status: proposed
 ## Problem
 
 Rules already undergo YAML parsing, database/path consistency checks, and CEL
-compilation. In the [validator](../../../../packages/syntrix/internal/core/identity/authz/engine.go),
+compilation. In the [validator](../../../../packages/syntrix/internal/gateway/authorization/engine.go),
 `env.Compile(cleanCondition)` checks expressions recursively. It does not apply
 the additional publication limits and ambiguity checks described in the
-[authorization design](../../../../docs/design/server/core/identity/03.authorization.md).
+[authorization design](../../../../docs/design/server/gateway/authorization.md).
 That design also records that current path ordering uses an alphabetical
 tie-breaker, while declaration-order semantics are planned. These are incomplete
 publication guarantees established by static inspection, not reproduced runtime

@@ -4,13 +4,15 @@ import (
 	"fmt"
 	"os"
 
+	authorization "github.com/codetreker/syntrix/internal/gateway/authorization/config"
 	services "github.com/codetreker/syntrix/internal/services/config"
 )
 
 type GatewayConfig struct {
-	QueryServiceURL    string         `yaml:"query_service_url"`
-	StreamerServiceURL string         `yaml:"streamer_service_url"`
-	Realtime           RealtimeConfig `yaml:"realtime"`
+	QueryServiceURL    string               `yaml:"query_service_url"`
+	StreamerServiceURL string               `yaml:"streamer_service_url"`
+	Realtime           RealtimeConfig       `yaml:"realtime"`
+	AuthZ              authorization.Config `yaml:"authz"`
 }
 
 type RealtimeConfig struct {
@@ -93,6 +95,7 @@ func DefaultGatewayConfig() GatewayConfig {
 	return GatewayConfig{
 		QueryServiceURL:    "localhost:9000",
 		StreamerServiceURL: "localhost:9000",
+		AuthZ:              authorization.DefaultConfig(),
 		Realtime: RealtimeConfig{
 			AllowedOrigins: []string{"http://localhost:8080", "http://localhost:3000", "http://localhost:5173"},
 			AllowDevOrigin: true,
@@ -114,18 +117,21 @@ func (g *GatewayConfig) ApplyDefaults() {
 		g.Realtime.AllowedOrigins = defaults.Realtime.AllowedOrigins
 	}
 	g.Realtime.Replica.ApplyDefaults()
+	g.AuthZ.ApplyDefaults()
 }
 
 // ApplyEnvOverrides applies environment variable overrides.
 func (g *GatewayConfig) ApplyEnvOverrides() {
+	g.AuthZ.ApplyEnvOverrides()
 	if val := os.Getenv("GATEWAY_QUERY_SERVICE_URL"); val != "" {
 		g.QueryServiceURL = val
 	}
 }
 
 // ResolvePaths resolves relative paths using the given directories.
-// No paths to resolve in gateway config.
-func (g *GatewayConfig) ResolvePaths(_, _ string) { _ = g }
+func (g *GatewayConfig) ResolvePaths(configDir, dataDir string) {
+	g.AuthZ.ResolvePaths(configDir, dataDir)
+}
 
 // Validate returns an error if the configuration is invalid.
 func (g *GatewayConfig) Validate(mode services.DeploymentMode) error {
@@ -137,5 +143,8 @@ func (g *GatewayConfig) Validate(mode services.DeploymentMode) error {
 			return fmt.Errorf("gateway.streamer_service_url is required in distributed mode")
 		}
 	}
-	return g.Realtime.Replica.Validate()
+	if err := g.Realtime.Replica.Validate(); err != nil {
+		return err
+	}
+	return g.AuthZ.Validate(mode)
 }

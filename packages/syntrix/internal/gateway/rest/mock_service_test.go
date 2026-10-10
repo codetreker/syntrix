@@ -7,6 +7,7 @@ import (
 	"github.com/codetreker/syntrix/internal/core/identity"
 	"github.com/codetreker/syntrix/internal/core/identity/authn"
 	"github.com/codetreker/syntrix/internal/core/storage"
+	"github.com/codetreker/syntrix/internal/gateway/authorization"
 	"github.com/codetreker/syntrix/internal/query"
 	"github.com/codetreker/syntrix/pkg/model"
 
@@ -197,25 +198,25 @@ type MockAuthzService struct {
 	mock.Mock
 }
 
-func (m *MockAuthzService) Evaluate(ctx context.Context, database string, path string, action string, req identity.AuthzRequest, existingRes *identity.Resource) (bool, error) {
+func (m *MockAuthzService) Evaluate(ctx context.Context, database string, path string, action string, req authorization.Request, existingRes *authorization.Resource) (bool, error) {
 	args := m.Called(ctx, database, path, action, req, existingRes)
 	return args.Bool(0), args.Error(1)
 }
 
-func (m *MockAuthzService) GetRules() *identity.RuleSet {
+func (m *MockAuthzService) GetRules() *authorization.RuleSet {
 	args := m.Called()
 	if args.Get(0) == nil {
 		return nil
 	}
-	return args.Get(0).(*identity.RuleSet)
+	return args.Get(0).(*authorization.RuleSet)
 }
 
-func (m *MockAuthzService) GetRulesForDatabase(database string) *identity.RuleSet {
+func (m *MockAuthzService) GetRulesForDatabase(database string) *authorization.RuleSet {
 	args := m.Called(database)
 	if args.Get(0) == nil {
 		return nil
 	}
-	return args.Get(0).(*identity.RuleSet)
+	return args.Get(0).(*authorization.RuleSet)
 }
 
 func (m *MockAuthzService) UpdateRules(database string, content []byte) error {
@@ -232,15 +233,15 @@ func (m *MockAuthzService) LoadRulesFromDir(dirPath string) error {
 // Use this in tests that don't need to test authorization logic.
 type AllowAllAuthzService struct{}
 
-func (a *AllowAllAuthzService) Evaluate(ctx context.Context, database string, path string, action string, req identity.AuthzRequest, existingRes *identity.Resource) (bool, error) {
+func (a *AllowAllAuthzService) Evaluate(ctx context.Context, database string, path string, action string, req authorization.Request, existingRes *authorization.Resource) (bool, error) {
 	return true, nil
 }
 
-func (a *AllowAllAuthzService) GetRules() *identity.RuleSet {
+func (a *AllowAllAuthzService) GetRules() *authorization.RuleSet {
 	return nil
 }
 
-func (a *AllowAllAuthzService) GetRulesForDatabase(database string) *identity.RuleSet {
+func (a *AllowAllAuthzService) GetRulesForDatabase(database string) *authorization.RuleSet {
 	return nil
 }
 
@@ -271,7 +272,7 @@ func (s *TestServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.mux.ServeHTTP(w, r)
 }
 
-func createTestServer(engine query.Service, auth identity.AuthN, authz identity.AuthZ) *TestServer {
+func createTestServer(engine query.Service, auth identity.AuthN, authz authorization.Engine) *TestServer {
 	if auth == nil {
 		auth = new(MockAuthService)
 	}

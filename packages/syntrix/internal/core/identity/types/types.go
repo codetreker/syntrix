@@ -1,8 +1,6 @@
 package types
 
 import (
-	"time"
-
 	"github.com/codetreker/syntrix/internal/core/storage"
 	"github.com/codetreker/syntrix/internal/ctxkeys"
 	"github.com/golang-jwt/jwt/v5"
@@ -55,42 +53,6 @@ type LoginRequest struct {
 // RefreshRequest represents the refresh payload.
 type RefreshRequest struct {
 	RefreshToken string `json:"refresh_token" validate:"required"`
-}
-
-// RuleSet defines authorization rules.
-type RuleSet struct {
-	Database string                `json:"database" yaml:"database"`
-	Version  string                `json:"rules_version" yaml:"rules_version"`
-	Service  string                `json:"service" yaml:"service"`
-	Match    map[string]MatchBlock `json:"match" yaml:"match"`
-}
-
-// MatchBlock defines nested authorization rules for a path segment.
-type MatchBlock struct {
-	Allow map[string]string     `json:"allow" yaml:"allow"`
-	Match map[string]MatchBlock `json:"match" yaml:"match"`
-}
-
-// AuthzRequest captures authorization evaluation inputs.
-type AuthzRequest struct {
-	Auth     Authenticated `json:"auth"`
-	Resource *Resource     `json:"resource,omitempty"`
-	Time     time.Time     `json:"time"`
-}
-
-// Authenticated stores authentication context for authorization evaluation.
-type Authenticated struct {
-	UID      interface{}            `json:"userId"`
-	Username string                 `json:"username,omitempty"`
-	Roles    []string               `json:"roles"`
-	DBAdmin  []string               `json:"db_admin,omitempty"` // Databases with admin access
-	Claims   map[string]interface{} `json:"claims,omitempty"`
-}
-
-// Resource describes the target resource for authorization evaluation.
-type Resource struct {
-	Data map[string]interface{} `json:"data"`
-	ID   string                 `json:"id"`
 }
 
 type User = storage.User

@@ -1,4 +1,4 @@
-package authz
+package authorization
 
 import (
 	"context"
@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codetreker/syntrix/internal/core/identity/config"
+	authorizationconfig "github.com/codetreker/syntrix/internal/gateway/authorization/config"
 	"github.com/codetreker/syntrix/pkg/model"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
@@ -75,7 +75,7 @@ match:
 			path:   "/users/user1/private_info/profile",
 			action: "read",
 			req: Request{
-				Auth: Auth{UID: "user1"},
+				Auth: Authenticated{UID: "user1"},
 			},
 			expected: true,
 		},
@@ -84,7 +84,7 @@ match:
 			path:   "/users/user1/private_info/profile",
 			action: "read",
 			req: Request{
-				Auth: Auth{UID: "user2"},
+				Auth: Authenticated{UID: "user2"},
 			},
 			expected: false,
 		},
@@ -93,7 +93,7 @@ match:
 			path:   "/posts/post1",
 			action: "create",
 			req: Request{
-				Auth: Auth{UID: "user1"},
+				Auth: Authenticated{UID: "user1"},
 				Resource: &Resource{
 					Data: map[string]interface{}{
 						"title": "My First Post",
@@ -107,7 +107,7 @@ match:
 			path:   "/posts/post1",
 			action: "create",
 			req: Request{
-				Auth: Auth{UID: "user1"},
+				Auth: Authenticated{UID: "user1"},
 				Resource: &Resource{
 					Data: map[string]interface{}{
 						"title": "",
@@ -121,7 +121,7 @@ match:
 			path:   "/posts/post1",
 			action: "create",
 			req: Request{
-				Auth: Auth{UID: nil}, // Unauthenticated
+				Auth: Authenticated{UID: nil}, // Unauthenticated
 				Resource: &Resource{
 					Data: map[string]interface{}{
 						"title": "Valid Title",
@@ -135,7 +135,7 @@ match:
 			path:   "/posts/post1",
 			action: "update",
 			req: Request{
-				Auth: Auth{UID: "author1"},
+				Auth: Authenticated{UID: "author1"},
 			},
 			existingRes: &Resource{
 				Data: map[string]interface{}{
@@ -149,7 +149,7 @@ match:
 			path:   "/posts/post1",
 			action: "update",
 			req: Request{
-				Auth: Auth{UID: "other"},
+				Auth: Authenticated{UID: "other"},
 			},
 			existingRes: &Resource{
 				Data: map[string]interface{}{
@@ -163,7 +163,7 @@ match:
 			path:   "/posts/post1",
 			action: "update",
 			req: Request{
-				Auth: Auth{
+				Auth: Authenticated{
 					UID:   "admin1",
 					Roles: []string{"admin"},
 				},
@@ -180,7 +180,7 @@ match:
 			path:   "/secrets/s1",
 			action: "read",
 			req: Request{
-				Auth: Auth{UID: "user1"},
+				Auth: Authenticated{UID: "user1"},
 			},
 			mockSetup: func(m *MockQueryService) {
 				m.On("GetDocument", mock.Anything, "default", "users/user1").Return(model.Document{
@@ -197,7 +197,7 @@ match:
 			path:   "/secrets/s1",
 			action: "read",
 			req: Request{
-				Auth: Auth{UID: "user2"},
+				Auth: Authenticated{UID: "user2"},
 			},
 			mockSetup: func(m *MockQueryService) {
 				m.On("GetDocument", mock.Anything, "default", "users/user2").Return(model.Document{
@@ -242,7 +242,7 @@ match:
 			path:   "/complex_logic/doc1",
 			action: "write",
 			req: Request{
-				Auth: Auth{UID: "owner1"},
+				Auth: Authenticated{UID: "owner1"},
 				Resource: &Resource{
 					Data: map[string]interface{}{
 						"status": "draft",
@@ -261,7 +261,7 @@ match:
 			path:   "/complex_logic/doc1",
 			action: "write",
 			req: Request{
-				Auth: Auth{UID: "owner1"},
+				Auth: Authenticated{UID: "owner1"},
 				Resource: &Resource{
 					Data: map[string]interface{}{
 						"status": "published",
@@ -284,7 +284,7 @@ match:
 				tc.mockSetup(mockQuery)
 			}
 
-			engine, err := NewEngine(config.AuthZConfig{RulesPath: tmpDir}, mockQuery)
+			engine, err := NewEngine(authorizationconfig.Config{RulesPath: tmpDir}, mockQuery)
 			assert.NoError(t, err)
 
 			allowed, err := engine.Evaluate(context.Background(), "default", tc.path, tc.action, tc.req, tc.existingRes)

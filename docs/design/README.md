@@ -15,6 +15,7 @@ and currently implemented contracts.
 | Employee-facing Management platform | [Management design](server/console/02.control_plane.md) |
 | Runtime services within one Syntrix instance | [Instance architecture](server/01.architecture.md) |
 | Project end-user realms, OAuth/OIDC, external login | [Identity design](server/core/identity/01.architecture.md) |
+| Business-document CEL rules and evaluation | [Gateway authorization](server/gateway/authorization.md) |
 | Instance system metadata and logical database lifecycle | [Database design](server/core/database/01.architecture.md) |
 | Private system PostgreSQL and business-document MongoDB | [Storage design](server/core/storage/01.architecture.md) |
 
@@ -33,8 +34,9 @@ alternatives, trade-offs, and historical decisions belong in an
 
 Keep affected designs synchronized with implementation in the same change.
 Rewrite documents coherently and reconcile conflicting statements.
-Execution plans remain in `docs/plans/`, and the [task board](../tasks/BOARD.md)
-tracks work. Use [prose-standard](../../.agents/skills/prose-standard/SKILL.md)
+Local execution plans remain in the gitignored `docs/plans/` directory.
+Existing task reports retain validation history.
+Use [prose-standard](../../.agents/skills/prose-standard/SKILL.md)
 when editing prose and preserve the complete behavior being described.
 
 ## Instance Runtime Overview

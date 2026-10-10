@@ -1,4 +1,4 @@
-package authz
+package authorization
 
 import (
 	"context"
@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codetreker/syntrix/internal/core/identity/config"
 	"github.com/codetreker/syntrix/internal/core/storage"
+	authorizationconfig "github.com/codetreker/syntrix/internal/gateway/authorization/config"
 	"github.com/codetreker/syntrix/pkg/model"
 
 	"github.com/stretchr/testify/assert"
@@ -102,12 +102,12 @@ match:
 	tmpDir := createTestRulesDir(t, "default", rules)
 
 	mockQuery := new(MockQueryService)
-	engine, err := NewEngine(config.AuthZConfig{RulesPath: tmpDir}, mockQuery)
+	engine, err := NewEngine(authorizationconfig.Config{RulesPath: tmpDir}, mockQuery)
 	assert.NoError(t, err)
 
 	// Test Case 1: Allowed Read (User matches)
 	req := Request{
-		Auth: Auth{UID: "user123"},
+		Auth: Authenticated{UID: "user123"},
 		Time: time.Now(),
 	}
 	allowed, err := engine.Evaluate(context.Background(), "default", "/users/user123", "read", req, nil)
@@ -116,7 +116,7 @@ match:
 
 	// Test Case 2: Denied Read (User mismatch)
 	req = Request{
-		Auth: Auth{UID: "otherUser"},
+		Auth: Authenticated{UID: "otherUser"},
 		Time: time.Now(),
 	}
 	allowed, err = engine.Evaluate(context.Background(), "default", "/users/user123", "read", req, nil)
@@ -151,7 +151,7 @@ match:
 
 	// Test Case 6: Resource Data Check (Private Room, Non-Member)
 	reqNonMember := Request{
-		Auth: Auth{UID: "stranger"},
+		Auth: Authenticated{UID: "stranger"},
 		Time: time.Now(),
 	}
 	allowed, err = engine.Evaluate(context.Background(), "default", "/rooms/room2", "read", reqNonMember, privateRoom)
@@ -160,7 +160,7 @@ match:
 
 	// Test Case 7: Custom Function 'exists' (Admin Check - Success)
 	reqAdmin := Request{
-		Auth: Auth{UID: "adminUser"},
+		Auth: Authenticated{UID: "adminUser"},
 		Time: time.Now(),
 	}
 	mockQuery.On("GetDocument", mock.Anything, "default", "admins/adminUser").Return(model.Document{"id": "adminUser"}, nil)
@@ -192,10 +192,10 @@ match:
 	tmpDir := createTestRulesDir(t, "default", rules)
 
 	mockQuery := new(MockQueryService)
-	engine, err := NewEngine(config.AuthZConfig{RulesPath: tmpDir}, mockQuery)
+	engine, err := NewEngine(authorizationconfig.Config{RulesPath: tmpDir}, mockQuery)
 	assert.NoError(t, err)
 
-	req := Request{Auth: Auth{UID: "user1"}}
+	req := Request{Auth: Authenticated{UID: "user1"}}
 
 	// Test read aliases
 	for _, action := range []string{"get", "list"} {
@@ -223,7 +223,7 @@ match:
 }
 
 func TestEngine_UpdateRules(t *testing.T) {
-	engine, err := NewEngine(config.AuthZConfig{}, new(MockQueryService))
+	engine, err := NewEngine(authorizationconfig.Config{}, new(MockQueryService))
 	assert.NoError(t, err)
 
 	rules := `
@@ -259,7 +259,7 @@ match:
 `
 		tmpDir := createTestRulesDir(t, "mydb", rules)
 
-		engine, err := NewEngine(config.AuthZConfig{RulesPath: tmpDir}, new(MockQueryService))
+		engine, err := NewEngine(authorizationconfig.Config{RulesPath: tmpDir}, new(MockQueryService))
 		require.NoError(t, err)
 
 		dbRules := engine.GetRulesForDatabase("mydb")
@@ -295,7 +295,7 @@ match:
 		err = os.WriteFile(tmpDir+"/db2.yml", []byte(rules2), 0644)
 		require.NoError(t, err)
 
-		engine, err := NewEngine(config.AuthZConfig{RulesPath: tmpDir}, new(MockQueryService))
+		engine, err := NewEngine(authorizationconfig.Config{RulesPath: tmpDir}, new(MockQueryService))
 		require.NoError(t, err)
 
 		assert.NotNil(t, engine.GetRulesForDatabase("db1"))
@@ -320,7 +320,7 @@ match:
 		err = os.WriteFile(tmpDir+"/file2.yml", []byte(rules), 0644)
 		require.NoError(t, err)
 
-		_, err = NewEngine(config.AuthZConfig{RulesPath: tmpDir}, new(MockQueryService))
+		_, err = NewEngine(authorizationconfig.Config{RulesPath: tmpDir}, new(MockQueryService))
 		assert.Error(t, err)
 		assert.ErrorIs(t, err, ErrDuplicateDatabase)
 	})
@@ -340,7 +340,7 @@ match:
 		err := os.WriteFile(tmpDir+"/test.yml", []byte(rules), 0644)
 		require.NoError(t, err)
 
-		_, err = NewEngine(config.AuthZConfig{RulesPath: tmpDir}, new(MockQueryService))
+		_, err = NewEngine(authorizationconfig.Config{RulesPath: tmpDir}, new(MockQueryService))
 		assert.Error(t, err)
 		assert.ErrorIs(t, err, ErrEmptyDatabase)
 	})
@@ -358,7 +358,7 @@ match:
 `
 		tmpDir := createTestRulesDir(t, "analytics", rules)
 
-		engine, err := NewEngine(config.AuthZConfig{RulesPath: tmpDir}, new(MockQueryService))
+		engine, err := NewEngine(authorizationconfig.Config{RulesPath: tmpDir}, new(MockQueryService))
 		require.NoError(t, err)
 
 		dbRules := engine.GetRulesForDatabase("analytics")
@@ -385,7 +385,7 @@ match:
 		err := os.WriteFile(tmpDir+"/mydb.yml", []byte(rules), 0644)
 		require.NoError(t, err)
 
-		_, err = NewEngine(config.AuthZConfig{RulesPath: tmpDir}, new(MockQueryService))
+		_, err = NewEngine(authorizationconfig.Config{RulesPath: tmpDir}, new(MockQueryService))
 		assert.Error(t, err)
 		assert.ErrorIs(t, err, ErrDatabaseMismatch)
 	})
@@ -395,7 +395,7 @@ match:
 		err := os.WriteFile(tmpFile, []byte("database: test\n"), 0644)
 		require.NoError(t, err)
 
-		_, err = NewEngine(config.AuthZConfig{RulesPath: tmpFile}, new(MockQueryService))
+		_, err = NewEngine(authorizationconfig.Config{RulesPath: tmpFile}, new(MockQueryService))
 		assert.Error(t, err)
 		assert.ErrorIs(t, err, ErrNotDirectory)
 	})
@@ -403,11 +403,11 @@ match:
 	t.Run("empty directory", func(t *testing.T) {
 		tmpDir := t.TempDir()
 
-		engine, err := NewEngine(config.AuthZConfig{RulesPath: tmpDir}, new(MockQueryService))
+		engine, err := NewEngine(authorizationconfig.Config{RulesPath: tmpDir}, new(MockQueryService))
 		require.NoError(t, err)
 
 		// No rules loaded, evaluate should deny
-		req := Request{Auth: Auth{UID: "user1"}}
+		req := Request{Auth: Authenticated{UID: "user1"}}
 		allowed, err := engine.Evaluate(context.Background(), "anydb", "/test", "read", req, nil)
 		assert.NoError(t, err)
 		assert.False(t, allowed)
@@ -427,10 +427,10 @@ match:
 `
 	tmpDir := createTestRulesDir(t, "db1", rules)
 
-	engine, err := NewEngine(config.AuthZConfig{RulesPath: tmpDir}, new(MockQueryService))
+	engine, err := NewEngine(authorizationconfig.Config{RulesPath: tmpDir}, new(MockQueryService))
 	require.NoError(t, err)
 
-	req := Request{Auth: Auth{UID: "user1"}}
+	req := Request{Auth: Authenticated{UID: "user1"}}
 
 	// Should allow for db1
 	allowed, err := engine.Evaluate(context.Background(), "db1", "/test", "read", req, nil)
@@ -456,7 +456,7 @@ match:
 `
 	tmpDir := createTestRulesDir(t, "testdb", rules)
 
-	engine, err := NewEngine(config.AuthZConfig{RulesPath: tmpDir}, new(MockQueryService))
+	engine, err := NewEngine(authorizationconfig.Config{RulesPath: tmpDir}, new(MockQueryService))
 	require.NoError(t, err)
 
 	// GetRules should return the first ruleset for backward compatibility
@@ -468,7 +468,7 @@ match:
 func TestEngine_GetRules_Empty(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	engine, err := NewEngine(config.AuthZConfig{RulesPath: tmpDir}, new(MockQueryService))
+	engine, err := NewEngine(authorizationconfig.Config{RulesPath: tmpDir}, new(MockQueryService))
 	require.NoError(t, err)
 
 	// GetRules should return nil when no rules loaded
@@ -479,7 +479,7 @@ func TestEngine_GetRules_Empty(t *testing.T) {
 func TestEngine_UpdateRules_DatabaseMismatch(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	engine, err := NewEngine(config.AuthZConfig{RulesPath: tmpDir}, new(MockQueryService))
+	engine, err := NewEngine(authorizationconfig.Config{RulesPath: tmpDir}, new(MockQueryService))
 	require.NoError(t, err)
 
 	// Try to update with content that has different database than target
@@ -513,12 +513,12 @@ match:
 `
 	tmpDir := createTestRulesDir(t, "default", rules)
 
-	engine, err := NewEngine(config.AuthZConfig{RulesPath: tmpDir}, new(MockQueryService))
+	engine, err := NewEngine(authorizationconfig.Config{RulesPath: tmpDir}, new(MockQueryService))
 	require.NoError(t, err)
 
 	t.Run("db_admin bypasses rules for matching database", func(t *testing.T) {
 		req := Request{
-			Auth: Auth{
+			Auth: Authenticated{
 				UID:     "user1",
 				DBAdmin: []string{"default"},
 			},
@@ -536,7 +536,7 @@ match:
 
 	t.Run("db_admin does not bypass rules for non-matching database", func(t *testing.T) {
 		req := Request{
-			Auth: Auth{
+			Auth: Authenticated{
 				UID:     "user1",
 				DBAdmin: []string{"other_database"},
 			},
@@ -550,7 +550,7 @@ match:
 
 	t.Run("db_admin with multiple databases", func(t *testing.T) {
 		req := Request{
-			Auth: Auth{
+			Auth: Authenticated{
 				UID:     "user1",
 				DBAdmin: []string{"db1", "default", "db2"},
 			},
@@ -564,7 +564,7 @@ match:
 
 	t.Run("empty db_admin does not bypass", func(t *testing.T) {
 		req := Request{
-			Auth: Auth{
+			Auth: Authenticated{
 				UID:     "user1",
 				DBAdmin: []string{},
 			},
@@ -578,7 +578,7 @@ match:
 
 	t.Run("nil db_admin does not bypass", func(t *testing.T) {
 		req := Request{
-			Auth: Auth{
+			Auth: Authenticated{
 				UID:     "user1",
 				DBAdmin: nil,
 			},
@@ -594,12 +594,12 @@ match:
 func TestEngine_Evaluate_DBAdminBypassNoRules(t *testing.T) {
 	// Create engine with no rules
 	tmpDir := t.TempDir()
-	engine, err := NewEngine(config.AuthZConfig{RulesPath: tmpDir}, new(MockQueryService))
+	engine, err := NewEngine(authorizationconfig.Config{RulesPath: tmpDir}, new(MockQueryService))
 	require.NoError(t, err)
 
 	t.Run("db_admin allows access even when no rules exist", func(t *testing.T) {
 		req := Request{
-			Auth: Auth{
+			Auth: Authenticated{
 				UID:     "user1",
 				DBAdmin: []string{"unknown_db"},
 			},
@@ -614,7 +614,7 @@ func TestEngine_Evaluate_DBAdminBypassNoRules(t *testing.T) {
 
 	t.Run("non db_admin denied when no rules exist", func(t *testing.T) {
 		req := Request{
-			Auth: Auth{
+			Auth: Authenticated{
 				UID:     "user1",
 				DBAdmin: []string{},
 			},

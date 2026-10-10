@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/codetreker/syntrix/internal/core/identity"
+	"github.com/codetreker/syntrix/internal/gateway/authorization"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
@@ -230,7 +231,7 @@ func TestAdmin_GetRules(t *testing.T) {
 	mockAuthz := new(MockAuthzService)
 	server := createTestServer(nil, mockAuth, mockAuthz)
 
-	ruleSet := &identity.RuleSet{Version: "1"}
+	ruleSet := &authorization.RuleSet{Version: "1"}
 	mockAuthz.On("GetRulesForDatabase", "default").Return(ruleSet)
 
 	req := httptest.NewRequest("GET", "/admin/rules", nil)
@@ -240,7 +241,7 @@ func TestAdmin_GetRules(t *testing.T) {
 	server.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusOK, w.Code)
-	var resp identity.RuleSet
+	var resp authorization.RuleSet
 	assert.NoError(t, json.NewDecoder(w.Body).Decode(&resp))
 	assert.Equal(t, "1", resp.Version)
 	mockAuthz.AssertExpectations(t)

@@ -26,9 +26,10 @@ directly into implemented notes. Historical decision circumstances remain intact
 while descriptions of current system facts track subsequent code changes.
 
 Design discussions retain concise rationale and link to notes for detailed
-alternatives. Plans and the task board keep their execution and tracking roles.
-All imported skills and note conventions use English and refer to the existing
-documentation layout.
+alternatives. Local plans describe execution; existing task reports preserve
+validation history. Project task tracking does not use a repository Markdown
+board. All imported skills and note conventions use English and refer to the
+existing documentation layout.
 
 ## Alternatives
 

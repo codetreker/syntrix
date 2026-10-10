@@ -38,7 +38,7 @@ syntrix/
 │   └── examples/realtime-demo/ # Browser replica example
 ├── deployment/              # Development and CI infrastructure
 ├── scripts/                 # Repository maintenance helpers
-├── docs/                    # Designs, references, plans, and task tracking
+├── docs/                    # Designs, references, local plans, and retained reports
 └── .agents/                 # Repository skills and decision notes
 ```
 
@@ -114,6 +114,7 @@ enables race detection and enforces the CI coverage thresholds.
 - [Developer Console](design/server/console/01.console.md)
 - [Employee Management Platform](design/server/console/02.control_plane.md)
 - [Instance Identity](design/server/core/identity/01.architecture.md)
+- [Gateway Document Authorization](design/server/gateway/authorization.md)
 - [Design Documents](design/README.md)
 - [Server Design](design/server/)
 - [SDK Design](design/sdk/)
@@ -131,8 +132,9 @@ interfaces; a target architecture does not establish new routes or methods.
 
 ## Plans, Decisions, and Agent Workflows
 
-Execution plans live in `docs/plans/`; the [task board](tasks/BOARD.md) tracks
-ownership and status. [Agent Notes](../.agents/notes/README.md) preserve decisions,
+Local execution plans live in the gitignored `docs/plans/` directory.
+Existing reports in `docs/tasks/` retain validation history.
+[Agent Notes](../.agents/notes/README.md) preserve decisions,
 alternatives, and consequences. [Proposed notes](../.agents/notes/proposed/) record
 deferred work with its evidence, alternatives, acceptance criteria, and risks;
 proposal status does not imply an implementation commitment. Keep concise Why

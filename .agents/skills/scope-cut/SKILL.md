@@ -32,11 +32,11 @@ A guarantee must hold in the delivered system. A shape constraint only keeps a f
 
 ## Record a defensible scope decision
 
-1. Derive candidates from the user's confirmed scope and existing requirements in `docs/design/`, `docs/reference/`, `docs/plans/`, `docs/tasks/`, and README documents. Use existing requirement IDs or links where available. Resolve material omissions in the owning document; do not invent requirements or require a new specification tree.
+1. Derive candidates from the user's confirmed scope and existing requirements in `docs/design/`, `docs/reference/`, local `docs/plans/`, and README documents. Use existing requirement IDs or links where available. Resolve material omissions in the owning document; do not invent requirements or require a new specification tree.
 2. Classify each candidate and identify what would have to change if it were deferred. State the concrete cost, not a label such as “low.”
 3. Turn every condition that keeps a deferral cheap into a constraint on the current design. Preserve existing constraints unless the scope decision explicitly changes them.
 4. Identify the observable outcome when a deferred case is encountered: an error, a limit, a documented slow path, or another precise behavior. “Not well supported” is neither implementable nor testable.
-5. Record the decision and its costs in an Agent Note, synchronizing affected active requirements, design documents, and tasks. Keep concise Why and How in the design document and link to the full rationale.
+5. Record the decision and its costs in an Agent Note, synchronizing affected active requirements, design documents, and the local execution plan. Keep concise Why and How in the design document and link to the full rationale.
 6. In `## Alternatives`, record only other scope choices actually considered and what they would have bought or cost. If none were considered, say so. Do not fabricate a smaller or larger choice to fill the section.
 
 Honor decisions already confirmed by the user. If the requested functionality would be removed, make that proposed change explicit and obtain the required scope decision before implementing it. Work already within the confirmed scope can continue.
