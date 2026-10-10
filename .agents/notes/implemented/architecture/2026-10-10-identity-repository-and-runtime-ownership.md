@@ -45,6 +45,13 @@ on configuration types; it does not own account/repository business logic.
 Backends performs no schema DDL; module constructors retain their existing
 schema/index calls rather than adding an index-readiness guarantee.
 
+The catalog cancellation test uses a local SQL connector implementing
+`SessionResetter` and `Validator`, matching the production driver's reusable
+connection behavior. It synchronizes lock entry and rollback before asserting
+that the same borrowed connection remains usable and only Backends closes it.
+Sqlmock does not implement those interfaces, so automatic cancellation rollback
+can discard its connection independently of factory ownership.
+
 Startup failure runs the same stop-before-close cleanup path and retains
 initialization and cleanup errors. If a consumer stop fails or cleanup times
 out, Backends remains open for a later cleanup attempt after consumers finish.

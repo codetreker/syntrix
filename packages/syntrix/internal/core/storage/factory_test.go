@@ -2,8 +2,11 @@ package storage
 
 import (
 	"context"
+	"database/sql"
 	"database/sql/driver"
 	"errors"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -165,47 +168,151 @@ func TestNewFactoryRoutingFailureDoesNotCloseBorrowedConnections(t *testing.T) {
 	}
 }
 
-type factoryCancelOnLock struct{ cancel context.CancelFunc }
-
-func (c factoryCancelOnLock) Match(driver.Value) bool { c.cancel(); return true }
-
 func TestNewFactoryCatalogFailureDoesNotCloseBorrowedConnections(t *testing.T) {
-	for _, phase := range []string{"schema", "cancellation"} {
-		t.Run(phase, func(t *testing.T) {
-			client, err := mongo.NewClient()
-			require.NoError(t, err)
-			provider := &backendTestProvider{client: client, dbName: "data"}
-			db, mock, err := sqlmock.New()
-			require.NoError(t, err)
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
-			failure := errors.New("schema failed")
-			mock.ExpectBegin()
-			if phase == "schema" {
-				mock.ExpectExec("SELECT pg_advisory_xact_lock").WithArgs(sqlmock.AnyArg()).WillReturnResult(sqlmock.NewResult(0, 1))
-				mock.ExpectExec("CREATE TABLE IF NOT EXISTS databases").WillReturnError(failure)
-			} else {
-				mock.ExpectExec("SELECT pg_advisory_xact_lock").WithArgs(factoryCancelOnLock{cancel}).WillDelayFor(time.Second).WillReturnResult(sqlmock.NewResult(0, 1))
-			}
-			mock.ExpectRollback()
-			mock.ExpectClose()
-			backends := &Backends{providers: map[string]Provider{"primary": provider}, postgresDB: db}
-			cfg := factoryTestConfig("single")
-			cfg.Databases = nil
-			factory, err := NewFactory(ctx, cfg, backends)
-			require.Nil(t, factory)
-			if phase == "schema" {
-				assert.ErrorIs(t, err, failure)
-			} else {
-				assert.ErrorIs(t, err, context.Canceled)
-			}
-			assert.Zero(t, provider.closes)
-			require.NoError(t, db.Ping())
-			require.NoError(t, backends.Close())
-			assert.Equal(t, 1, provider.closes)
-			require.EventuallyWithT(t, func(c *assert.CollectT) { require.NoError(c, mock.ExpectationsWereMet()) }, time.Second, time.Millisecond)
-		})
+	t.Run("schema", func(t *testing.T) {
+		client, err := mongo.NewClient()
+		require.NoError(t, err)
+		provider := &backendTestProvider{client: client, dbName: "data"}
+		db, mock, err := sqlmock.New()
+		require.NoError(t, err)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		failure := errors.New("schema failed")
+		mock.ExpectBegin()
+		mock.ExpectExec("SELECT pg_advisory_xact_lock").WithArgs(sqlmock.AnyArg()).WillReturnResult(sqlmock.NewResult(0, 1))
+		mock.ExpectExec("CREATE TABLE IF NOT EXISTS databases").WillReturnError(failure)
+		mock.ExpectRollback()
+		mock.ExpectClose()
+		backends := &Backends{providers: map[string]Provider{"primary": provider}, postgresDB: db}
+		cfg := factoryTestConfig("single")
+		cfg.Databases = nil
+		factory, err := NewFactory(ctx, cfg, backends)
+		require.Nil(t, factory)
+		assert.ErrorIs(t, err, failure)
+		assert.Zero(t, provider.closes)
+		require.NoError(t, db.Ping())
+		require.NoError(t, backends.Close())
+		assert.Equal(t, 1, provider.closes)
+		require.NoError(t, mock.ExpectationsWereMet())
+	})
+	t.Run("cancellation", testFactoryCatalogCancellationKeepsBorrowedPool)
+}
+
+// SessionResetter and Validator let database/sql retain a connection after
+// cancellation rollback, matching lib/pq. Sqlmock lacks these capabilities and
+// can lose its connection when automatic rollback wins the explicit rollback.
+type catalogCancellationConn struct {
+	started     chan struct{}
+	rolledBack  chan struct{}
+	connections atomic.Int32
+	rollbacks   atomic.Int32
+	closes      atomic.Int32
+	closed      atomic.Bool
+}
+
+type catalogCancellationDriver struct{ conn *catalogCancellationConn }
+
+func (d *catalogCancellationDriver) Connect(ctx context.Context) (driver.Conn, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
+	d.conn.connections.Add(1)
+	return d.conn, nil
+}
+func (d *catalogCancellationDriver) Driver() driver.Driver { return d }
+func (d *catalogCancellationDriver) Open(string) (driver.Conn, error) {
+	return d.Connect(context.Background())
+}
+
+func (c *catalogCancellationConn) Prepare(string) (driver.Stmt, error) {
+	return nil, errors.New("unexpected prepared statement")
+}
+func (c *catalogCancellationConn) Begin() (driver.Tx, error) {
+	return nil, errors.New("schema initialization must use BeginTx")
+}
+func (c *catalogCancellationConn) BeginTx(context.Context, driver.TxOptions) (driver.Tx, error) {
+	return &catalogCancellationTx{conn: c}, nil
+}
+func (c *catalogCancellationConn) ExecContext(ctx context.Context, query string, _ []driver.NamedValue) (driver.Result, error) {
+	if !strings.HasPrefix(query, "SELECT pg_advisory_xact_lock") {
+		return nil, errors.New("schema DDL ran after canceled lock acquisition")
+	}
+	close(c.started)
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+func (c *catalogCancellationConn) Ping(ctx context.Context) error { return ctx.Err() }
+func (c *catalogCancellationConn) ResetSession(ctx context.Context) error {
+	return ctx.Err()
+}
+func (c *catalogCancellationConn) IsValid() bool { return !c.closed.Load() }
+func (c *catalogCancellationConn) Close() error {
+	c.closes.Add(1)
+	c.closed.Store(true)
+	return nil
+}
+
+type catalogCancellationTx struct{ conn *catalogCancellationConn }
+
+func (*catalogCancellationTx) Commit() error { return errors.New("canceled transaction committed") }
+func (tx *catalogCancellationTx) Rollback() error {
+	tx.conn.rollbacks.Add(1)
+	close(tx.conn.rolledBack)
+	return nil
+}
+
+func testFactoryCatalogCancellationKeepsBorrowedPool(t *testing.T) {
+	t.Helper()
+	testCtx, stop := context.WithTimeout(context.Background(), 5*time.Second)
+	defer stop()
+	ctx, cancel := context.WithCancel(testCtx)
+	defer cancel()
+	conn := &catalogCancellationConn{started: make(chan struct{}), rolledBack: make(chan struct{})}
+	db := sql.OpenDB(&catalogCancellationDriver{conn: conn})
+	db.SetMaxOpenConns(1)
+	client, err := mongo.NewClient()
+	require.NoError(t, err)
+	provider := &backendTestProvider{client: client, dbName: "data"}
+	backends := &Backends{providers: map[string]Provider{"primary": provider}, postgresDB: db}
+	t.Cleanup(func() { require.NoError(t, backends.Close()) })
+	cfg := factoryTestConfig("single")
+	cfg.Databases = nil
+	type result struct {
+		factory StorageFactory
+		err     error
+	}
+	completed := make(chan result, 1)
+	go func() {
+		factory, err := NewFactory(ctx, cfg, backends)
+		completed <- result{factory: factory, err: err}
+	}()
+	select {
+	case <-conn.started:
+	case <-testCtx.Done():
+		t.Fatal(testCtx.Err())
+	}
+	cancel()
+	select {
+	case got := <-completed:
+		require.Nil(t, got.factory)
+		require.ErrorIs(t, got.err, context.Canceled)
+	case <-testCtx.Done():
+		t.Fatal(testCtx.Err())
+	}
+	select {
+	case <-conn.rolledBack:
+	case <-testCtx.Done():
+		t.Fatal(testCtx.Err())
+	}
+	require.NoError(t, db.PingContext(testCtx))
+	assert.Equal(t, int32(1), conn.connections.Load())
+	assert.Equal(t, int32(1), conn.rollbacks.Load())
+	assert.Zero(t, conn.closes.Load())
+	assert.Zero(t, provider.closes)
+	require.NoError(t, backends.Close())
+	require.NoError(t, backends.Close())
+	assert.Equal(t, int32(1), conn.closes.Load())
+	assert.Equal(t, 1, provider.closes)
 }
 
 func TestFactoryCatalogWorksWithoutUserInitialization(t *testing.T) {
