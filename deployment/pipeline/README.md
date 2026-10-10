@@ -1,62 +1,74 @@
-# Pipeline Infrastructure
+# Instance Test Infrastructure
 
-Lightweight Docker Compose setup for CI/CD pipelines.
+This lightweight Compose stack supplies dependencies for local integration tests
+and CI. The [system architecture](../../docs/architecture.md) and
+[boundary decision](../../.agents/notes/proposed/architecture/2026-10-10-platform-console-instance-boundaries.md)
+separate employee Management, developer Console, and application instances.
+Starting these services exercises the current instance runtime; it does not
+provision those future platform products or project identity realms.
 
 ## Services
 
-| Service    | Port  | Description                         |
-|------------|-------|-------------------------------------|
-| MongoDB    | 27017 | Document storage (replica set)      |
-| PostgreSQL | 5432  | User storage                        |
-| NATS       | 4222  | Message broker with JetStream       |
+| Service | Port | Current responsibility |
+|---|---|---|
+| MongoDB | 27017 | Business documents, replica-set change streams, current token revocation |
+| PostgreSQL | 5432 | Instance users and logical-database metadata |
+| NATS | 4222, 8222 | Distributed trigger broker and monitoring |
 
-## Usage
+The accepted target moves all private instance system data, including projects,
+application identity/OAuth/provider/client/session state, and database
+configuration/metadata, into instance PostgreSQL. Developer business documents
+remain in MongoDB. Current global JWT users and Mongo revocation are explicit
+implementation gaps; PostgreSQL is not a global employee/developer account store.
+
+## Usage and connections
+
+From the repository root:
 
 ```bash
-# Start all services
 docker compose -f deployment/pipeline/docker-compose.yml up -d
-
-# Check status
 docker compose -f deployment/pipeline/docker-compose.yml ps
-
-# Stop all services
 docker compose -f deployment/pipeline/docker-compose.yml down
 ```
 
-## Connection Strings
+- MongoDB: `mongodb://localhost:27017`
+- PostgreSQL: `postgres://syntrix:syntrix@localhost:5432/syntrix?sslmode=disable`
+- NATS: `nats://localhost:4222`
 
-- **MongoDB**: `mongodb://localhost:27017`
-- **PostgreSQL**: `postgres://syntrix:syntrix@localhost:5432/syntrix?sslmode=disable`
-- **NATS**: `nats://localhost:4222`
+Wait for the configured service health checks before integration tests. This
+stack has faster checks and smaller resource settings than development, and no
+Prometheus/Grafana stack. No named persistence volumes are configured; image
+anonymous volumes can still retain local test data. Stopping services is not a
+coordinated backup or an isolation test for the accepted hierarchy.
 
-## Differences from Dev Environment
+## File-descriptor requirements
 
-This setup is optimized for CI/CD:
-- No persistent volumes (ephemeral storage)
-- No monitoring stack (Prometheus, Grafana)
-- Faster health check intervals
-- Minimal resource allocation
-
-MongoDB has explicit soft and hard `nofile` limits of 64,000. MongoDB uses file
-descriptors for data files, journals, and connections; relying on a Docker daemon
-default of 1,024 can exhaust descriptors during integration-test collection and
-index creation, causing WiredTiger to stop the server. The container limits
-follow [MongoDB resource-limit guidance](https://www.mongodb.com/docs/manual/reference/ulimit/)
-and keep the test environment independent of the host daemon's default. Recreate
-the MongoDB container after changing these limits; changing the Compose file does
-not update an already running process.
+MongoDB sets soft/hard `nofile` limits to 64,000. Data files, journals, and
+connections consume descriptors; inheriting a Docker soft limit of 1,024 can
+exhaust them during test collection/index creation and stop WiredTiger. These
+limits follow [MongoDB resource-limit guidance](https://www.mongodb.com/docs/manual/reference/ulimit/)
+and keep test reliability independent of the daemon default. Development and
+devcontainer MongoDB use the same setting. Recreate a running container after
+changing limits so its process inherits them.
 
 ## Go CI checks
 
-The server workflow runs build and race/coverage jobs in parallel, each with a
-five-minute timeout. Only the test job starts the services above. Tests do not
-require build artifacts; generated protocol sources are committed. Separate jobs
-keep cold-cache build compilation out of the race-test execution budget.
+The current server workflow runs build and race/coverage jobs in parallel, each
+with a five-minute timeout. Only the test job starts this stack. Tests do not
+require build artifacts; generated protocol sources are committed. Separate
+jobs keep cold-cache build compilation out of the race-test budget.
 
-The required `Syntrix Server (Go)` check passes only when both jobs succeed. It
-runs even if dependencies fail, are cancelled, or are skipped, and rejects those
-results. Coverage uses a pinned go-cov version to enforce race detection, package,
-function, and overall coverage, and critical uncovered blocks.
+The required `Syntrix Server (Go)` check succeeds only when both jobs succeed;
+it executes and rejects failed, cancelled, or skipped dependencies. Pinned
+go-cov enforces race detection, package/function/overall coverage, and critical
+uncovered blocks in CI.
 
-From the repository root, `make -C packages/syntrix coverage` reports coverage;
-`CI=true make -C packages/syntrix coverage` enforces the same CI thresholds.
+```bash
+make -C packages/syntrix coverage
+CI=true make -C packages/syntrix coverage
+```
+
+The first command reports local coverage; the second enforces the CI thresholds.
+Passing current runtime tests does not prove employee/developer token separation,
+project realms, OAuth/OIDC flows, or separate Console/Management deployment.
+Those contracts require validation with their future implementations.

@@ -4,11 +4,11 @@ Status: proposed
 
 ## Problem
 
-The [Triggers page](../../../../packages/console/src/pages/TriggersPage.tsx) contains only `Trigger rules management coming soon...`. The [console design](../../../../docs/design/server/console/01.console.md) calls for configuration inspection, execution history, manual tests, and error logs. The current [gateway routes](../../../../packages/syntrix/internal/gateway/rest/handler.go) expose trigger document operations, not a complete trigger administration API. This is an incomplete planned capability, established through static inspection.
+The current embedded instance administration [Triggers page](../../../../packages/console/src/pages/TriggersPage.tsx) contains only `Trigger rules management coming soon...`. The [console design](../../../../docs/design/server/console/01.console.md) calls for configuration inspection, execution history, manual tests, and error logs. The current [gateway routes](../../../../packages/syntrix/internal/gateway/rest/handler.go) expose trigger document operations, not a complete trigger administration API. This is an incomplete planned capability, established through static inspection.
 
 ## Proposal
 
-Deliver a database-scoped trigger administration workflow covering rule inspection and editing, validation feedback, activation state, paginated execution history, delivery errors, and explicit manual tests. Establish authenticated backend operations for those actions together with the UI; document which actions require database administration rights and enforce them server-side.
+In the [target developer Console](../../../../docs/architecture.md), require selection of an owned instance, project, and logical database before trigger administration. Authorize the developer operation separately from project end-user tokens and employee Management authority. Deliver a database-scoped trigger administration workflow covering rule inspection and editing, validation feedback, activation state, paginated execution history, delivery errors, and explicit manual tests. Establish authenticated backend operations for those actions together with the UI; document which actions require database administration rights and enforce them server-side.
 
 Keep trigger configuration distinct from authorization rules. Use stable rule versions and conditional updates so concurrent editors receive a conflict rather than overwrite changes. An activation response must identify the persisted configuration and its effective state; history entries must identify the rule version and delivery operation. A manual test must distinguish validation from actual webhook execution, show the selected target and side effects, and require an explicit execution action. It must use the normal evaluator/delivery controls and produce a correlated result.
 
@@ -22,9 +22,9 @@ The UI displays secret references and resolution status only. Loading, empty his
 
 ## Acceptance Criteria
 
-- An authorized operator can inspect, change, validate, activate, and test a rule and find its correlated execution result.
+- An authorized developer or explicitly delegated instance administrator can inspect, change, validate, activate, and test a rule and find its correlated execution result.
 - Conflicting updates preserve the active rule; invalid configurations and unavailable services produce explicit errors.
-- Database boundaries are enforced for configuration, history, and manual tests; ordinary users cannot invoke administration operations.
+- Database boundaries are enforced for configuration, history, and manual tests; application end users cannot obtain administration rights from an application role name alone.
 - History is paginated, polling stops on navigation, and secrets never appear in responses or browser diagnostics.
 
 ## Dependencies

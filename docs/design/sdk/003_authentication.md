@@ -1,7 +1,23 @@
 # SDK Authentication Design
 
-**Date:** December 22, 2025
 **Status:** Authentication sessions implemented; remaining planned integration is marked below
+
+## Instance and project scope
+
+This authentication layer belongs to application clients of a Syntrix runtime
+instance. The [system architecture](../../architecture.md) separates Management
+employee accounts, Console developer accounts, and runtime application end users.
+The target instance [Identity module](../server/core/identity/01.architecture.md)
+is a peer to Indexer and Puller. It owns project-isolated end-user accounts,
+sessions, and both OAuth/OIDC roles, backed by instance-local PostgreSQL.
+A project can use several logical Syntrix databases backed by MongoDB.
+
+Current login/signup send username and password to the instance's JSON auth
+endpoints. They have no implemented project selector or OAuth authorization
+flow. Client `database` selects data-request paths; it does not make the current
+login database-scoped. Management/Console credentials are not the intended
+application authentication domain. The project/OAuth API and its SDK integration
+remain to be designed without weakening existing session fences.
 
 ## Context & Why
 - The SDK needs a consistent auth story across HTTP CRUD/query, replication (pull/push), and realtime channels.
@@ -60,23 +76,34 @@ not part of the delivered configuration. Applications own durable secret storage
   `AuthSessionChangedError` without notifying the new session through auth hooks.
 - Network errors follow existing backoff; auth errors do not exponential-backoff (they need user/token action).
 
-## Replica WebSocket 与 SSE
+## Replica WebSocket and SSE
 
-- 私有 replica WS 与 HTTP 共用 tokenProvider。活动 leader 的运输租约捕获原会话，
-  以 `replica-data` auth 帧发送 token/database，匹配 auth_ack 后才建立源注册。
-- 当前 auth 请求收到结构化 UNAUTHORIZED 时只允许一次共享 refresh；FORBIDDEN、
-  绑定身份错误或 refresh 失败保留既有阻塞语义，不能以 HTTP fallback 绕过。
-- 连接/认证及注册分别受 10 秒 deadline 限制。取消监听先于凭据调用安装，关闭只等待
-  可取消的本次尝试，不等待 provider 共享 refresh promise；底层迟到结果仍有处理器并
-  受 provider 的会话检查保护。关闭一个 WS 不取消其它 HTTP 调用共享的 refresh。
-- 重连保留原 session，只在有效 leader 租约存在时运行；账号替换退休旧租约和迟到
-  消息归属。诊断回调可同步关闭句柄，回调后必须再次核对 owner。
-- SSE 仍在等待 token 前建立 controller 并捕获会话；认证、响应、读取和回调核对
-  controller/session，旧清理不能移除新连接。公开 SSE 行为不变。
-- 登录、注册和退出先失效 provider 会话，既有 replica owner 负责取消私有运输；
-  客户端在等待远端认证前清除并断开缓存 SSE。独立创建的 SSE client 仍由调用方清理。
-- 公开 `realtime()`、`subscribe()` 及 WS 构造器/协议类型已移除；SSE 与手动 Pull 保留。
-  运输所有权和 fallback 的完整决定见[SDK WS 复制](../../../.agents/notes/implemented/architecture/2026-09-21-sdk-replica-websocket.md)。
+- Private replica WS shares the HTTP token provider. An active leader's transport
+  lease captures its original session and sends token/database in a `replica-data`
+  auth frame. Source registration begins only after the matching auth ACK.
+- Structured `UNAUTHORIZED` for current authentication permits one shared refresh.
+  `FORBIDDEN`, identity-binding errors, and refresh failures retain the existing
+  blocked behavior; HTTP fallback cannot bypass them.
+- Connection/authentication and registration each have a 10-second deadline.
+  Cancellation listeners are installed before credential acquisition. Shutdown
+  waits for its cancellable attempt rather than a provider's shared refresh;
+  late results retain handlers and provider session checks. Closing one WS does
+  not cancel refresh shared with other HTTP calls.
+- Reconnect retains the original session and runs only with an active leader
+  lease. Account replacement retires old leases and late-message ownership.
+  Diagnostic callbacks can synchronously close a handle; ownership is checked
+  again after each callback.
+- SSE creates its controller and captures the session before waiting for a token.
+  Authentication, response, reads, and callbacks check controller/session ownership;
+  obsolete cleanup cannot clear a replacement connection.
+- Login, signup, and logout invalidate the provider session. Existing replica
+  owners cancel private transport, and the client clears/disconnects cached SSE
+  before awaiting remote authentication. Independently constructed SSE clients
+  remain the caller's cleanup responsibility.
+- Public `realtime()`, `subscribe()`, and WS constructors/protocol types have been
+  removed; SSE and manual Pull remain. The
+  [SDK replica WS decision](../../../.agents/notes/implemented/architecture/2026-09-21-sdk-replica-websocket.md)
+  owns transport/fallback details.
 
 ## Replication (pull/push)
 - Pull/Push use the same auth layer; retries on 401/403 follow the refresh-once rule.
@@ -85,8 +112,17 @@ not part of the delivered configuration. Applications own durable secret storage
 ## Trigger Handler
 - `TriggerHandler` continues to require `preIssuedToken` from the payload; no auto-refresh. Fail fast if missing/invalid.
 
-## Multi-database / Audience
-- Prefer token-scoped database. If a database header is ever needed, expose an explicit option (not implicit) to avoid drift between token and header.
+## Database and project binding
+
+Current data requests use the configured database in URL paths; current tokens
+carry a user subject and optional database-admin assignments. Login does not
+bind one database or expose a project parameter. Replica storage binds the
+endpoint, subject, configured database string, and accepted source identity.
+
+The target server must validate instance/project authority before database and
+document access. The eventual project/issuer/audience representation and SDK
+configuration require explicit design. Credentials must not be reused across
+project realms merely because their local username or role string matches.
 
 ## Authentication Session Ownership
 
@@ -144,8 +180,9 @@ owns public usage and errors.
 - 401 on CRUD without refresh: propagate error, no retry.
 - Refresh failure: single retry attempt, then error, hook fired.
 - Concurrency: multiple parallel requests hit 401 -> only one refresh occurs; all retry once with new token.
-- Replica WebSocket：当前 auth 的 UNAUTHORIZED 只 refresh 一次；终止错误结束尝试，
-  新连接认证后为活动 alias 建立新注册，凭据取消不等待共享 refresh。
+- Replica WebSocket: current `UNAUTHORIZED` refreshes once; terminal errors end
+  the attempt. After new connection authentication, active aliases obtain new
+  registrations. Credential cancellation does not wait for shared refresh.
 - Replication pull/push: 401 triggers refresh-once, checkpoint unchanged on failure, resumes on success.
 
 ## Integration Points

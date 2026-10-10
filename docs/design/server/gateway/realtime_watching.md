@@ -101,7 +101,7 @@ func buildSummary(sub SubscribeRequest) SubscriptionSummary {
   - CSP and Gateway clusters both use a consistent-hash ring; events route by (collection + docKey hash) to the responsible Gateway by default.
   - If the routing key is uncertain (e.g., range queries), CSP can broadcast to a small candidate set of Gateways; Gateways then filter locally.
 - Membership (Why: elasticity and migration; How):
-  - Control plane maintains heartbeats and leases; ring changes trigger smooth partition migration (drain plus resume token handoff).
+  - Proposed coordination maintains heartbeats and leases within an explicit runtime instance scope; ring changes require partition migration with drain and resume-token handoff. The [platform architecture](../../../architecture.md) separates employee Management from instance process composition. Membership and assignment placement remain proposed mechanisms; this document does not establish an implemented platform Management service.
 - Rebalance semantics (Why: avoid gaps/dupes during movement; How):
   - Donor drains the partition queue, checkpoints resume token, transfers the last committed token to the recipient, and enters a brief “handoff broadcast” mode (up to 1s) so no events are lost; recipient starts from the token and exits broadcast once caught up.
 - Backpressure (Why: prevent amplification; How):

@@ -31,8 +31,7 @@ data on deletion requires a reliable stored routing value or before-image.
 Reject unsupported field configurations at subscription creation rather than
 silently hashing an empty value.
 
-Coordinate shard ownership and fenced handoff through the cluster control plane,
-with per-shard processed checkpoints and bounded draining. Indexer needs state
+Coordinate shard ownership and fenced handoff within an explicit Syntrix instance scope, with per-shard processed checkpoints and bounded draining. The [platform architecture](../../../../docs/architecture.md) distinguishes employee Management from runtime process composition; the [cluster coordination proposal](2026-09-07-cluster-control-plane.md) leaves concrete assignment authority and placement open. A routing generation or owner from one instance cannot authorize processing another instance's events. Indexer needs state
 transfer or rebuild and query routing; Streamer needs gateway subscription
 routing; Trigger needs independent consumer groups and retry-safe delivery.
 These integrations are part of usable scaling, not guarantees supplied by a

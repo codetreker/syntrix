@@ -1,67 +1,194 @@
-# Syntrix Architecture
+# Syntrix Platform Architecture
 
-Syntrix is a realtime backend-as-a-service platform designed for high scalability and low latency. It follows a microservices-oriented architecture where components can be deployed together (monolithic mode) or separately.
+**Status:** Accepted target architecture. The implementation status below identifies
+the runtime behavior that exists today and the remaining separation work.
 
-## System Overview
+This document owns the platform's user categories, service boundaries, instance
+hierarchy, and database terminology. Component designs and references must use
+these meanings. The [boundary decision](../.agents/notes/proposed/architecture/2026-10-10-platform-console-instance-boundaries.md)
+records the rationale, alternatives, and implementation constraints.
 
-The system consists of the following core services:
+## Users and Service Boundaries
 
-1. **API Gateway**: The entry point for client REST requests. It handles authentication (future), validation, and routing to the Query Service.
-2. **Query Service**: The central brain for data operations. It abstracts the storage layer and provides a unified interface for CRUD and complex queries.
-3. **Indexer** - Secondary index service that subscribes to change events from Puller and maintains in-memory indexes for accelerated query execution.
-4. **Puller** - Realtime change puller, subscribe changes from storage and fanout to consumers.
-5. **Streamer** - Realtime watch processor.
-6. **Trigger Service**: A server-side event reaction system. It evaluates database changes against user-defined rules (CEL) and executes Webhooks via a durable queue (NATS).
+| Layer | Users | Responsibility |
+|---|---|---|
+| Management platform | Syntrix platform employees | Platform-wide scheduling, resource operations, monitoring, and administration |
+| Console service | Developers building services with Syntrix | Developer accounts and creation and management of each developer's Syntrix instances |
+| Syntrix instance | End users of a developer's applications | Project-scoped identity, authentication, business-document access, queries, and realtime synchronization |
 
-## Arch Overview
+A developer can own one or more instances. Employees administer the platform;
+developers manage their own resources through Console. Application end users
+authenticate to a project inside an instance. These are distinct account and
+authorization domains. An application's `admin` role does not grant Console or
+Management privileges.
 
-![Arch Overview](./_img/architecture.drawio.png)
-
-## Data Flow
-
-### 1. Request Path (CRUD)
-
-```mermaid
-graph LR
-    Client -->|HTTP| API_Gateway
-    API_Gateway -->|RPC/Direct| Query_Service
-    Query_Service -->|Driver| MongoDB
-```
-
-### 2. Realtime Path
+Management is a platform service outside developer runtime instances. Console is
+the developer-facing service. An instance's Identity service manages application
+end users. The existing Go `services.Manager` assembles dependencies and manages
+process lifecycle; its name does not make it the Management platform.
 
 ```mermaid
-graph LR
-    NATS[(NATS Jetstream)]
-
-    MongoDB -->|Change Stream| Puller
-    Puller -->|Events| Streamer
-    Streamer -->|Pub| NATS
-    NATS -->|Sub| Gateway
-    Gateway -->|WebSocket/SSE| Client
+flowchart TB
+    Employees[Platform employees] --> Management[Management platform]
+    Developers[Developers] --> Console[Console service]
+    Management -->|Platform operations and monitoring| Console
+    Console -->|Manage owned instances| Instance[Syntrix instance]
+    Management -->|Scheduling and resource operations| Instance
+    EndUsers[Application end users] -->|Project authentication and data APIs| Instance
+    Instance --> PostgreSQL[(Private system PostgreSQL)]
+    Instance --> MongoDB[(Business-document MongoDB)]
 ```
 
-### 3. Trigger Path
+The diagram expresses responsibility and ownership. Concrete platform APIs,
+provisioning transports, and platform persistence backends require their own
+designs; it does not prescribe an HTTP proxy chain for application requests.
+
+## Instances, Projects, and Logical Databases
+
+The hierarchy is:
+
+```text
+Developer
+  Syntrix instance A
+    Project shop
+      Project identity realm: users, credentials, OAuth configuration, sessions
+      Syntrix database orders
+      Syntrix database catalog
+    Project forum
+      Separate project identity realm
+      Syntrix database posts
+  Syntrix instance B
+    Its own projects, identity realms, and logical databases
+```
+
+An instance is the outer runtime and data-isolation boundary. Its projects and
+application users belong to that instance. A project owns an isolated identity
+realm and can use multiple logical Syntrix databases. Web, mobile, and other
+OAuth clients of one project use that project's identity realm; an OAuth client
+is not a separate project.
+
+Shared project identity does not grant every user access to every project
+database or document. Data access requires the target instance, project, and
+database binding plus the applicable application policy. Equal usernames,
+emails, role names, or database names across projects or instances do not imply
+shared authority or accounts.
+
+For example, an external identity can map to one stable local user in `shop` and
+another local user in `forum`. Disabling the shop account affects its project.
+Deleting `orders` leaves the shop identity realm available to `catalog`.
+Deleting a project requires coordination of its identity realm and databases;
+deleting an instance retires its project and runtime resources.
+
+## Database Terminology and Data Ownership
+
+| Term | Meaning | Data ownership |
+|---|---|---|
+| Instance system PostgreSQL | Private storage supporting the operation of one Syntrix instance | Projects, application end users, credentials, OAuth/OIDC providers and clients, sessions, logical-database configuration and metadata, and other system records |
+| Syntrix database | The logical document-database product provided to developers | A project's business documents, accessed through Syntrix APIs and SDKs |
+| Physical MongoDB database or collection | An implementation storage namespace | Holds business documents for the configured logical Syntrix databases |
+
+Each instance contains Syntrix services, MongoDB, and PostgreSQL. PostgreSQL is
+the instance's private system database; it is not a developer-facing Syntrix
+database. MongoDB carries developer business documents. A logical Syntrix
+database need not correspond one-to-one to a physical MongoDB database or
+collection. The [storage design](design/server/core/storage/05.multi-database.md)
+owns the physical representation and routing contracts.
+
+Management's platform records and Console's developer accounts and instance
+inventory have their own service ownership. Their persistence backend is not
+specified here. An instance's PostgreSQL must not be treated as the global
+employee/developer account store or platform inventory authority.
+
+System records are exposed through authorized system operations. They are not
+ordinary business documents that application document APIs may read or modify.
+Sharing an instance's PostgreSQL deployment between system modules does not
+merge their record ownership or authorization policy.
+
+## Instance Runtime Services
+
+| Service | Instance responsibility |
+|---|---|
+| Gateway | Public document, query, and realtime entry points; token validation and application-policy enforcement |
+| Identity | Project-scoped end-user accounts, authentication, OAuth/OIDC, external identity mapping, sessions, and token authority |
+| Query | Document CRUD and query/replication execution |
+| Indexer | Derived indexes and projection lifecycle |
+| Puller | MongoDB change ingestion, buffering, and replay for consumers |
+| Streamer | Realtime subscriptions and delivery |
+| Trigger Evaluator / Worker | Rule evaluation and external event delivery |
+
+Identity is a peer runtime module to Indexer and Puller. Its PostgreSQL records
+include project-scoped users and authentication state. It supports both roles:
+
+- Syntrix authenticates a project's end users and issues its own OAuth/OIDC
+  credentials to that project's clients.
+- Syntrix acts as a client of configured external identity providers, maps the
+  external identity into the project's user realm, and establishes a Syntrix
+  session.
+
+The [identity architecture](design/server/core/identity/01.architecture.md) owns
+these contracts. Management coordinates platform resource operations; Console
+is their developer-facing entry. Instance services execute the local catalog,
+identity, and data operations within the requested instance and project scope.
+Application end-user credentials do not authorize instance provisioning or
+platform database-lifecycle requests.
+
+The Go Service Manager wires modules within a process. Standalone uses direct
+calls; distributed deployment uses service clients, including when services
+share one process. These are deployment choices inside an instance, not the
+Management/Console/instance hierarchy. The [runtime architecture](design/server/01.architecture.md)
+and [deployment design](design/server/03.deployment_modes.md) own those details.
+
+## Current Runtime Data Flows
+
+The current implementation already provides these document-runtime paths:
 
 ```mermaid
-graph LR
-    MongoDB -->|Change Stream| Trigger_Evaluator
-    Trigger_Evaluator -->|Match?| NATS[NATS JetStream]
-    NATS -->|Task| Trigger_Worker
-    Trigger_Worker -->|HTTP| External_Webhook
+flowchart LR
+    Client[Application client] --> Gateway[Gateway]
+    Gateway --> Query[Query]
+    Query --> MongoDB[(MongoDB)]
+    Query --> Indexer[Indexer]
+    MongoDB -->|Change streams| Puller[Puller]
+    Puller --> Streamer[Streamer]
+    Streamer --> Gateway
+    Puller --> Evaluator[Trigger Evaluator]
+    Evaluator --> Queue[Trigger queue]
+    Queue --> Worker[Trigger Worker]
+    Worker --> External[External endpoint]
 ```
 
-## Deployment Modes
+Distributed trigger delivery uses NATS JetStream; standalone delivery uses
+in-memory pubsub. The realtime Streamer-to-Gateway path does not use the trigger
+queue. Go requires the version declared by `packages/syntrix/go.mod`.
 
-Syntrix supports flexible deployment via the `Service Manager`:
+## Implementation Status
 
-- **Monolithic (Dev/Test)**: All services run in a single process.
-- **Microservices (Prod)**: Services run in separate processes/containers, communicating via HTTP/RPC and NATS.
+| Area | Current repository behavior | Accepted target |
+|---|---|---|
+| Platform Management | A cluster-control proposal exists; the Go Manager provides process composition | Employee-facing platform scheduling, monitoring, and resource management |
+| Console | `packages/console` is an instance administration frontend currently served by Gateway at `/console/` | A developer-facing service managing developer-owned instances |
+| Identity | Embedded `core/identity` with custom username/password JSON authentication and JWTs | A peer instance Identity module with project-scoped accounts and both OAuth/OIDC roles |
+| Account scope | One runtime-global user model combines roles and database administration | Separate platform employee, Console developer, and project end-user domains |
+| System storage | PostgreSQL stores users and database metadata; revocation currently uses MongoDB | Instance system data, including identity/OAuth/session state, belongs in PostgreSQL |
+| Project hierarchy | Existing database metadata and APIs have no project identity realm | Instance-owned projects, project-owned identity realms, and multiple databases per project |
 
-## Technology Stack
+These implementation gaps must remain visible in API references and future
+changes. Describing the accepted architecture does not make project-scoped
+endpoints, OAuth grants, a developer Console backend, or platform Management
+available in the current runtime.
 
-- **Language**: Go (Golang) 1.23+
-- **Storage**: MongoDB (Primary Data Store)
-- **Messaging**: NATS JetStream (Durable Queues for Triggers)
-- **Realtime**: WebSocket / Server-Sent Events (SSE)
-- **Logic Engine**: Google CEL (Common Expression Language)
+The existing database metadata ID and document namespace are also distinct in
+parts of the runtime. A project binding or module extraction must not silently
+change stored document, index, replay, or SDK identity. The
+[database architecture](design/server/core/database/01.architecture.md) owns
+those current contracts and their migration requirements.
+
+## Related Design Owners
+
+- [Developer Console](design/server/console/01.console.md)
+- [Platform Management](design/server/console/02.control_plane.md)
+- [Instance Identity](design/server/core/identity/01.architecture.md)
+- [Instance Database Catalog and Lifecycle](design/server/core/database/01.architecture.md)
+- [Instance Storage](design/server/core/storage/01.architecture.md)
+- [Public API Reference](reference/api.md)
+- [TypeScript SDK Reference](reference/typescript_sdk.md)

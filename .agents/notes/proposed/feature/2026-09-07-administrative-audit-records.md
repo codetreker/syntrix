@@ -4,10 +4,15 @@ Status: proposed
 
 ## Problem
 
-The [authentication design](../../../../docs/design/server/core/identity/02.authentication.md)
-requires append-only authentication events and at least 30 days of audit retention.
-The [console design](../../../../docs/design/server/console/01.console.md) requires
-administrative mutation history. Static inspection of
+Authentication and administrative mutations inside an instance need retained,
+queryable outcomes. The target
+[Identity architecture](../../../../docs/design/server/core/identity/01.architecture.md)
+places end-user accounts, sessions, projects, and database configuration in the
+instance's PostgreSQL system data. These records are separate from developer
+account/instance operations in Console and employee platform operations in
+Management; each authority domain needs its own audit ownership.
+
+Static inspection of
 [authentication](../../../../packages/syntrix/internal/core/identity/authn/service.go) and
 [admin handlers](../../../../packages/syntrix/internal/gateway/rest/handler_admin.go) finds operation
 execution and diagnostic logging, without a durable audit store or query API.
@@ -16,11 +21,12 @@ restart or an interrupted response.
 
 ## Proposal
 
-Add an append-only audit event store in the existing PostgreSQL metadata backend.
+Add an append-only audit event store in the instance-local PostgreSQL system backend.
 Cover signup, signin success/failure, logout/revocation, password change, user
-administration, rule publication/rollback, and database administration. Each event
-records event/operation IDs, time, actor, action, target/database, outcome, and
-bounded client metadata. Use redacted change summaries; exclude passwords,
+administration, rule publication/rollback, and project/database administration.
+Each event records instance/project scope, event/operation IDs, time, actor,
+action, target/database, outcome, and bounded client metadata. Use redacted
+change summaries; exclude passwords,
 tokens, hashes, full rule text, and document payloads.
 
 For mutations in PostgreSQL, commit the audit result in the same transaction as
@@ -31,8 +37,11 @@ not claim audited completion until its result record is durable. Bound pending
 work and reject admission when durable audit storage cannot accept it. Preserve
 operation IDs when the caller receives an uncertain outcome.
 
-Expose administrator-only cursor pagination filtered by actor, action, target,
-and time. Enforce a configured retention period of at least 30 days with a
+Expose project/instance-authorized cursor pagination filtered by actor, action,
+target, and time. Enforce the actor's authority domain and scope before querying;
+a matching `admin` role string cannot grant cross-project, Console, or Management
+access. Console and Management audit APIs remain separate responsibilities.
+Enforce a configured retention period of at least 30 days with a
 bounded, cancellable retention worker. Generic telemetry remains owned by
 [application observability](../architecture/2026-09-07-application-observability.md).
 
@@ -51,8 +60,9 @@ the local durable event contract is established.
   failed attempts record their result without sensitive values.
 - Restart and injected write/delivery failures preserve pending or unresolved
   operations without fabricating completion or repeating non-idempotent changes.
-- Non-administrators cannot query audit records; pagination has no omissions or
-  duplicate traversal under concurrent insertion.
+- Unauthorized actors cannot query audit records, including actors from another
+  project or account domain. Pagination has no omissions or duplicate traversal
+  under concurrent insertion.
 - Retention preserves the configured minimum and shutdown cancels cleanup within
   its timeout.
 

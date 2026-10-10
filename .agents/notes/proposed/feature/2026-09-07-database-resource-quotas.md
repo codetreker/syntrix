@@ -17,7 +17,7 @@ each database, not all quota or lifecycle handling.
 
 ## Proposal
 
-Define `max_documents` as the number of live documents and `max_storage_bytes`
+The [accepted architecture](../../../../docs/architecture.md) separates Console developer resources, Management platform operations, and instance-local project/database state. Authorize quota configuration within that hierarchy; a project end-user role does not grant platform resource administration. Current `MaxDatabasesPerUser` counts databases against the embedded runtime user model and does not implement a target developer or project quota. Define `max_documents` as the number of live documents and `max_storage_bytes`
 as the canonical persisted document bytes, including retained tombstones.
 Physical indexes, replay caches, and backend allocation overhead require separate
 operational capacity reporting. Preserve zero as unlimited.
@@ -53,8 +53,7 @@ budget in the product contract.
   prohibited growth until usage falls below it.
 - Restart and interrupted baseline/reconciliation cannot reset usage or report
   enforcement before a valid baseline exists.
-- Separate databases retain separate counters; existing user database-count
-  quota and deletion behavior remain intact.
+- Separate databases retain separate counters; the current runtime user database-count quota and deletion behavior remain explicit until a separately designed ownership migration establishes project/instance limits.
 - Rejections expose database, limit kind, revision, and measured usage without
   document contents.
 

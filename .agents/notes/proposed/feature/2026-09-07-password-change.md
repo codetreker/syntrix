@@ -12,21 +12,32 @@ password-change operation. The [PostgreSQL user update](../../../../packages/syn
 changes roles, database administration, and disabled state, without updating
 credentials. Existing token revocation targets individual token identifiers.
 Static inspection therefore finds an absent account capability, not an absent
-signup or login implementation.
+signup or login implementation. The target
+[instance Identity architecture](../../../../docs/design/server/core/identity/01.architecture.md)
+scopes these accounts to a project inside one instance and stores all credential
+and session state in that instance's PostgreSQL. Developer accounts in Console
+and employee accounts in Management have independent account capabilities.
 
 ## Proposal
 
-Add authenticated `POST /auth/v1/password` accepting the old and new passwords.
-Resolve the account from the authenticated subject, verify its old password,
-apply the configured signup password policy, and replace its hash using the
+Add authenticated password change accepting the old and new passwords. The
+previously proposed `POST /auth/v1/password` route is not implemented; the final
+route and project-selection contract follow the instance Identity API design.
+Resolve the account from the authenticated instance/project identity and local
+subject, verify its old password, apply the configured signup password policy,
+and replace its hash using the
 existing hashing implementation. Return a fresh token pair only after the
 credential update succeeds.
 
-Introduce a persisted credential generation, updated atomically with the password
-hash, and include that generation in user tokens. Validate it for access-token
+Introduce a credential generation persisted in the instance's PostgreSQL,
+updated atomically with the password hash, and include it in user tokens.
+Validate it for access-token
 admission and refresh, including concurrent signin and refresh issuance. A
-successful change invalidates all older user sessions; service tokens retain
-their separate lifecycle. Use conditional updates so concurrent changes cannot
+successful change invalidates all older sessions of that project account;
+accounts in other projects and service tokens retain their separate lifecycles.
+The invalidation guarantee is part of this capability proposal; its propagation
+mechanism and timing require the broader session/revocation design. Use
+conditional updates so concurrent changes cannot
 silently overwrite credentials verified against an earlier hash.
 
 The schema/token transition must explicitly expire existing user sessions and
@@ -58,12 +69,14 @@ requirement. A credential generation provides the needed account-wide boundary.
 ## Risks
 
 Generation validation adds storage-read or coherently invalidated cache cost.
-Deployment requires an intentional user-session expiration. Deferral leaves users
-unable to rotate compromised credentials themselves; keeping credential mutation
+Deployment requires an intentional user-session expiration within the migrated
+identity realm. Deferral leaves users unable to rotate compromised credentials
+themselves; keeping credential mutation
 centralized avoids divergent policies later.
 
 ## Dependencies
 
 [Administrative audit records](2026-09-07-administrative-audit-records.md) own retained
-outcomes; [console account self-service](2026-09-07-console-account-self-service.md)
-owns the UI.
+instance/project outcomes. Application-facing account UI and the target Identity
+protocol need separate design; the developer-facing Console does not own end-user
+password self-service.

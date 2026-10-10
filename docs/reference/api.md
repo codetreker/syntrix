@@ -1,18 +1,39 @@
 # Syntrix API Documentation
 
-This document describes the REST API provided by Syntrix.
+This document describes the currently supported REST API of a Syntrix runtime
+instance. It does not describe the developer-facing Console or employee-facing
+Management API. The [system architecture](../architecture.md) owns those
+separate authority domains.
+
+The confirmed target [Identity architecture](../design/server/core/identity/01.architecture.md)
+isolates application end users by project inside each instance, with several
+logical Syntrix databases per project. Identity/OAuth/session, project, and
+database configuration records belong to the instance's PostgreSQL system
+store; MongoDB backs the logical databases' business documents. Project-scoped
+accounts and complete OAuth/OIDC flows are pending implementation and do not
+add project parameters or new grants to the API below.
 
 ## Base URL
 
-All API endpoints are prefixed with `/api/v1`, except for the health check.
+Document and query routes use `/api/v1/databases/{database}`. Authentication
+uses `/auth/v1`, replication uses `/replication/v1`, Trigger RPC uses
+`/trigger/v1`, and health uses `/health`. Preserve any deployment prefix before
+these paths.
 
 ## Authentication
 
-Syntrix uses JWT (JSON Web Tokens) for authentication.
+Current authentication uses RS256 JWTs issued by the instance's embedded AuthN
+service. Signup/login accept username and password without a database or project
+selector. Database selection belongs to data-request paths. Existing instance
+`admin`/`db_admin` claims are current runtime permissions, not Console developer
+or Management employee credentials. The
+[authentication design](../design/server/core/identity/02.authentication.md)
+distinguishes implemented behavior from the target OAuth/OIDC and project model.
 
 ### Sign Up
 
-Create a new user account and receive a token pair.
+Create a new user account and receive a token pair. Response tokens and lifetimes
+below are illustrative; actual `expires_in` follows the instance configuration.
 
 **Endpoint:** `POST /auth/v1/signup`
 
@@ -21,8 +42,7 @@ Create a new user account and receive a token pair.
 ```json
 {
   "username": "newuser",
-  "password": "securepassword123",
-  "email": "user@example.com"
+  "password": "SecurePassword123!"
 }
 ```
 
@@ -30,15 +50,17 @@ Create a new user account and receive a token pair.
 
 ```json
 {
-  "access_token": "eyJhbGciOiJIUzI1Ni...",
+  "access_token": "eyJhbGciOiJSUzI1Ni...",
   "refresh_token": "dGhpcyBpcyBhIHJlZnJlc2ggdG9rZW4...",
   "expires_in": 3600
 }
 ```
 
 **Error Responses:**
-- `400 Bad Request`: Invalid request body or database is required
-- `409 Conflict`: Username already exists
+
+- `400 Bad Request`: Invalid request body or signup failure, including duplicate
+  usernames or a password rejected by the configured policy. Current signup does
+  not expose a separate duplicate-username `409` response.
 
 ### Login
 
@@ -59,7 +81,7 @@ Authenticate a user and receive a token pair (Access Token and Refresh Token).
 
 ```json
 {
-  "access_token": "eyJhbGciOiJIUzI1Ni...",
+  "access_token": "eyJhbGciOiJSUzI1Ni...",
   "refresh_token": "dGhpcyBpcyBhIHJlZnJlc2ggdG9rZW4...",
   "expires_in": 3600
 }
@@ -83,7 +105,7 @@ Get a new Access Token using a valid Refresh Token.
 
 ```json
 {
-  "access_token": "eyJhbGciOiJIUzI1Ni...",
+  "access_token": "eyJhbGciOiJSUzI1Ni...",
   "refresh_token": "new_refresh_token...",
   "expires_in": 3600
 }
@@ -121,9 +143,9 @@ These endpoints allow you to perform CRUD operations on documents.
 
 Retrieve a document by its full path.
 
-**Endpoint:** `GET /api/v1/{path...}`
+**Endpoint:** `GET /api/v1/databases/{database}/documents/{path...}`
 
-**Example:** `GET /api/v1/rooms/room-1/messages/msg-1`
+**Example:** `GET /api/v1/databases/orders/documents/rooms/room-1/messages/msg-1`
 
 **Response (200 OK):**
 
@@ -143,9 +165,9 @@ Retrieve a document by its full path.
 
 Create a new document in a collection. The ID is automatically generated if not provided.
 
-**Endpoint:** `POST /api/v1/{collection_path...}`
+**Endpoint:** `POST /api/v1/databases/{database}/documents/{collection_path...}`
 
-**Example:** `POST /api/v1/rooms/room-1/messages`
+**Example:** `POST /api/v1/databases/orders/documents/rooms/room-1/messages`
 
 **Request Body:**
 
@@ -162,9 +184,9 @@ Create a new document in a collection. The ID is automatically generated if not 
 
 Replace an existing document or create it if it doesn't exist.
 
-**Endpoint:** `PUT /api/v1/{document_path...}`
+**Endpoint:** `PUT /api/v1/databases/{database}/documents/{document_path...}`
 
-**Example:** `PUT /api/v1/rooms/room-1/messages/msg-1`
+**Example:** `PUT /api/v1/databases/orders/documents/rooms/room-1/messages/msg-1`
 
 **Request Body:**
 
@@ -185,9 +207,9 @@ Replace an existing document or create it if it doesn't exist.
 
 Update specific fields of an existing document.
 
-**Endpoint:** `PATCH /api/v1/{document_path...}`
+**Endpoint:** `PATCH /api/v1/databases/{database}/documents/{document_path...}`
 
-**Example:** `PATCH /api/v1/rooms/room-1/messages/msg-1`
+**Example:** `PATCH /api/v1/databases/orders/documents/rooms/room-1/messages/msg-1`
 
 **Request Body:**
 
@@ -208,9 +230,9 @@ Logically delete a document: retain its tombstone and metadata, clear business
 data, and advance version/time. Later physical cleanup does not generate another
 business deletion. See [deletion semantics](../design/server/core/storage/03.stores.md#document-deletion-and-physical-cleanup).
 
-**Endpoint:** `DELETE /api/v1/{document_path...}`
+**Endpoint:** `DELETE /api/v1/databases/{database}/documents/{document_path...}`
 
-**Example:** `DELETE /api/v1/rooms/room-1/messages/msg-1`
+**Example:** `DELETE /api/v1/databases/orders/documents/rooms/room-1/messages/msg-1`
 
 **Response (204 No Content):** Empty body.
 

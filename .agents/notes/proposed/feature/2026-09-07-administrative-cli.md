@@ -14,11 +14,10 @@ example, already exist in the [authentication service](../../../../packages/synt
 
 ## Proposal
 
-Implement the documented rules and auth command groups as clients of authenticated
-administrative APIs. Rules commands should support push, dry-run, activation,
+Implement the documented rules and auth command groups as clients of authenticated administrative APIs. The [platform architecture](../../../../docs/architecture.md) requires explicit employee Management, developer Console, and instance/project Identity authority. A command must select the authority and resource scope it targets; an application role named `admin` does not authorize employee or developer operations. Rules commands should support push, dry-run, activation,
 rollback, and version listing. Auth commands should support user listing,
 creation, enable/disable, and password rotation with explicit account identifiers.
-Provide target and database selection, request deadlines, cancellation, readable
+Provide instance, project, target, and database selection, request deadlines, cancellation, readable
 output, and structured output with documented exit statuses. Validate local
 arguments and rule-file syntax early while leaving authoritative authorization
 and publication validation to the server.

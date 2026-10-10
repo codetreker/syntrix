@@ -1,6 +1,18 @@
 # TypeScript Client SDK Reference
 
-The `@syntrixbase/client` package provides a type-safe interface for Syntrix. It includes `SyntrixClient` for external apps and `TriggerClient` for trigger workers.
+The `@syntrixbase/client` package provides application access to a Syntrix runtime
+instance. It includes `SyntrixClient` for applications and `TriggerClient` for
+trigger workers. Console developer accounts and Management employee accounts
+belong to separate authority domains; see the
+[system architecture](../architecture.md).
+
+The target [instance Identity module](../design/server/core/identity/01.architecture.md)
+serves project-isolated application end users and supports both OAuth/OIDC roles,
+using instance-local PostgreSQL for identity, sessions, projects, and database
+configuration. Each project can use multiple logical Syntrix databases backed
+by MongoDB. Those project/OAuth capabilities are pending implementation. This
+reference describes supported SDK behavior and does not introduce a project
+selector, OAuth grant, or Console/Management administration API.
 
 ## Installation
 
@@ -12,7 +24,10 @@ bun add @syntrixbase/client
 
 ## 1. SyntrixClient (Standard)
 
-Use this client in external applications (Web, Mobile, Backend). Multi-database auth requires a database ID during login.
+Use this client in application frontend and backend code. The required
+`database` configuration selects document/query/replication paths. Current
+`login()` and `signup()` send only username and password to instance authentication;
+the database selector is not a project-scoped login or token audience.
 
 ```typescript
 import { SyntrixClient } from '@syntrixbase/client';
@@ -74,7 +89,10 @@ complete Pull response is not a Push request.
 Pull binds the session before scheduling the request. Login, signup, or logout
 invalidates a successful old-session response with `AuthSessionChangedError`;
 applications must also invalidate pending local application after account changes.
-Keep mirrors and checkpoints separated by account, database URL scope, and collection.
+Keep mirrors and checkpoints separated by account, instance endpoint/database
+URL scope, and collection. The target project identity representation and its
+SDK integration remain to be designed; current storage keys do not constitute
+implemented project-realm support.
 
 The implemented access profile requires the database owner or matching `db_admin`
 grant; that full-scope policy remains provisional pending approval. See the
@@ -124,7 +142,9 @@ discarding local edits.
 #### Typed quick start
 
 Run this from a browser application with a configured endpoint and JWT. The
-server must provide the indexes required by the source filter/window.
+server must provide the indexes required by the source filter/window. The sample
+`projectId` field and `projects/p1/tasks` collection path are ordinary application
+data; they do not select or implement a server-managed project identity realm.
 
 ```typescript
 import { SyntrixClient, type ReplicaDocument } from '@syntrixbase/client';
@@ -485,6 +505,10 @@ awaited by the SDK.
 改变不保证固定同步延迟。Local `watch` 继续只消费已应用的本地状态。
 
 ### Authentication sessions
+
+These sessions belong to the current instance authentication API. A local SDK
+session version is an ownership fence, not a platform account, project ID, or
+server-wide revocation marker.
 
 `login(username, password)` and `signup(username, password)` immediately end the
 current local session before making their request. The last session operation
