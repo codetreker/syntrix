@@ -26,6 +26,8 @@ alias 解析到另一数据库后不能继续使用。ID 地址与 slug 地址�
 
 ### Authorization Profile
 
+The [platform architecture](../../../architecture.md) defines target project-scoped end-user identity. The profile below describes current instance runtime admission; it is not a grant of employee Management or developer Console authority and does not implement the target project-user authorization model.
+
 The implemented full-scope profile requires the validated database owner or a
 matching `db_admin` grant for its ID or validated slug. Authentication, a global
 role, and a valid cursor alone do not grant Pull access. Authorization is checked
@@ -45,13 +47,13 @@ Query and return a complete replacement, under the same database identity gate.
 
 | Request | Gate before data access |
 |---|---|
-| Query-source Pull, including initial binding | Resolve the database directly from management storage; check active status and owner/`db_admin` authorization on that same object |
+| Query-source Pull, including initial binding | Resolve the database directly from instance database metadata storage; check active status and owner/`db_admin` authorization on that same object |
 | replica-data WS | auth、注册、每次 read 与 changed flush 使用同一权威检查；注册固定 source/数据库身份，读取及发送受当前 owner 约束 |
 | Pull, Push, ordinary Query, or document GET with `X-Syntrix-Expected-Database-Identity` | Apply the same fresh resolution and full-scope authorization, then compare the expected ID |
 | Existing unbound request | Keep existing resolution and authorization |
 
 Fresh resolution bypasses cached database metadata. Status, authorization, and
-identity cannot refer to different database objects. Management-store errors fail
+identity cannot refer to different database objects. Metadata-store errors fail
 the request; there is no cache fallback. Permission checks precede identity
 mismatch reporting. A mismatch rejects the complete request before document
 access, including every change in Push. Ordinary Query and GET carrying this
@@ -66,7 +68,7 @@ authenticate -> authoritative database object -> active + full-scope access
 The response and cursor use the verified database identity. The namespace remains
 the URL value because changing it to an ID address would select a different
 existing storage namespace. This admission check prevents an old binding from
-accessing a replacement already visible in management storage. It does not lease
+accessing a replacement already visible in instance database metadata storage. It does not lease
 the database or serialize data requests against concurrent deletion/reassignment.
 A rejection cannot settle an earlier timed-out write. All participating Gateway
 and Query nodes require a coordinated upgrade before exposing query-replication

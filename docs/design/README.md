@@ -1,8 +1,28 @@
 # Design Documents
 
 Designs are organized by [server](server/), [SDK](sdk/), and
-[monitoring](monitor/). Their status distinguishes proposals from implemented
-mechanisms; the diagram below is the service design overview.
+[monitoring](monitor/). [Platform Architecture](../architecture.md) owns the
+accepted user domains, service boundaries, instance hierarchy, and database
+terminology. Design status distinguishes that target from proposed mechanisms
+and currently implemented contracts.
+
+## Architecture Owners
+
+| Subject | Owner |
+|---|---|
+| Employees, developers, end users; Management, Console, instances | [Platform Architecture](../architecture.md) |
+| Developer-facing Console and its current embedded UI | [Console design](server/console/01.console.md) |
+| Employee-facing Management platform | [Management design](server/console/02.control_plane.md) |
+| Runtime services within one Syntrix instance | [Instance architecture](server/01.architecture.md) |
+| Project end-user realms, OAuth/OIDC, external login | [Identity design](server/core/identity/01.architecture.md) |
+| Instance system metadata and logical database lifecycle | [Database design](server/core/database/01.architecture.md) |
+| Private system PostgreSQL and business-document MongoDB | [Storage design](server/core/storage/01.architecture.md) |
+
+A developer can own multiple instances. Every instance owns its projects, and a
+project has one isolated Identity realm and can use multiple logical Syntrix
+databases. Employee, developer, and application-user authority remain distinct.
+The source package layout does not prove these service separations are already
+implemented; the platform document's status table identifies the current gaps.
 
 ## Writing and Decision Ownership
 
@@ -17,44 +37,33 @@ Execution plans remain in `docs/plans/`, and the [task board](../tasks/BOARD.md)
 tracks work. Use [prose-standard](../../.agents/skills/prose-standard/SKILL.md)
 when editing prose and preserve the complete behavior being described.
 
-## Architecture Overview
+## Instance Runtime Overview
+
+This is an instance-runtime diagram. Management and the developer Console sit at
+the platform layers described by the canonical architecture. Identity is the
+target peer module; current authentication is embedded under `core/identity`.
+PostgreSQL stores private instance system records, while MongoDB holds developer
+business documents. Current code still stores revocation in MongoDB.
 
 ```mermaid
-graph TB
-    Client[Client SDK]
-    Gateway[API Gateway: HTTP, Websocket, SSE]
-    Streamer[Streamers, Stateful]
-    Indexer[A Group of Indexers, Sharded & Copies, Stateful, Presistant]
-    QueryServer[A Group of Query Servers, Stateless]
-    MongoDB[(MongoDB Storage)]
-
-    Client --> |HTTP/SSE/Websocket|Gateway
-
-    Gateway ---> |gRPC| QueryServer ---> |Get/Put| MongoDB
-    QueryServer ---> |Query| Indexer
-    Indexer ---> |gRPC Streaming| Puller
-
-    Gateway ---> |Register/Unregister|Streamer
-    Streamer ---> |gRPC Streaming| Gateway
-    Streamer ---> |gRPC Streaming| Puller
-
-    Puller ---> |ChangeStream| MongoDB
-
-
-    TriggerEval --->|gRPC Streaming| Puller
-    TriggerEval ---> |Pub| NATS2 -->|Sub| TriggerWorker
-    TriggerWorker --> External
-
-    subgraph Trigger
-        NATS2[(NATS Jetstream)]
-        TriggerEval[Sharded Trigger Evaluators]
-        TriggerWorker[A Group of Trigger Workers]
-    end
-
-    subgraph External
-      Webhook[Webhook Worker]
-      Lambda[Cloud Lambda]
-      Function[Function Compute]
-    end
-
+flowchart LR
+    EndUsers[Project end users] --> Gateway[Gateway]
+    Gateway -.-> Identity[Target Identity peer]
+    Identity -.-> PostgreSQL[(Private system PostgreSQL)]
+    Gateway --> Query[Query]
+    Query --> MongoDB[(Business-document MongoDB)]
+    Query --> Indexer[Indexer]
+    MongoDB --> Puller[Puller]
+    Puller --> Indexer
+    Puller --> Streamer[Streamer]
+    Streamer --> Gateway
+    Puller --> Evaluator[Trigger Evaluator]
+    Evaluator --> Queue[Trigger queue]
+    Queue --> Worker[Trigger Worker]
+    Worker --> External[External endpoint]
 ```
+
+Standalone uses direct calls and in-memory trigger pubsub. Distributed mode uses
+service clients and NATS JetStream for trigger delivery. These modes apply within
+an instance; the [deployment design](server/03.deployment_modes.md) owns their
+configuration and lifecycle.

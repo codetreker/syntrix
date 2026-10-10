@@ -1,35 +1,49 @@
-# Agent Note: Administrative Account Provisioning and Credential Rotation
+# Agent Note: Project End-User Provisioning and Credential Rotation
 
 Status: proposed
 
 ## Problem
 
-The [console design](../../../../docs/design/server/console/01.console.md) calls for
-administrators to create users and rotate passwords. The
-[REST routes](../../../../packages/syntrix/internal/gateway/rest/handler.go) currently expose
+Applications need authorized provisioning and recovery of end-user accounts,
+with separate actor and target semantics. Under the
+[platform/instance boundaries](../architecture/2026-10-10-platform-console-instance-boundaries.md),
+these accounts belong to a project's Identity realm inside one Syntrix instance;
+Console developer accounts and Management employee accounts are separate.
+
+The current [REST routes](../../../../packages/syntrix/internal/gateway/rest/handler.go) expose
 `GET /admin/users` and `PATCH /admin/users/{id}`; the latter changes roles,
 database administration, and disabled state through
 [admin handlers](../../../../packages/syntrix/internal/gateway/rest/handler_admin.go). Public signup
-already creates accounts. What is missing is an authorized administrative
-creation/credential-recovery operation with separate actor and target semantics.
+already creates accounts. These operations use the current instance-wide user
+and role model, without project isolation. An authorized administrative
+creation/credential-recovery operation and its project-scoped authority are absent.
 
 ## Proposal
 
-Add administrator-only user creation and password-rotation endpoints using stable
-user IDs for existing accounts. Creation accepts an explicit username, initial
-password, and allowed role/database-admin assignments; it returns account
-metadata without a session for the created user. Rotation accepts a policy-valid
-replacement password and invalidates the target's earlier sessions through the
-same credential mutation mechanism as self-service change.
+Add project-authorized end-user creation and password rotation through the
+instance Identity module, using stable local user IDs. Creation accepts an
+explicit username, initial password, and allowed application-role assignments;
+it returns account metadata without a session for the created user. Database
+permissions remain part of the project's data-access policy and must not be
+interpreted as Console or Management authority. The final route, credential,
+and permission representation depend on the project Identity API design.
 
-Keep authentication, password hashing/policy, username uniqueness, and user
-storage shared with the existing service. Public signup and the existing
-list/update operations retain their responsibilities. Apply admin rate limits
-and enforce the existing administration boundary before reading target details.
+Rotation accepts a policy-valid replacement password and invalidates the target's
+earlier sessions through the same credential mutation mechanism as self-service
+change. Users, credential state, and durable operation records belong to the
+instance's PostgreSQL system data.
+
+Keep authentication, password hashing/policy, project-scoped username uniqueness,
+and user storage shared with the instance Identity module. Public signup and the existing
+list/update capabilities retain their responsibilities while receiving explicit
+project authority. Apply administrative rate limits and enforce instance/project
+scope before reading target details. A role string named `admin` alone cannot
+authorize another project or platform account domain.
 Return predictable duplicate, missing-account, and invalid-request errors.
 
-Persist mutation idempotency records scoped to actor, operation, and key. A retry
-with the same key and request returns the completed metadata result; reuse with
+Persist mutation idempotency records scoped to instance/project, actor, operation,
+and key. A retry with the same key and request returns the completed metadata
+result; reuse with
 different input fails. Never store raw password material in those records. Make
 credential-state changes and their operation result recoverable together so an
 interrupted response cannot create a second account or perform another rotation.
@@ -46,8 +60,9 @@ match the existing password authentication model without settling that workflow.
 
 ## Acceptance Criteria
 
-- Administrators can create users and rotate target credentials; ordinary users
-  cannot invoke either operation or discover account details through failures.
+- Authorized project administrators can create project end users and rotate
+  target credentials. Ordinary users and actors from another project or account
+  domain cannot invoke either operation or discover account details through failures.
 - Duplicate usernames, weak passwords, and invalid assignments cause no partial
   account creation; successful rotation invalidates previous sessions.
 - Retries after a lost response or restart return one operation result; conflicting

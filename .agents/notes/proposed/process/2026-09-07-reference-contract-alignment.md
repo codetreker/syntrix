@@ -4,7 +4,17 @@ Status: proposed
 
 ## Problem
 
-Active references describe incompatible API generations. [The REST reference](../../../../docs/reference/api.md) documents `GET /api/v1/{path...}`, while [gateway registration](../../../../packages/syntrix/internal/gateway/rest/handler.go) uses database-scoped document routes. [The SDK reference](../../../../docs/reference/typescript_sdk.md) calls `client.login('username', 'password', 'my-database')`, but [SyntrixClient](../../../../packages/sdks/client-ts/src/clients/syntrix-client.ts) accepts two login arguments. [The SDK README](../../../../packages/sdks/client-ts/README.md) supplies token options at the constructor's top level, while the implementation requires a database and nested `auth` configuration. These static mismatches make documented entry points unreliable.
+The accepted [platform architecture](../../../../docs/architecture.md) separates
+employee Management, developer Console, and instance/project end-user Identity.
+Current references must describe supported runtime routes and SDK methods while
+keeping that target distinct from implementation. The
+[SDK README](../../../../packages/sdks/client-ts/README.md) still places token
+options at the constructor's top level, while
+[SyntrixClient](../../../../packages/sdks/client-ts/src/clients/syntrix-client.ts)
+requires a database and nested `auth` configuration. Authenticated examples also
+need an explicit actor and runtime scope; a token described as `admin` cannot
+stand for all three authority domains. Authored examples lack executable checks
+that prevent these interfaces and permission meanings from drifting.
 
 ## Proposal
 
@@ -23,8 +33,8 @@ Maintain a change checklist connecting route, schema, SDK, and configuration cha
 ## Acceptance Criteria
 
 - Active consumer references use registered routes, valid constructor options, and exported method signatures; supported examples pass their declared validation.
-- HTTP examples state actual response shapes, including bare query arrays, and documented error behavior matches handlers.
-- README commands identify prerequisites and supported runtime modes, including console assets.
+- HTTP examples state actual response shapes, including typed query-page envelopes, and documented error behavior matches handlers.
+- README commands identify prerequisites and supported runtime modes, including current embedded instance administration assets and the target developer Console boundary.
 - Planned replication, rule publication, account, and realtime guarantees are clearly separated from implemented behavior; active links resolve and archives remain unchanged.
 
 ## Dependencies

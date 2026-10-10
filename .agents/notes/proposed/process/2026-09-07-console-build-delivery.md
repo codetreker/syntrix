@@ -18,7 +18,7 @@ defines development locations; a combined distribution contract remains open.
 
 ## Proposal
 
-Make the delivered server-and-console artifact reproducible from a clean checkout. Add an explicit console build target using the repository's frontend tooling and lockfile, and make the full distribution target build and package those assets with the server. Keep a clearly named Go-only development target for consumers that intentionally need only the backend.
+This proposal owns delivery of the current embedded instance administration frontend. The [platform architecture](../../../../docs/architecture.md) separately defines the developer-facing Console service; packaging this frontend with an instance runtime does not implement that service or its developer accounts. Make the delivered instance-runtime-and-administration-frontend artifact reproducible from a clean checkout. Add an explicit console build target using the repository's frontend tooling and lockfile, and make the full distribution target build and package those assets with the server. Keep a clearly named Go-only development target for consumers that intentionally need only the backend.
 
 Define the runtime asset location independently of an accidental shell working directory. Package assets at that documented location or embed them after generation; choose one distribution contract and validate it in CI. A console-enabled distribution must fail its build if assets are absent or frontend type checking fails. Intentional API-only operation needs an explicit documented build or runtime mode.
 

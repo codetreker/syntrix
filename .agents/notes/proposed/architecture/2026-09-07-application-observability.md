@@ -19,19 +19,18 @@ monitoring stack.
 
 ## Proposal
 
-Give each service-manager instance an owned metrics registry and telemetry
-lifecycle. Register an operationally restricted metrics endpoint on the shared
+Give each runtime process assembled by the Go Service Manager an owned metrics registry and telemetry lifecycle. The [platform architecture](../../../../docs/architecture.md) distinguishes this runtime infrastructure from employee Management and the developer Console. Management observes platform and instance operations; Console exposes authorized developer instance/project summaries. Their authentication and telemetry authority do not become application end-user authority. Register an operationally restricted metrics endpoint on the shared
 HTTP server, including processes that run without Gateway. Connect bounded
 request, query, indexing, ingestion, subscription, and delivery counters and
 histograms to their actual success, failure, retry, and cancellation paths.
 Implement the trigger metrics interface and reconcile existing Puller collectors
-with the registry so multiple instances do not collide.
+with the registry so multiple runtime processes do not collide.
 
 Propagate request/trace identity across HTTP, gRPC, and asynchronous trigger work;
 link background operations to their originating event when one exists. Capture
 structured error category, component, phase, and correlation identifiers without
 tokens, secrets, or document payloads. Keep identifiers out of unbounded metric
-labels. Metric dimensions and database cardinality need explicit limits.
+labels. Metric dimensions and instance/project/database cardinality need explicit limits. Correlation includes the applicable scope; platform provisioning and project authentication do not require a logical-database identifier.
 
 Use the existing Prometheus dependency for scraping. Evaluate tracing dependencies
 and exporters against the [monitoring architecture](../../../../docs/design/monitor/001.architecture.md)

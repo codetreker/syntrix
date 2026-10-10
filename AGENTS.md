@@ -32,9 +32,9 @@ available.
 
 | Path | Purpose |
 |---|---|
-| `packages/syntrix/` | Go module, services, shared code, protocols, configuration, and integration tests |
+| `packages/syntrix/` | Go instance runtime, shared code, protocols, configuration, and integration tests |
 | `packages/sdks/client-ts/` | TypeScript client SDK |
-| `packages/console/`, `packages/examples/` | Web console and example applications |
+| `packages/console/`, `packages/examples/` | Current instance administration frontend and example applications |
 | `docs/design/` | Requirements, architecture, and design discussions |
 | `docs/reference/` | API and SDK behavior |
 | `docs/plans/` | Task execution plans |
@@ -45,6 +45,19 @@ available.
 [Agent Notes](.agents/notes/README.md) owns the note format and lifecycle;
 [its local instructions](.agents/notes/AGENTS.md) govern that directory.
 The [documentation guide](docs/README.md) links the design and reference material.
+
+## Platform architecture ownership
+
+[Platform Architecture](docs/architecture.md) owns the accepted target boundaries:
+employee-facing Management, developer-facing Console, and developer-owned Syntrix
+instances serving project end users. Each instance owns its projects, a private
+system PostgreSQL database, and MongoDB business-document storage. A project has
+an isolated Identity realm and can use multiple logical Syntrix databases.
+
+Keep this target distinct from current source locations and behavior. The
+embedded console is not the completed developer Console; the Go
+`services.Manager` owns process composition, not platform Management. References
+must describe only implemented interfaces and clearly identify target additions.
 
 ## Decision workflow
 

@@ -1,10 +1,24 @@
 # Syntrix
 
-Syntrix is a Firestore-like realtime document database built with Go and MongoDB.
+Syntrix is a realtime backend platform with document databases, queries,
+subscriptions, and triggers. Its runtime uses Go, MongoDB for business documents,
+and PostgreSQL for system records.
 
 ## What is Syntrix?
 
-Syntrix provides a document database with real-time capabilities, allowing clients to subscribe to data changes and receive instant updates. It's designed as a **splittable monolith** - run everything in one process for simplicity, or deploy as separate microservices for scale.
+The [platform architecture](docs/architecture.md) separates three service and
+account domains: an employee-facing Management platform, a developer-facing
+Console, and developer-owned Syntrix instances serving application end users.
+A developer can create multiple instances; each instance owns projects, and
+each project has an isolated user identity realm and multiple logical Syntrix
+databases. Instance PostgreSQL supports system operation; MongoDB stores the
+developer's business documents.
+
+The current repository provides the instance document runtime, SDK, and an
+embedded instance administration frontend. The architecture document identifies
+the remaining platform, Console, project-identity, and OAuth implementation work.
+The runtime is a **splittable monolith**: services within an instance can run
+together using direct calls or use distributed service communication.
 
 ## Key Features
 
@@ -16,15 +30,18 @@ Syntrix provides a document database with real-time capabilities, allowing clien
 
 ## Documentation
 
-See [docs/README.md](docs/README.md) for detailed documentation including:
+Start with [Platform Architecture](docs/architecture.md) for ownership and
+terminology, then [docs/README.md](docs/README.md) for:
 - Project structure and how to run
 - Architecture and design documents
 - API reference and SDK guides
 
 ## Quick Start
 
-Run from the repository root. The server runs from its package directory so
-configuration, data, and logs resolve against that package.
+These commands start and test the current instance runtime. Run from the
+repository root; the server runs from its package directory so configuration,
+data, and logs resolve against that package. Infrastructure prerequisites are
+described in the [development guide](deployment/dev/README.md).
 
 ```bash
 # Build
