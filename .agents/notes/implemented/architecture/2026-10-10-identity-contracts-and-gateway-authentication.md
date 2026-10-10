@@ -19,12 +19,14 @@ system-token-issuance interfaces, request/token/claim types, safe account views,
 and opaque verified identities. `AccountService` provides signup, signin,
 refresh, logout, and actor-authorized user listing/update. `TokenVerifier`
 provides `VerifyToken`; `SystemTokenIssuer` provides `GenerateSystemToken`.
-The account/signing implementations remain in `core/identity/authn`.
+The account/signing implementations remain in `identity/authn`.
 `authn.NewServices` constructs the account service, shared public-key verifier,
 and separate system-token issuer. The
 [token capability decision](2026-10-10-identity-token-capabilities.md) owns that
 later concrete separation; this decision owns the transport-free contracts and
-Gateway adapter. Repository ownership and runtime placement remain separate work.
+Gateway adapter. The [repository/runtime decision](2026-10-10-identity-repository-and-runtime-ownership.md)
+owns current account/config/repository placement and borrowed-backend composition;
+independent service deployment remains separate work.
 
 A `VerifiedIdentity` privately binds verified claims to the verifier that
 issued it. Administrative operations accept that identity, require the account
@@ -57,9 +59,8 @@ own these contracts. The earlier
 [Gateway document authorization decision](2026-10-10-gateway-document-authorization.md)
 continues to own CEL/configuration separation. The
 [platform and instance proposal](../../proposed/architecture/2026-10-10-platform-console-instance-boundaries.md)
-remains active for repository and runtime composition, verification-key
-distribution, project identity, sessions, independent deployment, and both OAuth
-roles.
+remains active for verification-key distribution, project identity, sessions,
+independent deployment, and both OAuth roles.
 
 ## Alternatives
 
@@ -96,5 +97,5 @@ actor contract rather than serializing this local capability as authorization.
 - The token capability decision separates concrete signing and public-key
   verification. Current composition still loads the configured private key for
   local issuing capabilities and uses PostgreSQL users/Mongo revocations.
-  Verification-key distribution, repository relocation, and independent runtime
-  placement retain separate delivery gates.
+  Identity runtime owns borrowed repository composition. Verification-key
+  distribution and independent service deployment retain separate delivery gates.

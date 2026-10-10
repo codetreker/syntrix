@@ -3,7 +3,6 @@ package services
 import (
 	"context"
 	"testing"
-	"time"
 
 	"github.com/codetreker/syntrix/internal/config"
 	"github.com/codetreker/syntrix/internal/core/storage"
@@ -12,40 +11,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 )
-
-// Mocks
-type mockDocumentProvider struct {
-	mock.Mock
-}
-
-func (m *mockDocumentProvider) Document() storage.DocumentStore {
-	args := m.Called()
-	return args.Get(0).(storage.DocumentStore)
-}
-
-func (m *mockDocumentProvider) Close(ctx context.Context) error {
-	args := m.Called(ctx)
-	return args.Error(0)
-}
-
-type mockAuthProvider struct {
-	mock.Mock
-}
-
-func (m *mockAuthProvider) Users() storage.UserStore {
-	args := m.Called()
-	return args.Get(0).(storage.UserStore)
-}
-
-func (m *mockAuthProvider) Revocations() storage.TokenRevocationStore {
-	args := m.Called()
-	return args.Get(0).(storage.TokenRevocationStore)
-}
-
-func (m *mockAuthProvider) Close(ctx context.Context) error {
-	args := m.Called(ctx)
-	return args.Error(0)
-}
 
 type mockDocumentStore struct {
 	mock.Mock
@@ -93,98 +58,27 @@ func (m *mockDocumentStore) DeleteByDatabase(ctx context.Context, database strin
 	return args.Int(0), args.Error(1)
 }
 
-type mockUserStore struct {
-	mock.Mock
-}
-
-func (m *mockUserStore) CreateUser(ctx context.Context, user *types.User) error {
-	return nil
-}
-func (m *mockUserStore) GetUserByUsername(ctx context.Context, username string) (*types.User, error) {
-	return nil, nil
-}
-func (m *mockUserStore) GetUserByID(ctx context.Context, id string) (*types.User, error) {
-	return nil, nil
-}
-func (m *mockUserStore) ListUsers(ctx context.Context, limit int, offset int) ([]*types.User, error) {
-	return nil, nil
-}
-func (m *mockUserStore) UpdateUser(ctx context.Context, user *types.User) error {
-	return nil
-}
-func (m *mockUserStore) UpdateUserLoginStats(ctx context.Context, id string, lastLogin time.Time, attempts int, lockoutUntil time.Time) error {
-	return nil
-}
-func (m *mockUserStore) EnsureIndexes(ctx context.Context) error {
-	return nil
-}
-func (m *mockUserStore) Close(ctx context.Context) error {
-	return nil
-}
-
-type mockRevocationStore struct {
-	mock.Mock
-}
-
-func (m *mockRevocationStore) RevokeToken(ctx context.Context, jti string, expiresAt time.Time) error {
-	return nil
-}
-func (m *mockRevocationStore) RevokeTokenImmediate(ctx context.Context, jti string, expiresAt time.Time) error {
-	return nil
-}
-func (m *mockRevocationStore) IsRevoked(ctx context.Context, jti string, gracePeriod time.Duration) (bool, error) {
-	return false, nil
-}
-func (m *mockRevocationStore) RevokeTokenIfNotRevoked(ctx context.Context, jti string, expiresAt time.Time, gracePeriod time.Duration) error {
-	return nil
-}
-func (m *mockRevocationStore) EnsureIndexes(ctx context.Context) error {
-	return nil
-}
-func (m *mockRevocationStore) Close(ctx context.Context) error {
-	return nil
-}
-
 func TestManager_Init_RouterWiring(t *testing.T) {
-	// Save original factories and restore after test
-	origFactory := storageFactoryFactory
-	defer func() {
-		storageFactoryFactory = origFactory
-	}()
-
-	// Setup mocks
+	setupManagerFactories(t)
 	mockDocStore := new(mockDocumentStore)
-	mockUsrStore := new(mockUserStore)
-	mockRevStore := new(mockRevocationStore)
-
-	// Override factories
-	storageFactoryFactory = func(ctx context.Context, cfg *config.Config) (storage.StorageFactory, error) {
-		return &fakeStorageFactory{
-			docStore: mockDocStore,
-			usrStore: mockUsrStore,
-			revStore: mockRevStore,
-		}, nil
+	shared := &storage.Backends{}
+	backendCalls := 0
+	storageBackendsFactory = func(context.Context, *config.Config) (*storage.Backends, error) {
+		backendCalls++
+		return shared, nil
 	}
-
-	// Initialize Manager
+	storageFactoryFactory = func(ctx context.Context, cfg *config.Config, backends *storage.Backends) (storage.StorageFactory, error) {
+		assert.Same(t, shared, backends)
+		return &fakeStorageFactory{docStore: mockDocStore}, nil
+	}
 	cfg := config.LoadConfig()
-	mgr := NewManager(cfg, Options{RunQuery: true}) // RunQuery triggers initStorage
-
-	err := mgr.Init(context.Background())
-	assert.NoError(t, err)
-
-	// Verify Stores are initialized and wired correctly
-	assert.NotNil(t, mgr.storageFactory.Document())
-	assert.NotNil(t, mgr.storageFactory.User())
-	assert.NotNil(t, mgr.storageFactory.Revocation())
-
-	// Verify Stores route to the mocked stores
-	// Since we use RoutedStore, we can't directly compare equality of the store object itself easily
-	// without exposing the inner router. But we can verify behavior or check if it's not nil.
-	// For now, just checking not nil is a basic check.
-	// To be more rigorous, we could call a method and see if it hits the mock.
-
+	mgr := NewManager(cfg, Options{RunQuery: true})
+	defer mgr.Shutdown(context.Background())
+	assert.NoError(t, mgr.Init(context.Background()))
+	assert.Equal(t, 1, backendCalls)
+	assert.Nil(t, mgr.identityModule)
 	mockDocStore.On("Get", mock.Anything, "default", "test").Return(&types.StoredDoc{}, nil)
-	_, _ = mgr.storageFactory.Document().Get(context.Background(), "default", "test")
+	_, err := mgr.storageFactory.Document().Get(context.Background(), "default", "test")
+	assert.NoError(t, err)
 	mockDocStore.AssertCalled(t, "Get", mock.Anything, "default", "test")
 }

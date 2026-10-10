@@ -2,6 +2,8 @@ package services
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 
@@ -9,30 +11,41 @@ import (
 )
 
 func (m *Manager) Shutdown(ctx context.Context) {
+	if err := m.shutdown(ctx); err != nil {
+		slog.Error("Error shutting down instance", "error", err)
+	}
+}
+
+func (m *Manager) shutdown(ctx context.Context) error {
+	m.shutdownMu.Lock()
+	defer m.shutdownMu.Unlock()
+	return m.shutdownResources(ctx)
+}
+
+func (m *Manager) shutdownResources(ctx context.Context) (shutdownErr error) {
+	quiesced := true
 	// Close streamer client if using remote connection
 	if m.streamerClient != nil {
 		if closer, ok := m.streamerClient.(io.Closer); ok {
 			slog.Info("Closing Streamer gRPC client...")
 			if err := closer.Close(); err != nil {
-				slog.Error("Error closing Streamer client", "error", err)
+				shutdownErr = errors.Join(shutdownErr, fmt.Errorf("close Streamer client: %w", err))
+			} else {
+				m.streamerClient = nil
 			}
+		} else {
+			m.streamerClient = nil
 		}
 	}
 
-	// Close storage providers if initialized
-	if m.storageFactory != nil {
-		defer func() {
-			if err := m.storageFactory.Close(); err != nil {
-				slog.Error("Error closing storage factory", "error", err)
-			}
-		}()
-	}
-
 	// Stop Unified Server Service
-	if s := server.Default(); s != nil {
+	if s := server.Default(); s != nil && !m.serverStopped {
 		slog.Info("Stopping Unified Server Service...")
 		if err := s.Stop(ctx); err != nil {
-			slog.Error("Error stopping Unified Server Service", "error", err)
+			quiesced = false
+			shutdownErr = errors.Join(shutdownErr, fmt.Errorf("stop unified server: %w", err))
+		} else {
+			m.serverStopped = true
 		}
 	}
 
@@ -48,14 +61,18 @@ func (m *Manager) Shutdown(ctx context.Context) {
 	case <-done:
 		slog.Info("Background tasks finished")
 	case <-ctx.Done():
+		quiesced = false
 		slog.Warn("Timeout waiting for background tasks")
+		shutdownErr = errors.Join(shutdownErr, ctx.Err())
 	}
 
 	// Close pubsub provider (handles both NATS and memory implementations)
 	if m.pubsubProvider != nil {
 		slog.Info("Closing pubsub provider...")
 		if err := m.pubsubProvider.Close(); err != nil {
-			slog.Error("Error closing pubsub provider", "error", err)
+			shutdownErr = errors.Join(shutdownErr, fmt.Errorf("close pubsub provider: %w", err))
+		} else {
+			m.pubsubProvider = nil
 		}
 	}
 
@@ -63,13 +80,17 @@ func (m *Manager) Shutdown(ctx context.Context) {
 	if m.pullerGRPC != nil {
 		slog.Info("Shutting down Puller gRPC Service...")
 		m.pullerGRPC.Shutdown()
+		m.pullerGRPC = nil
 	}
 
 	// Stop Change Stream Puller
 	if m.pullerService != nil {
 		slog.Info("Stopping Change Stream Puller...")
 		if err := m.pullerService.Stop(ctx); err != nil {
-			slog.Error("Error stopping Change Stream Puller", "error", err)
+			quiesced = false
+			shutdownErr = errors.Join(shutdownErr, fmt.Errorf("stop Puller: %w", err))
+		} else {
+			m.pullerService = nil
 		}
 	}
 
@@ -77,7 +98,16 @@ func (m *Manager) Shutdown(ctx context.Context) {
 	if m.indexerService != nil {
 		slog.Info("Stopping Indexer Service...")
 		if err := m.indexerService.Stop(ctx); err != nil {
-			slog.Error("Error stopping Indexer Service", "error", err)
+			quiesced = false
+			shutdownErr = errors.Join(shutdownErr, fmt.Errorf("stop Indexer: %w", err))
+		} else {
+			m.indexerService = nil
 		}
 	}
+	if quiesced && m.backends != nil {
+		if err := m.backends.Close(); err != nil {
+			shutdownErr = errors.Join(shutdownErr, fmt.Errorf("close instance backends: %w", err))
+		}
+	}
+	return shutdownErr
 }

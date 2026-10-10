@@ -43,9 +43,10 @@ when editing prose and preserve the complete behavior being described.
 
 This is an instance-runtime diagram. Management and the developer Console sit at
 the platform layers described by the canonical architecture. Identity is the
-target peer runtime module. Current transport-free contracts live under
-`internal/identity`, the password/JWT implementation remains under
-`core/identity/authn`, and Gateway owns HTTP authentication adapters.
+peer account/config/repository module under `internal/identity`. Its runtime
+composes current local capabilities from borrowed physical Backends; independent
+service deployment and project/OAuth capabilities remain target work. Gateway
+owns HTTP authentication adapters.
 PostgreSQL stores private instance system records, while MongoDB holds developer
 business documents. Current code still stores revocation in MongoDB.
 

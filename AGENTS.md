@@ -33,6 +33,8 @@ available.
 | Path | Purpose |
 |---|---|
 | `packages/syntrix/` | Go instance runtime, shared code, protocols, configuration, and integration tests |
+| `packages/syntrix/internal/identity/` | Account contracts, authentication/configuration, credential repositories, and local runtime composition |
+| `packages/syntrix/internal/core/storage/` | Shared physical backend ownership and document/catalog storage infrastructure |
 | `packages/sdks/client-ts/` | TypeScript client SDK |
 | `packages/console/`, `packages/examples/` | Current instance administration frontend and example applications |
 | `docs/design/` | Requirements, architecture, and design discussions |

@@ -15,9 +15,11 @@ import (
 	"github.com/codetreker/syntrix/internal/core/pubsub"
 	pubsubtesting "github.com/codetreker/syntrix/internal/core/pubsub/testing"
 	"github.com/codetreker/syntrix/internal/core/storage"
+	storageconfig "github.com/codetreker/syntrix/internal/core/storage/config"
 	"github.com/codetreker/syntrix/internal/gateway"
 	"github.com/codetreker/syntrix/internal/gateway/authorization"
 	"github.com/codetreker/syntrix/internal/identity"
+	identityconfig "github.com/codetreker/syntrix/internal/identity/config"
 	"github.com/codetreker/syntrix/internal/indexer"
 	indexer_config "github.com/codetreker/syntrix/internal/indexer/config"
 	"github.com/codetreker/syntrix/internal/puller"
@@ -28,8 +30,55 @@ import (
 	"github.com/codetreker/syntrix/internal/trigger/evaluator"
 	"github.com/codetreker/syntrix/pkg/model"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"go.mongodb.org/mongo-driver/mongo"
 )
+
+func setupManagerFactories(t *testing.T) {
+	t.Helper()
+	originalBackends := storageBackendsFactory
+	originalStores := storageFactoryFactory
+	originalModule := identityModuleFactory
+	t.Cleanup(func() {
+		storageBackendsFactory = originalBackends
+		storageFactoryFactory = originalStores
+		identityModuleFactory = originalModule
+	})
+	storageBackendsFactory = func(context.Context, *config.Config) (*storage.Backends, error) {
+		return &storage.Backends{}, nil
+	}
+	storageFactoryFactory = func(context.Context, *config.Config, *storage.Backends) (storage.StorageFactory, error) {
+		return &fakeStorageFactory{}, nil
+	}
+	identityModuleFactory = func(context.Context, identityconfig.Config, storageconfig.Config, *storage.Backends) (identityModule, error) {
+		verifier, err := identity.NewVerifier(func(string) (*identity.Claims, error) { return nil, identity.ErrInvalidToken })
+		if err != nil {
+			return nil, err
+		}
+		return &fakeIdentityModule{accounts: &stubAuthN{}, verifier: verifier, issuer: &stubAuthN{}}, nil
+	}
+}
+
+type fakeIdentityModule struct {
+	accounts     identity.AccountService
+	verifier     *identity.Verifier
+	issuer       identity.SystemTokenIssuer
+	ensureAdmin  func(context.Context) error
+	resolveOwner func(context.Context, string) (string, string, error)
+}
+
+func (m *fakeIdentityModule) Accounts() identity.AccountService             { return m.accounts }
+func (m *fakeIdentityModule) Verifier() *identity.Verifier                  { return m.verifier }
+func (m *fakeIdentityModule) SystemTokenIssuer() identity.SystemTokenIssuer { return m.issuer }
+func (m *fakeIdentityModule) EnsureAdmin(ctx context.Context) error {
+	if m.ensureAdmin != nil {
+		return m.ensureAdmin(ctx)
+	}
+	return nil
+}
+func (m *fakeIdentityModule) ResolveOwner(ctx context.Context, username string) (string, string, error) {
+	return m.resolveOwner(ctx, username)
+}
 
 func TestManager_AuthServiceGetter(t *testing.T) {
 	t.Parallel()
@@ -40,12 +89,12 @@ func TestManager_AuthServiceGetter(t *testing.T) {
 }
 
 func TestManager_Init_StorageError(t *testing.T) {
-	t.Parallel()
-	cfg := config.LoadConfig()
-	if backend, ok := cfg.Storage.Backends["default_mongo"]; ok {
-		backend.Mongo.URI = "mongodb://invalid-host:1"
-		cfg.Storage.Backends["default_mongo"] = backend
+	setupManagerFactories(t)
+	wantErr := errors.New("physical backend connection failed")
+	storageBackendsFactory = func(context.Context, *config.Config) (*storage.Backends, error) {
+		return nil, wantErr
 	}
+	cfg := config.LoadConfig()
 	opt := Options{RunQuery: true}
 	mgr := NewManager(cfg, opt)
 
@@ -53,12 +102,16 @@ func TestManager_Init_StorageError(t *testing.T) {
 	defer cancel()
 
 	err := mgr.Init(ctx)
-	assert.Error(t, err)
+	assert.ErrorIs(t, err, wantErr)
 }
 
 func TestManager_Init_TokenServiceError(t *testing.T) {
+	setupManagerFactories(t)
+	wantErr := errors.New("token service initialization failed")
+	identityModuleFactory = func(context.Context, identityconfig.Config, storageconfig.Config, *storage.Backends) (identityModule, error) {
+		return nil, wantErr
+	}
 	cfg := config.LoadConfig()
-	cfg.Identity.AuthN.PrivateKeyFile = "/nonexistent/dir/key.pem"
 	opt := Options{RunAPI: true}
 	mgr := NewManager(cfg, opt)
 
@@ -66,10 +119,11 @@ func TestManager_Init_TokenServiceError(t *testing.T) {
 	defer cancel()
 
 	err := mgr.Init(ctx)
-	assert.Error(t, err)
+	assert.ErrorIs(t, err, wantErr)
 }
 
 func TestManager_Init_AuthzRulesLoadError(t *testing.T) {
+	setupManagerFactories(t)
 	cfg := config.LoadConfig()
 	cfg.Gateway.AuthZ.RulesPath = "__missing_rules_file__"
 	opts := Options{RunAPI: true}
@@ -82,36 +136,92 @@ func TestManager_Init_AuthzRulesLoadError(t *testing.T) {
 	assert.Error(t, err)
 }
 
-func TestManager_InitAuthService_GenerateKey(t *testing.T) {
+func TestManager_InitAuthService_IndependentComposition(t *testing.T) {
+	setupManagerFactories(t)
 	cfg := config.LoadConfig()
-	cfg.Identity.AuthN.PrivateKeyFile = filepath.Join(t.TempDir(), "private.pem")
 	mgr := NewManager(cfg, Options{RunTriggerWorker: true})
-
-	// Mock storage factory
-	fakeAuth := &fakeAuthStore{}
-	storageFactoryFactory = func(ctx context.Context, cfg *config.Config) (storage.StorageFactory, error) {
-		return &fakeStorageFactory{
-			usrStore: fakeAuth,
-			revStore: fakeAuth,
-		}, nil
+	backends := &storage.Backends{}
+	storageBackendsFactory = func(context.Context, *config.Config) (*storage.Backends, error) { return backends, nil }
+	storageFactoryFactory = func(context.Context, *config.Config, *storage.Backends) (storage.StorageFactory, error) {
+		t.Fatal("Identity initialization must not construct document or catalog stores")
+		return nil, nil
 	}
-	defer func() {
-		storageFactoryFactory = func(ctx context.Context, cfg *config.Config) (storage.StorageFactory, error) {
-			return storage.NewFactory(ctx, cfg.Storage)
-		}
-	}()
+	verifier, err := identity.NewVerifier(func(string) (*identity.Claims, error) { return nil, identity.ErrInvalidToken })
+	require.NoError(t, err)
+	module := &fakeIdentityModule{accounts: &stubAuthN{}, verifier: verifier, issuer: &stubAuthN{}}
+	identityModuleFactory = func(ctx context.Context, gotIdentity identityconfig.Config, gotStorage storageconfig.Config, gotBackends *storage.Backends) (identityModule, error) {
+		require.Equal(t, cfg.Identity, gotIdentity)
+		require.Equal(t, cfg.Storage, gotStorage)
+		require.Same(t, backends, gotBackends)
+		return module, nil
+	}
+	require.NoError(t, mgr.initAuthService(context.Background()))
+	require.Same(t, module.accounts, mgr.accountService)
+	require.Same(t, module.verifier, mgr.tokenVerifier)
+	require.Same(t, module.issuer, mgr.systemTokenIssuer)
+	require.Nil(t, mgr.storageFactory)
+}
 
-	// We need to init storage first because initAuthService depends on it
+func TestManager_Init_IdentityAndCatalogBootstrapOrder(t *testing.T) {
+	setupManagerFactories(t)
+	cfg := config.LoadConfig()
+	cfg.Server.HTTPPort = 0
+	cfg.Gateway.AuthZ.RulesPath = ""
+	cfg.Identity.Admin.Username = "owner"
+	var events []string
+	shared := &storage.Backends{}
+	storageBackendsFactory = func(context.Context, *config.Config) (*storage.Backends, error) {
+		events = append(events, "backends")
+		return shared, nil
+	}
+	verifier, err := identity.NewVerifier(func(string) (*identity.Claims, error) { return nil, identity.ErrInvalidToken })
+	require.NoError(t, err)
+	module := &fakeIdentityModule{
+		accounts: &stubAuthN{}, verifier: verifier, issuer: &stubAuthN{},
+		ensureAdmin: func(context.Context) error { events = append(events, "admin"); return nil },
+		resolveOwner: func(ctx context.Context, username string) (string, string, error) {
+			events = append(events, "owner")
+			require.Equal(t, "owner", username)
+			return "owner-id", username, nil
+		},
+	}
+	identityModuleFactory = func(context.Context, identityconfig.Config, storageconfig.Config, *storage.Backends) (identityModule, error) {
+		events = append(events, "identity")
+		return module, nil
+	}
+	catalog := &bootstrapOrderDatabaseStore{fakeDatabaseStore: newFakeDatabaseStore(), events: &events}
+	storageFactoryFactory = func(ctx context.Context, cfg *config.Config, got *storage.Backends) (storage.StorageFactory, error) {
+		events = append(events, "stores")
+		require.Same(t, shared, got)
+		return &fakeStorageFactory{dbStore: catalog}, nil
+	}
+	mgr := NewManager(cfg, Options{RunAPI: true})
+	t.Cleanup(func() { mgr.Shutdown(context.Background()) })
+	require.NoError(t, mgr.Init(context.Background()))
+	require.Equal(t, []string{"backends", "identity", "admin", "stores", "catalog", "owner", "database"}, events)
+	require.Same(t, module, mgr.identityModule)
+	db, err := catalog.fakeDatabaseStore.GetBySlug(context.Background(), "default")
+	require.NoError(t, err)
+	require.Equal(t, "owner-id", db.OwnerID)
+}
 
-	err := mgr.initAuthService(context.Background())
-	assert.NoError(t, err)
-	assert.NotNil(t, mgr.accountService)
+type bootstrapOrderDatabaseStore struct {
+	*fakeDatabaseStore
+	events *[]string
+}
 
-	_, statErr := os.Stat(cfg.Identity.AuthN.PrivateKeyFile)
-	assert.NoError(t, statErr)
+func (s *bootstrapOrderDatabaseStore) GetBySlug(ctx context.Context, slug string) (*database.Database, error) {
+	*s.events = append(*s.events, "catalog")
+	return s.fakeDatabaseStore.GetBySlug(ctx, slug)
+}
+
+func (s *bootstrapOrderDatabaseStore) Create(ctx context.Context, db *database.Database) error {
+	*s.events = append(*s.events, "database")
+	return s.fakeDatabaseStore.Create(ctx, db)
 }
 
 func TestManager_InitAPIServer_WithRules(t *testing.T) {
+	setupManagerFactories(t)
 	// Initialize a fresh server instance to avoid route conflicts with other tests
 	server.InitDefault(server.DefaultConfig(), nil)
 
@@ -135,6 +245,7 @@ func TestManager_InitAPIServer_WithRules(t *testing.T) {
 }
 
 func TestManager_InitAPIServer_NoRules(t *testing.T) {
+	setupManagerFactories(t)
 	// Initialize a fresh server instance to avoid route conflicts with other tests
 	server.InitDefault(server.DefaultConfig(), nil)
 
@@ -154,6 +265,7 @@ func TestManager_InitAPIServer_NoRules(t *testing.T) {
 }
 
 func TestManager_InitAPIServer_WithRealtime(t *testing.T) {
+	setupManagerFactories(t)
 	// Initialize a fresh server instance to avoid route conflicts with other tests
 	server.InitDefault(server.DefaultConfig(), nil)
 
@@ -172,6 +284,7 @@ func TestManager_InitAPIServer_WithRealtime(t *testing.T) {
 }
 
 func TestManager_InitTriggerServices_NATSFailure(t *testing.T) {
+	setupManagerFactories(t)
 	cfg := config.LoadConfig()
 	cfg.Trigger.NatsURL = "nats://127.0.0.1:1"
 	mgr := NewManager(cfg, Options{RunTriggerWorker: true, Mode: ModeDistributed})
@@ -181,6 +294,7 @@ func TestManager_InitTriggerServices_NATSFailure(t *testing.T) {
 }
 
 func TestManager_InitStorage_SkipsWhenNoServices(t *testing.T) {
+	setupManagerFactories(t)
 	cfg := config.LoadConfig()
 	mgr := NewManager(cfg, Options{})
 
@@ -193,16 +307,14 @@ func TestManager_InitStorage_SkipsWhenNoServices(t *testing.T) {
 }
 
 func TestManager_Init_RunAuthPath(t *testing.T) {
+	setupManagerFactories(t)
 	origFactory := storageFactoryFactory
 	defer func() { storageFactoryFactory = origFactory }()
 
 	fakeDocStore := &fakeDocumentStore{}
-	fakeAuth := &fakeAuthStore{}
-	storageFactoryFactory = func(ctx context.Context, cfg *config.Config) (storage.StorageFactory, error) {
+	storageFactoryFactory = func(ctx context.Context, cfg *config.Config, backends *storage.Backends) (storage.StorageFactory, error) {
 		return &fakeStorageFactory{
 			docStore: fakeDocStore,
-			usrStore: fakeAuth,
-			revStore: fakeAuth,
 		}, nil
 	}
 
@@ -223,6 +335,7 @@ func TestManager_Init_RunAuthPath(t *testing.T) {
 }
 
 func TestManager_Init_RunQueryPath(t *testing.T) {
+	setupManagerFactories(t)
 	origFactory := storageFactoryFactory
 	defer func() { storageFactoryFactory = origFactory }()
 
@@ -230,7 +343,7 @@ func TestManager_Init_RunQueryPath(t *testing.T) {
 	server.InitDefault(server.DefaultConfig(), nil)
 
 	fakeDocStore := &fakeDocumentStore{}
-	storageFactoryFactory = func(ctx context.Context, cfg *config.Config) (storage.StorageFactory, error) {
+	storageFactoryFactory = func(ctx context.Context, cfg *config.Config, backends *storage.Backends) (storage.StorageFactory, error) {
 		return &fakeStorageFactory{
 			docStore: fakeDocStore,
 		}, nil
@@ -249,17 +362,15 @@ func TestManager_Init_RunQueryPath(t *testing.T) {
 }
 
 func TestManager_Init_RunRealtimePath(t *testing.T) {
+	setupManagerFactories(t)
 	// Initialize a fresh server instance to avoid route conflicts with other tests
 	server.InitDefault(server.DefaultConfig(), nil)
 
 	// Mock storage factory to avoid real database connection
-	fakeSF := &stubStorageFactory{
-		dbByName: map[string]string{"primary": "db_primary"},
-		client:   &mongo.Client{},
-	}
+	fakeSF := &fakeStorageFactory{}
 	origFactory := storageFactoryFactory
 	defer func() { storageFactoryFactory = origFactory }()
-	storageFactoryFactory = func(ctx context.Context, cfg *config.Config) (storage.StorageFactory, error) {
+	storageFactoryFactory = func(ctx context.Context, cfg *config.Config, backends *storage.Backends) (storage.StorageFactory, error) {
 		return fakeSF, nil
 	}
 
@@ -276,20 +387,21 @@ func TestManager_Init_RunRealtimePath(t *testing.T) {
 }
 
 func TestManager_initPullerService_Success(t *testing.T) {
-	fakeSF := &stubStorageFactory{
-		dbByName: map[string]string{"primary": "db_primary"},
-		client:   &mongo.Client{},
-	}
+	setupManagerFactories(t)
+	fakeSF := &fakeStorageFactory{}
 
 	origFactory := storageFactoryFactory
 	defer func() { storageFactoryFactory = origFactory }()
-	storageFactoryFactory = func(ctx context.Context, cfg *config.Config) (storage.StorageFactory, error) {
+	storageFactoryFactory = func(ctx context.Context, cfg *config.Config, backends *storage.Backends) (storage.StorageFactory, error) {
 		return fakeSF, nil
 	}
 
 	cfg := config.LoadConfig()
+	storageBackendsFactory = func(ctx context.Context, cfg *config.Config) (*storage.Backends, error) {
+		return storage.NewBackends(ctx, cfg.Storage)
+	}
 	cfg.Puller.Buffer.Path = t.TempDir()
-	cfg.Puller.Backends = []puller_config.PullerBackendConfig{{Name: "primary"}}
+	cfg.Puller.Backends = []puller_config.PullerBackendConfig{{Name: "default_mongo"}}
 
 	mgr := NewManager(cfg, Options{Mode: ModeDistributed, RunPuller: true})
 	defer mgr.Shutdown(context.Background())
@@ -298,20 +410,18 @@ func TestManager_initPullerService_Success(t *testing.T) {
 	assert.NoError(t, err)
 	names := mgr.pullerService.BackendNames()
 	assert.Len(t, names, 1)
-	assert.Equal(t, "primary", names[0])
+	assert.Equal(t, "default_mongo", names[0])
 	// Note: pullerGRPC is nil here because initPullerService no longer registers gRPC.
 	// gRPC registration is done separately by initPullerGRPCServer() in initDistributed().
 	assert.Nil(t, mgr.pullerGRPC)
 }
 
 func TestManager_initPullerService_GetMongoError(t *testing.T) {
-	fakeSF := &stubStorageFactory{
-		errByName: map[string]error{"missing": errors.New("no backend")},
-		client:    &mongo.Client{},
-	}
+	setupManagerFactories(t)
+	fakeSF := &fakeStorageFactory{}
 	origFactory := storageFactoryFactory
 	defer func() { storageFactoryFactory = origFactory }()
-	storageFactoryFactory = func(ctx context.Context, cfg *config.Config) (storage.StorageFactory, error) {
+	storageFactoryFactory = func(ctx context.Context, cfg *config.Config, backends *storage.Backends) (storage.StorageFactory, error) {
 		return fakeSF, nil
 	}
 
@@ -358,63 +468,6 @@ func (f *fakeDocumentStore) Close(ctx context.Context) error { return nil }
 func (f *fakeDocumentStore) DeleteByDatabase(ctx context.Context, database string, limit int) (int, error) {
 	return 0, nil
 }
-
-type fakeAuthStore struct {
-	db           *mongo.Database
-	ensureCalled bool
-}
-
-func (f *fakeAuthStore) CreateUser(ctx context.Context, user *storage.User) error {
-	return nil
-}
-func (f *fakeAuthStore) GetUserByUsername(ctx context.Context, username string) (*storage.User, error) {
-	return nil, identity.ErrUserNotFound
-}
-func (f *fakeAuthStore) GetUserByID(ctx context.Context, id string) (*storage.User, error) {
-	return nil, identity.ErrUserNotFound
-}
-func (f *fakeAuthStore) ListUsers(ctx context.Context, limit int, offset int) ([]*storage.User, error) {
-	return nil, nil
-}
-func (f *fakeAuthStore) UpdateUser(ctx context.Context, user *storage.User) error {
-	return nil
-}
-func (f *fakeAuthStore) UpdateUserLoginStats(ctx context.Context, id string, lastLogin time.Time, attempts int, lockoutUntil time.Time) error {
-	return nil
-}
-func (f *fakeAuthStore) RevokeToken(ctx context.Context, jti string, expiresAt time.Time) error {
-	return nil
-}
-func (f *fakeAuthStore) RevokeTokenImmediate(ctx context.Context, jti string, expiresAt time.Time) error {
-	return nil
-}
-func (f *fakeAuthStore) IsRevoked(ctx context.Context, jti string, gracePeriod time.Duration) (bool, error) {
-	return false, nil
-}
-func (f *fakeAuthStore) RevokeTokenIfNotRevoked(ctx context.Context, jti string, expiresAt time.Time, gracePeriod time.Duration) error {
-	return nil
-}
-func (f *fakeAuthStore) EnsureIndexes(ctx context.Context) error {
-	f.ensureCalled = true
-	return nil
-}
-func (f *fakeAuthStore) Close(ctx context.Context) error { return nil }
-
-type fakeDocumentProvider struct {
-	store storage.DocumentStore
-}
-
-func (f *fakeDocumentProvider) Document() storage.DocumentStore { return f.store }
-func (f *fakeDocumentProvider) Close(ctx context.Context) error { return nil }
-
-type fakeAuthProvider struct {
-	users       storage.UserStore
-	revocations storage.TokenRevocationStore
-}
-
-func (f *fakeAuthProvider) Users() storage.UserStore                  { return f.users }
-func (f *fakeAuthProvider) Revocations() storage.TokenRevocationStore { return f.revocations }
-func (f *fakeAuthProvider) Close(ctx context.Context) error           { return nil }
 
 type stubQueryService struct{}
 
@@ -489,44 +542,13 @@ func (s *stubIndexerService) InvalidateDatabase(ctx context.Context, database st
 	return nil
 }
 
-type stubStorageFactory struct {
-	dbByName  map[string]string
-	errByName map[string]error
-	client    *mongo.Client
-}
-
-func (s *stubStorageFactory) Document() storage.DocumentStore          { return nil }
-func (s *stubStorageFactory) User() storage.UserStore                  { return nil }
-func (s *stubStorageFactory) Revocation() storage.TokenRevocationStore { return nil }
-func (s *stubStorageFactory) Database() database.DatabaseStore         { return nil }
-func (s *stubStorageFactory) GetMongoClient(name string) (*mongo.Client, string, error) {
-	if err := s.errByName[name]; err != nil {
-		return nil, "", err
-	}
-
-	db := s.dbByName[name]
-	if db == "" {
-		db = name
-	}
-	return s.client, db, nil
-}
-func (s *stubStorageFactory) Close() error { return nil }
-
 type fakeStorageFactory struct {
 	docStore storage.DocumentStore
-	usrStore storage.UserStore
-	revStore storage.TokenRevocationStore
 	dbStore  database.DatabaseStore
 }
 
-func (f *fakeStorageFactory) Document() storage.DocumentStore          { return f.docStore }
-func (f *fakeStorageFactory) User() storage.UserStore                  { return f.usrStore }
-func (f *fakeStorageFactory) Revocation() storage.TokenRevocationStore { return f.revStore }
-func (f *fakeStorageFactory) Database() database.DatabaseStore         { return f.dbStore }
-func (f *fakeStorageFactory) GetMongoClient(name string) (*mongo.Client, string, error) {
-	return nil, "", nil
-}
-func (f *fakeStorageFactory) Close() error { return nil }
+func (f *fakeStorageFactory) Document() storage.DocumentStore  { return f.docStore }
+func (f *fakeStorageFactory) Database() database.DatabaseStore { return f.dbStore }
 
 type stubAuthN struct{}
 
@@ -563,16 +585,14 @@ func (s *stubAuthZ) UpdateRules(database string, content []byte) error          
 func (s *stubAuthZ) LoadRulesFromDir(dirPath string) error                      { return nil }
 
 func TestManager_Init_StandaloneMode(t *testing.T) {
+	setupManagerFactories(t)
 	origFactory := storageFactoryFactory
 	defer func() { storageFactoryFactory = origFactory }()
 
 	fakeDocStore := &fakeDocumentStore{}
-	fakeAuth := &fakeAuthStore{}
-	storageFactoryFactory = func(ctx context.Context, cfg *config.Config) (storage.StorageFactory, error) {
+	storageFactoryFactory = func(ctx context.Context, cfg *config.Config, backends *storage.Backends) (storage.StorageFactory, error) {
 		return &fakeStorageFactory{
 			docStore: fakeDocStore,
-			usrStore: fakeAuth,
-			revStore: fakeAuth,
 		}, nil
 	}
 
@@ -599,16 +619,14 @@ func TestManager_Init_StandaloneMode(t *testing.T) {
 }
 
 func TestManager_Init_StandaloneMode_NoHTTPForCSP(t *testing.T) {
+	setupManagerFactories(t)
 	origFactory := storageFactoryFactory
 	defer func() { storageFactoryFactory = origFactory }()
 
 	fakeDocStore := &fakeDocumentStore{}
-	fakeAuth := &fakeAuthStore{}
-	storageFactoryFactory = func(ctx context.Context, cfg *config.Config) (storage.StorageFactory, error) {
+	storageFactoryFactory = func(ctx context.Context, cfg *config.Config, backends *storage.Backends) (storage.StorageFactory, error) {
 		return &fakeStorageFactory{
 			docStore: fakeDocStore,
-			usrStore: fakeAuth,
-			revStore: fakeAuth,
 		}, nil
 	}
 
@@ -633,11 +651,12 @@ func TestManager_Init_StandaloneMode_NoHTTPForCSP(t *testing.T) {
 }
 
 func TestManager_initQueryService(t *testing.T) {
+	setupManagerFactories(t)
 	fakeDocStore := &fakeDocumentStore{}
 	origFactory := storageFactoryFactory
 	defer func() { storageFactoryFactory = origFactory }()
 
-	storageFactoryFactory = func(ctx context.Context, cfg *config.Config) (storage.StorageFactory, error) {
+	storageFactoryFactory = func(ctx context.Context, cfg *config.Config, backends *storage.Backends) (storage.StorageFactory, error) {
 		return &fakeStorageFactory{
 			docStore: fakeDocStore,
 		}, nil
@@ -662,10 +681,11 @@ func TestManager_initQueryService(t *testing.T) {
 // in internal/config/config_test.go.
 
 func TestManager_initQueryService_StorageError(t *testing.T) {
+	setupManagerFactories(t)
 	origFactory := storageFactoryFactory
 	defer func() { storageFactoryFactory = origFactory }()
 
-	storageFactoryFactory = func(ctx context.Context, cfg *config.Config) (storage.StorageFactory, error) {
+	storageFactoryFactory = func(ctx context.Context, cfg *config.Config, backends *storage.Backends) (storage.StorageFactory, error) {
 		return nil, errors.New("storage connection failed")
 	}
 
@@ -678,6 +698,7 @@ func TestManager_initQueryService_StorageError(t *testing.T) {
 }
 
 func TestManager_initQueryGRPCServer(t *testing.T) {
+	setupManagerFactories(t)
 	cfg := config.LoadConfig()
 	cfg.Server.GRPCPort = 0
 	mgr := NewManager(cfg, Options{})
@@ -692,16 +713,14 @@ func TestManager_initQueryGRPCServer(t *testing.T) {
 }
 
 func TestManager_initStandalone_APIServerError(t *testing.T) {
+	setupManagerFactories(t)
 	origFactory := storageFactoryFactory
 	defer func() { storageFactoryFactory = origFactory }()
 
 	fakeDocStore := &fakeDocumentStore{}
-	fakeAuth := &fakeAuthStore{}
-	storageFactoryFactory = func(ctx context.Context, cfg *config.Config) (storage.StorageFactory, error) {
+	storageFactoryFactory = func(ctx context.Context, cfg *config.Config, backends *storage.Backends) (storage.StorageFactory, error) {
 		return &fakeStorageFactory{
 			docStore: fakeDocStore,
-			usrStore: fakeAuth,
-			revStore: fakeAuth,
 		}, nil
 	}
 
@@ -724,16 +743,14 @@ func TestManager_initStandalone_APIServerError(t *testing.T) {
 }
 
 func TestManager_initDistributed_APIServerError(t *testing.T) {
+	setupManagerFactories(t)
 	origFactory := storageFactoryFactory
 	defer func() { storageFactoryFactory = origFactory }()
 
 	fakeDocStore := &fakeDocumentStore{}
-	fakeAuth := &fakeAuthStore{}
-	storageFactoryFactory = func(ctx context.Context, cfg *config.Config) (storage.StorageFactory, error) {
+	storageFactoryFactory = func(ctx context.Context, cfg *config.Config, backends *storage.Backends) (storage.StorageFactory, error) {
 		return &fakeStorageFactory{
 			docStore: fakeDocStore,
-			usrStore: fakeAuth,
-			revStore: fakeAuth,
 		}, nil
 	}
 
@@ -751,14 +768,12 @@ func TestManager_initDistributed_APIServerError(t *testing.T) {
 }
 
 func TestManager_Init_PullerServiceError(t *testing.T) {
+	setupManagerFactories(t)
 	origFactory := storageFactoryFactory
 	defer func() { storageFactoryFactory = origFactory }()
 
-	storageFactoryFactory = func(ctx context.Context, cfg *config.Config) (storage.StorageFactory, error) {
-		return &stubStorageFactory{
-			// Return an error for the "missing_backend" backend
-			errByName: map[string]error{"missing_backend": errors.New("backend not found")},
-		}, nil
+	storageFactoryFactory = func(ctx context.Context, cfg *config.Config, backends *storage.Backends) (storage.StorageFactory, error) {
+		return &fakeStorageFactory{}, nil
 	}
 
 	cfg := config.LoadConfig()
@@ -781,16 +796,14 @@ func TestManager_Init_PullerServiceError(t *testing.T) {
 }
 
 func TestManager_initDistributed_TriggerServicesError(t *testing.T) {
+	setupManagerFactories(t)
 	origFactory := storageFactoryFactory
 	defer func() { storageFactoryFactory = origFactory }()
 
 	fakeDocStore := &fakeDocumentStore{}
-	fakeAuth := &fakeAuthStore{}
-	storageFactoryFactory = func(ctx context.Context, cfg *config.Config) (storage.StorageFactory, error) {
+	storageFactoryFactory = func(ctx context.Context, cfg *config.Config, backends *storage.Backends) (storage.StorageFactory, error) {
 		return &fakeStorageFactory{
 			docStore: fakeDocStore,
-			usrStore: fakeAuth,
-			revStore: fakeAuth,
 		}, nil
 	}
 
@@ -839,6 +852,7 @@ func (m *mockPullerService) ReplayFromAdmission(ctx context.Context, after map[s
 // See TestManager_Init_StandaloneMode for standalone tests.
 
 func TestManager_initStreamerService_Distributed(t *testing.T) {
+	setupManagerFactories(t)
 	cfg := config.LoadConfig()
 	cfg.Server.GRPCPort = 0
 	cfg.Streamer.Server.PullerAddr = "localhost:50051"
@@ -859,16 +873,14 @@ func TestManager_initStreamerService_Distributed(t *testing.T) {
 // in internal/config/config_test.go.
 
 func TestManager_initGateway(t *testing.T) {
+	setupManagerFactories(t)
 	origFactory := storageFactoryFactory
 	defer func() { storageFactoryFactory = origFactory }()
 
 	fakeDocStore := &fakeDocumentStore{}
-	fakeAuth := &fakeAuthStore{}
-	storageFactoryFactory = func(ctx context.Context, cfg *config.Config) (storage.StorageFactory, error) {
+	storageFactoryFactory = func(ctx context.Context, cfg *config.Config, backends *storage.Backends) (storage.StorageFactory, error) {
 		return &fakeStorageFactory{
 			docStore: fakeDocStore,
-			usrStore: fakeAuth,
-			revStore: fakeAuth,
 		}, nil
 	}
 
@@ -893,6 +905,7 @@ func TestManager_initGateway(t *testing.T) {
 }
 
 func TestManager_initDistributed_RunStreamer(t *testing.T) {
+	setupManagerFactories(t)
 	cfg := config.LoadConfig()
 	cfg.Server.GRPCPort = 0
 	cfg.Streamer.Server.PullerAddr = "localhost:50051"
@@ -908,11 +921,12 @@ func TestManager_initDistributed_RunStreamer(t *testing.T) {
 }
 
 func TestManager_initDistributed_RunQueryAndStreamer(t *testing.T) {
+	setupManagerFactories(t)
 	origFactory := storageFactoryFactory
 	defer func() { storageFactoryFactory = origFactory }()
 
 	fakeDocStore := &fakeDocumentStore{}
-	storageFactoryFactory = func(ctx context.Context, cfg *config.Config) (storage.StorageFactory, error) {
+	storageFactoryFactory = func(ctx context.Context, cfg *config.Config, backends *storage.Backends) (storage.StorageFactory, error) {
 		return &fakeStorageFactory{
 			docStore: fakeDocStore,
 		}, nil
@@ -937,16 +951,14 @@ func TestManager_initDistributed_RunQueryAndStreamer(t *testing.T) {
 }
 
 func TestManager_initDistributed_AllServices(t *testing.T) {
+	setupManagerFactories(t)
 	origFactory := storageFactoryFactory
 	defer func() { storageFactoryFactory = origFactory }()
 
 	fakeDocStore := &fakeDocumentStore{}
-	fakeAuth := &fakeAuthStore{}
-	storageFactoryFactory = func(ctx context.Context, cfg *config.Config) (storage.StorageFactory, error) {
+	storageFactoryFactory = func(ctx context.Context, cfg *config.Config, backends *storage.Backends) (storage.StorageFactory, error) {
 		return &fakeStorageFactory{
 			docStore: fakeDocStore,
-			usrStore: fakeAuth,
-			revStore: fakeAuth,
 		}, nil
 	}
 
@@ -976,6 +988,7 @@ func TestManager_initDistributed_AllServices(t *testing.T) {
 }
 
 func TestManager_initStandalone_TriggerServicesError(t *testing.T) {
+	setupManagerFactories(t)
 	origFactory := storageFactoryFactory
 	origEvaluatorFactory := evaluatorServiceFactory
 	defer func() {
@@ -984,12 +997,9 @@ func TestManager_initStandalone_TriggerServicesError(t *testing.T) {
 	}()
 
 	fakeDocStore := &fakeDocumentStore{}
-	fakeAuth := &fakeAuthStore{}
-	storageFactoryFactory = func(ctx context.Context, cfg *config.Config) (storage.StorageFactory, error) {
+	storageFactoryFactory = func(ctx context.Context, cfg *config.Config, backends *storage.Backends) (storage.StorageFactory, error) {
 		return &fakeStorageFactory{
 			docStore: fakeDocStore,
-			usrStore: fakeAuth,
-			revStore: fakeAuth,
 		}, nil
 	}
 
@@ -1023,23 +1033,24 @@ func TestManager_initStandalone_TriggerServicesError(t *testing.T) {
 }
 
 func TestManager_initStandalone_WithPuller(t *testing.T) {
+	setupManagerFactories(t)
 	origFactory := storageFactoryFactory
 	defer func() { storageFactoryFactory = origFactory }()
 
-	fakeSF := &stubStorageFactory{
-		dbByName: map[string]string{"default": "test_db"},
-		client:   &mongo.Client{},
-	}
-	storageFactoryFactory = func(ctx context.Context, cfg *config.Config) (storage.StorageFactory, error) {
+	fakeSF := &fakeStorageFactory{}
+	storageFactoryFactory = func(ctx context.Context, cfg *config.Config, backends *storage.Backends) (storage.StorageFactory, error) {
 		return fakeSF, nil
 	}
 
 	cfg := config.LoadConfig()
+	storageBackendsFactory = func(ctx context.Context, cfg *config.Config) (*storage.Backends, error) {
+		return storage.NewBackends(ctx, cfg.Storage)
+	}
 	cfg.Server.HTTPPort = 0
 	cfg.Gateway.AuthZ.RulesPath = ""
 	cfg.Trigger.Evaluator.RulesPath = ""
 	cfg.Puller.Buffer.Path = t.TempDir()
-	cfg.Puller.Backends = []puller_config.PullerBackendConfig{{Name: "default"}}
+	cfg.Puller.Backends = []puller_config.PullerBackendConfig{{Name: "default_mongo"}}
 
 	mgr := NewManager(cfg, Options{
 		Mode:      ModeStandalone,
@@ -1056,10 +1067,11 @@ func TestManager_initStandalone_WithPuller(t *testing.T) {
 }
 
 func TestManager_initStandalone_PullerError(t *testing.T) {
+	setupManagerFactories(t)
 	origFactory := storageFactoryFactory
 	defer func() { storageFactoryFactory = origFactory }()
 
-	storageFactoryFactory = func(ctx context.Context, cfg *config.Config) (storage.StorageFactory, error) {
+	storageFactoryFactory = func(ctx context.Context, cfg *config.Config, backends *storage.Backends) (storage.StorageFactory, error) {
 		return nil, errors.New("storage error")
 	}
 
@@ -1078,6 +1090,7 @@ func TestManager_initStandalone_PullerError(t *testing.T) {
 }
 
 func TestManager_initPullerGRPCServer(t *testing.T) {
+	setupManagerFactories(t)
 	cfg := config.LoadConfig()
 	cfg.Server.HTTPPort = 0
 	cfg.Server.GRPCPort = 0
@@ -1105,6 +1118,7 @@ func TestManager_initPullerGRPCServer(t *testing.T) {
 // See TestManager_Init_StandaloneMode for standalone tests.
 
 func TestManager_initIndexerService_Distributed(t *testing.T) {
+	setupManagerFactories(t)
 	cfg := config.LoadConfig()
 	cfg.Indexer.TemplatePath = ""
 	cfg.Indexer.PullerAddr = "localhost:50051"
@@ -1121,6 +1135,7 @@ func TestManager_initIndexerService_Distributed(t *testing.T) {
 }
 
 func TestManager_initIndexerGRPCServer(t *testing.T) {
+	setupManagerFactories(t)
 	cfg := config.LoadConfig()
 	cfg.Server.HTTPPort = 0
 	cfg.Server.GRPCPort = 0
@@ -1147,6 +1162,7 @@ func TestManager_initIndexerGRPCServer(t *testing.T) {
 }
 
 func TestManager_initStandalone_WithIndexer(t *testing.T) {
+	setupManagerFactories(t)
 	origFactory := storageFactoryFactory
 	origEvalFactory := evaluatorServiceFactory
 	origDeliveryFactory := deliveryServiceFactory
@@ -1156,11 +1172,8 @@ func TestManager_initStandalone_WithIndexer(t *testing.T) {
 		deliveryServiceFactory = origDeliveryFactory
 	}()
 
-	fakeSF := &stubStorageFactory{
-		dbByName: map[string]string{"default": "test_db"},
-		client:   &mongo.Client{},
-	}
-	storageFactoryFactory = func(ctx context.Context, cfg *config.Config) (storage.StorageFactory, error) {
+	fakeSF := &fakeStorageFactory{}
+	storageFactoryFactory = func(ctx context.Context, cfg *config.Config, backends *storage.Backends) (storage.StorageFactory, error) {
 		return fakeSF, nil
 	}
 
@@ -1173,11 +1186,14 @@ func TestManager_initStandalone_WithIndexer(t *testing.T) {
 	}
 
 	cfg := config.LoadConfig()
+	storageBackendsFactory = func(ctx context.Context, cfg *config.Config) (*storage.Backends, error) {
+		return storage.NewBackends(ctx, cfg.Storage)
+	}
 	cfg.Server.HTTPPort = 0
 	cfg.Gateway.AuthZ.RulesPath = ""
 	cfg.Indexer.TemplatePath = ""
 	cfg.Puller.Buffer.Path = t.TempDir()
-	cfg.Puller.Backends = []puller_config.PullerBackendConfig{{Name: "default"}}
+	cfg.Puller.Backends = []puller_config.PullerBackendConfig{{Name: "default_mongo"}}
 	cfg.Trigger.Evaluator.RulesPath = "" // Mock factory handles this
 
 	mgr := NewManager(cfg, Options{
@@ -1198,23 +1214,24 @@ func TestManager_initStandalone_WithIndexer(t *testing.T) {
 }
 
 func TestManager_initDistributed_WithIndexer(t *testing.T) {
+	setupManagerFactories(t)
 	origFactory := storageFactoryFactory
 	defer func() { storageFactoryFactory = origFactory }()
 
-	fakeSF := &stubStorageFactory{
-		dbByName: map[string]string{"default": "test_db"},
-		client:   &mongo.Client{},
-	}
-	storageFactoryFactory = func(ctx context.Context, cfg *config.Config) (storage.StorageFactory, error) {
+	fakeSF := &fakeStorageFactory{}
+	storageFactoryFactory = func(ctx context.Context, cfg *config.Config, backends *storage.Backends) (storage.StorageFactory, error) {
 		return fakeSF, nil
 	}
 
 	cfg := config.LoadConfig()
+	storageBackendsFactory = func(ctx context.Context, cfg *config.Config) (*storage.Backends, error) {
+		return storage.NewBackends(ctx, cfg.Storage)
+	}
 	cfg.Server.HTTPPort = 0
 	cfg.Server.GRPCPort = 0
 	cfg.Indexer.TemplatePath = ""
 	cfg.Puller.Buffer.Path = t.TempDir()
-	cfg.Puller.Backends = []puller_config.PullerBackendConfig{{Name: "default"}}
+	cfg.Puller.Backends = []puller_config.PullerBackendConfig{{Name: "default_mongo"}}
 
 	// Initialize the unified server first
 	server.InitDefault(cfg.Server, nil)
@@ -1232,16 +1249,14 @@ func TestManager_initDistributed_WithIndexer(t *testing.T) {
 }
 
 func TestManager_initStandalone_IndexerError(t *testing.T) {
+	setupManagerFactories(t)
 	origFactory := storageFactoryFactory
 	defer func() { storageFactoryFactory = origFactory }()
 
 	fakeDocStore := &fakeDocumentStore{}
-	fakeAuth := &fakeAuthStore{}
-	storageFactoryFactory = func(ctx context.Context, cfg *config.Config) (storage.StorageFactory, error) {
+	storageFactoryFactory = func(ctx context.Context, cfg *config.Config, backends *storage.Backends) (storage.StorageFactory, error) {
 		return &fakeStorageFactory{
 			docStore: fakeDocStore,
-			usrStore: fakeAuth,
-			revStore: fakeAuth,
 		}, nil
 	}
 
@@ -1288,201 +1303,25 @@ var _ delivery.Service = (*fakeDeliveryService)(nil)
 var _ pubsub.Publisher = pubsubtesting.NewMockPublisher()
 var _ pubsub.Consumer = pubsubtesting.NewMockConsumer()
 
-func TestManager_ensureAdminUser_Success(t *testing.T) {
-	origFactory := storageFactoryFactory
-	defer func() { storageFactoryFactory = origFactory }()
-
-	fakeAuth := &fakeAuthStore{}
-	storageFactoryFactory = func(ctx context.Context, cfg *config.Config) (storage.StorageFactory, error) {
-		return &fakeStorageFactory{
-			usrStore: fakeAuth,
-			revStore: fakeAuth,
-		}, nil
-	}
-
-	cfg := config.LoadConfig()
-	cfg.Identity.AuthN.PrivateKeyFile = filepath.Join(t.TempDir(), "auth.pem")
-	cfg.Identity.Admin.Username = "syntrix"
-	cfg.Identity.Admin.Password = "TestPassword123!"
-
-	mgr := NewManager(cfg, Options{RunAPI: true})
-
-	// Initialize auth service first
-	err := mgr.initAuthService(context.Background())
-	assert.NoError(t, err)
-
-	// Now test ensureAdminUser
-	err = mgr.ensureAdminUser(context.Background())
-	assert.NoError(t, err)
+func TestManager_ensureAdminUser_NoModule(t *testing.T) {
+	setupManagerFactories(t)
+	mgr := NewManager(config.LoadConfig(), Options{})
+	require.NoError(t, mgr.ensureAdminUser(context.Background()))
 }
 
-func TestManager_ensureAdminUser_UserAlreadyExists(t *testing.T) {
-	origFactory := storageFactoryFactory
-	defer func() { storageFactoryFactory = origFactory }()
-
-	// Create a fake auth store that returns user exists
-	fakeAuth := &fakeAuthStoreWithUser{
-		users: map[string]*storage.User{
-			"syntrix": {ID: "existing-id", Username: "syntrix"},
-		},
-	}
-	storageFactoryFactory = func(ctx context.Context, cfg *config.Config) (storage.StorageFactory, error) {
-		return &fakeStorageFactory{
-			usrStore: fakeAuth,
-			revStore: fakeAuth,
-		}, nil
-	}
-
-	cfg := config.LoadConfig()
-	cfg.Identity.AuthN.PrivateKeyFile = filepath.Join(t.TempDir(), "auth.pem")
-	cfg.Identity.Admin.Username = "syntrix"
-	cfg.Identity.Admin.Password = "TestPassword123!"
-
-	mgr := NewManager(cfg, Options{RunAPI: true})
-
-	err := mgr.initAuthService(context.Background())
-	assert.NoError(t, err)
-
-	// Should not error when user already exists
-	err = mgr.ensureAdminUser(context.Background())
-	assert.NoError(t, err)
-}
-
-func TestManager_ensureAdminUser_NoAuthService(t *testing.T) {
-	cfg := config.LoadConfig()
-	cfg.Identity.Admin.Username = "syntrix"
-	cfg.Identity.Admin.Password = "TestPassword123!"
-
-	mgr := NewManager(cfg, Options{})
-	// accountService is nil
-
-	// Should skip gracefully when no auth service
-	err := mgr.ensureAdminUser(context.Background())
-	assert.NoError(t, err)
-}
-
-func TestManager_ensureAdminUser_NoUsername(t *testing.T) {
-	cfg := config.LoadConfig()
-	cfg.Identity.Admin.Username = ""
-	cfg.Identity.Admin.Password = "TestPassword123!"
-
-	mgr := NewManager(cfg, Options{RunAPI: true})
-	mgr.accountService = &stubAuthN{}
-	mgr.tokenVerifier = &stubAuthN{}
-	mgr.systemTokenIssuer = &stubAuthN{}
-
-	// Should skip gracefully when no username configured
-	err := mgr.ensureAdminUser(context.Background())
-	assert.NoError(t, err)
-}
-
-func TestManager_ensureAdminUser_NoPassword(t *testing.T) {
-	cfg := config.LoadConfig()
-	cfg.Identity.Admin.Username = "syntrix"
-	cfg.Identity.Admin.Password = ""
-
-	mgr := NewManager(cfg, Options{RunAPI: true})
-	mgr.accountService = &stubAuthN{}
-	mgr.tokenVerifier = &stubAuthN{}
-	mgr.systemTokenIssuer = &stubAuthN{}
-
-	// Should skip gracefully when no password configured
-	err := mgr.ensureAdminUser(context.Background())
-	assert.NoError(t, err)
-}
-
-// fakeAuthStoreWithUser is a variant of fakeAuthStore that can return existing users
-type fakeAuthStoreWithUser struct {
-	users map[string]*storage.User
-}
-
-func (f *fakeAuthStoreWithUser) CreateUser(ctx context.Context, user *storage.User) error {
-	if f.users == nil {
-		f.users = make(map[string]*storage.User)
-	}
-	f.users[user.Username] = user
-	return nil
-}
-func (f *fakeAuthStoreWithUser) GetUserByUsername(ctx context.Context, username string) (*storage.User, error) {
-	if user, ok := f.users[username]; ok {
-		return user, nil
-	}
-	return nil, identity.ErrUserNotFound
-}
-func (f *fakeAuthStoreWithUser) GetUserByID(ctx context.Context, id string) (*storage.User, error) {
-	return nil, identity.ErrUserNotFound
-}
-func (f *fakeAuthStoreWithUser) ListUsers(ctx context.Context, limit int, offset int) ([]*storage.User, error) {
-	return nil, nil
-}
-func (f *fakeAuthStoreWithUser) UpdateUser(ctx context.Context, user *storage.User) error {
-	return nil
-}
-func (f *fakeAuthStoreWithUser) UpdateUserLoginStats(ctx context.Context, id string, lastLogin time.Time, attempts int, lockoutUntil time.Time) error {
-	return nil
-}
-func (f *fakeAuthStoreWithUser) RevokeToken(ctx context.Context, jti string, expiresAt time.Time) error {
-	return nil
-}
-func (f *fakeAuthStoreWithUser) RevokeTokenImmediate(ctx context.Context, jti string, expiresAt time.Time) error {
-	return nil
-}
-func (f *fakeAuthStoreWithUser) IsRevoked(ctx context.Context, jti string, gracePeriod time.Duration) (bool, error) {
-	return false, nil
-}
-func (f *fakeAuthStoreWithUser) RevokeTokenIfNotRevoked(ctx context.Context, jti string, expiresAt time.Time, gracePeriod time.Duration) error {
-	return nil
-}
-func (f *fakeAuthStoreWithUser) EnsureIndexes(ctx context.Context) error {
-	return nil
-}
-func (f *fakeAuthStoreWithUser) Close(ctx context.Context) error { return nil }
-
-func TestManager_ensureAdminUser_CreatesUserWithAdminRole(t *testing.T) {
-	origFactory := storageFactoryFactory
-	defer func() { storageFactoryFactory = origFactory }()
-
-	// Use fakeAuthStoreWithUser to track created users
-	fakeAuth := &fakeAuthStoreWithUser{
-		users: make(map[string]*storage.User),
-	}
-	storageFactoryFactory = func(ctx context.Context, cfg *config.Config) (storage.StorageFactory, error) {
-		return &fakeStorageFactory{
-			usrStore: fakeAuth,
-			revStore: fakeAuth,
-		}, nil
-	}
-
-	cfg := config.LoadConfig()
-	cfg.Identity.AuthN.PrivateKeyFile = filepath.Join(t.TempDir(), "auth.pem")
-	cfg.Identity.Admin.Username = "syntrix"
-	cfg.Identity.Admin.Password = "TestPassword123!"
-
-	mgr := NewManager(cfg, Options{RunAPI: true})
-
-	// Initialize auth service first
-	err := mgr.initAuthService(context.Background())
-	assert.NoError(t, err)
-
-	// Ensure admin user is created
-	err = mgr.ensureAdminUser(context.Background())
-	assert.NoError(t, err)
-
-	// Verify the user was created in the store
-	createdUser, err := fakeAuth.GetUserByUsername(context.Background(), "syntrix")
-	assert.NoError(t, err)
-	assert.NotNil(t, createdUser)
-	assert.Equal(t, "syntrix", createdUser.Username)
-
-	// Verify admin role is assigned
-	assert.Contains(t, createdUser.Roles, "admin", "syntrix user should have admin role")
-
-	// Verify user ID is set
-	assert.NotEmpty(t, createdUser.ID)
-
-	// Verify password is hashed (not stored as plain text)
-	assert.NotEqual(t, "TestPassword123!", createdUser.PasswordHash)
-	assert.NotEmpty(t, createdUser.PasswordHash)
+func TestManager_ensureAdminUser_Forwards(t *testing.T) {
+	setupManagerFactories(t)
+	wantErr := errors.New("admin bootstrap failed")
+	ctx := context.WithValue(context.Background(), struct{}{}, "bootstrap")
+	called := 0
+	mgr := NewManager(config.LoadConfig(), Options{})
+	mgr.identityModule = &fakeIdentityModule{ensureAdmin: func(got context.Context) error {
+		called++
+		require.Equal(t, ctx, got)
+		return wantErr
+	}}
+	require.ErrorIs(t, mgr.ensureAdminUser(ctx), wantErr)
+	require.Equal(t, 1, called)
 }
 
 // fakeDatabaseStore is a mock implementation of database.DatabaseStore for testing
@@ -1561,17 +1400,15 @@ func (f *fakeDatabaseStore) Close(ctx context.Context) error {
 }
 
 func TestManager_initDatabaseService_WithDatabaseStore(t *testing.T) {
+	setupManagerFactories(t)
 	origFactory := storageFactoryFactory
 	defer func() { storageFactoryFactory = origFactory }()
 
 	fakeDocStore := &fakeDocumentStore{}
-	fakeAuth := &fakeAuthStore{}
 	fakeDbStore := newFakeDatabaseStore()
-	storageFactoryFactory = func(ctx context.Context, cfg *config.Config) (storage.StorageFactory, error) {
+	storageFactoryFactory = func(ctx context.Context, cfg *config.Config, backends *storage.Backends) (storage.StorageFactory, error) {
 		return &fakeStorageFactory{
 			docStore: fakeDocStore,
-			usrStore: fakeAuth,
-			revStore: fakeAuth,
 			dbStore:  fakeDbStore,
 		}, nil
 	}
@@ -1593,17 +1430,15 @@ func TestManager_initDatabaseService_WithDatabaseStore(t *testing.T) {
 }
 
 func TestManager_initDatabaseService_WithGatewayServer(t *testing.T) {
+	setupManagerFactories(t)
 	origFactory := storageFactoryFactory
 	defer func() { storageFactoryFactory = origFactory }()
 
 	fakeDocStore := &fakeDocumentStore{}
-	fakeAuth := &fakeAuthStore{}
 	fakeDbStore := newFakeDatabaseStore()
-	storageFactoryFactory = func(ctx context.Context, cfg *config.Config) (storage.StorageFactory, error) {
+	storageFactoryFactory = func(ctx context.Context, cfg *config.Config, backends *storage.Backends) (storage.StorageFactory, error) {
 		return &fakeStorageFactory{
 			docStore: fakeDocStore,
-			usrStore: fakeAuth,
-			revStore: fakeAuth,
 			dbStore:  fakeDbStore,
 		}, nil
 	}
@@ -1636,6 +1471,7 @@ func TestManager_initDatabaseService_WithGatewayServer(t *testing.T) {
 }
 
 func TestManager_ensureDefaultDatabase_NoAuthService(t *testing.T) {
+	setupManagerFactories(t)
 	cfg := config.LoadConfig()
 	cfg.Identity.Admin.Username = "syntrix"
 
@@ -1648,6 +1484,7 @@ func TestManager_ensureDefaultDatabase_NoAuthService(t *testing.T) {
 }
 
 func TestManager_ensureDefaultDatabase_NoAdminUsername(t *testing.T) {
+	setupManagerFactories(t)
 	cfg := config.LoadConfig()
 	cfg.Identity.Admin.Username = ""
 
@@ -1662,10 +1499,11 @@ func TestManager_ensureDefaultDatabase_NoAdminUsername(t *testing.T) {
 }
 
 func TestManager_ensureDefaultDatabase_StorageFactoryError(t *testing.T) {
+	setupManagerFactories(t)
 	origFactory := storageFactoryFactory
 	defer func() { storageFactoryFactory = origFactory }()
 
-	storageFactoryFactory = func(ctx context.Context, cfg *config.Config) (storage.StorageFactory, error) {
+	storageFactoryFactory = func(ctx context.Context, cfg *config.Config, backends *storage.Backends) (storage.StorageFactory, error) {
 		return nil, errors.New("storage connection failed")
 	}
 
@@ -1682,15 +1520,14 @@ func TestManager_ensureDefaultDatabase_StorageFactoryError(t *testing.T) {
 }
 
 func TestManager_ensureDefaultDatabase_NoDatabaseStore(t *testing.T) {
+	setupManagerFactories(t)
 	origFactory := storageFactoryFactory
 	defer func() { storageFactoryFactory = origFactory }()
 
 	// Return a storage factory with nil database store
-	storageFactoryFactory = func(ctx context.Context, cfg *config.Config) (storage.StorageFactory, error) {
+	storageFactoryFactory = func(ctx context.Context, cfg *config.Config, backends *storage.Backends) (storage.StorageFactory, error) {
 		return &fakeStorageFactory{
 			docStore: &fakeDocumentStore{},
-			usrStore: &fakeAuthStore{},
-			revStore: &fakeAuthStore{},
 			dbStore:  nil, // No database store
 		}, nil
 	}
@@ -1708,20 +1545,14 @@ func TestManager_ensureDefaultDatabase_NoDatabaseStore(t *testing.T) {
 }
 
 func TestManager_ensureDefaultDatabase_Success(t *testing.T) {
+	setupManagerFactories(t)
 	origFactory := storageFactoryFactory
 	defer func() { storageFactoryFactory = origFactory }()
 
 	fakeDbStore := newFakeDatabaseStore()
-	fakeUserStore := &fakeAuthStoreWithUser{
-		users: map[string]*storage.User{
-			"syntrix": {ID: "admin-user-id", Username: "syntrix"},
-		},
-	}
-	storageFactoryFactory = func(ctx context.Context, cfg *config.Config) (storage.StorageFactory, error) {
+	storageFactoryFactory = func(ctx context.Context, cfg *config.Config, backends *storage.Backends) (storage.StorageFactory, error) {
 		return &fakeStorageFactory{
 			docStore: &fakeDocumentStore{},
-			usrStore: fakeUserStore,
-			revStore: fakeUserStore,
 			dbStore:  fakeDbStore,
 		}, nil
 	}
@@ -1729,6 +1560,10 @@ func TestManager_ensureDefaultDatabase_Success(t *testing.T) {
 	cfg := config.LoadConfig()
 	cfg.Identity.Admin.Username = "syntrix"
 	mgr := NewManager(cfg, Options{RunAPI: true})
+	mgr.identityModule = &fakeIdentityModule{resolveOwner: func(ctx context.Context, username string) (string, string, error) {
+		require.Equal(t, "syntrix", username)
+		return "admin-user-id", username, nil
+	}}
 	mgr.accountService = &stubAuthN{}
 	mgr.tokenVerifier = &stubAuthN{}
 	mgr.systemTokenIssuer = &stubAuthN{}
@@ -1744,6 +1579,7 @@ func TestManager_ensureDefaultDatabase_Success(t *testing.T) {
 }
 
 func TestManager_initDeletionWorker_Disabled(t *testing.T) {
+	setupManagerFactories(t)
 	cfg := config.LoadConfig()
 	cfg.Database.Deletion.Enabled = false
 
@@ -1756,10 +1592,11 @@ func TestManager_initDeletionWorker_Disabled(t *testing.T) {
 }
 
 func TestManager_initDeletionWorker_StorageFactoryError(t *testing.T) {
+	setupManagerFactories(t)
 	origFactory := storageFactoryFactory
 	defer func() { storageFactoryFactory = origFactory }()
 
-	storageFactoryFactory = func(ctx context.Context, cfg *config.Config) (storage.StorageFactory, error) {
+	storageFactoryFactory = func(ctx context.Context, cfg *config.Config, backends *storage.Backends) (storage.StorageFactory, error) {
 		return nil, errors.New("storage connection failed")
 	}
 
@@ -1773,15 +1610,14 @@ func TestManager_initDeletionWorker_StorageFactoryError(t *testing.T) {
 }
 
 func TestManager_initDeletionWorker_NoDatabaseStore(t *testing.T) {
+	setupManagerFactories(t)
 	origFactory := storageFactoryFactory
 	defer func() { storageFactoryFactory = origFactory }()
 
 	// Return a storage factory with nil database store
-	storageFactoryFactory = func(ctx context.Context, cfg *config.Config) (storage.StorageFactory, error) {
+	storageFactoryFactory = func(ctx context.Context, cfg *config.Config, backends *storage.Backends) (storage.StorageFactory, error) {
 		return &fakeStorageFactory{
 			docStore: &fakeDocumentStore{},
-			usrStore: &fakeAuthStore{},
-			revStore: &fakeAuthStore{},
 			dbStore:  nil, // No database store
 		}, nil
 	}
@@ -1797,15 +1633,14 @@ func TestManager_initDeletionWorker_NoDatabaseStore(t *testing.T) {
 }
 
 func TestManager_initDeletionWorker_Success(t *testing.T) {
+	setupManagerFactories(t)
 	origFactory := storageFactoryFactory
 	defer func() { storageFactoryFactory = origFactory }()
 
 	fakeDbStore := newFakeDatabaseStore()
-	storageFactoryFactory = func(ctx context.Context, cfg *config.Config) (storage.StorageFactory, error) {
+	storageFactoryFactory = func(ctx context.Context, cfg *config.Config, backends *storage.Backends) (storage.StorageFactory, error) {
 		return &fakeStorageFactory{
 			docStore: &fakeDocumentStore{},
-			usrStore: &fakeAuthStore{},
-			revStore: &fakeAuthStore{},
 			dbStore:  fakeDbStore,
 		}, nil
 	}
@@ -1826,15 +1661,14 @@ func TestManager_initDeletionWorker_Success(t *testing.T) {
 }
 
 func TestManager_initDeletionWorker_WithoutIndexer(t *testing.T) {
+	setupManagerFactories(t)
 	origFactory := storageFactoryFactory
 	defer func() { storageFactoryFactory = origFactory }()
 
 	fakeDbStore := newFakeDatabaseStore()
-	storageFactoryFactory = func(ctx context.Context, cfg *config.Config) (storage.StorageFactory, error) {
+	storageFactoryFactory = func(ctx context.Context, cfg *config.Config, backends *storage.Backends) (storage.StorageFactory, error) {
 		return &fakeStorageFactory{
 			docStore: &fakeDocumentStore{},
-			usrStore: &fakeAuthStore{},
-			revStore: &fakeAuthStore{},
 			dbStore:  fakeDbStore,
 		}, nil
 	}
@@ -1852,15 +1686,14 @@ func TestManager_initDeletionWorker_WithoutIndexer(t *testing.T) {
 }
 
 func TestManager_initDatabaseService_NoDatabaseStore(t *testing.T) {
+	setupManagerFactories(t)
 	origFactory := storageFactoryFactory
 	defer func() { storageFactoryFactory = origFactory }()
 
 	// Return a storage factory with nil database store
-	storageFactoryFactory = func(ctx context.Context, cfg *config.Config) (storage.StorageFactory, error) {
+	storageFactoryFactory = func(ctx context.Context, cfg *config.Config, backends *storage.Backends) (storage.StorageFactory, error) {
 		return &fakeStorageFactory{
 			docStore: &fakeDocumentStore{},
-			usrStore: &fakeAuthStore{},
-			revStore: &fakeAuthStore{},
 			dbStore:  nil, // No database store
 		}, nil
 	}

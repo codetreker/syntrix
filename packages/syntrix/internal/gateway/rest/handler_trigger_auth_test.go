@@ -9,10 +9,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codetreker/syntrix/internal/core/identity/authn"
-	identity_config "github.com/codetreker/syntrix/internal/core/identity/config"
-	"github.com/codetreker/syntrix/internal/core/storage"
 	"github.com/codetreker/syntrix/internal/identity"
+	"github.com/codetreker/syntrix/internal/identity/authn"
+	identity_config "github.com/codetreker/syntrix/internal/identity/config"
+	"github.com/codetreker/syntrix/internal/identity/repository"
 	"github.com/codetreker/syntrix/pkg/model"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
@@ -24,22 +24,22 @@ type MockAuthStorage struct {
 	mock.Mock
 }
 
-func (m *MockAuthStorage) CreateUser(ctx context.Context, user *storage.User) error {
+func (m *MockAuthStorage) CreateUser(ctx context.Context, user *repository.UserRecord) error {
 	return m.Called(ctx, user).Error(0)
 }
-func (m *MockAuthStorage) GetUserByUsername(ctx context.Context, username string) (*storage.User, error) {
+func (m *MockAuthStorage) GetUserByUsername(ctx context.Context, username string) (*repository.UserRecord, error) {
 	args := m.Called(ctx, username)
 	if args.Get(0) == nil {
 		return nil, args.Error(1)
 	}
-	return args.Get(0).(*storage.User), args.Error(1)
+	return args.Get(0).(*repository.UserRecord), args.Error(1)
 }
-func (m *MockAuthStorage) GetUserByID(ctx context.Context, id string) (*storage.User, error) {
+func (m *MockAuthStorage) GetUserByID(ctx context.Context, id string) (*repository.UserRecord, error) {
 	args := m.Called(ctx, id)
 	if args.Get(0) == nil {
 		return nil, args.Error(1)
 	}
-	return args.Get(0).(*storage.User), args.Error(1)
+	return args.Get(0).(*repository.UserRecord), args.Error(1)
 }
 func (m *MockAuthStorage) UpdateUserLoginStats(ctx context.Context, id string, lastLogin time.Time, attempts int, lockoutUntil time.Time) error {
 	return m.Called(ctx, id, lastLogin, attempts, lockoutUntil).Error(0)
@@ -54,15 +54,15 @@ func (m *MockAuthStorage) IsRevoked(ctx context.Context, jti string, gracePeriod
 	args := m.Called(ctx, jti, gracePeriod)
 	return args.Bool(0), args.Error(1)
 }
-func (m *MockAuthStorage) ListUsers(ctx context.Context, limit int, offset int) ([]*storage.User, error) {
+func (m *MockAuthStorage) ListUsers(ctx context.Context, limit int, offset int) ([]*repository.UserRecord, error) {
 	args := m.Called(ctx, limit, offset)
 	if args.Get(0) == nil {
 		return nil, args.Error(1)
 	}
-	return args.Get(0).([]*storage.User), args.Error(1)
+	return args.Get(0).([]*repository.UserRecord), args.Error(1)
 }
 
-func (m *MockAuthStorage) UpdateUser(ctx context.Context, user *storage.User) error {
+func (m *MockAuthStorage) UpdateUser(ctx context.Context, user *repository.UserRecord) error {
 	return m.Called(ctx, user).Error(0)
 }
 func (m *MockAuthStorage) EnsureIndexes(ctx context.Context) error {

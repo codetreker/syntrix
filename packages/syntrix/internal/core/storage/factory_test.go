@@ -5,45 +5,20 @@ import (
 	"database/sql"
 	"database/sql/driver"
 	"errors"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/codetreker/syntrix/internal/core/storage/config"
+	"github.com/codetreker/syntrix/internal/core/storage/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
-	"go.mongodb.org/mongo-driver/mongo/options"
+	"go.mongodb.org/mongo-driver/mongo/integration/mtest"
 )
-
-type mockMongoProvider struct {
-	client *mongo.Client
-	dbName string
-}
-
-func (m *mockMongoProvider) Client() *mongo.Client {
-	return m.client
-}
-
-func (m *mockMongoProvider) DatabaseName() string {
-	return m.dbName
-}
-
-func (m *mockMongoProvider) Close(ctx context.Context) error {
-	return nil
-}
-
-// Mock provider creation
-var originalNewMongoProvider = newMongoProvider
-var originalNewPostgresDB = newPostgresDB
-
-func setupMockProvider() {
-	newMongoProvider = func(ctx context.Context, uri, dbName string) (Provider, error) {
-		// Return a dummy client (won't connect but satisfies interface)
-		client, _ := mongo.Connect(ctx, options.Client().ApplyURI("mongodb://mock"))
-		return &mockMongoProvider{client: client, dbName: dbName}, nil
-	}
-}
 
 func expectSchemaInitialization(mock sqlmock.Sqlmock, table string) {
 	mock.ExpectBegin()
@@ -52,761 +27,312 @@ func expectSchemaInitialization(mock sqlmock.Sqlmock, table string) {
 	mock.ExpectCommit()
 }
 
-type cancelOnLock struct{ cancel context.CancelFunc }
-
-func (a cancelOnLock) Match(driver.Value) bool {
-	a.cancel()
-	return true
+func factoryTestConfig(strategy string) config.Config {
+	return config.Config{
+		Topology: config.TopologyConfig{
+			Document: config.DocumentTopology{
+				BaseTopology:   config.BaseTopology{Strategy: strategy, Primary: "primary", Replica: "replica"},
+				DataCollection: "documents", SysCollection: "sys", SoftDeleteRetention: time.Minute,
+			},
+		},
+		Databases: map[string]config.DatabaseConfig{
+			"default":  {Backend: "dedicated"},
+			"accounts": {Backend: "dedicated"},
+		},
+	}
 }
 
-func TestNewFactoryInitializationCancellation(t *testing.T) {
-	for _, phase := range []string{"ping", "users", "databases"} {
-		t.Run(phase, func(t *testing.T) {
-			setupMockProvider()
-			defer teardownMockProvider()
-			ctx, cancel := context.WithCancel(context.Background())
+func TestNewFactoryPreservesPlacementAndRawNamespaces(t *testing.T) {
+	for _, strategy := range []string{"single", "read_write_split"} {
+		mt := mtest.New(t, mtest.NewOptions().ClientType(mtest.Mock))
+		mt.Run(strategy, func(mt *mtest.T) {
+			t := mt.T
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			db, mock, err := sqlmock.New(sqlmock.MonitorPingsOption(true))
+			db, mock, err := sqlmock.New()
 			require.NoError(t, err)
-			newPostgresDB = func(config.PostgresConfig) (*sql.DB, error) {
-				if phase == "ping" {
-					cancel()
-				}
-				return db, nil
-			}
-			if phase != "ping" {
-				mock.ExpectPing()
-				if phase == "databases" {
-					expectSchemaInitialization(mock, "auth_users")
-				}
-				mock.ExpectBegin()
-				mock.ExpectExec("SELECT pg_advisory_xact_lock").WithArgs(cancelOnLock{cancel}).
-					WillDelayFor(time.Second).WillReturnResult(sqlmock.NewResult(0, 1))
-				mock.ExpectRollback()
-			}
+			expectSchemaInitialization(mock, "databases")
 			mock.ExpectClose()
-			cfg := config.Config{
-				Backends: map[string]config.BackendConfig{
-					"primary":       {Type: "mongo"},
-					"postgres_user": {Type: "postgres", Postgres: config.PostgresConfig{DSN: "postgres://test"}},
-				},
-				Topology: config.TopologyConfig{
-					Document: config.DocumentTopology{
-						BaseTopology:   config.BaseTopology{Primary: "primary", Strategy: "single"},
-						DataCollection: "docs", SysCollection: "sys",
-					},
-					User:       config.CollectionTopology{BaseTopology: config.BaseTopology{Primary: "postgres_user", Strategy: "single"}},
-					Revocation: config.CollectionTopology{BaseTopology: config.BaseTopology{Primary: "primary", Strategy: "single"}},
-				},
+			providers := map[string]Provider{
+				"primary":   &backendTestProvider{client: mt.Client, dbName: "primary_data"},
+				"replica":   &backendTestProvider{client: mt.Client, dbName: "replica_data"},
+				"dedicated": &backendTestProvider{client: mt.Client, dbName: "dedicated_data"},
 			}
-			factory, err := NewFactory(ctx, cfg)
-			require.ErrorIs(t, err, context.Canceled)
-			require.Nil(t, factory, "initialization failure must not publish a factory")
-			// database/sql may finish the context-triggered rollback on its watcher.
-			require.EventuallyWithT(t, func(c *assert.CollectT) {
-				require.NoError(c, mock.ExpectationsWereMet())
-			}, time.Second, time.Millisecond)
+			backends := &Backends{providers: providers, postgresDB: db}
+			factory, err := NewFactory(ctx, factoryTestConfig(strategy), backends)
+			require.NoError(t, err)
+			require.NotNil(t, factory.Document())
+			require.NotNil(t, factory.Database())
+
+			primaryRead := "primary_data"
+			if strategy == "read_write_split" {
+				primaryRead = "replica_data"
+			}
+			cases := []struct {
+				namespace     string
+				path          string
+				authoritative bool
+				physical      string
+				collection    string
+			}{
+				{"default", "orders/1", false, primaryRead, "documents"},
+				{"unlisted", "orders/1", false, primaryRead, "documents"},
+				{"id:0123456789abcdef", "orders/1", true, "primary_data", "documents"},
+				{"accounts", "orders/1", false, "dedicated_data", "documents"},
+				{"accounts", "sys/rules", true, "dedicated_data", "sys"},
+			}
+			for _, test := range cases {
+				key := types.CalculateDatabase(test.namespace, test.path)
+				mt.AddMockResponses(mtest.CreateCursorResponse(0, test.physical+"."+test.collection, mtest.FirstBatch,
+					bson.D{{Key: "_id", Value: key}, {Key: "database", Value: test.namespace}, {Key: "fullpath", Value: test.path}, {Key: "data", Value: bson.D{{Key: "value", Value: 1}}}},
+				))
+				options := types.ReadOptions{}
+				if test.authoritative {
+					options.Consistency = types.ReadAuthoritative
+				}
+				document, err := factory.Document().Get(ctx, test.namespace, test.path, options)
+				require.NoError(t, err)
+				assert.Equal(t, test.namespace, document.Database)
+				command := mt.GetStartedEvent()
+				require.NotNil(t, command)
+				assert.Equal(t, test.physical, command.DatabaseName)
+				assert.Equal(t, test.collection, command.Command.Lookup("find").StringValue())
+				filter := command.Command.Lookup("filter").Document()
+				assert.Equal(t, test.namespace, filter.Lookup("database").StringValue())
+				assert.Equal(t, key, filter.Lookup("_id").StringValue())
+			}
+
+			for _, provider := range providers {
+				assert.Zero(t, provider.(*backendTestProvider).closes)
+			}
+			require.NoError(t, backends.Close())
+			for _, provider := range providers {
+				assert.Equal(t, 1, provider.(*backendTestProvider).closes)
+			}
+			require.NoError(t, mock.ExpectationsWereMet())
 		})
 	}
 }
 
-func setupMockPostgres() sqlmock.Sqlmock {
-	db, mock, _ := sqlmock.New()
-	newPostgresDB = func(cfg config.PostgresConfig) (*sql.DB, error) {
-		return db, nil
-	}
-	// Mock successful ping
-	mock.ExpectPing()
-	expectSchemaInitialization(mock, "auth_users")
-	expectSchemaInitialization(mock, "databases")
-	return mock
-}
-
-func teardownMockProvider() {
-	newMongoProvider = originalNewMongoProvider
-	newPostgresDB = originalNewPostgresDB
-}
-
-const (
-	testMongoURI = "mongodb://localhost:27017"
-	testDBName   = "syntrix_test_factory"
-)
-
-func TestNewFactory(t *testing.T) {
-	setupMockProvider()
-	setupMockPostgres()
-	defer teardownMockProvider()
-
-	cfg := config.Config{
-		Backends: map[string]config.BackendConfig{
-			"primary": {
-				Type: "mongo",
-				Mongo: config.MongoConfig{
-					URI:          testMongoURI,
-					DatabaseName: testDBName,
-				},
-			},
-			"postgres_user": {
-				Type: "postgres",
-				Postgres: config.PostgresConfig{
-					DSN: "postgres://test",
-				},
-			},
-		},
-		Topology: config.TopologyConfig{
-			Document: config.DocumentTopology{
-				BaseTopology: config.BaseTopology{
-					Strategy: "single",
-					Primary:  "primary",
-				},
-				DataCollection: "docs",
-				SysCollection:  "sys",
-			},
-			User: config.CollectionTopology{
-				BaseTopology: config.BaseTopology{
-					Strategy: "single",
-					Primary:  "postgres_user",
-				},
-				Collection: "users",
-			},
-			Revocation: config.CollectionTopology{
-				BaseTopology: config.BaseTopology{
-					Strategy: "single",
-					Primary:  "primary",
-				},
-				Collection: "revocations",
-			},
-		},
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	f, err := NewFactory(ctx, cfg)
+func TestDocumentRouterUsesPrimaryForWritesAndWatch(t *testing.T) {
+	client, err := mongo.NewClient()
 	require.NoError(t, err)
-	defer f.Close()
-
-	assert.NotNil(t, f.Document())
-	assert.NotNil(t, f.User())
-	assert.NotNil(t, f.Revocation())
-}
-
-func TestNewFactory_DatabaseConfig(t *testing.T) {
-	setupMockProvider()
-	setupMockPostgres()
-	defer teardownMockProvider()
-
-	cfg := config.Config{
-		Backends: map[string]config.BackendConfig{
-			"primary":       {Type: "mongo", Mongo: config.MongoConfig{URI: "mongodb://p", DatabaseName: "db1"}},
-			"database1":     {Type: "mongo", Mongo: config.MongoConfig{URI: "mongodb://t1", DatabaseName: "db2"}},
-			"postgres_user": {Type: "postgres", Postgres: config.PostgresConfig{DSN: "postgres://test"}},
-		},
-		Topology: config.TopologyConfig{
-			Document:   config.DocumentTopology{BaseTopology: config.BaseTopology{Strategy: "single", Primary: "primary"}},
-			User:       config.CollectionTopology{BaseTopology: config.BaseTopology{Strategy: "single", Primary: "postgres_user"}},
-			Revocation: config.CollectionTopology{BaseTopology: config.BaseTopology{Strategy: "single", Primary: "primary"}},
-		},
-		Databases: map[string]config.DatabaseConfig{
-			"t1": {Backend: "database1"},
-		},
-	}
-
-	f, err := NewFactory(context.Background(), cfg)
+	backends := &Backends{providers: map[string]Provider{
+		"primary": &backendTestProvider{client: client, dbName: "primary_data"},
+		"replica": &backendTestProvider{client: client, dbName: "replica_data"},
+	}}
+	router, err := createDocumentRouter(factoryTestConfig("read_write_split").Topology.Document, backends)
 	require.NoError(t, err)
-	defer f.Close()
-}
-
-func TestNewFactory_Errors(t *testing.T) {
-	ctx := context.Background()
-
-	t.Run("Unsupported Backend Type", func(t *testing.T) {
-		cfg := config.Config{
-			Backends: map[string]config.BackendConfig{
-				"bad": {Type: "redis"},
-			},
-		}
-		_, err := NewFactory(ctx, cfg)
-		assert.ErrorContains(t, err, "unsupported backend type")
-	})
-
-	t.Run("Document Backend Not Found", func(t *testing.T) {
-		cfg := config.Config{
-			Backends: map[string]config.BackendConfig{},
-			Topology: config.TopologyConfig{
-				Document: config.DocumentTopology{
-					BaseTopology: config.BaseTopology{Primary: "missing"},
-				},
-			},
-		}
-		_, err := NewFactory(ctx, cfg)
-		assert.ErrorContains(t, err, "backend not found")
-	})
-}
-
-func TestNewFactory_ReadWriteSplit(t *testing.T) {
-	// Mock provider creation
-	origNewMongoProvider := newMongoProvider
-	origNewPostgresDB := newPostgresDB
-	defer func() {
-		newMongoProvider = origNewMongoProvider
-		newPostgresDB = origNewPostgresDB
-	}()
-
-	newMongoProvider = func(ctx context.Context, uri, dbName string) (Provider, error) {
-		client, _ := mongo.Connect(ctx, options.Client().ApplyURI(uri))
-		return &mockMongoProvider{client: client, dbName: dbName}, nil
-	}
-
-	db, mock, _ := sqlmock.New()
-	newPostgresDB = func(cfg config.PostgresConfig) (*sql.DB, error) {
-		return db, nil
-	}
-	mock.ExpectPing()
-	expectSchemaInitialization(mock, "auth_users")
-	expectSchemaInitialization(mock, "databases")
-
-	cfg := config.Config{
-		Backends: map[string]config.BackendConfig{
-			"primary": {
-				Type:  "mongo",
-				Mongo: config.MongoConfig{URI: "mongodb://primary", DatabaseName: "db"},
-			},
-			"replica": {
-				Type:  "mongo",
-				Mongo: config.MongoConfig{URI: "mongodb://replica", DatabaseName: "db"},
-			},
-			"postgres_user": {
-				Type:     "postgres",
-				Postgres: config.PostgresConfig{DSN: "postgres://test"},
-			},
-		},
-		Topology: config.TopologyConfig{
-			Document: config.DocumentTopology{
-				BaseTopology: config.BaseTopology{
-					Strategy: "read_write_split",
-					Primary:  "primary",
-					Replica:  "replica",
-				},
-				DataCollection: "docs",
-				SysCollection:  "sys",
-			},
-			User: config.CollectionTopology{
-				BaseTopology: config.BaseTopology{
-					Strategy: "single",
-					Primary:  "postgres_user",
-				},
-				Collection: "users",
-			},
-			Revocation: config.CollectionTopology{
-				BaseTopology: config.BaseTopology{
-					Strategy: "read_write_split",
-					Primary:  "primary",
-					Replica:  "replica",
-				},
-				Collection: "revocations",
-			},
-		},
-	}
-
-	ctx := context.Background()
-	f, err := NewFactory(ctx, cfg)
+	read, err := router.Select("default", types.OpRead)
 	require.NoError(t, err)
-	defer f.Close()
-
-	assert.NotNil(t, f.Document())
-	assert.NotNil(t, f.User())
-	assert.NotNil(t, f.Revocation())
-}
-
-func TestNewFactory_ProviderInitError(t *testing.T) {
-	// Save original provider creator
-	origNewMongoProvider := newMongoProvider
-	defer func() { newMongoProvider = origNewMongoProvider }()
-
-	// Mock provider creation to fail
-	newMongoProvider = func(ctx context.Context, uri, dbName string) (Provider, error) {
-		return nil, errors.New("connection failed")
-	}
-
-	cfg := config.Config{
-		Backends: map[string]config.BackendConfig{
-			"primary": {Type: "mongo", Mongo: config.MongoConfig{URI: "mongodb://fail", DatabaseName: "db"}},
-		},
-	}
-
-	_, err := NewFactory(context.Background(), cfg)
-	assert.ErrorContains(t, err, "failed to initialize backend primary")
-}
-
-func TestNewFactory_RouterErrors(t *testing.T) {
-	// Mock provider creation to succeed
-	origNewMongoProvider := newMongoProvider
-	origNewPostgresDB := newPostgresDB
-	defer func() {
-		newMongoProvider = origNewMongoProvider
-		newPostgresDB = origNewPostgresDB
-	}()
-
-	newMongoProvider = func(ctx context.Context, uri, dbName string) (Provider, error) {
-		client, _ := mongo.Connect(ctx, options.Client().ApplyURI("mongodb://mock"))
-		return &mockMongoProvider{client: client, dbName: dbName}, nil
-	}
-
-	ctx := context.Background()
-
-	t.Run("Document Unsupported Strategy", func(t *testing.T) {
-		cfg := config.Config{
-			Backends: map[string]config.BackendConfig{
-				"primary": {Type: "mongo"},
-			},
-			Topology: config.TopologyConfig{
-				Document: config.DocumentTopology{
-					BaseTopology: config.BaseTopology{Primary: "primary", Strategy: "unknown"},
-				},
-			},
-		}
-		_, err := NewFactory(ctx, cfg)
-		assert.ErrorContains(t, err, "unsupported strategy: unknown")
-	})
-
-	t.Run("Document Replica Missing", func(t *testing.T) {
-		cfg := config.Config{
-			Backends: map[string]config.BackendConfig{
-				"primary": {Type: "mongo"},
-			},
-			Topology: config.TopologyConfig{
-				Document: config.DocumentTopology{
-					BaseTopology: config.BaseTopology{Primary: "primary", Strategy: "read_write_split", Replica: "missing"},
-				},
-			},
-		}
-		_, err := NewFactory(ctx, cfg)
-		assert.ErrorContains(t, err, "backend not found: missing")
-	})
-
-	t.Run("User Primary Missing", func(t *testing.T) {
-		cfg := config.Config{
-			Backends: map[string]config.BackendConfig{
-				"primary": {Type: "mongo"},
-			},
-			Topology: config.TopologyConfig{
-				Document: config.DocumentTopology{BaseTopology: config.BaseTopology{Primary: "primary", Strategy: "single"}},
-				User: config.CollectionTopology{
-					BaseTopology: config.BaseTopology{Primary: "missing"},
-				},
-			},
-		}
-		_, err := NewFactory(ctx, cfg)
-		assert.ErrorContains(t, err, "backend not found: missing")
-	})
-
-	t.Run("User Unsupported Backend Type", func(t *testing.T) {
-		cfg := config.Config{
-			Backends: map[string]config.BackendConfig{
-				"primary": {Type: "mongo"},
-			},
-			Topology: config.TopologyConfig{
-				Document: config.DocumentTopology{BaseTopology: config.BaseTopology{Primary: "primary", Strategy: "single"}},
-				User: config.CollectionTopology{
-					BaseTopology: config.BaseTopology{Primary: "primary", Strategy: "single"},
-				},
-			},
-		}
-		_, err := NewFactory(ctx, cfg)
-		assert.ErrorContains(t, err, "unsupported backend type for user store: mongo")
-	})
-
-	t.Run("Revocation Primary Missing", func(t *testing.T) {
-		db, mock, _ := sqlmock.New()
-		newPostgresDB = func(cfg config.PostgresConfig) (*sql.DB, error) {
-			return db, nil
-		}
-		mock.ExpectPing()
-		expectSchemaInitialization(mock, "auth_users")
-
-		cfg := config.Config{
-			Backends: map[string]config.BackendConfig{
-				"primary":       {Type: "mongo"},
-				"postgres_user": {Type: "postgres", Postgres: config.PostgresConfig{DSN: "postgres://test"}},
-			},
-			Topology: config.TopologyConfig{
-				Document: config.DocumentTopology{BaseTopology: config.BaseTopology{Primary: "primary", Strategy: "single"}},
-				User:     config.CollectionTopology{BaseTopology: config.BaseTopology{Primary: "postgres_user", Strategy: "single"}},
-				Revocation: config.CollectionTopology{
-					BaseTopology: config.BaseTopology{Primary: "missing"},
-				},
-			},
-		}
-		_, err := NewFactory(ctx, cfg)
-		assert.ErrorContains(t, err, "backend not found: missing")
-	})
-
-	t.Run("Revocation Unsupported Strategy", func(t *testing.T) {
-		db, mock, _ := sqlmock.New()
-		newPostgresDB = func(cfg config.PostgresConfig) (*sql.DB, error) {
-			return db, nil
-		}
-		mock.ExpectPing()
-		expectSchemaInitialization(mock, "auth_users")
-
-		cfg := config.Config{
-			Backends: map[string]config.BackendConfig{
-				"primary":       {Type: "mongo"},
-				"postgres_user": {Type: "postgres", Postgres: config.PostgresConfig{DSN: "postgres://test"}},
-			},
-			Topology: config.TopologyConfig{
-				Document:   config.DocumentTopology{BaseTopology: config.BaseTopology{Primary: "primary", Strategy: "single"}},
-				User:       config.CollectionTopology{BaseTopology: config.BaseTopology{Primary: "postgres_user", Strategy: "single"}},
-				Revocation: config.CollectionTopology{BaseTopology: config.BaseTopology{Primary: "primary", Strategy: "unknown"}},
-			},
-		}
-		_, err := NewFactory(ctx, cfg)
-		assert.ErrorContains(t, err, "unsupported strategy: unknown")
-	})
-
-	t.Run("Revocation Replica Missing", func(t *testing.T) {
-		db, mock, _ := sqlmock.New()
-		newPostgresDB = func(cfg config.PostgresConfig) (*sql.DB, error) {
-			return db, nil
-		}
-		mock.ExpectPing()
-		expectSchemaInitialization(mock, "auth_users")
-
-		cfg := config.Config{
-			Backends: map[string]config.BackendConfig{
-				"primary":       {Type: "mongo"},
-				"postgres_user": {Type: "postgres", Postgres: config.PostgresConfig{DSN: "postgres://test"}},
-			},
-			Topology: config.TopologyConfig{
-				Document:   config.DocumentTopology{BaseTopology: config.BaseTopology{Primary: "primary", Strategy: "single"}},
-				User:       config.CollectionTopology{BaseTopology: config.BaseTopology{Primary: "postgres_user", Strategy: "single"}},
-				Revocation: config.CollectionTopology{BaseTopology: config.BaseTopology{Primary: "primary", Strategy: "read_write_split", Replica: "missing"}},
-			},
-		}
-		_, err := NewFactory(ctx, cfg)
-		assert.ErrorContains(t, err, "backend not found: missing")
-	})
-}
-
-func TestNewFactory_DatabaseErrors(t *testing.T) {
-	origNewMongoProvider := newMongoProvider
-	defer func() { newMongoProvider = origNewMongoProvider }()
-
-	newMongoProvider = func(ctx context.Context, uri, dbName string) (Provider, error) {
-		client, _ := mongo.Connect(ctx, options.Client().ApplyURI("mongodb://mock"))
-		return &mockMongoProvider{client: client, dbName: dbName}, nil
-	}
-
-	ctx := context.Background()
-
-	t.Run("Database Document Backend Missing", func(t *testing.T) {
-		cfg := config.Config{
-			Backends: map[string]config.BackendConfig{
-				"primary": {Type: "mongo"},
-			},
-			Topology: config.TopologyConfig{
-				Document: config.DocumentTopology{BaseTopology: config.BaseTopology{Primary: "primary", Strategy: "single"}},
-			},
-			Databases: map[string]config.DatabaseConfig{
-				"t1": {Backend: "missing"},
-			},
-		}
-		_, err := NewFactory(ctx, cfg)
-		assert.ErrorContains(t, err, "backend not found: missing")
-	})
-}
-
-func TestNewFactory_DefaultDatabaseSkipped(t *testing.T) {
-	setupMockProvider()
-	setupMockPostgres()
-	defer teardownMockProvider()
-
-	cfg := config.Config{
-		Backends: map[string]config.BackendConfig{
-			"primary":       {Type: "mongo", Mongo: config.MongoConfig{URI: "mongodb://p", DatabaseName: "db1"}},
-			"postgres_user": {Type: "postgres", Postgres: config.PostgresConfig{DSN: "postgres://test"}},
-		},
-		Topology: config.TopologyConfig{
-			Document:   config.DocumentTopology{BaseTopology: config.BaseTopology{Strategy: "single", Primary: "primary"}},
-			User:       config.CollectionTopology{BaseTopology: config.BaseTopology{Strategy: "single", Primary: "postgres_user"}},
-			Revocation: config.CollectionTopology{BaseTopology: config.BaseTopology{Strategy: "single", Primary: "primary"}},
-		},
-		Databases: map[string]config.DatabaseConfig{
-			"default": {Backend: "primary"}, // Should be skipped
-		},
-	}
-
-	f, err := NewFactory(context.Background(), cfg)
+	write, err := router.Select("default", types.OpWrite)
 	require.NoError(t, err)
-	defer f.Close()
+	watch, err := router.Select("default", types.OpWatch)
+	require.NoError(t, err)
+	assert.NotSame(t, read, write)
+	assert.Same(t, write, watch)
 }
 
-type mockGenericProvider struct{}
+func TestNewFactoryRoutingFailureDoesNotCloseBorrowedConnections(t *testing.T) {
+	tests := []struct {
+		name     string
+		change   func(*config.Config)
+		expected string
+	}{
+		{"primary missing", func(cfg *config.Config) { cfg.Topology.Document.Primary = "missing" }, "backend not found: missing"},
+		{"primary wrong provider", func(cfg *config.Config) { cfg.Topology.Document.Primary = "generic" }, "not a mongo provider"},
+		{"unsupported strategy", func(cfg *config.Config) { cfg.Topology.Document.Strategy = "unknown" }, "unsupported strategy: unknown"},
+		{"replica missing", func(cfg *config.Config) { cfg.Topology.Document.Replica = "missing" }, "backend not found: missing"},
+		{"dedicated missing", func(cfg *config.Config) { cfg.Databases["accounts"] = config.DatabaseConfig{Backend: "missing"} }, "backend not found: missing"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			client, err := mongo.NewClient()
+			require.NoError(t, err)
+			provider := &backendTestProvider{client: client, dbName: "data"}
+			db, mock, err := sqlmock.New()
+			require.NoError(t, err)
+			mock.ExpectClose()
+			backends := &Backends{providers: map[string]Provider{"primary": provider, "replica": &backendTestProvider{client: client, dbName: "replica_data"}, "dedicated": &backendTestProvider{client: client, dbName: "dedicated_data"}, "generic": &backendGenericProvider{}}, postgresDB: db}
+			cfg := factoryTestConfig("read_write_split")
+			test.change(&cfg)
+			factory, err := NewFactory(context.Background(), cfg, backends)
+			require.Nil(t, factory)
+			require.ErrorContains(t, err, test.expected)
+			assert.Zero(t, provider.closes)
+			require.NoError(t, db.Ping())
+			require.NoError(t, backends.Close())
+			assert.Equal(t, 1, provider.closes)
+			require.NoError(t, mock.ExpectationsWereMet())
+		})
+	}
+}
 
-func (m *mockGenericProvider) Close(ctx context.Context) error {
+func TestNewFactoryCatalogFailureDoesNotCloseBorrowedConnections(t *testing.T) {
+	t.Run("schema", func(t *testing.T) {
+		client, err := mongo.NewClient()
+		require.NoError(t, err)
+		provider := &backendTestProvider{client: client, dbName: "data"}
+		db, mock, err := sqlmock.New()
+		require.NoError(t, err)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		failure := errors.New("schema failed")
+		mock.ExpectBegin()
+		mock.ExpectExec("SELECT pg_advisory_xact_lock").WithArgs(sqlmock.AnyArg()).WillReturnResult(sqlmock.NewResult(0, 1))
+		mock.ExpectExec("CREATE TABLE IF NOT EXISTS databases").WillReturnError(failure)
+		mock.ExpectRollback()
+		mock.ExpectClose()
+		backends := &Backends{providers: map[string]Provider{"primary": provider}, postgresDB: db}
+		cfg := factoryTestConfig("single")
+		cfg.Databases = nil
+		factory, err := NewFactory(ctx, cfg, backends)
+		require.Nil(t, factory)
+		assert.ErrorIs(t, err, failure)
+		assert.Zero(t, provider.closes)
+		require.NoError(t, db.Ping())
+		require.NoError(t, backends.Close())
+		assert.Equal(t, 1, provider.closes)
+		require.NoError(t, mock.ExpectationsWereMet())
+	})
+	t.Run("cancellation", testFactoryCatalogCancellationKeepsBorrowedPool)
+}
+
+// SessionResetter and Validator let database/sql retain a connection after
+// cancellation rollback, matching lib/pq. Sqlmock lacks these capabilities and
+// can lose its connection when automatic rollback wins the explicit rollback.
+type catalogCancellationConn struct {
+	started     chan struct{}
+	rolledBack  chan struct{}
+	connections atomic.Int32
+	rollbacks   atomic.Int32
+	closes      atomic.Int32
+	closed      atomic.Bool
+}
+
+type catalogCancellationDriver struct{ conn *catalogCancellationConn }
+
+func (d *catalogCancellationDriver) Connect(ctx context.Context) (driver.Conn, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	d.conn.connections.Add(1)
+	return d.conn, nil
+}
+func (d *catalogCancellationDriver) Driver() driver.Driver { return d }
+func (d *catalogCancellationDriver) Open(string) (driver.Conn, error) {
+	return d.Connect(context.Background())
+}
+
+func (c *catalogCancellationConn) Prepare(string) (driver.Stmt, error) {
+	return nil, errors.New("unexpected prepared statement")
+}
+func (c *catalogCancellationConn) Begin() (driver.Tx, error) {
+	return nil, errors.New("schema initialization must use BeginTx")
+}
+func (c *catalogCancellationConn) BeginTx(context.Context, driver.TxOptions) (driver.Tx, error) {
+	return &catalogCancellationTx{conn: c}, nil
+}
+func (c *catalogCancellationConn) ExecContext(ctx context.Context, query string, _ []driver.NamedValue) (driver.Result, error) {
+	if !strings.HasPrefix(query, "SELECT pg_advisory_xact_lock") {
+		return nil, errors.New("schema DDL ran after canceled lock acquisition")
+	}
+	close(c.started)
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+func (c *catalogCancellationConn) Ping(ctx context.Context) error { return ctx.Err() }
+func (c *catalogCancellationConn) ResetSession(ctx context.Context) error {
+	return ctx.Err()
+}
+func (c *catalogCancellationConn) IsValid() bool { return !c.closed.Load() }
+func (c *catalogCancellationConn) Close() error {
+	c.closes.Add(1)
+	c.closed.Store(true)
 	return nil
 }
 
-func TestFactory_GetMongoProvider_Errors(t *testing.T) {
-	f := &factory{
-		providers: map[string]Provider{
-			"generic": &mockGenericProvider{},
-		},
-	}
+type catalogCancellationTx struct{ conn *catalogCancellationConn }
 
-	t.Run("Backend Not Found", func(t *testing.T) {
-		_, err := f.getMongoProvider("missing")
-		assert.ErrorContains(t, err, "backend not found: missing")
-	})
-
-	t.Run("Not A Mongo Provider", func(t *testing.T) {
-		_, err := f.getMongoProvider("generic")
-		assert.ErrorContains(t, err, "is not a mongo provider")
-	})
+func (*catalogCancellationTx) Commit() error { return errors.New("canceled transaction committed") }
+func (tx *catalogCancellationTx) Rollback() error {
+	tx.conn.rollbacks.Add(1)
+	close(tx.conn.rolledBack)
+	return nil
 }
 
-type errorClosingProvider struct {
-	mockMongoProvider
-}
-
-func (e *errorClosingProvider) Close(ctx context.Context) error {
-	return errors.New("close failed")
-}
-
-func TestFactory_CloseError(t *testing.T) {
-	f := &factory{
-		providers: map[string]Provider{
-			"p1": &errorClosingProvider{},
-		},
-	}
-	err := f.Close()
-	assert.ErrorContains(t, err, "errors closing providers")
-	assert.ErrorContains(t, err, "close failed")
-}
-
-type noopProvider struct{}
-
-func (n *noopProvider) Close(ctx context.Context) error { return nil }
-
-func TestFactory_GetMongoClient_Success(t *testing.T) {
-	t.Parallel()
-
-	f := &factory{providers: make(map[string]Provider)}
-	client, _ := mongo.Connect(context.Background(), options.Client().ApplyURI("mongodb://mock"))
-	f.providers["primary"] = &mockMongoProvider{client: client, dbName: "db1"}
-
-	cli, dbName, err := f.GetMongoClient("primary")
-	require.NoError(t, err)
-	assert.Equal(t, client, cli)
-	assert.Equal(t, "db1", dbName)
-}
-
-func TestFactory_GetMongoClient_Errors(t *testing.T) {
-	t.Parallel()
-
-	f := &factory{providers: make(map[string]Provider)}
-
-	_, _, err := f.GetMongoClient("missing")
-	assert.ErrorContains(t, err, "backend not found")
-
-	f.providers["noop"] = &noopProvider{}
-	_, _, err = f.GetMongoClient("noop")
-	assert.ErrorContains(t, err, "not a mongo provider")
-}
-
-// Test newPostgresDB function directly
-func TestNewPostgresDB(t *testing.T) {
-	// Capture the original function before any mocking
-	realNewPostgresDB := originalNewPostgresDB
-
-	t.Run("WithInvalidDSN", func(t *testing.T) {
-		cfg := config.PostgresConfig{
-			DSN: "invalid://not-a-valid-connection",
-		}
-		// This will succeed at opening (sql.Open is lazy) but would fail on ping
-		db, err := realNewPostgresDB(cfg)
-		if err != nil {
-			// Some drivers may fail on Open with invalid DSN
-			return
-		}
-		defer db.Close()
-		// The connection is lazy, so Open succeeds but Ping would fail
-		assert.NotNil(t, db)
-	})
-
-	t.Run("WithConnectionPoolSettings", func(t *testing.T) {
-		cfg := config.PostgresConfig{
-			DSN:             "postgres://user:pass@localhost:5432/db?sslmode=disable",
-			MaxOpenConns:    10,
-			MaxIdleConns:    5,
-			ConnMaxLifetime: 5 * time.Minute,
-		}
-		// sql.Open is lazy and won't fail even with invalid connection string
-		db, err := realNewPostgresDB(cfg)
-		if err != nil {
-			// Some implementations may validate DSN on Open
-			return
-		}
-		defer db.Close()
-		assert.NotNil(t, db)
-	})
-
-	t.Run("WithZeroPoolSettings", func(t *testing.T) {
-		cfg := config.PostgresConfig{
-			DSN:             "postgres://user:pass@localhost:5432/db?sslmode=disable",
-			MaxOpenConns:    0, // Should skip SetMaxOpenConns
-			MaxIdleConns:    0, // Should skip SetMaxIdleConns
-			ConnMaxLifetime: 0, // Should skip SetConnMaxLifetime
-		}
-		db, err := realNewPostgresDB(cfg)
-		if err != nil {
-			return
-		}
-		defer db.Close()
-		assert.NotNil(t, db)
-	})
-}
-
-func TestNewFactory_PostgresErrors(t *testing.T) {
-	origNewMongoProvider := newMongoProvider
-	origNewPostgresDB := newPostgresDB
-	defer func() {
-		newMongoProvider = origNewMongoProvider
-		newPostgresDB = origNewPostgresDB
-	}()
-
-	newMongoProvider = func(ctx context.Context, uri, dbName string) (Provider, error) {
-		client, _ := mongo.Connect(ctx, options.Client().ApplyURI("mongodb://mock"))
-		return &mockMongoProvider{client: client, dbName: dbName}, nil
-	}
-
-	ctx := context.Background()
-
-	t.Run("PostgresConnectionError", func(t *testing.T) {
-		newPostgresDB = func(cfg config.PostgresConfig) (*sql.DB, error) {
-			return nil, errors.New("connection failed")
-		}
-
-		cfg := config.Config{
-			Backends: map[string]config.BackendConfig{
-				"primary":       {Type: "mongo"},
-				"postgres_user": {Type: "postgres", Postgres: config.PostgresConfig{DSN: "postgres://test"}},
-			},
-			Topology: config.TopologyConfig{
-				Document: config.DocumentTopology{BaseTopology: config.BaseTopology{Primary: "primary", Strategy: "single"}},
-				User:     config.CollectionTopology{BaseTopology: config.BaseTopology{Primary: "postgres_user", Strategy: "single"}},
-			},
-		}
-		_, err := NewFactory(ctx, cfg)
-		assert.ErrorContains(t, err, "failed to connect to postgres")
-	})
-
-	t.Run("PostgresPingError", func(t *testing.T) {
-		db, mock, _ := sqlmock.New(sqlmock.MonitorPingsOption(true))
-		newPostgresDB = func(cfg config.PostgresConfig) (*sql.DB, error) {
-			return db, nil
-		}
-		mock.ExpectPing().WillReturnError(errors.New("ping failed"))
-
-		cfg := config.Config{
-			Backends: map[string]config.BackendConfig{
-				"primary":       {Type: "mongo"},
-				"postgres_user": {Type: "postgres", Postgres: config.PostgresConfig{DSN: "postgres://test"}},
-			},
-			Topology: config.TopologyConfig{
-				Document: config.DocumentTopology{BaseTopology: config.BaseTopology{Primary: "primary", Strategy: "single"}},
-				User:     config.CollectionTopology{BaseTopology: config.BaseTopology{Primary: "postgres_user", Strategy: "single"}},
-			},
-		}
-		_, err := NewFactory(ctx, cfg)
-		assert.ErrorContains(t, err, "failed to ping postgres")
-	})
-
-	t.Run("PostgresEnsureSchemaError", func(t *testing.T) {
-		db, mock, _ := sqlmock.New(sqlmock.MonitorPingsOption(true))
-		newPostgresDB = func(cfg config.PostgresConfig) (*sql.DB, error) {
-			return db, nil
-		}
-		mock.ExpectPing()
-		mock.ExpectBegin()
-		mock.ExpectExec("SELECT pg_advisory_xact_lock").WithArgs(sqlmock.AnyArg()).WillReturnResult(sqlmock.NewResult(0, 1))
-		mock.ExpectExec("CREATE TABLE IF NOT EXISTS auth_users").WillReturnError(errors.New("schema error"))
-		mock.ExpectRollback()
-
-		cfg := config.Config{
-			Backends: map[string]config.BackendConfig{
-				"primary":       {Type: "mongo"},
-				"postgres_user": {Type: "postgres", Postgres: config.PostgresConfig{DSN: "postgres://test"}},
-			},
-			Topology: config.TopologyConfig{
-				Document: config.DocumentTopology{BaseTopology: config.BaseTopology{Primary: "primary", Strategy: "single"}},
-				User:     config.CollectionTopology{BaseTopology: config.BaseTopology{Primary: "postgres_user", Strategy: "single"}},
-			},
-		}
-		_, err := NewFactory(ctx, cfg)
-		assert.ErrorContains(t, err, "failed to ensure postgres schema")
-	})
-}
-
-func TestFactory_DatabaseAccessor(t *testing.T) {
-	setupMockProvider()
-	mock := setupMockPostgres()
-	defer teardownMockProvider()
-
-	cfg := config.Config{
-		Backends: map[string]config.BackendConfig{
-			"primary": {
-				Type: "mongo",
-				Mongo: config.MongoConfig{
-					URI:          testMongoURI,
-					DatabaseName: testDBName,
-				},
-			},
-			"postgres_user": {
-				Type: "postgres",
-				Postgres: config.PostgresConfig{
-					DSN: "postgres://test",
-				},
-			},
-		},
-		Topology: config.TopologyConfig{
-			Document: config.DocumentTopology{
-				BaseTopology: config.BaseTopology{
-					Strategy: "single",
-					Primary:  "primary",
-				},
-				DataCollection: "docs",
-				SysCollection:  "sys",
-			},
-			User: config.CollectionTopology{
-				BaseTopology: config.BaseTopology{
-					Strategy: "single",
-					Primary:  "postgres_user",
-				},
-				Collection: "users",
-			},
-			Revocation: config.CollectionTopology{
-				BaseTopology: config.BaseTopology{
-					Strategy: "single",
-					Primary:  "primary",
-				},
-				Collection: "revocations",
-			},
-		},
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+func testFactoryCatalogCancellationKeepsBorrowedPool(t *testing.T) {
+	t.Helper()
+	testCtx, stop := context.WithTimeout(context.Background(), 5*time.Second)
+	defer stop()
+	ctx, cancel := context.WithCancel(testCtx)
 	defer cancel()
-
-	f, err := NewFactory(ctx, cfg)
+	conn := &catalogCancellationConn{started: make(chan struct{}), rolledBack: make(chan struct{})}
+	db := sql.OpenDB(&catalogCancellationDriver{conn: conn})
+	db.SetMaxOpenConns(1)
+	client, err := mongo.NewClient()
 	require.NoError(t, err)
-	defer f.Close()
+	provider := &backendTestProvider{client: client, dbName: "data"}
+	backends := &Backends{providers: map[string]Provider{"primary": provider}, postgresDB: db}
+	t.Cleanup(func() { require.NoError(t, backends.Close()) })
+	cfg := factoryTestConfig("single")
+	cfg.Databases = nil
+	type result struct {
+		factory StorageFactory
+		err     error
+	}
+	completed := make(chan result, 1)
+	go func() {
+		factory, err := NewFactory(ctx, cfg, backends)
+		completed <- result{factory: factory, err: err}
+	}()
+	select {
+	case <-conn.started:
+	case <-testCtx.Done():
+		t.Fatal(testCtx.Err())
+	}
+	cancel()
+	select {
+	case got := <-completed:
+		require.Nil(t, got.factory)
+		require.ErrorIs(t, got.err, context.Canceled)
+	case <-testCtx.Done():
+		t.Fatal(testCtx.Err())
+	}
+	select {
+	case <-conn.rolledBack:
+	case <-testCtx.Done():
+		t.Fatal(testCtx.Err())
+	}
+	require.NoError(t, db.PingContext(testCtx))
+	assert.Equal(t, int32(1), conn.connections.Load())
+	assert.Equal(t, int32(1), conn.rollbacks.Load())
+	assert.Zero(t, conn.closes.Load())
+	assert.Zero(t, provider.closes)
+	require.NoError(t, backends.Close())
+	require.NoError(t, backends.Close())
+	assert.Equal(t, int32(1), conn.closes.Load())
+	assert.Equal(t, 1, provider.closes)
+}
 
-	// Test Database() accessor
-	dbStore := f.Database()
-	assert.NotNil(t, dbStore)
-
-	// Verify it's a PostgreSQL-backed store by checking its type
-	_ = mock // Use mock to avoid lint error
+func TestFactoryCatalogWorksWithoutUserInitialization(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	expectSchemaInitialization(mock, "databases")
+	mock.ExpectQuery("SELECT id, slug, display_name").WithArgs("0123456789abcdef").WillReturnRows(sqlmock.NewRows([]string{
+		"id", "slug", "display_name", "description", "owner_id", "created_at", "updated_at", "max_documents", "max_storage_bytes", "status",
+	}).AddRow("0123456789abcdef", "app", "App", nil, "existing-owner", time.Now(), time.Now(), 0, 0, "active"))
+	mock.ExpectClose()
+	client, err := mongo.NewClient()
+	require.NoError(t, err)
+	backends := &Backends{providers: map[string]Provider{"primary": &backendTestProvider{client: client, dbName: "data"}}, postgresDB: db}
+	cfg := factoryTestConfig("single")
+	cfg.Databases = nil
+	factory, err := NewFactory(context.Background(), cfg, backends)
+	require.NoError(t, err)
+	database, err := factory.Database().Get(context.Background(), "0123456789abcdef")
+	require.NoError(t, err)
+	assert.Equal(t, "existing-owner", database.OwnerID)
+	require.NoError(t, backends.Close())
+	require.NoError(t, mock.ExpectationsWereMet())
 }

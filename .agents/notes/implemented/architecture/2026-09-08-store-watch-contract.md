@@ -186,7 +186,7 @@ guarantee historical snapshots.
 
 This note owns the implemented Store API, Mongo adapter, routing, and associated
 validation. Puller ingestion still obtains Mongo clients through
-[`StorageFactory.GetMongoClient`](../../../../packages/syntrix/internal/services/manager_init.go)
+[`Backends.GetMongoClient`](../../../../packages/syntrix/internal/core/storage/backends.go)
 and bypasses `DocumentStore.Watch`. Its ingestion, batching, caches, pending
 writes, persisted buffers, and local/gRPC delivery are unchanged by this
 contract. Puller capture and delivery remain separate from Store Watch.

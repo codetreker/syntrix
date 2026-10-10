@@ -10,7 +10,7 @@ import (
 
 	"github.com/codetreker/syntrix/internal/core/storage"
 	storage_config "github.com/codetreker/syntrix/internal/core/storage/config"
-
+	identityconfig "github.com/codetreker/syntrix/internal/identity/config"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -73,15 +73,15 @@ match:
 				DataCollection: "documents",
 				SysCollection:  "sys",
 			},
-			User: storage_config.CollectionTopology{
-				BaseTopology: storage_config.BaseTopology{
+			User: identityconfig.CollectionTopology{
+				BaseTopology: identityconfig.BaseTopology{
 					Strategy: "single",
 					Primary:  "postgres",
 				},
 				Collection: "auth_users",
 			},
-			Revocation: storage_config.CollectionTopology{
-				BaseTopology: storage_config.BaseTopology{
+			Revocation: identityconfig.CollectionTopology{
+				BaseTopology: identityconfig.BaseTopology{
 					Strategy: "single",
 					Primary:  "default",
 				},
@@ -89,9 +89,11 @@ match:
 			},
 		},
 	}
-	factory, err := storage.NewFactory(connCtx, cfg)
+	backends, err := storage.NewBackends(connCtx, cfg)
 	require.NoError(t, err)
-	defer factory.Close()
+	defer backends.Close()
+	factory, err := storage.NewFactory(connCtx, cfg, backends)
+	require.NoError(t, err)
 	backend := factory.Document()
 
 	docs := []storage.StoredDoc{

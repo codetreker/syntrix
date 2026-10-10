@@ -13,10 +13,11 @@ import (
 	"time"
 
 	"github.com/codetreker/syntrix/internal/config"
-	identity_config "github.com/codetreker/syntrix/internal/core/identity/config"
 	storage_config "github.com/codetreker/syntrix/internal/core/storage/config"
 	authorizationconfig "github.com/codetreker/syntrix/internal/gateway/authorization/config"
 	api_config "github.com/codetreker/syntrix/internal/gateway/config"
+	identity_config "github.com/codetreker/syntrix/internal/identity/config"
+	identityconfig "github.com/codetreker/syntrix/internal/identity/config"
 	indexer_config "github.com/codetreker/syntrix/internal/indexer/config"
 	puller_config "github.com/codetreker/syntrix/internal/puller/config"
 	"github.com/codetreker/syntrix/internal/server"
@@ -156,15 +157,15 @@ templates:
 					DataCollection: "documents",
 					SysCollection:  "sys",
 				},
-				User: storage_config.CollectionTopology{
-					BaseTopology: storage_config.BaseTopology{
+				User: identityconfig.CollectionTopology{
+					BaseTopology: identityconfig.BaseTopology{
 						Strategy: "single",
 						Primary:  "postgres",
 					},
 					Collection: "auth_users",
 				},
-				Revocation: storage_config.CollectionTopology{
-					BaseTopology: storage_config.BaseTopology{
+				Revocation: identityconfig.CollectionTopology{
+					BaseTopology: identityconfig.BaseTopology{
 						Strategy: "single",
 						Primary:  "default",
 					},

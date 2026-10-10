@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codetreker/syntrix/internal/core/storage/types"
+	"github.com/codetreker/syntrix/internal/identity/repository"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -59,31 +59,31 @@ func (m *mockDatabaseStore) Close(ctx context.Context) error {
 	return nil
 }
 
-// mockUserStore is a mock implementation of types.UserStore for testing
+// mockUserStore is a mock implementation of repository.UserStore for testing
 type mockUserStore struct {
-	getUserByUsernameFunc func(ctx context.Context, username string) (*types.User, error)
+	getUserByUsernameFunc func(ctx context.Context, username string) (*repository.UserRecord, error)
 }
 
-func (m *mockUserStore) CreateUser(ctx context.Context, user *types.User) error {
+func (m *mockUserStore) CreateUser(ctx context.Context, user *repository.UserRecord) error {
 	return nil
 }
 
-func (m *mockUserStore) GetUser(ctx context.Context, id string) (*types.User, error) {
-	return nil, types.ErrUserNotFound
+func (m *mockUserStore) GetUser(ctx context.Context, id string) (*repository.UserRecord, error) {
+	return nil, repository.ErrUserNotFound
 }
 
-func (m *mockUserStore) GetUserByUsername(ctx context.Context, username string) (*types.User, error) {
+func (m *mockUserStore) GetUserByUsername(ctx context.Context, username string) (*repository.UserRecord, error) {
 	if m.getUserByUsernameFunc != nil {
 		return m.getUserByUsernameFunc(ctx, username)
 	}
-	return nil, types.ErrUserNotFound
+	return nil, repository.ErrUserNotFound
 }
 
-func (m *mockUserStore) GetUserByEmail(ctx context.Context, email string) (*types.User, error) {
-	return nil, types.ErrUserNotFound
+func (m *mockUserStore) GetUserByEmail(ctx context.Context, email string) (*repository.UserRecord, error) {
+	return nil, repository.ErrUserNotFound
 }
 
-func (m *mockUserStore) UpdateUser(ctx context.Context, user *types.User) error {
+func (m *mockUserStore) UpdateUser(ctx context.Context, user *repository.UserRecord) error {
 	return nil
 }
 
@@ -91,7 +91,7 @@ func (m *mockUserStore) DeleteUser(ctx context.Context, id string) error {
 	return nil
 }
 
-func (m *mockUserStore) ListUsers(ctx context.Context, limit, offset int) ([]*types.User, error) {
+func (m *mockUserStore) ListUsers(ctx context.Context, limit, offset int) ([]*repository.UserRecord, error) {
 	return nil, nil
 }
 
@@ -103,8 +103,8 @@ func (m *mockUserStore) EnsureIndexes(ctx context.Context) error {
 	return nil
 }
 
-func (m *mockUserStore) GetUserByID(ctx context.Context, id string) (*types.User, error) {
-	return nil, types.ErrUserNotFound
+func (m *mockUserStore) GetUserByID(ctx context.Context, id string) (*repository.UserRecord, error) {
+	return nil, repository.ErrUserNotFound
 }
 
 func (m *mockUserStore) UpdateUserLoginStats(ctx context.Context, id string, lastLogin time.Time, attempts int, lockoutUntil time.Time) error {
@@ -115,7 +115,7 @@ func TestEnsureDefaultDatabase_NoAdminUsername(t *testing.T) {
 	dbStore := &mockDatabaseStore{}
 	userStore := &mockUserStore{}
 
-	err := EnsureDefaultDatabase(context.Background(), dbStore, userStore, BootstrapConfig{
+	err := EnsureDefaultDatabase(context.Background(), dbStore, userStore.resolveOwner, BootstrapConfig{
 		AdminUsername: "",
 	})
 
@@ -138,7 +138,7 @@ func TestEnsureDefaultDatabase_AlreadyExists(t *testing.T) {
 	}
 	userStore := &mockUserStore{}
 
-	err := EnsureDefaultDatabase(context.Background(), dbStore, userStore, BootstrapConfig{
+	err := EnsureDefaultDatabase(context.Background(), dbStore, userStore.resolveOwner, BootstrapConfig{
 		AdminUsername: "admin",
 	})
 
@@ -153,7 +153,7 @@ func TestEnsureDefaultDatabase_GetBySlugError(t *testing.T) {
 	}
 	userStore := &mockUserStore{}
 
-	err := EnsureDefaultDatabase(context.Background(), dbStore, userStore, BootstrapConfig{
+	err := EnsureDefaultDatabase(context.Background(), dbStore, userStore.resolveOwner, BootstrapConfig{
 		AdminUsername: "admin",
 	})
 
@@ -168,12 +168,12 @@ func TestEnsureDefaultDatabase_AdminUserNotFound(t *testing.T) {
 		},
 	}
 	userStore := &mockUserStore{
-		getUserByUsernameFunc: func(ctx context.Context, username string) (*types.User, error) {
-			return nil, types.ErrUserNotFound
+		getUserByUsernameFunc: func(ctx context.Context, username string) (*repository.UserRecord, error) {
+			return nil, repository.ErrUserNotFound
 		},
 	}
 
-	err := EnsureDefaultDatabase(context.Background(), dbStore, userStore, BootstrapConfig{
+	err := EnsureDefaultDatabase(context.Background(), dbStore, userStore.resolveOwner, BootstrapConfig{
 		AdminUsername: "admin",
 	})
 
@@ -187,12 +187,12 @@ func TestEnsureDefaultDatabase_GetUserError(t *testing.T) {
 		},
 	}
 	userStore := &mockUserStore{
-		getUserByUsernameFunc: func(ctx context.Context, username string) (*types.User, error) {
+		getUserByUsernameFunc: func(ctx context.Context, username string) (*repository.UserRecord, error) {
 			return nil, errors.New("user store error")
 		},
 	}
 
-	err := EnsureDefaultDatabase(context.Background(), dbStore, userStore, BootstrapConfig{
+	err := EnsureDefaultDatabase(context.Background(), dbStore, userStore.resolveOwner, BootstrapConfig{
 		AdminUsername: "admin",
 	})
 
@@ -212,15 +212,15 @@ func TestEnsureDefaultDatabase_Success(t *testing.T) {
 		},
 	}
 	userStore := &mockUserStore{
-		getUserByUsernameFunc: func(ctx context.Context, username string) (*types.User, error) {
-			return &types.User{
+		getUserByUsernameFunc: func(ctx context.Context, username string) (*repository.UserRecord, error) {
+			return &repository.UserRecord{
 				ID:       "admin-user-id",
 				Username: "admin",
 			}, nil
 		},
 	}
 
-	err := EnsureDefaultDatabase(context.Background(), dbStore, userStore, BootstrapConfig{
+	err := EnsureDefaultDatabase(context.Background(), dbStore, userStore.resolveOwner, BootstrapConfig{
 		AdminUsername: "admin",
 	})
 
@@ -243,15 +243,15 @@ func TestEnsureDefaultDatabase_RaceCondition_SlugExists(t *testing.T) {
 		},
 	}
 	userStore := &mockUserStore{
-		getUserByUsernameFunc: func(ctx context.Context, username string) (*types.User, error) {
-			return &types.User{
+		getUserByUsernameFunc: func(ctx context.Context, username string) (*repository.UserRecord, error) {
+			return &repository.UserRecord{
 				ID:       "admin-user-id",
 				Username: "admin",
 			}, nil
 		},
 	}
 
-	err := EnsureDefaultDatabase(context.Background(), dbStore, userStore, BootstrapConfig{
+	err := EnsureDefaultDatabase(context.Background(), dbStore, userStore.resolveOwner, BootstrapConfig{
 		AdminUsername: "admin",
 	})
 
@@ -268,15 +268,15 @@ func TestEnsureDefaultDatabase_RaceCondition_DatabaseExists(t *testing.T) {
 		},
 	}
 	userStore := &mockUserStore{
-		getUserByUsernameFunc: func(ctx context.Context, username string) (*types.User, error) {
-			return &types.User{
+		getUserByUsernameFunc: func(ctx context.Context, username string) (*repository.UserRecord, error) {
+			return &repository.UserRecord{
 				ID:       "admin-user-id",
 				Username: "admin",
 			}, nil
 		},
 	}
 
-	err := EnsureDefaultDatabase(context.Background(), dbStore, userStore, BootstrapConfig{
+	err := EnsureDefaultDatabase(context.Background(), dbStore, userStore.resolveOwner, BootstrapConfig{
 		AdminUsername: "admin",
 	})
 
@@ -293,18 +293,26 @@ func TestEnsureDefaultDatabase_CreateError(t *testing.T) {
 		},
 	}
 	userStore := &mockUserStore{
-		getUserByUsernameFunc: func(ctx context.Context, username string) (*types.User, error) {
-			return &types.User{
+		getUserByUsernameFunc: func(ctx context.Context, username string) (*repository.UserRecord, error) {
+			return &repository.UserRecord{
 				ID:       "admin-user-id",
 				Username: "admin",
 			}, nil
 		},
 	}
 
-	err := EnsureDefaultDatabase(context.Background(), dbStore, userStore, BootstrapConfig{
+	err := EnsureDefaultDatabase(context.Background(), dbStore, userStore.resolveOwner, BootstrapConfig{
 		AdminUsername: "admin",
 	})
 
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "create failed")
+}
+
+func (m *mockUserStore) resolveOwner(ctx context.Context, username string) (string, string, error) {
+	user, err := m.GetUserByUsername(ctx, username)
+	if err != nil {
+		return "", "", err
+	}
+	return user.ID, user.Username, nil
 }

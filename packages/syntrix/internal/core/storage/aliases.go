@@ -5,15 +5,10 @@ import (
 )
 
 type StoredDoc = types.StoredDoc
-type User = types.User
-type RevokedToken = types.RevokedToken
 type DocumentStore = types.DocumentStore
 type ReadOptions = types.ReadOptions
 type ReadConsistency = types.ReadConsistency
-type UserStore = types.UserStore
-type TokenRevocationStore = types.TokenRevocationStore
 type DocumentProvider = types.DocumentProvider
-type AuthProvider = types.AuthProvider
 type OpKind = types.OpKind
 type EventType = types.EventType
 type Event = types.Event
@@ -34,10 +29,7 @@ type WatchFrame = types.WatchFrame
 type WatchStream = types.WatchStream
 type WatchError = types.WatchError
 type WatchErrorCode = types.WatchErrorCode
-type Router = types.Router
 type DocumentRouter = types.DocumentRouter
-type UserRouter = types.UserRouter
-type RevocationRouter = types.RevocationRouter
 
 const (
 	ReplicationUpsert = types.ReplicationUpsert
@@ -85,10 +77,4 @@ const (
 	WatchUnsupported        = types.WatchUnsupported
 	WatchPermissionDenied   = types.WatchPermissionDenied
 	WatchSourceUnavailable  = types.WatchSourceUnavailable
-)
-
-var (
-	ErrUserNotFound        = types.ErrUserNotFound
-	ErrUserExists          = types.ErrUserExists
-	ErrTokenAlreadyRevoked = types.ErrTokenAlreadyRevoked
 )
