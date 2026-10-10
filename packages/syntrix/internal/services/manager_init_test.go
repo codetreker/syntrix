@@ -18,6 +18,7 @@ import (
 	pubsubtesting "github.com/codetreker/syntrix/internal/core/pubsub/testing"
 	"github.com/codetreker/syntrix/internal/core/storage"
 	"github.com/codetreker/syntrix/internal/gateway"
+	"github.com/codetreker/syntrix/internal/gateway/authorization"
 	"github.com/codetreker/syntrix/internal/indexer"
 	indexer_config "github.com/codetreker/syntrix/internal/indexer/config"
 	"github.com/codetreker/syntrix/internal/puller"
@@ -549,13 +550,13 @@ func (s *stubAuthN) ValidateToken(tokenString string) (*identity.Claims, error) 
 // stubAuthZ is a minimal AuthZ implementation for testing
 type stubAuthZ struct{}
 
-func (s *stubAuthZ) Evaluate(ctx context.Context, database string, path string, action string, req identity.AuthzRequest, existingRes *identity.Resource) (bool, error) {
+func (s *stubAuthZ) Evaluate(ctx context.Context, database string, path string, action string, req authorization.Request, existingRes *authorization.Resource) (bool, error) {
 	return true, nil
 }
-func (s *stubAuthZ) GetRules() *identity.RuleSet                           { return nil }
-func (s *stubAuthZ) GetRulesForDatabase(database string) *identity.RuleSet { return nil }
-func (s *stubAuthZ) UpdateRules(database string, content []byte) error     { return nil }
-func (s *stubAuthZ) LoadRulesFromDir(dirPath string) error                 { return nil }
+func (s *stubAuthZ) GetRules() *authorization.RuleSet                           { return nil }
+func (s *stubAuthZ) GetRulesForDatabase(database string) *authorization.RuleSet { return nil }
+func (s *stubAuthZ) UpdateRules(database string, content []byte) error          { return nil }
+func (s *stubAuthZ) LoadRulesFromDir(dirPath string) error                      { return nil }
 
 func TestManager_Init_StandaloneMode(t *testing.T) {
 	origFactory := storageFactoryFactory

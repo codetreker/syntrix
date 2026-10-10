@@ -1,14 +1,20 @@
-# Authorization Rules Discussion
+# Gateway Document Authorization
 
-**Status:** Document rules are implemented in the embedded `identity.AuthZ`
-engine; project admission and safeguards explicitly marked as proposed are not
-implemented contracts.
+**Status:** Document rules are implemented by `gateway/authorization`; project
+admission and safeguards explicitly marked as proposed are not implemented
+contracts.
 
-The [system architecture](../../../../architecture.md) and
-[Identity architecture](01.architecture.md) define the authority domains. These
+The [system architecture](../../../architecture.md) and
+[Identity architecture](../core/identity/01.architecture.md) define the authority domains. These
 rules govern developer business documents in a Syntrix instance. Management
 employees and Console developers have separate credentials and administrative
 permissions.
+
+Gateway owns rule evaluation beside its request/resource authorization path.
+Identity supplies account authentication and token claims; it does not own the
+Query-backed CEL evaluator. The
+[ownership decision](../../../../.agents/notes/implemented/architecture/2026-10-10-gateway-document-authorization.md)
+records this separation and its preserved behavior.
 
 ## 1. Overview
 
@@ -30,7 +36,7 @@ binding. The engine supports per-database YAML rules, CEL compilation/evaluation
 the target project admission checks. Query-wide authorization, publish-time
 ambiguity rejection, resource limits, and error contracts below are design
 requirements where not explicitly described as current behavior; the
-[API reference](../../../../reference/api.md) owns supported responses.
+[API reference](../../../reference/api.md) owns supported responses.
 
 ## 2. Configuration
 
@@ -43,6 +49,13 @@ and Identity records are instance-local PostgreSQL system data. Publishing rules
 is an authorized instance/project configuration operation, not platform account
 administration. Persistent rule versioning and publication transactions remain
 to be designed.
+
+The runtime keeps the existing YAML `identity.authz.rules_path` setting, default
+`security_rules`, and configuration-directory path resolution. The root runtime
+configuration composes Identity account settings with Gateway authorization
+configuration; the rule configuration type and its lifecycle belong to
+`internal/gateway/authorization`. This layout changes Go ownership without
+changing the deployment configuration contract.
 
 **Directory structure:**
 ```
@@ -130,10 +143,15 @@ match:
 
 ### 3.3 Construction
 
-- Current constructor: `identity.NewAuthZ(config, queryService)` wraps
-  `authz.NewEngine`, keeping the CEL environment and program cache internal.
+- Current constructor: `authorization.NewEngine(config, queryService)` accepts
+  the Gateway-owned `authorization.Config` and returns `authorization.Engine`,
+  keeping the CEL environment and program cache internal.
+- RuleSet, MatchBlock, Request, Authenticated, and Resource belong to the
+  authorization package. Gateway projects the existing user ID, username,
+  roles, database-admin assignments, and full claims into that evaluation input.
 - Project-aware policy administration and additional publish-time validation
-  require an explicit instance contract when the peer Identity module is built.
+  require their own instance contracts; relocating the evaluator does not
+  establish those capabilities.
 
 ## 4. Evaluation Context
 
@@ -341,4 +359,4 @@ There is **no implicit inheritance**. If a sub-collection has no matching rule, 
 
 OAuth and session state belong to the instance Identity module's PostgreSQL
 system data. Their protocol and freshness choices are covered by the
-[authentication design](02.authentication.md), not document rule expressions.
+[authentication design](../core/identity/02.authentication.md), not document rule expressions.

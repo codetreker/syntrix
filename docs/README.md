@@ -114,6 +114,7 @@ enables race detection and enforces the CI coverage thresholds.
 - [Developer Console](design/server/console/01.console.md)
 - [Employee Management Platform](design/server/console/02.control_plane.md)
 - [Instance Identity](design/server/core/identity/01.architecture.md)
+- [Gateway Document Authorization](design/server/gateway/authorization.md)
 - [Design Documents](design/README.md)
 - [Server Design](design/server/)
 - [SDK Design](design/sdk/)

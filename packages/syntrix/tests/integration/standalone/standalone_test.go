@@ -15,6 +15,7 @@ import (
 	"github.com/codetreker/syntrix/internal/config"
 	identity_config "github.com/codetreker/syntrix/internal/core/identity/config"
 	storage_config "github.com/codetreker/syntrix/internal/core/storage/config"
+	"github.com/codetreker/syntrix/internal/gateway/authorization"
 	indexer_config "github.com/codetreker/syntrix/internal/indexer/config"
 	puller_config "github.com/codetreker/syntrix/internal/puller/config"
 	"github.com/codetreker/syntrix/internal/server"
@@ -182,19 +183,21 @@ templates:
 				Interval:  1 * time.Minute,
 			},
 		},
-		Identity: identity_config.Config{
-			AuthN: identity_config.AuthNConfig{
-				AccessTokenTTL:  15 * time.Minute,
-				RefreshTokenTTL: 7 * 24 * time.Hour,
-				AuthCodeTTL:     2 * time.Minute,
-				PrivateKeyFile:  t.TempDir() + "/keys/auth_private.pem",
+		Identity: config.IdentityConfig{
+			Config: identity_config.Config{
+				AuthN: identity_config.AuthNConfig{
+					AccessTokenTTL:  15 * time.Minute,
+					RefreshTokenTTL: 7 * 24 * time.Hour,
+					AuthCodeTTL:     2 * time.Minute,
+					PrivateKeyFile:  t.TempDir() + "/keys/auth_private.pem",
+				},
+				Admin: identity_config.AdminConfig{
+					Username: "admin", // Required for default database bootstrap
+					Password: "TestPassword123!",
+				},
 			},
-			AuthZ: identity_config.AuthZConfig{
+			AuthZ: authorization.Config{
 				RulesPath: rulesDir,
-			},
-			Admin: identity_config.AdminConfig{
-				Username: "admin", // Required for default database bootstrap
-				Password: "TestPassword123!",
 			},
 		},
 		Indexer: indexer_config.Config{

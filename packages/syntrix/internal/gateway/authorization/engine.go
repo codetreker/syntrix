@@ -1,4 +1,4 @@
-package authz
+package authorization
 
 import (
 	"context"
@@ -12,7 +12,6 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/codetreker/syntrix/internal/core/identity/config"
 	"github.com/codetreker/syntrix/internal/query"
 	"github.com/codetreker/syntrix/pkg/model"
 
@@ -47,7 +46,7 @@ type ruleEngine struct {
 	mu         sync.RWMutex
 }
 
-func NewEngine(cfg config.AuthZConfig, q query.Service) (Engine, error) {
+func NewEngine(cfg Config, q query.Service) (Engine, error) {
 	// Define CEL environment
 	env, err := cel.NewEnv(
 		cel.Declarations(

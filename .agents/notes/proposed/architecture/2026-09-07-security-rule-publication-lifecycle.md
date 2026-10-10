@@ -5,11 +5,11 @@ Status: proposed
 ## Problem
 
 The administrator push endpoint updates the receiving process only. In the
-[rule engine](../../../../packages/syntrix/internal/core/identity/authz/engine.go),
+[rule engine](../../../../packages/syntrix/internal/gateway/authorization/engine.go),
 `e.dbRules[database] = &rules` replaces an in-memory entry, while startup loads
 the configured rules directory. Static inspection therefore establishes no
 durable publication history, rollback, dry-run, or propagation to other nodes.
-The [identity design](../../../../docs/design/server/core/identity/02.authentication.md)
+The [Gateway authorization design](../../../../docs/design/server/gateway/authorization.md)
 already calls for versioned publication and rollback, and the
 [console design](../../../../docs/design/server/console/01.console.md) requires
 idempotent push/rollback results for 24 hours. A successful push cannot currently

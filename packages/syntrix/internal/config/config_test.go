@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	identity "github.com/codetreker/syntrix/internal/core/identity/config"
+	"github.com/codetreker/syntrix/internal/gateway/authorization"
 	services_config "github.com/codetreker/syntrix/internal/services/config"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -94,9 +95,9 @@ func TestServiceConfig_ResolvePaths(t *testing.T) {
 	// The ResolvePaths function is now part of each service config
 
 	// Test with identity config
-	identityCfg := identity.Config{
-		AuthZ: identity.AuthZConfig{RulesPath: "security.yaml"},
-		AuthN: identity.AuthNConfig{PrivateKeyFile: "keys/auth.pem"},
+	identityCfg := IdentityConfig{
+		AuthZ:  authorization.Config{RulesPath: "security.yaml"},
+		Config: identity.Config{AuthN: identity.AuthNConfig{PrivateKeyFile: "keys/auth.pem"}},
 	}
 	identityCfg.ResolvePaths("configs", "data")
 	assert.Equal(t, filepath.Join("configs", "security.yaml"), identityCfg.AuthZ.RulesPath)
@@ -104,15 +105,15 @@ func TestServiceConfig_ResolvePaths(t *testing.T) {
 
 	// Test with absolute path - should not be modified
 	absPath := filepath.Join(t.TempDir(), "absolute", "path", "to", "file")
-	identityCfg2 := identity.Config{
-		AuthZ: identity.AuthZConfig{RulesPath: absPath},
+	identityCfg2 := IdentityConfig{
+		AuthZ: authorization.Config{RulesPath: absPath},
 	}
 	identityCfg2.ResolvePaths("configs", "data")
 	assert.Equal(t, absPath, identityCfg2.AuthZ.RulesPath)
 
 	// Test with empty path - should remain empty
-	identityCfg3 := identity.Config{
-		AuthZ: identity.AuthZConfig{RulesPath: ""},
+	identityCfg3 := IdentityConfig{
+		AuthZ: authorization.Config{RulesPath: ""},
 	}
 	identityCfg3.ResolvePaths("configs", "data")
 	assert.Equal(t, "", identityCfg3.AuthZ.RulesPath)

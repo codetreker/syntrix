@@ -1,9 +1,20 @@
-# Syntrix — 任务板
+# Task Board
 
-> **Owner** = 此刻球在谁手上，随状态流转变化。所有任务必须有 Owner，无主任务不允许存在。
-> 对应关系：Backlog/Ready/讨论中→飞马，In Progress→战马，In Review→飞马，验收→烈马，Done→飞马。
+Owner identifies the role responsible for the next action. Every task has an
+owner: backlog, ready, discussion, review, and done use 飞马; implementation uses
+战马; acceptance uses 烈马. Local execution plans remain in the gitignored
+`docs/plans/` directory; tracked decisions and task state identify delivered and
+remaining work.
 
-| ID | 任务 | 状态 | Owner | PR |
-|----|------|------|-------|----|
-| SYN-001 | UI 展示方案确定 | backlog | 飞马 | — |
-| SYN-002 | 统一 Puller 订阅状态机 | In Review | 飞马 | [#167](https://github.com/codetreker/syntrix/pull/167) |
+| ID | Task | Status | Owner | PR |
+|---|---|---|---|---|
+| SYN-001 | UI presentation design | backlog | 飞马 | — |
+| SYN-002 | Unified Puller subscription state machine | In Review | 飞马 | [#167](https://github.com/codetreker/syntrix/pull/167) |
+| SYN-003 | [Instance Identity extraction](../../.agents/notes/proposed/architecture/2026-10-10-platform-console-instance-boundaries.md): Gateway document authorization | In Review | 飞马 | — |
+
+SYN-003 starts with Gateway document-policy ownership. Account contracts and
+Gateway authentication adapters, signing/verification capabilities, and Identity
+repository/composition ownership follow in separate dependent PRs after this
+step merges. Project realms, PostgreSQL revocation/sessions, independent
+deployment, and both OAuth roles remain subsequent capabilities with their own
+activation contracts.

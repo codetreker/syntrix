@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 
 	"github.com/codetreker/syntrix/internal/core/database"
-	identity "github.com/codetreker/syntrix/internal/core/identity/config"
 	storage "github.com/codetreker/syntrix/internal/core/storage/config"
 	api "github.com/codetreker/syntrix/internal/gateway/config"
 	indexer "github.com/codetreker/syntrix/internal/indexer/config"
@@ -35,7 +34,7 @@ type Config struct {
 
 	// Components
 	Storage  storage.Config  `yaml:"storage"`
-	Identity identity.Config `yaml:"identity"`
+	Identity IdentityConfig  `yaml:"identity"`
 	Database database.Config `yaml:"database"`
 
 	// DataDir is the root directory for all runtime data (logs, caches, indexes, etc.)
@@ -74,7 +73,7 @@ func LoadConfigFrom(configDir string) *Config {
 	// 1. Start with default values (so YAML can override them, including bool fields)
 	cfg := &Config{
 		Storage:    storage.DefaultConfig(),
-		Identity:   identity.DefaultConfig(),
+		Identity:   DefaultIdentityConfig(),
 		Server:     server.DefaultConfig(),
 		Logging:    DefaultLoggingConfig(),
 		Query:      query.DefaultConfig(),

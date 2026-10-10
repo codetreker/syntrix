@@ -8,7 +8,6 @@ import (
 
 	"github.com/codetreker/syntrix/internal/core/identity/config"
 	"github.com/codetreker/syntrix/internal/core/storage"
-	"github.com/codetreker/syntrix/pkg/model"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 )
@@ -102,77 +101,6 @@ func (m *MockTokenRevocationStore) RevokeTokenIfNotRevoked(ctx context.Context, 
 	return args.Error(0)
 }
 
-// MockQueryService
-type MockQueryService struct {
-	mock.Mock
-}
-
-func (m *MockQueryService) GetDocument(ctx context.Context, database string, path string) (model.Document, error) {
-	args := m.Called(ctx, database, path)
-	if args.Get(0) == nil {
-		return nil, args.Error(1)
-	}
-	return args.Get(0).(model.Document), args.Error(1)
-}
-
-func (m *MockQueryService) CreateDocument(ctx context.Context, database string, doc model.Document) error {
-	args := m.Called(ctx, database, doc)
-	return args.Error(0)
-}
-
-func (m *MockQueryService) ReplaceDocument(ctx context.Context, database string, data model.Document, pred model.Filters) (model.Document, error) {
-	args := m.Called(ctx, database, data, pred)
-	if args.Get(0) == nil {
-		return nil, args.Error(1)
-	}
-	return args.Get(0).(model.Document), args.Error(1)
-}
-
-func (m *MockQueryService) PatchDocument(ctx context.Context, database string, data model.Document, pred model.Filters) (model.Document, error) {
-	args := m.Called(ctx, database, data, pred)
-	if args.Get(0) == nil {
-		return nil, args.Error(1)
-	}
-	return args.Get(0).(model.Document), args.Error(1)
-}
-
-func (m *MockQueryService) DeleteDocument(ctx context.Context, database string, path string, pred model.Filters) error {
-	args := m.Called(ctx, database, path, pred)
-	return args.Error(0)
-}
-
-func (m *MockQueryService) ExecuteQuery(ctx context.Context, database string, q model.Query) ([]model.Document, error) {
-	args := m.Called(ctx, database, q)
-	if args.Get(0) == nil {
-		return nil, args.Error(1)
-	}
-	return args.Get(0).([]model.Document), args.Error(1)
-}
-
-func (m *MockQueryService) WatchCollection(ctx context.Context, database string, collection string) (<-chan storage.Event, error) {
-	args := m.Called(ctx, database, collection)
-	if args.Get(0) == nil {
-		return nil, args.Error(1)
-	}
-	return args.Get(0).(<-chan storage.Event), args.Error(1)
-}
-
-func (m *MockQueryService) Pull(ctx context.Context, database string, req storage.ReplicationPullRequest) (*storage.ReplicationPullResponse, error) {
-	args := m.Called(ctx, database, req)
-	if args.Get(0) == nil {
-		return nil, args.Error(1)
-	}
-	return args.Get(0).(*storage.ReplicationPullResponse), args.Error(1)
-}
-
-func (m *MockQueryService) Push(ctx context.Context, database string, req storage.ReplicationPushRequest) (*storage.ReplicationPushResponse, error) {
-	args := m.Called(ctx, database, req)
-	if args.Get(0) == nil {
-		return nil, args.Error(1)
-	}
-	return args.Get(0).(*storage.ReplicationPushResponse), args.Error(1)
-}
-
 func TestNewAuthN(t *testing.T) {
 	// Create a temporary file for the private key
 	tmpFile := t.TempDir() + "/private.pem"
@@ -193,13 +121,4 @@ func TestNewAuthN(t *testing.T) {
 	// Verify that the private key file was created
 	_, err = os.Stat(tmpFile)
 	assert.NoError(t, err)
-}
-
-func TestNewAuthZ(t *testing.T) {
-	cfg := config.AuthZConfig{}
-	mockQuery := new(MockQueryService)
-
-	authz, err := NewAuthZ(cfg, mockQuery)
-	assert.NoError(t, err)
-	assert.NotNil(t, authz)
 }

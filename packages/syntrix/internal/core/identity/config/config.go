@@ -1,7 +1,6 @@
 package config
 
 import (
-	"errors"
 	"path/filepath"
 	"time"
 
@@ -10,7 +9,6 @@ import (
 
 type Config struct {
 	AuthN AuthNConfig `yaml:"authn"`
-	AuthZ AuthZConfig `yaml:"authz"`
 	Admin AdminConfig `yaml:"admin"`
 }
 
@@ -30,10 +28,6 @@ type PasswordPolicyConfig struct {
 	RequireLowercase bool `yaml:"require_lowercase"`
 	RequireDigit     bool `yaml:"require_digit"`
 	RequireSpecial   bool `yaml:"require_special"`
-}
-
-type AuthZConfig struct {
-	RulesPath string `yaml:"rules_path"`
 }
 
 type AdminConfig struct {
@@ -56,9 +50,6 @@ func DefaultConfig() Config {
 				RequireDigit:     true,
 				RequireSpecial:   true,
 			},
-		},
-		AuthZ: AuthZConfig{
-			RulesPath: "security_rules",
 		},
 		Admin: AdminConfig{
 			Username: "syntrix",
@@ -88,9 +79,6 @@ func (c *Config) ApplyDefaults() {
 	if c.AuthN.AdminUsername == "" {
 		c.AuthN.AdminUsername = defaults.AuthN.AdminUsername
 	}
-	if c.AuthZ.RulesPath == "" {
-		c.AuthZ.RulesPath = defaults.AuthZ.RulesPath
-	}
 	if c.Admin.Username == "" {
 		c.Admin.Username = defaults.Admin.Username
 	}
@@ -101,13 +89,10 @@ func (c *Config) ApplyDefaults() {
 func (c *Config) ApplyEnvOverrides() { _ = c }
 
 // ResolvePaths resolves relative paths using the given directories.
-// - configDir: base directory for config-related paths (rules_path, private_key_file)
+// - configDir: base directory for private_key_file
 // - dataDir: not used for identity config
 func (c *Config) ResolvePaths(configDir, dataDir string) {
 	_ = dataDir // identity has no data-related paths
-	if c.AuthZ.RulesPath != "" && !filepath.IsAbs(c.AuthZ.RulesPath) {
-		c.AuthZ.RulesPath = filepath.Join(configDir, c.AuthZ.RulesPath)
-	}
 	if c.AuthN.PrivateKeyFile != "" && !filepath.IsAbs(c.AuthN.PrivateKeyFile) {
 		c.AuthN.PrivateKeyFile = filepath.Join(configDir, c.AuthN.PrivateKeyFile)
 	}
@@ -115,8 +100,5 @@ func (c *Config) ResolvePaths(configDir, dataDir string) {
 
 // Validate returns an error if the configuration is invalid.
 func (c *Config) Validate(_ services.DeploymentMode) error {
-	if c.AuthZ.RulesPath == "" {
-		return errors.New("identity.authz.rules_path is required")
-	}
 	return nil
 }

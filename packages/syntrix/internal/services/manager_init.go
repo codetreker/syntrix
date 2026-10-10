@@ -17,6 +17,7 @@ import (
 	pubsubnats "github.com/codetreker/syntrix/internal/core/pubsub/nats"
 	"github.com/codetreker/syntrix/internal/core/storage"
 	"github.com/codetreker/syntrix/internal/gateway"
+	"github.com/codetreker/syntrix/internal/gateway/authorization"
 	"github.com/codetreker/syntrix/internal/gateway/realtime"
 	"github.com/codetreker/syntrix/internal/indexer"
 	"github.com/codetreker/syntrix/internal/puller"
@@ -358,7 +359,7 @@ func (m *Manager) initQueryGRPCServer(service query.Service) {
 
 func (m *Manager) initAPIServer(queryService query.Service) error {
 	// Always create authz engine (required for API server)
-	authzEngine, err := identity.NewAuthZ(m.cfg.Identity.AuthZ, queryService)
+	authzEngine, err := authorization.NewEngine(m.cfg.Identity.AuthZ, queryService)
 	if err != nil {
 		return fmt.Errorf("failed to create authz engine: %w", err)
 	}

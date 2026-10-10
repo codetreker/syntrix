@@ -15,6 +15,7 @@ and currently implemented contracts.
 | Employee-facing Management platform | [Management design](server/console/02.control_plane.md) |
 | Runtime services within one Syntrix instance | [Instance architecture](server/01.architecture.md) |
 | Project end-user realms, OAuth/OIDC, external login | [Identity design](server/core/identity/01.architecture.md) |
+| Business-document CEL rules and evaluation | [Gateway authorization](server/gateway/authorization.md) |
 | Instance system metadata and logical database lifecycle | [Database design](server/core/database/01.architecture.md) |
 | Private system PostgreSQL and business-document MongoDB | [Storage design](server/core/storage/01.architecture.md) |
 

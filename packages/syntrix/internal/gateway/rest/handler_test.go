@@ -10,6 +10,7 @@ import (
 
 	"github.com/codetreker/syntrix/internal/core/database"
 	"github.com/codetreker/syntrix/internal/core/identity"
+	"github.com/codetreker/syntrix/internal/gateway/authorization"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
@@ -155,7 +156,7 @@ func TestAuthorized_InvalidJSONBody(t *testing.T) {
 	// We need to verify that Evaluate is called with nil Resource (or Resource with nil Data)
 	// when body is invalid JSON.
 
-	mockAuthz.On("Evaluate", mock.Anything, "default", "col/doc", "create", mock.MatchedBy(func(req identity.AuthzRequest) bool {
+	mockAuthz.On("Evaluate", mock.Anything, "default", "col/doc", "create", mock.MatchedBy(func(req authorization.Request) bool {
 		// Resource should be nil because Unmarshal failed
 		return req.Resource == nil
 	}), mock.Anything).Return(true, nil)
@@ -192,7 +193,7 @@ func TestAuthorized_OwnerImplicitDBAdmin_SlugMatch(t *testing.T) {
 	handler, _ := NewHandler(mockService, mockAuth, mockAuthz)
 
 	// Set up authz to allow the request
-	mockAuthz.On("Evaluate", mock.Anything, "db-123", "col/doc", "create", mock.MatchedBy(func(req identity.AuthzRequest) bool {
+	mockAuthz.On("Evaluate", mock.Anything, "db-123", "col/doc", "create", mock.MatchedBy(func(req authorization.Request) bool {
 		// Verify that my-slug is in DBAdmin list (not duplicated)
 		count := 0
 		for _, admin := range req.Auth.DBAdmin {
@@ -249,7 +250,7 @@ func TestAuthorized_OwnerImplicitDBAdmin_IDMatch(t *testing.T) {
 	handler, _ := NewHandler(mockService, mockAuth, mockAuthz)
 
 	// Set up authz to allow the request
-	mockAuthz.On("Evaluate", mock.Anything, "db-123", "col/doc", "create", mock.MatchedBy(func(req identity.AuthzRequest) bool {
+	mockAuthz.On("Evaluate", mock.Anything, "db-123", "col/doc", "create", mock.MatchedBy(func(req authorization.Request) bool {
 		// Verify that db-123 is in DBAdmin list exactly once
 		count := 0
 		for _, admin := range req.Auth.DBAdmin {
@@ -304,7 +305,7 @@ func TestAuthorized_OwnerImplicitDBAdmin_NotInList(t *testing.T) {
 	handler, _ := NewHandler(mockService, mockAuth, mockAuthz)
 
 	// Set up authz to allow the request
-	mockAuthz.On("Evaluate", mock.Anything, "db-123", "col/doc", "create", mock.MatchedBy(func(req identity.AuthzRequest) bool {
+	mockAuthz.On("Evaluate", mock.Anything, "db-123", "col/doc", "create", mock.MatchedBy(func(req authorization.Request) bool {
 		// Verify that db-123 is in DBAdmin list (should have been added)
 		for _, admin := range req.Auth.DBAdmin {
 			if admin == "db-123" {

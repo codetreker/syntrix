@@ -8,6 +8,7 @@ import (
 
 	"github.com/codetreker/syntrix/internal/core/database"
 	"github.com/codetreker/syntrix/internal/core/identity"
+	"github.com/codetreker/syntrix/internal/gateway/authorization"
 	"github.com/codetreker/syntrix/internal/gateway/realtime"
 	"github.com/codetreker/syntrix/internal/gateway/rest"
 	"github.com/codetreker/syntrix/internal/query"
@@ -46,7 +47,7 @@ func WithServerAuthRateLimiter(limiter ratelimit.Limiter, window time.Duration) 
 }
 
 // NewServer creates a new API Server (route registrar).
-func NewServer(engine query.Service, auth identity.AuthN, authz identity.AuthZ, rt *realtime.Server, opts ...ServerOption) (*Server, error) {
+func NewServer(engine query.Service, auth identity.AuthN, authz authorization.Engine, rt *realtime.Server, opts ...ServerOption) (*Server, error) {
 	// Collect server options
 	cfg := &serverConfig{}
 	for _, opt := range opts {
