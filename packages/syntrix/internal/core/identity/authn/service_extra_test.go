@@ -20,7 +20,7 @@ func TestListUsers_Coverage(t *testing.T) {
 		PrivateKeyFile: getTestKeyPath(t),
 		AccessTokenTTL: time.Hour,
 	}
-	svc, err := NewAuthService(cfg, mockStorage, mockStorage)
+	svc, err := newTestAccountService(cfg, mockStorage, mockStorage)
 	require.NoError(t, err)
 
 	t.Run("Success", func(t *testing.T) {
@@ -54,7 +54,7 @@ func TestUpdateUser_Coverage(t *testing.T) {
 		PrivateKeyFile: getTestKeyPath(t),
 		AccessTokenTTL: time.Hour,
 	}
-	svc, err := NewAuthService(cfg, mockStorage, mockStorage)
+	svc, err := newTestAccountService(cfg, mockStorage, mockStorage)
 	require.NoError(t, err)
 
 	t.Run("User Not Found", func(t *testing.T) {
@@ -96,11 +96,11 @@ func TestUpdateUser_Coverage(t *testing.T) {
 	})
 }
 
-func systemActor(t *testing.T, svc *AuthService) *identity.VerifiedIdentity {
+func systemActor(t *testing.T, svc *accountService) *identity.VerifiedIdentity {
 	t.Helper()
-	token, err := svc.GenerateSystemToken("test-admin")
+	token, err := (&systemTokenIssuer{privateKey: svc.signer.privateKey, accessTTL: svc.signer.accessTTL}).GenerateSystemToken("test-admin")
 	require.NoError(t, err)
-	actor, err := svc.VerifyToken(token)
+	actor, err := svc.verifier.VerifyToken(token)
 	require.NoError(t, err)
 	return actor
 }

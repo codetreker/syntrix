@@ -121,6 +121,10 @@ exclusion until they receive one.
 - Iterator iteration and cleanup failures remain separately observable. This
   increases adapter responsibility because both errors may require reporting or
   logging even though only the primary failure determines the transport result.
+- Ready publication failure is tested directly at its callback: a canceled
+  context determines the cancellation exit, while other failures retain their
+  cause and Ready phase. A full local output buffer alone does not establish
+  that Ready publication has started; cancellation can still interrupt replay.
 - One shared runner makes transition changes affect both transports. Adapter
   callbacks therefore remain explicit so blocking sends and transport-specific
   status mapping are visible at the integration boundary.

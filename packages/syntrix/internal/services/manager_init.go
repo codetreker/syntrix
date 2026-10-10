@@ -252,7 +252,7 @@ func (m *Manager) initAuthService(ctx context.Context) error {
 	}
 
 	var authErr error
-	m.authService, authErr = authn.NewAuthService(m.cfg.Identity.AuthN, sf.User(), sf.Revocation())
+	m.accountService, m.tokenVerifier, m.systemTokenIssuer, authErr = authn.NewServices(m.cfg.Identity.AuthN, sf.User(), sf.Revocation())
 	if authErr != nil {
 		return fmt.Errorf("failed to create auth service: %w", authErr)
 	}
@@ -265,7 +265,7 @@ func (m *Manager) initAuthService(ctx context.Context) error {
 // The admin username and initial password are read from the identity.admin config.
 func (m *Manager) ensureAdminUser(ctx context.Context) error {
 	// Skip if auth service is not initialized (no API or trigger worker)
-	if m.authService == nil {
+	if m.accountService == nil {
 		return nil
 	}
 
@@ -283,7 +283,7 @@ func (m *Manager) ensureAdminUser(ctx context.Context) error {
 
 	// Try to create admin user via SignUp
 	// SignUp will return error if user already exists
-	_, err := m.authService.SignUp(ctx, identity.SignupRequest{
+	_, err := m.accountService.SignUp(ctx, identity.SignupRequest{
 		Username: adminCfg.Username,
 		Password: adminCfg.Password,
 	})
@@ -305,7 +305,7 @@ func (m *Manager) ensureAdminUser(ctx context.Context) error {
 // The default database is owned by the system admin user.
 func (m *Manager) ensureDefaultDatabase(ctx context.Context) error {
 	// Skip if auth service is not initialized
-	if m.authService == nil {
+	if m.accountService == nil {
 		return nil
 	}
 
@@ -380,7 +380,7 @@ func (m *Manager) initAPIServer(queryService query.Service) error {
 
 	// Always initialize realtime server as part of gateway
 	m.rtServer = realtime.NewServer(queryService, streamerSvc, m.cfg.Storage.Topology.Document.DataCollection,
-		m.authService, m.cfg.Gateway.Realtime)
+		m.tokenVerifier, m.cfg.Gateway.Realtime)
 
 	// Build gateway server options
 	var gatewayOpts []gateway.ServerOption
@@ -389,7 +389,7 @@ func (m *Manager) initAPIServer(queryService query.Service) error {
 	}
 
 	// Register API routes to the unified server
-	m.gatewayServer, err = gateway.NewServer(queryService, m.authService, m.authService, authzEngine, m.rtServer, gatewayOpts...)
+	m.gatewayServer, err = gateway.NewServer(queryService, m.accountService, m.tokenVerifier, authzEngine, m.rtServer, gatewayOpts...)
 	if err != nil {
 		return fmt.Errorf("failed to create gateway server: %w", err)
 	}
@@ -579,7 +579,7 @@ func (m *Manager) initTriggerServicesStandalone(ctx context.Context) error {
 
 	deliverySvc, err := deliveryServiceFactory(delivery.Dependencies{
 		Consumer: consumer,
-		Auth:     m.authService,
+		Auth:     m.systemTokenIssuer,
 		Secrets:  nil,
 		Metrics:  nil,
 	}, m.cfg.Trigger.Delivery)
@@ -655,7 +655,7 @@ func (m *Manager) initTriggerServices(ctx context.Context) error {
 
 		deliverySvc, err := deliveryServiceFactory(delivery.Dependencies{
 			Consumer: consumer,
-			Auth:     m.authService,
+			Auth:     m.systemTokenIssuer,
 			Secrets:  nil,
 			Metrics:  nil,
 		}, m.cfg.Trigger.Delivery)

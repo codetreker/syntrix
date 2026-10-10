@@ -16,6 +16,7 @@ import (
 	"github.com/codetreker/syntrix/pkg/model"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 )
 
 // MockAuthStorage implements auth.StorageInterface
@@ -76,7 +77,7 @@ func (m *MockAuthStorage) RevokeTokenIfNotRevoked(ctx context.Context, jti strin
 func TestTriggerAuth(t *testing.T) {
 	// Setup Auth Service
 	mockStorage := new(MockAuthStorage)
-	authService, _ := authn.NewAuthService(identity_config.AuthNConfig{
+	authService, verifier, issuer, _ := authn.NewServices(identity_config.AuthNConfig{
 		PrivateKeyFile:  filepath.Join(t.TempDir(), "key.pem"),
 		AccessTokenTTL:  time.Hour,
 		RefreshTokenTTL: time.Hour,
@@ -85,7 +86,11 @@ func TestTriggerAuth(t *testing.T) {
 
 	// Setup Server
 	mockEngine := new(MockQueryService)
-	server := createTestServer(mockEngine, authService, nil)
+	handler, err := NewHandler(mockEngine, authService, verifier, new(AllowAllAuthzService))
+	require.NoError(t, err)
+	mux := http.NewServeMux()
+	handler.RegisterRoutes(mux)
+	server := &TestServer{Handler: handler, mux: mux}
 
 	mockStorage.On("GetUserByUsername", mock.Anything, "user1").Return(nil, identity.ErrUserNotFound)
 	mockStorage.On("CreateUser", mock.Anything, mock.Anything).Return(nil)
@@ -95,7 +100,7 @@ func TestTriggerAuth(t *testing.T) {
 		t.Fatalf("Failed to sign up: %v", err)
 	}
 
-	systemToken, _ := authService.GenerateSystemToken("trigger-worker")
+	systemToken, _ := issuer.GenerateSystemToken("trigger-worker")
 
 	t.Run("Reject No Token", func(t *testing.T) {
 		req := httptest.NewRequest("POST", "/trigger/v1/databases/default/get", nil)

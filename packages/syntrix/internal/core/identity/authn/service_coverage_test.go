@@ -114,7 +114,7 @@ func TestSignUp_Coverage(t *testing.T) {
 					RequireSpecial:   true,
 				},
 			}
-			svc, err := NewAuthService(cfg, mockStorage, mockStorage)
+			svc, err := newTestAccountService(cfg, mockStorage, mockStorage)
 			require.NoError(t, err)
 			authService := svc
 
@@ -149,14 +149,14 @@ func TestRefresh_Coverage(t *testing.T) {
 
 	tests := []struct {
 		name        string
-		setupToken  func(t *testing.T, svc *AuthService, m *MockStorage) string
+		setupToken  func(t *testing.T, svc *accountService, m *MockStorage) string
 		mockSetup   func(*MockStorage)
 		expectError bool
 		errorIs     error
 	}{
 		{
 			name: "Revoked Token",
-			setupToken: func(t *testing.T, svc *AuthService, m *MockStorage) string {
+			setupToken: func(t *testing.T, svc *accountService, m *MockStorage) string {
 				m.On("GetUserByUsername", mock.Anything, "revoked").Return(nil, ErrUserNotFound).Once()
 				m.On("CreateUser", mock.Anything, mock.Anything).Return(nil).Once()
 				resp, err := svc.SignUp(context.Background(), SignupRequest{
@@ -174,7 +174,7 @@ func TestRefresh_Coverage(t *testing.T) {
 		},
 		{
 			name: "Revocation Check Error",
-			setupToken: func(t *testing.T, svc *AuthService, m *MockStorage) string {
+			setupToken: func(t *testing.T, svc *accountService, m *MockStorage) string {
 				m.On("GetUserByUsername", mock.Anything, "reverr").Return(nil, ErrUserNotFound).Once()
 				m.On("CreateUser", mock.Anything, mock.Anything).Return(nil).Once()
 				resp, err := svc.SignUp(context.Background(), SignupRequest{
@@ -191,7 +191,7 @@ func TestRefresh_Coverage(t *testing.T) {
 		},
 		{
 			name: "User Not Found",
-			setupToken: func(t *testing.T, svc *AuthService, m *MockStorage) string {
+			setupToken: func(t *testing.T, svc *accountService, m *MockStorage) string {
 				m.On("GetUserByUsername", mock.Anything, "missing").Return(nil, ErrUserNotFound).Once()
 				m.On("CreateUser", mock.Anything, mock.Anything).Return(nil).Once()
 				resp, err := svc.SignUp(context.Background(), SignupRequest{
@@ -209,7 +209,7 @@ func TestRefresh_Coverage(t *testing.T) {
 		},
 		{
 			name: "User Disabled",
-			setupToken: func(t *testing.T, svc *AuthService, m *MockStorage) string {
+			setupToken: func(t *testing.T, svc *accountService, m *MockStorage) string {
 				m.On("GetUserByUsername", mock.Anything, "disabled").Return(nil, ErrUserNotFound).Once()
 				m.On("CreateUser", mock.Anything, mock.Anything).Return(nil).Once()
 				resp, err := svc.SignUp(context.Background(), SignupRequest{
@@ -234,7 +234,7 @@ func TestRefresh_Coverage(t *testing.T) {
 			t.Parallel()
 
 			mockStorage := new(MockStorage)
-			svc, err := NewAuthService(cfg, mockStorage, mockStorage)
+			svc, err := newTestAccountService(cfg, mockStorage, mockStorage)
 			require.NoError(t, err)
 
 			token := tt.setupToken(t, svc, mockStorage)
@@ -258,7 +258,7 @@ func TestRefresh_Coverage(t *testing.T) {
 	}
 }
 
-func TestNewAuthService_Coverage(t *testing.T) {
+func TestNewServices_Coverage(t *testing.T) {
 	// Force invalid key path by using an existing file as the parent directory
 	tmpDir := t.TempDir()
 	parentFile := filepath.Join(tmpDir, "parent-file")
@@ -268,7 +268,7 @@ func TestNewAuthService_Coverage(t *testing.T) {
 		PrivateKeyFile: filepath.Join(parentFile, "key.pem"),
 	}
 
-	svc, err := NewAuthService(cfg, nil, nil)
+	svc, err := newTestAccountService(cfg, nil, nil)
 	assert.Error(t, err)
 	assert.Nil(t, svc)
 }
@@ -283,7 +283,7 @@ func TestAuthService_Logout_Coverage(t *testing.T) {
 		PrivateKeyFile: keyFile,
 	}
 
-	svc, err := NewAuthService(cfg, nil, nil)
+	svc, err := newTestAccountService(cfg, nil, nil)
 	assert.NoError(t, err)
 
 	// Case 1: Invalid token

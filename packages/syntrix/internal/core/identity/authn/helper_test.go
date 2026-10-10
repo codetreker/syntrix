@@ -1,6 +1,7 @@
 package authn
 
 import (
+	"github.com/codetreker/syntrix/internal/core/identity/config"
 	"os"
 	"sync"
 	"testing"
@@ -29,4 +30,12 @@ func getTestKeyPath(t *testing.T) string {
 		}
 	})
 	return sharedKeyPath
+}
+
+func newTestAccountService(cfg config.AuthNConfig, users UserStore, revocations TokenRevocationStore) (*accountService, error) {
+	accounts, _, _, err := NewServices(cfg, users, revocations)
+	if err != nil {
+		return nil, err
+	}
+	return accounts.(*accountService), nil
 }

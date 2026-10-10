@@ -128,22 +128,20 @@ func LoadToken(tokenConfig string) (string, error) {
 }
 
 // GenerateBenchmarkToken generates a system token for benchmark usage.
-// It uses the existing TokenService from the identity package.
+// It uses the dedicated system-token issuer.
 func GenerateBenchmarkToken(keyFile string, serviceName string, ttl time.Duration) (string, error) {
 	// Create AuthN config with the specified key file and TTL
 	cfg := config.AuthNConfig{
-		AccessTokenTTL:  ttl,
-		RefreshTokenTTL: ttl, // Not used for system tokens, but required
-		AuthCodeTTL:     2 * time.Minute,
-		PrivateKeyFile:  keyFile,
+		AccessTokenTTL: ttl,
+		PrivateKeyFile: keyFile,
 	}
 
-	// Create token service
-	tokenService, err := authn.NewTokenService(cfg)
+	// Create system-token issuer
+	issuer, err := authn.NewSystemTokenIssuer(cfg)
 	if err != nil {
-		return "", fmt.Errorf("failed to create token service: %w", err)
+		return "", fmt.Errorf("failed to create system token issuer: %w", err)
 	}
 
 	// Generate system token
-	return tokenService.GenerateSystemToken(serviceName)
+	return issuer.GenerateSystemToken(serviceName)
 }

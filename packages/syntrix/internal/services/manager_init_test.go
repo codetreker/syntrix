@@ -105,7 +105,7 @@ func TestManager_InitAuthService_GenerateKey(t *testing.T) {
 
 	err := mgr.initAuthService(context.Background())
 	assert.NoError(t, err)
-	assert.NotNil(t, mgr.authService)
+	assert.NotNil(t, mgr.accountService)
 
 	_, statErr := os.Stat(cfg.Identity.AuthN.PrivateKeyFile)
 	assert.NoError(t, statErr)
@@ -124,7 +124,9 @@ func TestManager_InitAPIServer_WithRules(t *testing.T) {
 	cfg.Gateway.AuthZ.RulesPath = rulesDir
 
 	mgr := NewManager(cfg, Options{})
-	mgr.authService = &stubAuthN{}
+	mgr.accountService = &stubAuthN{}
+	mgr.tokenVerifier = &stubAuthN{}
+	mgr.systemTokenIssuer = &stubAuthN{}
 	querySvc := &stubQueryService{}
 
 	err := mgr.initAPIServer(querySvc)
@@ -141,7 +143,9 @@ func TestManager_InitAPIServer_NoRules(t *testing.T) {
 	cfg.Gateway.AuthZ.RulesPath = ""
 
 	mgr := NewManager(cfg, Options{})
-	mgr.authService = &stubAuthN{}
+	mgr.accountService = &stubAuthN{}
+	mgr.tokenVerifier = &stubAuthN{}
+	mgr.systemTokenIssuer = &stubAuthN{}
 	querySvc := &stubQueryService{}
 
 	err := mgr.initAPIServer(querySvc)
@@ -157,7 +161,9 @@ func TestManager_InitAPIServer_WithRealtime(t *testing.T) {
 	cfg.Server.HTTPPort = 0
 	cfg.Gateway.AuthZ.RulesPath = ""
 	mgr := NewManager(cfg, Options{})
-	mgr.authService = &stubAuthN{}
+	mgr.accountService = &stubAuthN{}
+	mgr.tokenVerifier = &stubAuthN{}
+	mgr.systemTokenIssuer = &stubAuthN{}
 
 	err := mgr.initAPIServer(&stubQueryService{})
 	assert.NoError(t, err)
@@ -213,7 +219,7 @@ func TestManager_Init_RunAuthPath(t *testing.T) {
 
 	err := mgr.Init(context.Background())
 	assert.NoError(t, err)
-	assert.NotNil(t, mgr.authService)
+	assert.NotNil(t, mgr.accountService)
 }
 
 func TestManager_Init_RunQueryPath(t *testing.T) {
@@ -876,7 +882,9 @@ func TestManager_initGateway(t *testing.T) {
 	server.InitDefault(cfg.Server, nil)
 
 	mgr := NewManager(cfg, Options{Mode: ModeDistributed, RunAPI: true})
-	mgr.authService = &stubAuthN{}
+	mgr.accountService = &stubAuthN{}
+	mgr.tokenVerifier = &stubAuthN{}
+	mgr.systemTokenIssuer = &stubAuthN{}
 
 	err := mgr.initGateway()
 	assert.NoError(t, err)
@@ -1346,7 +1354,7 @@ func TestManager_ensureAdminUser_NoAuthService(t *testing.T) {
 	cfg.Identity.Admin.Password = "TestPassword123!"
 
 	mgr := NewManager(cfg, Options{})
-	// authService is nil
+	// accountService is nil
 
 	// Should skip gracefully when no auth service
 	err := mgr.ensureAdminUser(context.Background())
@@ -1359,7 +1367,9 @@ func TestManager_ensureAdminUser_NoUsername(t *testing.T) {
 	cfg.Identity.Admin.Password = "TestPassword123!"
 
 	mgr := NewManager(cfg, Options{RunAPI: true})
-	mgr.authService = &stubAuthN{}
+	mgr.accountService = &stubAuthN{}
+	mgr.tokenVerifier = &stubAuthN{}
+	mgr.systemTokenIssuer = &stubAuthN{}
 
 	// Should skip gracefully when no username configured
 	err := mgr.ensureAdminUser(context.Background())
@@ -1372,7 +1382,9 @@ func TestManager_ensureAdminUser_NoPassword(t *testing.T) {
 	cfg.Identity.Admin.Password = ""
 
 	mgr := NewManager(cfg, Options{RunAPI: true})
-	mgr.authService = &stubAuthN{}
+	mgr.accountService = &stubAuthN{}
+	mgr.tokenVerifier = &stubAuthN{}
+	mgr.systemTokenIssuer = &stubAuthN{}
 
 	// Should skip gracefully when no password configured
 	err := mgr.ensureAdminUser(context.Background())
@@ -1628,7 +1640,7 @@ func TestManager_ensureDefaultDatabase_NoAuthService(t *testing.T) {
 	cfg.Identity.Admin.Username = "syntrix"
 
 	mgr := NewManager(cfg, Options{})
-	// authService is nil
+	// accountService is nil
 
 	// Should skip gracefully when no auth service
 	err := mgr.ensureDefaultDatabase(context.Background())
@@ -1640,7 +1652,9 @@ func TestManager_ensureDefaultDatabase_NoAdminUsername(t *testing.T) {
 	cfg.Identity.Admin.Username = ""
 
 	mgr := NewManager(cfg, Options{RunAPI: true})
-	mgr.authService = &stubAuthN{}
+	mgr.accountService = &stubAuthN{}
+	mgr.tokenVerifier = &stubAuthN{}
+	mgr.systemTokenIssuer = &stubAuthN{}
 
 	// Should skip gracefully when no admin username configured
 	err := mgr.ensureDefaultDatabase(context.Background())
@@ -1658,7 +1672,9 @@ func TestManager_ensureDefaultDatabase_StorageFactoryError(t *testing.T) {
 	cfg := config.LoadConfig()
 	cfg.Identity.Admin.Username = "syntrix"
 	mgr := NewManager(cfg, Options{RunAPI: true})
-	mgr.authService = &stubAuthN{}
+	mgr.accountService = &stubAuthN{}
+	mgr.tokenVerifier = &stubAuthN{}
+	mgr.systemTokenIssuer = &stubAuthN{}
 
 	err := mgr.ensureDefaultDatabase(context.Background())
 	assert.Error(t, err)
@@ -1682,7 +1698,9 @@ func TestManager_ensureDefaultDatabase_NoDatabaseStore(t *testing.T) {
 	cfg := config.LoadConfig()
 	cfg.Identity.Admin.Username = "syntrix"
 	mgr := NewManager(cfg, Options{RunAPI: true})
-	mgr.authService = &stubAuthN{}
+	mgr.accountService = &stubAuthN{}
+	mgr.tokenVerifier = &stubAuthN{}
+	mgr.systemTokenIssuer = &stubAuthN{}
 
 	// Should skip gracefully when database store not available
 	err := mgr.ensureDefaultDatabase(context.Background())
@@ -1711,7 +1729,9 @@ func TestManager_ensureDefaultDatabase_Success(t *testing.T) {
 	cfg := config.LoadConfig()
 	cfg.Identity.Admin.Username = "syntrix"
 	mgr := NewManager(cfg, Options{RunAPI: true})
-	mgr.authService = &stubAuthN{}
+	mgr.accountService = &stubAuthN{}
+	mgr.tokenVerifier = &stubAuthN{}
+	mgr.systemTokenIssuer = &stubAuthN{}
 
 	err := mgr.ensureDefaultDatabase(context.Background())
 	assert.NoError(t, err)

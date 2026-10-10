@@ -15,7 +15,7 @@ import (
 
 func TestAccountCommandsRequireOwnAdminActor(t *testing.T) {
 	store := new(MockStorage)
-	svc, err := NewAuthService(config.AuthNConfig{PrivateKeyFile: getTestKeyPath(t), AccessTokenTTL: time.Hour}, store, store)
+	svc, err := newTestAccountService(config.AuthNConfig{PrivateKeyFile: getTestKeyPath(t), AccessTokenTTL: time.Hour}, store, store)
 	require.NoError(t, err)
 	foreignVerifier, err := identity.NewVerifier(func(string) (*identity.Claims, error) { return &identity.Claims{Roles: []string{"admin"}}, nil })
 	require.NoError(t, err)
@@ -27,9 +27,9 @@ func TestAccountCommandsRequireOwnAdminActor(t *testing.T) {
 		assert.ErrorIs(t, svc.UpdateUser(context.Background(), actor, "target", []string{"admin"}, nil, true), identity.ErrAdminRequired)
 	}
 	for _, roles := range [][]string{{"user"}, {"Admin"}, {"SYSTEM"}, {"admin"}, {"system"}} {
-		tokenPair, err := svc.tokenService.GenerateTokenPair(&User{ID: "actor", Roles: roles})
+		tokenPair, err := svc.signer.generateTokenPair(&User{ID: "actor", Roles: roles})
 		require.NoError(t, err)
-		actor, err := svc.VerifyToken(tokenPair.AccessToken)
+		actor, err := svc.verifier.VerifyToken(tokenPair.AccessToken)
 		require.NoError(t, err)
 		projection := actor.Claims()
 		projection.Roles[0] = "admin"
@@ -50,7 +50,7 @@ func TestAccountCommandsRequireOwnAdminActor(t *testing.T) {
 
 func TestAccountUserViewIsDetached(t *testing.T) {
 	store := new(MockStorage)
-	svc, err := NewAuthService(config.AuthNConfig{PrivateKeyFile: getTestKeyPath(t), AccessTokenTTL: time.Hour}, store, store)
+	svc, err := newTestAccountService(config.AuthNConfig{PrivateKeyFile: getTestKeyPath(t), AccessTokenTTL: time.Hour}, store, store)
 	require.NoError(t, err)
 	actor := systemActor(t, svc)
 	now := time.Now()
