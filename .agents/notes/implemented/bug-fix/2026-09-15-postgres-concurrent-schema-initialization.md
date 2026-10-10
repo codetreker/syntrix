@@ -44,12 +44,13 @@ transaction snapshot. Lock acquisition and DDL are separate commands so that DDL
 started after a lock wait observes the preceding initializer's commit.
 PostgreSQL releases the lock when the transaction commits or rolls back.
 
-The Factory propagates its caller's context through `PingContext`, authentication
-initialization, and database metadata initialization. The standard CLI startup
-shares its existing 10-second initialization deadline across these operations;
+The physical backend owner propagates the runtime caller's context through
+`PingContext`; Identity runtime and catalog construction use that context for
+their schema initialization. The standard CLI startup shares its existing
+10-second initialization deadline across these operations;
 the helper adds no separate default timeout. Each entry point commits its own DDL
-unit, and the Factory succeeds only after all required initialization succeeds.
-Errors retain their cause, including cancellation and rollback errors.
+unit, and usable module construction succeeds only after its required
+initialization succeeds. Errors retain their cause, including cancellation and rollback errors.
 
 The [PostgreSQL storage design](../../../../docs/design/server/core/storage/06.user-store-postgres.md#7-schema-initialization)
 owns the startup contract. PostgreSQL documents
@@ -79,8 +80,8 @@ framework or configuration change.
 - Waiting consumes the caller's initialization budget. Cancellation and DDL
   failure remain observable, roll back that entry point, and release its lock.
 - Earlier successful entry points can remain committed if a later one fails.
-  The failed Factory does not report successful initialization; a subsequent
-  attempt can safely repeat the committed setup.
+  Failed module construction does not report successful initialization; a
+  subsequent attempt can safely repeat the committed setup.
 - Table and index definitions, CRUD behavior, and schema resolution are
   unchanged. There are no new dependencies, configuration options, or data
   migrations.

@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/codetreker/syntrix/internal/core/identity/authn"
-	"github.com/codetreker/syntrix/internal/core/identity/config"
+	"github.com/codetreker/syntrix/internal/identity/authn"
+	"github.com/codetreker/syntrix/internal/identity/config"
 )
 
 // TokenSource represents a source for authentication tokens.

@@ -3,40 +3,9 @@ package types
 import (
 	"context"
 	"errors"
-	"time"
 
-	"github.com/codetreker/syntrix/internal/identity"
 	"github.com/codetreker/syntrix/pkg/model"
 )
-
-var (
-	ErrUserNotFound = identity.ErrUserNotFound
-	ErrUserExists   = identity.ErrUserExists
-)
-
-// User represents a user in the system
-type User struct {
-	ID            string                 `json:"id"`
-	Username      string                 `json:"username"`
-	PasswordHash  string                 `json:"password_hash"`
-	PasswordAlgo  string                 `json:"password_algo"` // "argon2id" or "bcrypt"
-	CreatedAt     time.Time              `json:"createdAt"`
-	UpdatedAt     time.Time              `json:"updatedAt"`
-	Disabled      bool                   `json:"disabled"`
-	Roles         []string               `json:"roles"`
-	DBAdmin       []string               `json:"db_admin"` // Databases with admin access
-	Profile       map[string]interface{} `json:"profile"`
-	LastLoginAt   time.Time              `json:"last_login_at"`
-	LoginAttempts int                    `json:"login_attempts"`
-	LockoutUntil  time.Time              `json:"lockout_until"`
-}
-
-// RevokedToken represents a revoked JWT
-type RevokedToken struct {
-	JTI       string    `bson:"_id"`
-	ExpiresAt time.Time `bson:"expires_at"`
-	RevokedAt time.Time `bson:"revoked_at"`
-}
 
 // StoredDoc represents a stored document in the database
 type StoredDoc struct {
@@ -184,44 +153,9 @@ type SourceScanPage struct {
 
 var ErrSourceScanBudget = errors.New("source candidate byte budget exceeded")
 
-// UserStore defines the interface for user storage operations
-type UserStore interface {
-	CreateUser(ctx context.Context, user *User) error
-	GetUserByUsername(ctx context.Context, username string) (*User, error)
-	GetUserByID(ctx context.Context, id string) (*User, error)
-	ListUsers(ctx context.Context, limit int, offset int) ([]*User, error)
-	UpdateUser(ctx context.Context, user *User) error
-	UpdateUserLoginStats(ctx context.Context, id string, lastLogin time.Time, attempts int, lockoutUntil time.Time) error
-	EnsureIndexes(ctx context.Context) error
-	Close(ctx context.Context) error
-}
-
-// ErrTokenAlreadyRevoked is returned when attempting to revoke an already-revoked token.
-var ErrTokenAlreadyRevoked = errors.New("token already revoked")
-
-// TokenRevocationStore defines the interface for token revocation storage operations
-type TokenRevocationStore interface {
-	RevokeToken(ctx context.Context, jti string, expiresAt time.Time) error
-	RevokeTokenImmediate(ctx context.Context, jti string, expiresAt time.Time) error
-	// RevokeTokenIfNotRevoked atomically checks if token is revoked and revokes it.
-	// Returns ErrTokenAlreadyRevoked if the token was already revoked (within grace period).
-	// This prevents race conditions in concurrent token refresh attempts.
-	RevokeTokenIfNotRevoked(ctx context.Context, jti string, expiresAt time.Time, gracePeriod time.Duration) error
-	IsRevoked(ctx context.Context, jti string, gracePeriod time.Duration) (bool, error)
-	EnsureIndexes(ctx context.Context) error
-	Close(ctx context.Context) error
-}
-
 // DocumentProvider provides access to DocumentStore
 type DocumentProvider interface {
 	Document() DocumentStore
-	Close(ctx context.Context) error
-}
-
-// AuthProvider provides access to UserStore and TokenRevocationStore
-type AuthProvider interface {
-	Users() UserStore
-	Revocations() TokenRevocationStore
 	Close(ctx context.Context) error
 }
 
@@ -237,27 +171,9 @@ const (
 	OpWatch
 )
 
-// Router defines the interface for selecting stores based on operation
-// Deprecated: Use specific routers instead
-type Router interface {
-	SelectDocument(op OpKind) DocumentStore
-	SelectUser(op OpKind) UserStore
-	SelectRevocation(op OpKind) TokenRevocationStore
-}
-
 // DocumentRouter routes document operations
 type DocumentRouter interface {
 	Select(database string, op OpKind) (DocumentStore, error)
-}
-
-// UserRouter routes user operations
-type UserRouter interface {
-	Select(database string, op OpKind) (UserStore, error)
-}
-
-// RevocationRouter routes revocation operations
-type RevocationRouter interface {
-	Select(database string, op OpKind) (TokenRevocationStore, error)
 }
 
 // EventType represents the type of change

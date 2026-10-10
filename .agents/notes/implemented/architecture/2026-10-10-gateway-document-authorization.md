@@ -17,9 +17,10 @@ under `internal/gateway/authorization`. Manager constructs
 `authorization.NewEngine(config, queryService)` separately from Identity account
 and token contracts. Gateway projects the existing user ID, username, roles,
 `db_admin`, and full claims into authorization inputs. Account/password/JWT
-implementation remains in `core/identity/authn` with current user/revocation
-stores; transport-free contracts live in `internal/identity`. Neither owns the
-Query-backed document-rule evaluator.
+implementation remains in `identity/authn` with current user/revocation
+stores; transport-free contracts live in `internal/identity`. Identity runtime
+owns repository/capability composition through borrowed physical Backends. Neither
+account logic nor repositories own the Query-backed document-rule evaluator.
 
 Each module owns its configuration type, defaults, path resolution, and
 validation. `internal/gateway/config.GatewayConfig.AuthZ` composes
@@ -40,8 +41,9 @@ boundary within the broader [instance architecture](../../proposed/architecture/
 The [Identity contract decision](2026-10-10-identity-contracts-and-gateway-authentication.md)
 owns the later account/verifier/issuer capability separation, safe user views,
 and Gateway authentication adapter. The broader proposal remains active for
-repository/runtime composition, verification-key distribution, project realms,
-sessions, deployment, and both OAuth roles. The
+verification-key distribution, project realms, sessions, deployment, and both
+OAuth roles. The [repository/runtime decision](2026-10-10-identity-repository-and-runtime-ownership.md)
+owns the later module and borrowed-backend composition. The
 [token capability decision](2026-10-10-identity-token-capabilities.md) owns the
 later concrete signer/issuer/public-verifier separation; current process
 assembly still loads private keys for local issuing capabilities.
@@ -76,5 +78,6 @@ that ownership.
   YAML layout; deployment overrides require the documented rule-path move.
   Account contracts and the Gateway authentication adapter follow the Identity
   contract decision; concrete token capabilities follow their own decision.
-  Store/runtime separation, key distribution, and new Identity capabilities
-  retain separate delivery gates.
+  Repository/runtime ownership follows its own decision; key distribution,
+  independent deployment, and new Identity capabilities retain separate delivery
+  gates.

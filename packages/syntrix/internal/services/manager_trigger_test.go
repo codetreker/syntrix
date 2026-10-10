@@ -45,6 +45,7 @@ func (m *mockTriggerPuller) ReplayFromAdmission(ctx context.Context, after map[s
 
 // setupTriggerTestFactories saves and restores all trigger-related factories
 func setupTriggerTestFactories(t *testing.T) func() {
+	setupManagerFactories(t)
 	origStorageFactory := storageFactoryFactory
 	origEvalFactory := evaluatorServiceFactory
 	origDeliveryFactory := deliveryServiceFactory
@@ -66,7 +67,7 @@ func TestManager_InitTriggerServices_EvaluatorSuccess(t *testing.T) {
 	restore := setupTriggerTestFactories(t)
 	defer restore()
 
-	storageFactoryFactory = func(ctx context.Context, cfg *config.Config) (storage.StorageFactory, error) {
+	storageFactoryFactory = func(ctx context.Context, cfg *config.Config, backends *storage.Backends) (storage.StorageFactory, error) {
 		return &fakeStorageFactory{}, nil
 	}
 
@@ -98,7 +99,7 @@ func TestManager_InitTriggerServices_DeliverySuccess(t *testing.T) {
 	restore := setupTriggerTestFactories(t)
 	defer restore()
 
-	storageFactoryFactory = func(ctx context.Context, cfg *config.Config) (storage.StorageFactory, error) {
+	storageFactoryFactory = func(ctx context.Context, cfg *config.Config, backends *storage.Backends) (storage.StorageFactory, error) {
 		return &fakeStorageFactory{}, nil
 	}
 
@@ -126,7 +127,7 @@ func TestManager_InitTriggerServices_BothServices(t *testing.T) {
 	restore := setupTriggerTestFactories(t)
 	defer restore()
 
-	storageFactoryFactory = func(ctx context.Context, cfg *config.Config) (storage.StorageFactory, error) {
+	storageFactoryFactory = func(ctx context.Context, cfg *config.Config, backends *storage.Backends) (storage.StorageFactory, error) {
 		return &fakeStorageFactory{}, nil
 	}
 
@@ -166,7 +167,7 @@ func TestManager_InitTriggerServices_EvaluatorError(t *testing.T) {
 	restore := setupTriggerTestFactories(t)
 	defer restore()
 
-	storageFactoryFactory = func(ctx context.Context, cfg *config.Config) (storage.StorageFactory, error) {
+	storageFactoryFactory = func(ctx context.Context, cfg *config.Config, backends *storage.Backends) (storage.StorageFactory, error) {
 		return &fakeStorageFactory{}, nil
 	}
 
@@ -190,7 +191,7 @@ func TestManager_InitTriggerServices_DeliveryError(t *testing.T) {
 	restore := setupTriggerTestFactories(t)
 	defer restore()
 
-	storageFactoryFactory = func(ctx context.Context, cfg *config.Config) (storage.StorageFactory, error) {
+	storageFactoryFactory = func(ctx context.Context, cfg *config.Config, backends *storage.Backends) (storage.StorageFactory, error) {
 		return &fakeStorageFactory{}, nil
 	}
 
@@ -244,7 +245,7 @@ triggers:
 	restore := setupTriggerTestFactories(t)
 	defer restore()
 
-	storageFactoryFactory = func(ctx context.Context, cfg *config.Config) (storage.StorageFactory, error) {
+	storageFactoryFactory = func(ctx context.Context, cfg *config.Config, backends *storage.Backends) (storage.StorageFactory, error) {
 		return &fakeStorageFactory{}, nil
 	}
 
@@ -275,7 +276,7 @@ func TestManager_InitTriggerServices_PublisherError(t *testing.T) {
 	restore := setupTriggerTestFactories(t)
 	defer restore()
 
-	storageFactoryFactory = func(ctx context.Context, cfg *config.Config) (storage.StorageFactory, error) {
+	storageFactoryFactory = func(ctx context.Context, cfg *config.Config, backends *storage.Backends) (storage.StorageFactory, error) {
 		return &fakeStorageFactory{}, nil
 	}
 
@@ -297,7 +298,7 @@ func TestManager_InitTriggerServices_ConsumerError(t *testing.T) {
 	restore := setupTriggerTestFactories(t)
 	defer restore()
 
-	storageFactoryFactory = func(ctx context.Context, cfg *config.Config) (storage.StorageFactory, error) {
+	storageFactoryFactory = func(ctx context.Context, cfg *config.Config, backends *storage.Backends) (storage.StorageFactory, error) {
 		return &fakeStorageFactory{}, nil
 	}
 
@@ -321,7 +322,7 @@ func TestManager_InitTriggerServices_Distributed_EvaluatorSuccess(t *testing.T) 
 	restore := setupTriggerTestFactories(t)
 	defer restore()
 
-	storageFactoryFactory = func(ctx context.Context, cfg *config.Config) (storage.StorageFactory, error) {
+	storageFactoryFactory = func(ctx context.Context, cfg *config.Config, backends *storage.Backends) (storage.StorageFactory, error) {
 		return &fakeStorageFactory{}, nil
 	}
 
@@ -350,7 +351,7 @@ func TestManager_InitTriggerServices_Distributed_EvaluatorPublisherError(t *test
 	restore := setupTriggerTestFactories(t)
 	defer restore()
 
-	storageFactoryFactory = func(ctx context.Context, cfg *config.Config) (storage.StorageFactory, error) {
+	storageFactoryFactory = func(ctx context.Context, cfg *config.Config, backends *storage.Backends) (storage.StorageFactory, error) {
 		return &fakeStorageFactory{}, nil
 	}
 
@@ -374,7 +375,7 @@ func TestManager_InitTriggerServices_Distributed_EvaluatorServiceError(t *testin
 	restore := setupTriggerTestFactories(t)
 	defer restore()
 
-	storageFactoryFactory = func(ctx context.Context, cfg *config.Config) (storage.StorageFactory, error) {
+	storageFactoryFactory = func(ctx context.Context, cfg *config.Config, backends *storage.Backends) (storage.StorageFactory, error) {
 		return &fakeStorageFactory{}, nil
 	}
 
@@ -401,7 +402,7 @@ func TestManager_InitTriggerServices_Standalone_UsesMemoryPubsub(t *testing.T) {
 	restore := setupTriggerTestFactories(t)
 	defer restore()
 
-	storageFactoryFactory = func(ctx context.Context, cfg *config.Config) (storage.StorageFactory, error) {
+	storageFactoryFactory = func(ctx context.Context, cfg *config.Config, backends *storage.Backends) (storage.StorageFactory, error) {
 		return &fakeStorageFactory{}, nil
 	}
 

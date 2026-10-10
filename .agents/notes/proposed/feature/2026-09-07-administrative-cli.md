@@ -10,7 +10,7 @@ specifies rule publication, dry-run, rollback, version listing, and account
 administration commands. Operators cannot perform those workflows through the
 CLI. This is an unfinished client interface; it does not establish that every
 underlying server capability is missing. User listing and status updates, for
-example, already exist in the [authentication service](../../../../packages/syntrix/internal/core/identity/authn/service.go).
+example, already exist in the [authentication service](../../../../packages/syntrix/internal/identity/authn/service.go).
 
 ## Proposal
 

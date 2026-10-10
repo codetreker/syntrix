@@ -6,9 +6,9 @@ import (
 	"path/filepath"
 
 	"github.com/codetreker/syntrix/internal/core/database"
-	identity "github.com/codetreker/syntrix/internal/core/identity/config"
 	storage "github.com/codetreker/syntrix/internal/core/storage/config"
 	api "github.com/codetreker/syntrix/internal/gateway/config"
+	identity "github.com/codetreker/syntrix/internal/identity/config"
 	indexer "github.com/codetreker/syntrix/internal/indexer/config"
 	puller "github.com/codetreker/syntrix/internal/puller/config"
 	query "github.com/codetreker/syntrix/internal/query/config"

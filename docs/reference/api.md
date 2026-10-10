@@ -22,8 +22,9 @@ these paths.
 
 ## Authentication
 
-Current authentication uses RS256 JWTs issued by the instance's embedded AuthN
-service. Signup/login accept username and password without a database or project
+Current authentication uses RS256 JWTs issued by the instance Identity module.
+Its local runtime owns account/repository composition, while Gateway owns the
+HTTP Bearer adapter; this does not add an independently deployed Identity API. Signup/login accept username and password without a database or project
 selector. Database selection belongs to data-request paths. Existing instance
 `admin`/`db_admin` claims are current runtime permissions, not Console developer
 or Management employee credentials. The

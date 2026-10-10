@@ -13,7 +13,7 @@ account/instance operations in Console and employee platform operations in
 Management; each authority domain needs its own audit ownership.
 
 Static inspection of
-[authentication](../../../../packages/syntrix/internal/core/identity/authn/service.go) and
+[authentication](../../../../packages/syntrix/internal/identity/authn/service.go) and
 [admin handlers](../../../../packages/syntrix/internal/gateway/rest/handler_admin.go) finds operation
 execution and diagnostic logging, without a durable audit store or query API.
 Logs alone do not establish which administrative operation completed after a

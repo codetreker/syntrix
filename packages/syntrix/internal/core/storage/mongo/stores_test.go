@@ -16,15 +16,6 @@ func TestNewDocumentStore(t *testing.T) {
 	assert.NotNil(t, store)
 }
 
-func TestRevocationStore_Close(t *testing.T) {
-	env := setupTestEnv(t)
-	ctx := context.Background()
-
-	store := NewRevocationStore(env.DB, "")
-	err := store.Close(ctx)
-	assert.NoError(t, err)
-}
-
 func TestDocumentStore_Close(t *testing.T) {
 	// Create a dedicated client for this test to avoid closing the global one
 	ctx := context.Background()

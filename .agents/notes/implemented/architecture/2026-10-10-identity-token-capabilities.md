@@ -16,7 +16,7 @@ future composition of verification-only consumers and issuing services.
 `authn.NewServices(config, users, revocations)` constructs separate account,
 shared verifier, and system-token-issuer capabilities. The account service,
 user-token signer, and system-token issuer are unexported implementations under
-`core/identity/authn`. Accounts retain user signing and validation needed for
+`identity/authn`. Accounts retain user signing and validation needed for
 existing signin, signup, refresh, logout, and administrative operations. Manager
 holds distinct capabilities and passes the same verifier to account
 administration and Gateway.
@@ -39,10 +39,11 @@ OAuth endpoint is introduced.
 
 Current API and Trigger Worker process assembly still constructs local issuing
 capabilities and loads the configured private key. A verification-only object is
-not a private-key-free process deployment. Repository ownership, implementation
-placement, verification-key distribution, and independent Identity service
-composition retain separate delivery gates. Identity/Gateway module-owned
-configuration and the `gateway.authz` rule setting remain unchanged.
+not a private-key-free process deployment. The
+[repository/runtime decision](2026-10-10-identity-repository-and-runtime-ownership.md)
+owns current module placement and borrowed-backend composition. Verification-key
+distribution and independent Identity service deployment retain separate delivery
+gates. Identity/Gateway module-owned configuration and the `gateway.authz` rule setting remain unchanged.
 
 The [Identity architecture](../../../../docs/design/server/core/identity/01.architecture.md)
 and [authentication design](../../../../docs/design/server/core/identity/02.authentication.md)
@@ -52,8 +53,8 @@ retains its account/adapter, safe-view, and verified-actor rationale; the
 [Gateway authorization decision](2026-10-10-gateway-document-authorization.md)
 retains CEL/configuration ownership. The broader
 [platform/instance proposal](../../proposed/architecture/2026-10-10-platform-console-instance-boundaries.md)
-remains active for repository/runtime separation, key distribution, project
-identity, sessions, independent deployment, and both OAuth roles.
+remains active for key distribution, project identity, sessions, independent
+deployment, and both OAuth roles.
 
 ## Alternatives
 
@@ -84,7 +85,7 @@ making the eventual verification-only dependency possible.
   and SDK session semantics remain unchanged; no extra account-state or
   revocation checks are added to ordinary verification.
 - API/Trigger Worker startup still loads private keys for local issuance. Key
-  distribution and repository/runtime extraction remain necessary before a
+  distribution and independent process composition remain necessary before a
   private-key-free deployment can be claimed.
 - Project realms, PostgreSQL sessions/revocations, OAuth/OIDC issuer and external
   login, and other new user capabilities remain governed by their existing

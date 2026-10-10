@@ -167,7 +167,7 @@ queue. Go requires the version declared by `packages/syntrix/go.mod`.
 |---|---|---|
 | Platform Management | A cluster-control proposal exists; the Go Manager provides process composition | Employee-facing platform scheduling, monitoring, and resource management |
 | Console | `packages/console` is an instance administration frontend currently served by Gateway at `/console/` | A developer-facing service managing developer-owned instances |
-| Identity | Transport-free `internal/identity` contracts with embedded `core/identity/authn` username/password/JWT implementation and Gateway HTTP adapters | A peer instance Identity module with project-scoped accounts and both OAuth/OIDC roles |
+| Identity | `internal/identity` owns current account/authn/config/repositories/runtime and narrow capabilities; Gateway owns HTTP adapters | A peer instance Identity service with project-scoped accounts and both OAuth/OIDC roles |
 | Account scope | One runtime-global user model combines roles and database administration | Separate platform employee, Console developer, and project end-user domains |
 | System storage | PostgreSQL stores users and database metadata; revocation currently uses MongoDB | Instance system data, including identity/OAuth/session state, belongs in PostgreSQL |
 | Project hierarchy | Existing database metadata and APIs have no project identity realm | Instance-owned projects, project-owned identity realms, and multiple databases per project |
@@ -197,8 +197,17 @@ separate the concrete account service, user-token signer, system-token issuer,
 and public-key verifier. The verifier holds only a detached public key; Manager
 shares it with Gateway and administrative account operations. Current local
 API/Trigger Worker composition still loads the configured private key for
-issuing capabilities. Repository/runtime extraction, key distribution, and
-project/OAuth capabilities remain distinct from these delivered boundaries.
+issuing capabilities.
+
+[Identity repository/runtime ownership](../.agents/notes/implemented/architecture/2026-10-10-identity-repository-and-runtime-ownership.md)
+completes extraction of existing account logic, configuration, repositories,
+and administrator bootstrap into the Identity module. Its runtime and the
+document/catalog factory borrow named connections from the shared physical
+Backends owner, closed once by Manager after consumers stop. Default catalog
+bootstrap resolves its owner through Identity only after confirming no default
+row exists. Current account IDs, storage, JWTs, grants, and configuration retain
+their behavior; key distribution, project/session/OAuth capabilities, and
+independent deployment remain target work.
 
 The existing database metadata ID and document namespace are also distinct in
 parts of the runtime. A project binding or module extraction must not silently

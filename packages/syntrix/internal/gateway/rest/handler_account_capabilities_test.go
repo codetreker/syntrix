@@ -8,10 +8,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codetreker/syntrix/internal/core/identity/authn"
-	identityconfig "github.com/codetreker/syntrix/internal/core/identity/config"
-	"github.com/codetreker/syntrix/internal/core/storage"
 	"github.com/codetreker/syntrix/internal/identity"
+	"github.com/codetreker/syntrix/internal/identity/authn"
+	identityconfig "github.com/codetreker/syntrix/internal/identity/config"
+	"github.com/codetreker/syntrix/internal/identity/repository"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
@@ -27,7 +27,7 @@ func TestGatewayAdminUsesAccountVerifierAuthority(t *testing.T) {
 	handler.RegisterRoutes(mux)
 	token, err := issuer.GenerateSystemToken("gateway-admin")
 	require.NoError(t, err)
-	store.On("ListUsers", mock.Anything, 50, 0).Return([]*storage.User{{ID: "user", PasswordHash: "secret", PasswordAlgo: "argon2id"}}, nil).Once()
+	store.On("ListUsers", mock.Anything, 50, 0).Return([]*repository.UserRecord{{ID: "user", PasswordHash: "secret", PasswordAlgo: "argon2id"}}, nil).Once()
 	request := httptest.NewRequest(http.MethodGet, "/admin/users", nil)
 	request.Header.Set("Authorization", "Bearer "+token)
 	response := httptest.NewRecorder()

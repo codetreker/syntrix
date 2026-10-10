@@ -2,8 +2,10 @@ package services
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
+	"time"
 
 	indexerv1 "github.com/codetreker/syntrix/api/gen/indexer/v1"
 	pullerv1 "github.com/codetreker/syntrix/api/gen/puller/v1"
@@ -11,15 +13,16 @@ import (
 	streamerv1 "github.com/codetreker/syntrix/api/gen/streamer/v1"
 	"github.com/codetreker/syntrix/internal/config"
 	"github.com/codetreker/syntrix/internal/core/database"
-	"github.com/codetreker/syntrix/internal/core/identity/authn"
 	"github.com/codetreker/syntrix/internal/core/pubsub"
 	"github.com/codetreker/syntrix/internal/core/pubsub/memory"
 	pubsubnats "github.com/codetreker/syntrix/internal/core/pubsub/nats"
 	"github.com/codetreker/syntrix/internal/core/storage"
+	storageconfig "github.com/codetreker/syntrix/internal/core/storage/config"
 	"github.com/codetreker/syntrix/internal/gateway"
 	"github.com/codetreker/syntrix/internal/gateway/authorization"
 	"github.com/codetreker/syntrix/internal/gateway/realtime"
-	"github.com/codetreker/syntrix/internal/identity"
+	identityconfig "github.com/codetreker/syntrix/internal/identity/config"
+	identityruntime "github.com/codetreker/syntrix/internal/identity/runtime"
 	"github.com/codetreker/syntrix/internal/indexer"
 	"github.com/codetreker/syntrix/internal/puller"
 	"github.com/codetreker/syntrix/internal/query"
@@ -29,8 +32,14 @@ import (
 	"github.com/codetreker/syntrix/internal/trigger/evaluator"
 )
 
-var storageFactoryFactory = func(ctx context.Context, cfg *config.Config) (storage.StorageFactory, error) {
-	return storage.NewFactory(ctx, cfg.Storage)
+var storageBackendsFactory = func(ctx context.Context, cfg *config.Config) (*storage.Backends, error) {
+	return storage.NewBackends(ctx, cfg.Storage)
+}
+var identityModuleFactory = func(ctx context.Context, cfg identityconfig.Config, persistence storageconfig.Config, backends *storage.Backends) (identityModule, error) {
+	return identityruntime.NewModule(ctx, cfg, persistence, backends)
+}
+var storageFactoryFactory = func(ctx context.Context, cfg *config.Config, backends *storage.Backends) (storage.StorageFactory, error) {
+	return storage.NewFactory(ctx, cfg.Storage, backends)
 }
 
 // evaluatorServiceFactory creates evaluator services - injectable for testing
@@ -48,7 +57,14 @@ var pubsubProviderFactory = func(url string) (pubsub.Provider, error) {
 	return pubsubnats.NewProvider(url)
 }
 
-func (m *Manager) Init(ctx context.Context) error {
+func (m *Manager) Init(ctx context.Context) (initErr error) {
+	defer func() {
+		if initErr != nil {
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			initErr = errors.Join(initErr, m.shutdown(cleanupCtx))
+		}
+	}()
 	slog.Info("Initializing Service Manager", "mode", m.opts.Mode)
 
 	// Common infrastructure initialization
@@ -224,7 +240,12 @@ func (m *Manager) getStorageFactory(ctx context.Context) (storage.StorageFactory
 	}
 
 	m.storageFactoryOnce.Do(func() {
-		m.storageFactory, m.storageFactoryErr = storageFactoryFactory(ctx, m.cfg)
+		backends, err := m.getBackends(ctx)
+		if err != nil {
+			m.storageFactoryErr = err
+			return
+		}
+		m.storageFactory, m.storageFactoryErr = storageFactoryFactory(ctx, m.cfg, backends)
 		if m.storageFactoryErr == nil {
 			slog.Info("Connected to Storage successfully")
 		}
@@ -237,6 +258,11 @@ func (m *Manager) getStorageFactory(ctx context.Context) (storage.StorageFactory
 	return m.storageFactory, nil
 }
 
+func (m *Manager) getBackends(ctx context.Context) (*storage.Backends, error) {
+	m.backendsOnce.Do(func() { m.backends, m.backendsErr = storageBackendsFactory(ctx, m.cfg) })
+	return m.backends, m.backendsErr
+}
+
 func (m *Manager) initAuthService(ctx context.Context) error {
 	// Determine if auth service is needed
 	// - Standalone mode: always needed
@@ -246,59 +272,27 @@ func (m *Manager) initAuthService(ctx context.Context) error {
 		return nil
 	}
 
-	sf, err := m.getStorageFactory(ctx)
+	backends, err := m.getBackends(ctx)
 	if err != nil {
 		return err
 	}
-
-	var authErr error
-	m.accountService, m.tokenVerifier, m.systemTokenIssuer, authErr = authn.NewServices(m.cfg.Identity.AuthN, sf.User(), sf.Revocation())
-	if authErr != nil {
-		return fmt.Errorf("failed to create auth service: %w", authErr)
+	module, err := identityModuleFactory(ctx, m.cfg.Identity, m.cfg.Storage, backends)
+	if err != nil {
+		return fmt.Errorf("failed to create auth service: %w", err)
 	}
-
+	m.identityModule = module
+	m.accountService = module.Accounts()
+	m.tokenVerifier = module.Verifier()
+	m.systemTokenIssuer = module.SystemTokenIssuer()
 	slog.Info("Initialized Auth Service")
 	return nil
 }
 
-// ensureAdminUser creates the system admin user if it doesn't exist.
-// The admin username and initial password are read from the identity.admin config.
 func (m *Manager) ensureAdminUser(ctx context.Context) error {
-	// Skip if auth service is not initialized (no API or trigger worker)
-	if m.accountService == nil {
+	if m.identityModule == nil {
 		return nil
 	}
-
-	adminCfg := m.cfg.Identity.Admin
-	if adminCfg.Username == "" {
-		slog.Debug("Admin user initialization skipped: no username configured")
-		return nil
-	}
-
-	if adminCfg.Password == "" {
-		slog.Warn("Admin user initialization skipped: no password configured",
-			"username", adminCfg.Username)
-		return nil
-	}
-
-	// Try to create admin user via SignUp
-	// SignUp will return error if user already exists
-	_, err := m.accountService.SignUp(ctx, identity.SignupRequest{
-		Username: adminCfg.Username,
-		Password: adminCfg.Password,
-	})
-
-	if err != nil {
-		// User already exists is expected, not an error
-		if err.Error() == "user already exists" {
-			slog.Debug("Admin user already exists", "username", adminCfg.Username)
-			return nil
-		}
-		return fmt.Errorf("failed to create admin user: %w", err)
-	}
-
-	slog.Info("Created admin user", "username", adminCfg.Username)
-	return nil
+	return m.identityModule.EnsureAdmin(ctx)
 }
 
 // ensureDefaultDatabase creates the default database if it doesn't exist.
@@ -327,7 +321,7 @@ func (m *Manager) ensureDefaultDatabase(ctx context.Context) error {
 		return nil
 	}
 
-	return database.EnsureDefaultDatabase(ctx, dbStore, sf.User(), database.BootstrapConfig{
+	return database.EnsureDefaultDatabase(ctx, dbStore, m.identityModule.ResolveOwner, database.BootstrapConfig{
 		AdminUsername: adminCfg.Username,
 	})
 }
@@ -468,7 +462,7 @@ func (m *Manager) initGateway() error {
 func (m *Manager) initPullerService(ctx context.Context) error {
 	slog.Info("Initializing Change Stream Puller Service...")
 
-	sf, err := m.getStorageFactory(ctx)
+	backends, err := m.getBackends(ctx)
 	if err != nil {
 		return err
 	}
@@ -478,7 +472,7 @@ func (m *Manager) initPullerService(ctx context.Context) error {
 
 	// 2. Add Backends
 	for _, backendCfg := range m.cfg.Puller.Backends {
-		client, dbName, err := sf.GetMongoClient(backendCfg.Name)
+		client, dbName, err := backends.GetMongoClient(backendCfg.Name)
 		if err != nil {
 			return fmt.Errorf("failed to get mongo client for backend %s: %w", backendCfg.Name, err)
 		}

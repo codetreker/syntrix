@@ -5,6 +5,7 @@ import (
 	"os"
 	"time"
 
+	identityconfig "github.com/codetreker/syntrix/internal/identity/config"
 	services "github.com/codetreker/syntrix/internal/services/config"
 )
 
@@ -25,9 +26,9 @@ type BackendConfig struct {
 }
 
 type TopologyConfig struct {
-	Document   DocumentTopology   `yaml:"document"`
-	User       CollectionTopology `yaml:"user"`
-	Revocation CollectionTopology `yaml:"revocation"`
+	Document   DocumentTopology                  `yaml:"document"`
+	User       identityconfig.CollectionTopology `yaml:"user"`
+	Revocation identityconfig.CollectionTopology `yaml:"revocation"`
 }
 
 type BaseTopology struct {
@@ -41,11 +42,6 @@ type DocumentTopology struct {
 	DataCollection      string        `yaml:"data_collection"`
 	SysCollection       string        `yaml:"sys_collection"`
 	SoftDeleteRetention time.Duration `yaml:"soft_delete_retention"`
-}
-
-type CollectionTopology struct {
-	BaseTopology `yaml:",inline"`
-	Collection   string `yaml:"collection"`
 }
 
 type MongoConfig struct {
@@ -90,20 +86,8 @@ func DefaultConfig() Config {
 				SysCollection:       "sys",
 				SoftDeleteRetention: 5 * time.Minute,
 			},
-			User: CollectionTopology{
-				BaseTopology: BaseTopology{
-					Strategy: "single",
-					Primary:  "default_postgres",
-				},
-				Collection: "auth_users",
-			},
-			Revocation: CollectionTopology{
-				BaseTopology: BaseTopology{
-					Strategy: "single",
-					Primary:  "default_mongo",
-				},
-				Collection: "revocations",
-			},
+			User:       identityconfig.DefaultUserTopology(),
+			Revocation: identityconfig.DefaultRevocationTopology(),
 		},
 		Databases: map[string]DatabaseConfig{
 			"default": {
@@ -152,24 +136,8 @@ func (c *Config) ApplyDefaults() {
 	if c.Topology.Document.SoftDeleteRetention == 0 {
 		c.Topology.Document.SoftDeleteRetention = defaults.Topology.Document.SoftDeleteRetention
 	}
-	if c.Topology.User.Strategy == "" {
-		c.Topology.User.Strategy = defaults.Topology.User.Strategy
-	}
-	if c.Topology.User.Primary == "" {
-		c.Topology.User.Primary = defaults.Topology.User.Primary
-	}
-	if c.Topology.User.Collection == "" {
-		c.Topology.User.Collection = defaults.Topology.User.Collection
-	}
-	if c.Topology.Revocation.Strategy == "" {
-		c.Topology.Revocation.Strategy = defaults.Topology.Revocation.Strategy
-	}
-	if c.Topology.Revocation.Primary == "" {
-		c.Topology.Revocation.Primary = defaults.Topology.Revocation.Primary
-	}
-	if c.Topology.Revocation.Collection == "" {
-		c.Topology.Revocation.Collection = defaults.Topology.Revocation.Collection
-	}
+	c.Topology.User.ApplyDefaults(defaults.Topology.User)
+	c.Topology.Revocation.ApplyDefaults(defaults.Topology.Revocation)
 }
 
 // ApplyEnvOverrides applies environment variable overrides.

@@ -55,9 +55,24 @@ type deletionWorkerService interface {
 	Stop(ctx context.Context) error
 }
 
+type identityModule interface {
+	Accounts() identity.AccountService
+	Verifier() *identity.Verifier
+	SystemTokenIssuer() identity.SystemTokenIssuer
+	EnsureAdmin(context.Context) error
+	ResolveOwner(context.Context, string) (string, string, error)
+}
+
 type Manager struct {
 	cfg  *config.Config
 	opts Options
+
+	backends       *storage.Backends
+	backendsOnce   sync.Once
+	backendsErr    error
+	identityModule identityModule
+	shutdownMu     sync.Mutex
+	serverStopped  bool
 
 	storageFactory     storage.StorageFactory
 	storageFactoryOnce sync.Once

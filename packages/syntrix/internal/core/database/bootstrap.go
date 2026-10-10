@@ -4,7 +4,7 @@ import (
 	"context"
 	"log/slog"
 
-	"github.com/codetreker/syntrix/internal/core/storage/types"
+	"github.com/codetreker/syntrix/internal/identity"
 )
 
 const (
@@ -20,9 +20,11 @@ type BootstrapConfig struct {
 	AdminUsername string
 }
 
-// EnsureDefaultDatabase creates the default database if it doesn't exist.
-// The default database is owned by the system admin user.
-func EnsureDefaultDatabase(ctx context.Context, store DatabaseStore, userStore types.UserStore, config BootstrapConfig) error {
+// OwnerResolver resolves an existing account without exposing its credentials.
+type OwnerResolver func(context.Context, string) (string, string, error)
+
+// EnsureDefaultDatabase looks up the catalog before resolving its account owner.
+func EnsureDefaultDatabase(ctx context.Context, store DatabaseStore, resolveOwner OwnerResolver, config BootstrapConfig) error {
 	if config.AdminUsername == "" {
 		slog.Debug("Default database bootstrap skipped: no admin username configured")
 		return nil
@@ -39,9 +41,9 @@ func EnsureDefaultDatabase(ctx context.Context, store DatabaseStore, userStore t
 	}
 
 	// Get the admin user
-	adminUser, err := userStore.GetUserByUsername(ctx, config.AdminUsername)
+	ownerID, ownerUsername, err := resolveOwner(ctx, config.AdminUsername)
 	if err != nil {
-		if err == types.ErrUserNotFound {
+		if err == identity.ErrUserNotFound {
 			slog.Warn("Default database bootstrap skipped: admin user not found",
 				"username", config.AdminUsername)
 			return nil
@@ -55,7 +57,7 @@ func EnsureDefaultDatabase(ctx context.Context, store DatabaseStore, userStore t
 		ID:          GenerateID(),
 		Slug:        &slug,
 		DisplayName: DefaultDatabaseDisplayName,
-		OwnerID:     adminUser.ID,
+		OwnerID:     ownerID,
 		Status:      StatusActive,
 	}
 
@@ -71,7 +73,7 @@ func EnsureDefaultDatabase(ctx context.Context, store DatabaseStore, userStore t
 	slog.Info("Created default database",
 		"id", db.ID,
 		"slug", DefaultDatabaseSlug,
-		"owner", adminUser.Username,
+		"owner", ownerUsername,
 	)
 
 	return nil
