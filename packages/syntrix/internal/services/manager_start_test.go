@@ -12,10 +12,10 @@ import (
 	"time"
 
 	"github.com/codetreker/syntrix/internal/config"
-	"github.com/codetreker/syntrix/internal/core/identity"
 	"github.com/codetreker/syntrix/internal/core/storage"
 	api_config "github.com/codetreker/syntrix/internal/gateway/config"
 	"github.com/codetreker/syntrix/internal/gateway/realtime"
+	"github.com/codetreker/syntrix/internal/identity"
 	"github.com/codetreker/syntrix/internal/indexer"
 	indexer_config "github.com/codetreker/syntrix/internal/indexer/config"
 	"github.com/codetreker/syntrix/internal/puller"
@@ -26,7 +26,6 @@ import (
 	"github.com/codetreker/syntrix/internal/streamer"
 	"github.com/codetreker/syntrix/internal/trigger"
 	"github.com/codetreker/syntrix/pkg/model"
-
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"go.mongodb.org/mongo-driver/mongo"
@@ -237,6 +236,7 @@ func freeAddr() string {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return "127.0.0.1:0"
+
 	}
 	addr := ln.Addr().String()
 	ln.Close()
@@ -427,12 +427,6 @@ type MockAuthService struct {
 	mock.Mock
 }
 
-func (m *MockAuthService) Middleware(next http.Handler) http.Handler {
-	return next
-}
-func (m *MockAuthService) MiddlewareOptional(next http.Handler) http.Handler {
-	return next
-}
 func (m *MockAuthService) SignIn(ctx context.Context, req identity.LoginRequest) (*identity.TokenPair, error) {
 	return nil, nil
 }
@@ -442,10 +436,10 @@ func (m *MockAuthService) SignUp(ctx context.Context, req identity.SignupRequest
 func (m *MockAuthService) Refresh(ctx context.Context, req identity.RefreshRequest) (*identity.TokenPair, error) {
 	return nil, nil
 }
-func (m *MockAuthService) ListUsers(ctx context.Context, limit int, offset int) ([]*identity.User, error) {
+func (m *MockAuthService) ListUsers(ctx context.Context, actor *identity.VerifiedIdentity, limit int, offset int) ([]*identity.User, error) {
 	return nil, nil
 }
-func (m *MockAuthService) UpdateUser(ctx context.Context, id string, roles []string, dbAdmin []string, disabled bool) error {
+func (m *MockAuthService) UpdateUser(ctx context.Context, actor *identity.VerifiedIdentity, id string, roles []string, dbAdmin []string, disabled bool) error {
 	return nil
 }
 func (m *MockAuthService) Logout(ctx context.Context, refreshToken string) error {
@@ -454,8 +448,8 @@ func (m *MockAuthService) Logout(ctx context.Context, refreshToken string) error
 func (m *MockAuthService) GenerateSystemToken(serviceName string) (string, error) {
 	return "", nil
 }
-func (m *MockAuthService) ValidateToken(tokenString string) (*identity.Claims, error) {
-	return nil, nil
+func (m *MockAuthService) VerifyToken(string) (*identity.VerifiedIdentity, error) {
+	return nil, identity.ErrInvalidToken
 }
 
 func TestManager_Start_RealtimeRetry(t *testing.T) {

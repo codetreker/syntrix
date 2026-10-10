@@ -18,10 +18,10 @@ import (
 	"time"
 
 	"github.com/codetreker/syntrix/internal/core/database"
-	"github.com/codetreker/syntrix/internal/core/identity"
 	"github.com/codetreker/syntrix/internal/core/storage"
 	storagetypes "github.com/codetreker/syntrix/internal/core/storage/types"
 	gatewayconfig "github.com/codetreker/syntrix/internal/gateway/config"
+	"github.com/codetreker/syntrix/internal/identity"
 	"github.com/codetreker/syntrix/internal/puller/events"
 	"github.com/codetreker/syntrix/internal/query"
 	querycore "github.com/codetreker/syntrix/internal/query/core"
@@ -37,7 +37,7 @@ const replicaIntegrationIdentity = "0123456789abcdef"
 
 type replicaIntegrationAuth struct{ mockAuthService }
 
-func (*replicaIntegrationAuth) ValidateToken(token string) (*identity.Claims, error) {
+func (*replicaIntegrationAuth) validateClaims(token string) (*identity.Claims, error) {
 	claims := &identity.Claims{UserID: "alice", RegisteredClaims: jwt.RegisteredClaims{
 		Subject: "alice", ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour)),
 	}}
@@ -758,4 +758,9 @@ func TestReplicaWSIntegrationTokenExpiryCancelsLatePage(t *testing.T) {
 		usage := env.server.replicaBudget.snapshot()
 		return usage.Reads == 0 && usage.PageBytes == 0 && usage.Connections == 0
 	}, 3*time.Second, time.Millisecond)
+}
+
+func (m *replicaIntegrationAuth) VerifyToken(token string) (*identity.VerifiedIdentity, error) {
+	verifier, _ := identity.NewVerifier(m.validateClaims)
+	return verifier.VerifyToken(token)
 }

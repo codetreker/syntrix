@@ -10,11 +10,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codetreker/syntrix/internal/core/identity"
 	"github.com/codetreker/syntrix/internal/core/storage"
 	api_config "github.com/codetreker/syntrix/internal/gateway/config"
+	"github.com/codetreker/syntrix/internal/identity"
 	"github.com/codetreker/syntrix/pkg/model"
-
 	"github.com/gorilla/websocket"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
@@ -105,12 +104,12 @@ type mockAuthServiceSystem struct {
 	mockAuthService
 }
 
-func (m *mockAuthServiceSystem) ValidateToken(tokenString string) (*identity.Claims, error) {
+func (m *mockAuthServiceSystem) validateClaims(tokenString string) (*identity.Claims, error) {
 	if tokenString == "system" {
 		// Database is now extracted from auth payload, not token
 		return &identity.Claims{Roles: []string{"system"}}, nil
 	}
-	return m.mockAuthService.ValidateToken(tokenString)
+	return m.mockAuthService.validateClaims(tokenString)
 }
 
 func TestClientHandleMessage_AuthSystemRole(t *testing.T) {
@@ -474,4 +473,9 @@ func setupMockQuery() *MockQueryService {
 		CaughtUp:   true,
 	}, nil).Maybe()
 	return m
+}
+
+func (m *mockAuthServiceSystem) VerifyToken(token string) (*identity.VerifiedIdentity, error) {
+	verifier, _ := identity.NewVerifier(m.validateClaims)
+	return verifier.VerifyToken(token)
 }

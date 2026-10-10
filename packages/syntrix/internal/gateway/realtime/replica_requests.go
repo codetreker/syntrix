@@ -109,8 +109,13 @@ func (c *replicaClient) startAuth(message BaseMessage, frameBytes int) {
 			return
 		}
 		defer release()
-		claims, err := c.server.auth.ValidateToken(payload.Token)
-		if err != nil || claims == nil || claims.Disabled || claims.Subject == "" || (claims.ExpiresAt != nil && !time.Now().Before(claims.ExpiresAt.Time)) {
+		actor, err := c.server.auth.VerifyToken(payload.Token)
+		if err != nil || actor == nil {
+			c.sendError(message.ID, "", "", gen, "UNAUTHORIZED", 0, false)
+			return
+		}
+		claims := actor.Claims()
+		if claims.Disabled || claims.Subject == "" || (claims.ExpiresAt != nil && !time.Now().Before(claims.ExpiresAt.Time)) {
 			c.sendError(message.ID, "", "", gen, "UNAUTHORIZED", 0, false)
 			return
 		}

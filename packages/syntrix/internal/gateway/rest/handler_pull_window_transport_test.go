@@ -122,7 +122,7 @@ func TestWindowPullAcrossLocalAndRemoteGateways(t *testing.T) {
 	t.Cleanup(func() { require.NoError(t, remote.Close()) })
 	gateways := []*http.ServeMux{}
 	for _, service := range []query.Service{core.New(source, idx), remote} {
-		handler, err := NewHandler(service, &pullRouteAuth{MockAuthService: new(MockAuthService), uid: "owner"}, new(AllowAllAuthzService))
+		handler, err := NewHandler(service, &pullRouteAuth{MockAuthService: new(MockAuthService), uid: "owner"}, &pullRouteAuth{MockAuthService: new(MockAuthService), uid: "owner"}, new(AllowAllAuthzService))
 		require.NoError(t, err)
 		handler.SetDatabaseService(querySourceRouteDatabase{})
 		mux := http.NewServeMux()
@@ -146,6 +146,7 @@ func TestWindowPullAcrossLocalAndRemoteGateways(t *testing.T) {
 		}
 		for _, gateway := range gateways {
 			r := httptest.NewRequest(http.MethodPost, "/replication/v1/databases/app/pull", strings.NewReader(body)).WithContext(ctx)
+			r.Header.Set("Authorization", "Bearer test")
 			r.Header.Set("X-Syntrix-Expected-Database-Identity", "0123456789abcdef")
 			response := newPullRecorder()
 			before := idx.opens.Load()
@@ -194,6 +195,7 @@ func TestWindowPullAcrossLocalAndRemoteGateways(t *testing.T) {
 	}
 	for _, gateway := range gateways {
 		r := httptest.NewRequest(http.MethodPost, "/replication/v1/databases/app/pull", strings.NewReader(body)).WithContext(ctx)
+		r.Header.Set("Authorization", "Bearer test")
 		r.Header.Set("X-Syntrix-Expected-Database-Identity", "fedcba9876543210")
 		response := newPullRecorder()
 		before := idx.opens.Load()
@@ -209,6 +211,7 @@ func TestWindowPullAcrossLocalAndRemoteGateways(t *testing.T) {
 	largeBody := strings.Replace(body, `"limit":2`, `"limit":6`, 1)
 	for _, gateway := range gateways {
 		r := httptest.NewRequest(http.MethodPost, "/replication/v1/databases/app/pull", strings.NewReader(largeBody)).WithContext(ctx)
+		r.Header.Set("Authorization", "Bearer test")
 		r.Header.Set("X-Syntrix-Expected-Database-Identity", "0123456789abcdef")
 		response := newPullRecorder()
 		gateway.ServeHTTP(response, r)

@@ -14,10 +14,12 @@ into a separately deployed Identity service.
 
 Gateway owns the existing CEL evaluator, rule configuration, and evaluation types
 under `internal/gateway/authorization`. Manager constructs
-`authorization.NewEngine(config, queryService)` separately from Identity AuthN.
-Gateway projects the existing user ID, username, roles, `db_admin`, and full claims
-into authorization inputs. Identity retains account/password/JWT implementation
-and its current user/revocation stores; it has no Query or rule dependency.
+`authorization.NewEngine(config, queryService)` separately from Identity account
+and token contracts. Gateway projects the existing user ID, username, roles,
+`db_admin`, and full claims into authorization inputs. Account/password/JWT
+implementation remains in `core/identity/authn` with current user/revocation
+stores; transport-free contracts live in `internal/identity`. Neither owns the
+Query-backed document-rule evaluator.
 
 Each module owns its configuration type, defaults, path resolution, and
 validation. `internal/gateway/config.GatewayConfig.AuthZ` composes
@@ -35,8 +37,11 @@ HTTP/rule formats and evaluation behavior remain unchanged.
 The [Gateway authorization design](../../../../docs/design/server/gateway/authorization.md)
 owns rule behavior and pending safeguards. This implements the document-policy
 boundary within the broader [instance architecture](../../proposed/architecture/2026-10-10-platform-console-instance-boundaries.md).
-That proposal remains active for the remaining Identity extraction, project
-realms, sessions, deployment, and both OAuth roles.
+The [Identity contract decision](2026-10-10-identity-contracts-and-gateway-authentication.md)
+owns the later account/verifier/issuer capability separation, safe user views,
+and Gateway authentication adapter. The broader proposal remains active for
+concrete signing/public-key verification separation, repository/runtime
+composition, project realms, sessions, deployment, and both OAuth roles.
 
 ## Alternatives
 
@@ -66,5 +71,6 @@ that ownership.
   persistence, and local process placement retain their existing contracts.
   Configuration values/defaults retain their meaning under the module-owned
   YAML layout; deployment overrides require the documented rule-path move.
-  Subsequent account/transport/token/store extraction and
-  new Identity capabilities retain separate delivery gates.
+  Account contracts and the Gateway authentication adapter follow the Identity
+  contract decision; concrete token/store/runtime separation and new Identity
+  capabilities retain separate delivery gates.

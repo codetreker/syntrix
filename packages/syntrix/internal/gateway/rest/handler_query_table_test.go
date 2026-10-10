@@ -88,6 +88,7 @@ func TestQueryHandler_TableDriven(t *testing.T) {
 			server := createTestServer(mockService, nil, nil)
 
 			req := httptest.NewRequest("POST", "/api/v1/databases/default/query", bytes.NewReader([]byte(tt.body)))
+			req.Header.Set("Authorization", "Bearer test")
 			rr := httptest.NewRecorder()
 
 			server.ServeHTTP(rr, req)
@@ -164,6 +165,7 @@ func TestQueryHandler_InvalidIndexedFilterTransportParity(t *testing.T) {
 					ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 					defer cancel()
 					req := httptest.NewRequestWithContext(ctx, http.MethodPost, "/api/v1/databases/default/query", bytes.NewReader(body))
+					req.Header.Set("Authorization", "Bearer test")
 					response := httptest.NewRecorder()
 					handler.ServeHTTP(response, req)
 					require.Equal(t, http.StatusBadRequest, response.Code)
@@ -236,6 +238,7 @@ func TestQueryHandler_PageTransportParity(t *testing.T) {
 			defer cancel()
 			ctx = context.WithValue(ctx, ctxkeys.KeyRequestID, "request-page-parity")
 			req := httptest.NewRequestWithContext(ctx, http.MethodPost, "/api/v1/databases/default/query", strings.NewReader(body))
+			req.Header.Set("Authorization", "Bearer test")
 			response := httptest.NewRecorder()
 			createTestServer(engine, nil, nil).ServeHTTP(response, req)
 			require.Equal(t, http.StatusOK, response.Code)
@@ -283,6 +286,7 @@ func TestQueryHandler_ErrorTransportParity(t *testing.T) {
 					ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 					defer cancel()
 					req := httptest.NewRequestWithContext(ctx, http.MethodPost, "/api/v1/databases/default/query", strings.NewReader(`{"collection":"users"}`))
+					req.Header.Set("Authorization", "Bearer test")
 					response := httptest.NewRecorder()
 					createTestServer(engine, nil, nil).ServeHTTP(response, req)
 					require.Equal(t, tc.status, response.Code)
@@ -301,6 +305,7 @@ func TestQueryHandler_RejectsMalformedTypedFilters(t *testing.T) {
 		t.Run(value, func(t *testing.T) {
 			service := new(MockQueryService)
 			req := httptest.NewRequest(http.MethodPost, "/api/v1/databases/default/query", strings.NewReader(fmt.Sprintf(`{"collection":"users","filters":[{"field":"value","op":"==","value":%s}]}`, value)))
+			req.Header.Set("Authorization", "Bearer test")
 			response := httptest.NewRecorder()
 			createTestServer(service, nil, nil).ServeHTTP(response, req)
 			assert.Equal(t, http.StatusBadRequest, response.Code)
@@ -314,6 +319,7 @@ type documentOnlyQueryService struct{ query.Service }
 func TestQueryHandler_RequiresPageService(t *testing.T) {
 	service := new(MockQueryService)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/databases/default/query", strings.NewReader(`{"collection":"users"}`))
+	req.Header.Set("Authorization", "Bearer test")
 	response := httptest.NewRecorder()
 	createTestServer(documentOnlyQueryService{Service: service}, nil, nil).ServeHTTP(response, req)
 	assert.Equal(t, http.StatusInternalServerError, response.Code)
@@ -331,6 +337,7 @@ func TestQueryHandlerRejectsInvalidUnicode(t *testing.T) {
 	} {
 		service := new(MockQueryService)
 		request := httptest.NewRequest(http.MethodPost, "/api/v1/databases/default/query", strings.NewReader(body))
+		request.Header.Set("Authorization", "Bearer test")
 		response := httptest.NewRecorder()
 		createTestServer(service, nil, nil).ServeHTTP(response, request)
 		require.Equal(t, http.StatusBadRequest, response.Code, body)

@@ -10,10 +10,10 @@ import (
 	"testing"
 
 	"github.com/codetreker/syntrix/internal/core/database"
-	"github.com/codetreker/syntrix/internal/core/identity"
 	"github.com/codetreker/syntrix/internal/gateway/authorization"
 	api_config "github.com/codetreker/syntrix/internal/gateway/config"
 	"github.com/codetreker/syntrix/internal/gateway/realtime"
+	"github.com/codetreker/syntrix/internal/identity"
 	"github.com/codetreker/syntrix/internal/query"
 	"github.com/codetreker/syntrix/pkg/model"
 	"github.com/stretchr/testify/assert"
@@ -36,21 +36,7 @@ func (m *MockQueryService) GetDocument(ctx context.Context, database string, pat
 
 type MockAuthService struct {
 	mock.Mock
-	identity.AuthN
-}
-
-func (m *MockAuthService) Middleware(next http.Handler) http.Handler {
-	// Database is now extracted from URL path, not context
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		next.ServeHTTP(w, r)
-	})
-}
-
-func (m *MockAuthService) MiddlewareOptional(next http.Handler) http.Handler {
-	// Database is now extracted from URL path, not context
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		next.ServeHTTP(w, r)
-	})
+	identity.AccountService
 }
 
 type MockAuthzEngine struct {
@@ -68,7 +54,7 @@ func TestNewServer(t *testing.T) {
 	mockAuth := new(MockAuthService)
 	mockAuthz := new(MockAuthzEngine)
 
-	server, err := NewServer(mockQuery, mockAuth, mockAuthz, nil)
+	server, err := NewServer(mockQuery, mockAuth, mockAuth, mockAuthz, nil)
 	assert.NoError(t, err)
 	assert.NotNil(t, server)
 	assert.NotNil(t, server.rest)
@@ -81,7 +67,7 @@ func TestNewServer_WithRealtime(t *testing.T) {
 
 	rt := realtime.NewServer(mockQuery, nil, "docs", mockAuth, api_config.RealtimeConfig{})
 
-	server, err := NewServer(mockQuery, mockAuth, mockAuthz, rt)
+	server, err := NewServer(mockQuery, mockAuth, mockAuth, mockAuthz, rt)
 	assert.NoError(t, err)
 	assert.NotNil(t, server)
 	assert.NotNil(t, server.realtime)
@@ -92,7 +78,7 @@ func TestServer_RegisterRoutes(t *testing.T) {
 	mockAuth := new(MockAuthService)
 	mockAuthz := new(MockAuthzEngine)
 
-	server, err := NewServer(mockQuery, mockAuth, mockAuthz, nil)
+	server, err := NewServer(mockQuery, mockAuth, mockAuth, mockAuthz, nil)
 	assert.NoError(t, err)
 
 	// Create a mux and register routes
@@ -132,7 +118,7 @@ func TestServer_RegisterRoutes_WithRealtime(t *testing.T) {
 	mockAuthz := new(MockAuthzEngine)
 
 	rt := realtime.NewServer(mockQuery, nil, "docs", mockAuth, api_config.RealtimeConfig{})
-	server, err := NewServer(mockQuery, mockAuth, mockAuthz, rt)
+	server, err := NewServer(mockQuery, mockAuth, mockAuth, mockAuthz, rt)
 	assert.NoError(t, err)
 
 	mux := http.NewServeMux()
@@ -168,7 +154,7 @@ func TestServer_SetDatabaseService(t *testing.T) {
 	mockAuth := new(MockAuthService)
 	mockAuthz := new(MockAuthzEngine)
 
-	server, err := NewServer(mockQuery, mockAuth, mockAuthz, nil)
+	server, err := NewServer(mockQuery, mockAuth, mockAuth, mockAuthz, nil)
 	assert.NoError(t, err)
 	assert.NotNil(t, server)
 
@@ -184,13 +170,15 @@ func TestServer_SetDatabaseService(t *testing.T) {
 func TestServer_SetDatabaseServiceUpdatesRESTAndReplicaAdmission(t *testing.T) {
 	queryService, auth, authz := new(MockQueryService), new(MockAuthService), new(MockAuthzEngine)
 	rt := realtime.NewServer(queryService, nil, "docs", auth, api_config.RealtimeConfig{})
-	server, err := NewServer(queryService, auth, authz, rt)
+	server, err := NewServer(queryService, auth, auth, authz, rt)
 	assert.NoError(t, err)
 	mux := http.NewServeMux()
 	server.RegisterRoutes(mux)
 	status := func(path string) int {
 		response := httptest.NewRecorder()
-		mux.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+		request := httptest.NewRequest(http.MethodGet, path, nil)
+		request.Header.Set("Authorization", "Bearer test")
+		mux.ServeHTTP(response, request)
 		return response.Code
 	}
 	assert.Equal(t, http.StatusServiceUnavailable, status("/api/v1/databases"))
@@ -210,7 +198,7 @@ func TestNewServer_WithOptions(t *testing.T) {
 
 	t.Run("WithDatabase option", func(t *testing.T) {
 		mockDB := &stubDatabaseService{}
-		server, err := NewServer(mockQuery, mockAuth, mockAuthz, nil,
+		server, err := NewServer(mockQuery, mockAuth, mockAuth, mockAuthz, nil,
 			WithDatabase(mockDB))
 
 		assert.NoError(t, err)
@@ -219,7 +207,7 @@ func TestNewServer_WithOptions(t *testing.T) {
 
 	t.Run("WithServerAuthRateLimiter option", func(t *testing.T) {
 		limiter := &stubRateLimiter{allowResult: true}
-		server, err := NewServer(mockQuery, mockAuth, mockAuthz, nil,
+		server, err := NewServer(mockQuery, mockAuth, mockAuth, mockAuthz, nil,
 			WithServerAuthRateLimiter(limiter, 60000000000))
 
 		assert.NoError(t, err)
@@ -229,7 +217,7 @@ func TestNewServer_WithOptions(t *testing.T) {
 	t.Run("Multiple options", func(t *testing.T) {
 		mockDB := &stubDatabaseService{}
 		limiter := &stubRateLimiter{allowResult: true}
-		server, err := NewServer(mockQuery, mockAuth, mockAuthz, nil,
+		server, err := NewServer(mockQuery, mockAuth, mockAuth, mockAuthz, nil,
 			WithDatabase(mockDB),
 			WithServerAuthRateLimiter(limiter, 60000000000))
 
@@ -243,7 +231,7 @@ func TestServer_SetAuthRateLimiter(t *testing.T) {
 	mockAuth := new(MockAuthService)
 	mockAuthz := new(MockAuthzEngine)
 
-	server, err := NewServer(mockQuery, mockAuth, mockAuthz, nil)
+	server, err := NewServer(mockQuery, mockAuth, mockAuth, mockAuthz, nil)
 	assert.NoError(t, err)
 
 	limiter := &stubRateLimiter{allowResult: true}
@@ -267,7 +255,7 @@ func TestServer_RegisterRoutes_Console(t *testing.T) {
 	mockAuth := new(MockAuthService)
 	mockAuthz := new(MockAuthzEngine)
 
-	server, err := NewServer(mockQuery, mockAuth, mockAuthz, nil)
+	server, err := NewServer(mockQuery, mockAuth, mockAuth, mockAuthz, nil)
 	assert.NoError(t, err)
 
 	mux := http.NewServeMux()
@@ -354,4 +342,9 @@ func (s *stubRateLimiter) Allow(key string) bool {
 
 func (s *stubRateLimiter) Reset(key string) {
 	// no-op
+}
+
+func (m *MockAuthService) VerifyToken(token string) (*identity.VerifiedIdentity, error) {
+	v, _ := identity.NewVerifier(func(string) (*identity.Claims, error) { return &identity.Claims{}, nil })
+	return v.VerifyToken(token)
 }

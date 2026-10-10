@@ -1,10 +1,12 @@
 package authn
 
-import (
-	"github.com/codetreker/syntrix/internal/core/storage"
-)
+import "github.com/codetreker/syntrix/internal/identity"
 
 var (
-	ErrUserNotFound = storage.ErrUserNotFound
-	ErrUserExists   = storage.ErrUserExists
+	ErrInvalidCredentials = identity.ErrInvalidCredentials
+	ErrAccountDisabled    = identity.ErrAccountDisabled
+	ErrAccountLocked      = identity.ErrAccountLocked
+	ErrInvalidToken       = identity.ErrInvalidToken
+	ErrUserNotFound       = identity.ErrUserNotFound
+	ErrUserExists         = identity.ErrUserExists
 )

@@ -5,6 +5,9 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+
+	"github.com/codetreker/syntrix/internal/gateway/authentication"
+	"github.com/codetreker/syntrix/internal/identity"
 )
 
 func (h *Handler) handleAdminListUsers(w http.ResponseWriter, r *http.Request) {
@@ -25,19 +28,26 @@ func (h *Handler) handleAdminListUsers(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	users, err := h.auth.ListUsers(r.Context(), limit, offset)
+	users, err := h.auth.ListUsers(r.Context(), authentication.FromContext(r.Context()), limit, offset)
 	if err != nil {
 		writeInternalError(w, err, "Failed to list users")
 		return
 	}
 
-	// Redact sensitive info
-	for _, u := range users {
-		u.PasswordHash = ""
-		u.PasswordAlgo = ""
+	var response []*userResponse
+	if users != nil {
+		response = make([]*userResponse, len(users))
+		for i, user := range users {
+			response[i] = &userResponse{User: user}
+		}
 	}
+	writeJSON(w, http.StatusOK, response)
+}
 
-	writeJSON(w, http.StatusOK, users)
+type userResponse struct {
+	*identity.User
+	PasswordHash string `json:"password_hash"`
+	PasswordAlgo string `json:"password_algo"`
 }
 
 type UpdateUserRequest struct {
@@ -59,7 +69,7 @@ func (h *Handler) handleAdminUpdateUser(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	if err := h.auth.UpdateUser(r.Context(), id, req.Roles, req.DBAdmin, req.Disabled); err != nil {
+	if err := h.auth.UpdateUser(r.Context(), authentication.FromContext(r.Context()), id, req.Roles, req.DBAdmin, req.Disabled); err != nil {
 		writeInternalError(w, err, "Failed to update user")
 		return
 	}

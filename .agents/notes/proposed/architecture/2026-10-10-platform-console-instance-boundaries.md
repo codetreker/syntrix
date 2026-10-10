@@ -35,11 +35,16 @@ Gateway [document authorization](../../implemented/architecture/2026-10-10-gatew
 owns the existing CEL evaluator, rule configuration, and evaluation types
 separately from account authentication. Gateway's module configuration owns
 YAML `gateway.authz`, while Identity owns authentication/admin settings. Rule
-behavior, enforcement, and storage retain their contracts. The broader Identity extraction
-still needs transport-free account contracts, signing/verification separation,
-and account/revocation repository composition before adding project, session,
-deployment, and OAuth capabilities. This note remains proposed for those
-unimplemented architectural responsibilities.
+behavior, enforcement, and storage retain their contracts.
+
+[Identity contracts and Gateway authentication](../../implemented/architecture/2026-10-10-identity-contracts-and-gateway-authentication.md)
+provide transport-free account/verifier/issuer capabilities, safe user views,
+opaque verified actor provenance, and Gateway-owned HTTP/context adapters.
+The current implementation remains under `core/identity/authn`; concrete
+signing/public-key verification separation and account/revocation repository
+composition are still structural work. Project realms, sessions, independent
+deployment, and both OAuth roles remain unimplemented capabilities. This note
+retains proposed status for those architectural responsibilities.
 
 Instance PostgreSQL stores projects, application users, credentials, OAuth/OIDC
 state, sessions, and logical-database configuration and metadata. Syntrix

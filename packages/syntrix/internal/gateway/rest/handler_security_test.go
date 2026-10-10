@@ -32,6 +32,7 @@ func TestMaxBodySize_UnderLimit(t *testing.T) {
 	// Request with small body
 	body := []byte(`{"message": "hello"}`)
 	req := httptest.NewRequest("POST", "/test", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer test")
 	rr := httptest.NewRecorder()
 
 	handler(rr, req)
@@ -54,6 +55,7 @@ func TestMaxBodySize_OverLimit(t *testing.T) {
 	// Request with large body (over 100 bytes)
 	body := strings.Repeat("x", 200)
 	req := httptest.NewRequest("POST", "/test", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer test")
 	rr := httptest.NewRecorder()
 
 	handler(rr, req)
@@ -69,6 +71,7 @@ func TestMaxBodySize_NilBody(t *testing.T) {
 	}, 1024)
 
 	req := httptest.NewRequest("GET", "/test", nil)
+	req.Header.Set("Authorization", "Bearer test")
 	rr := httptest.NewRecorder()
 
 	handler(rr, req)
@@ -284,6 +287,7 @@ func TestWithTimeout_Normal(t *testing.T) {
 	}, 1*time.Second)
 
 	req := httptest.NewRequest("GET", "/test", nil)
+	req.Header.Set("Authorization", "Bearer test")
 	rr := httptest.NewRecorder()
 
 	handler(rr, req)
@@ -304,6 +308,7 @@ func TestWithTimeout_ContextPropagated(t *testing.T) {
 	}, 5*time.Second)
 
 	req := httptest.NewRequest("GET", "/test", nil)
+	req.Header.Set("Authorization", "Bearer test")
 	rr := httptest.NewRecorder()
 
 	handler(rr, req)
@@ -328,6 +333,7 @@ func TestWithTimeout_ContextCancellation(t *testing.T) {
 	}, 100*time.Millisecond)
 
 	req := httptest.NewRequest("GET", "/test", nil)
+	req.Header.Set("Authorization", "Bearer test")
 	rr := httptest.NewRecorder()
 
 	handler(rr, req)
@@ -401,6 +407,7 @@ func TestGetParsedBody_WithCache(t *testing.T) {
 	}
 
 	req := httptest.NewRequest("POST", "/test", nil)
+	req.Header.Set("Authorization", "Bearer test")
 	ctx := context.WithValue(req.Context(), contextKeyParsedBody, cachedData)
 	req = req.WithContext(ctx)
 
@@ -412,6 +419,7 @@ func TestGetParsedBody_WithCache(t *testing.T) {
 
 func TestGetParsedBody_NoCache(t *testing.T) {
 	req := httptest.NewRequest("POST", "/test", nil)
+	req.Header.Set("Authorization", "Bearer test")
 	result := getParsedBody(req.Context())
 	assert.Nil(t, result)
 }
@@ -425,6 +433,7 @@ func TestDecodeBody_WithCache(t *testing.T) {
 	}
 
 	req := httptest.NewRequest("POST", "/test", strings.NewReader(`{"doc":{"name":"from body"}}`))
+	req.Header.Set("Authorization", "Bearer test")
 	ctx := context.WithValue(req.Context(), contextKeyParsedBody, cachedData)
 	req = req.WithContext(ctx)
 
@@ -436,6 +445,7 @@ func TestDecodeBody_WithCache(t *testing.T) {
 
 func TestDecodeBody_NoCache(t *testing.T) {
 	req := httptest.NewRequest("POST", "/test", strings.NewReader(`{"doc":{"name":"from body"}}`))
+	req.Header.Set("Authorization", "Bearer test")
 
 	var data UpdateDocumentRequest
 	err := decodeBody(req, &data)
@@ -445,6 +455,7 @@ func TestDecodeBody_NoCache(t *testing.T) {
 
 func TestDecodeBody_InvalidJSON(t *testing.T) {
 	req := httptest.NewRequest("POST", "/test", strings.NewReader(`{invalid json}`))
+	req.Header.Set("Authorization", "Bearer test")
 
 	var data UpdateDocumentRequest
 	err := decodeBody(req, &data)
@@ -458,6 +469,7 @@ func TestDecodeBodyAsDocument_WithCache(t *testing.T) {
 	}
 
 	req := httptest.NewRequest("POST", "/test", strings.NewReader(`{"name":"from body"}`))
+	req.Header.Set("Authorization", "Bearer test")
 	ctx := context.WithValue(req.Context(), contextKeyParsedBody, cachedData)
 	req = req.WithContext(ctx)
 
@@ -469,6 +481,7 @@ func TestDecodeBodyAsDocument_WithCache(t *testing.T) {
 
 func TestDecodeBodyAsDocument_NoCache(t *testing.T) {
 	req := httptest.NewRequest("POST", "/test", strings.NewReader(`{"name":"from body"}`))
+	req.Header.Set("Authorization", "Bearer test")
 
 	doc, err := decodeBodyAsDocument(req)
 	assert.NoError(t, err)
@@ -477,6 +490,7 @@ func TestDecodeBodyAsDocument_NoCache(t *testing.T) {
 
 func TestDecodeBodyAsDocument_InvalidJSON(t *testing.T) {
 	req := httptest.NewRequest("POST", "/test", strings.NewReader(`{invalid}`))
+	req.Header.Set("Authorization", "Bearer test")
 
 	doc, err := decodeBodyAsDocument(req)
 	assert.Error(t, err)
@@ -560,6 +574,7 @@ func TestSplitPath(t *testing.T) {
 
 func TestLogRequest(t *testing.T) {
 	req := httptest.NewRequest("GET", "/api/v1/databases/default/documents/users", nil)
+	req.Header.Set("Authorization", "Bearer test")
 	// logRequest uses server.GetRequestID which needs the server's context key
 	// For testing, we just verify logRequest doesn't panic without a request ID
 
@@ -570,6 +585,7 @@ func TestLogRequest(t *testing.T) {
 
 func TestLogRequest_NoRequestID(t *testing.T) {
 	req := httptest.NewRequest("POST", "/api/v1/databases/default/documents/docs", nil)
+	req.Header.Set("Authorization", "Bearer test")
 	// No request ID in context
 	logRequest(req, http.StatusCreated, 50*time.Millisecond)
 }

@@ -9,11 +9,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codetreker/syntrix/internal/core/identity"
+	"github.com/codetreker/syntrix/internal/core/identity/authn"
 	identity_config "github.com/codetreker/syntrix/internal/core/identity/config"
 	"github.com/codetreker/syntrix/internal/core/storage"
+	"github.com/codetreker/syntrix/internal/identity"
 	"github.com/codetreker/syntrix/pkg/model"
-
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 )
@@ -76,7 +76,7 @@ func (m *MockAuthStorage) RevokeTokenIfNotRevoked(ctx context.Context, jti strin
 func TestTriggerAuth(t *testing.T) {
 	// Setup Auth Service
 	mockStorage := new(MockAuthStorage)
-	authService, _ := identity.NewAuthN(identity_config.AuthNConfig{
+	authService, _ := authn.NewAuthService(identity_config.AuthNConfig{
 		PrivateKeyFile:  filepath.Join(t.TempDir(), "key.pem"),
 		AccessTokenTTL:  time.Hour,
 		RefreshTokenTTL: time.Hour,
@@ -86,17 +86,6 @@ func TestTriggerAuth(t *testing.T) {
 	// Setup Server
 	mockEngine := new(MockQueryService)
 	server := createTestServer(mockEngine, authService, nil)
-
-	// Generate Tokens
-	// We need to access internal token generation for testing, or use SignIn/SignUp.
-	// Since we are testing the handler, we can use the authService to generate system token.
-	// But for user token, we need to mock SignIn or use a helper.
-	// However, AuthN interface doesn't expose GenerateTokenPair directly (it's internal to SignIn/SignUp).
-	// But we can use SignIn if we mock the storage correctly.
-	// OR, we can just use the fact that we have the key and generate it manually using jwt-go,
-	// but that duplicates logic.
-	// Actually, for this test, we just need A valid token.
-	// Let's use SignUp with mocked storage.
 
 	mockStorage.On("GetUserByUsername", mock.Anything, "user1").Return(nil, identity.ErrUserNotFound)
 	mockStorage.On("CreateUser", mock.Anything, mock.Anything).Return(nil)

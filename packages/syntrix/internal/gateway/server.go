@@ -7,10 +7,10 @@ import (
 	"time"
 
 	"github.com/codetreker/syntrix/internal/core/database"
-	"github.com/codetreker/syntrix/internal/core/identity"
 	"github.com/codetreker/syntrix/internal/gateway/authorization"
 	"github.com/codetreker/syntrix/internal/gateway/realtime"
 	"github.com/codetreker/syntrix/internal/gateway/rest"
+	"github.com/codetreker/syntrix/internal/identity"
 	"github.com/codetreker/syntrix/internal/query"
 	"github.com/codetreker/syntrix/internal/server/ratelimit"
 )
@@ -47,7 +47,7 @@ func WithServerAuthRateLimiter(limiter ratelimit.Limiter, window time.Duration) 
 }
 
 // NewServer creates a new API Server (route registrar).
-func NewServer(engine query.Service, auth identity.AuthN, authz authorization.Engine, rt *realtime.Server, opts ...ServerOption) (*Server, error) {
+func NewServer(engine query.Service, auth identity.AccountService, verifier identity.TokenVerifier, authz authorization.Engine, rt *realtime.Server, opts ...ServerOption) (*Server, error) {
 	// Collect server options
 	cfg := &serverConfig{}
 	for _, opt := range opts {
@@ -66,7 +66,7 @@ func NewServer(engine query.Service, auth identity.AuthN, authz authorization.En
 		restOpts = append(restOpts, rest.WithAuthRateLimiter(cfg.authRateLimiter, cfg.authRLWindow))
 	}
 
-	restHandler, err := rest.NewHandler(engine, auth, authz, restOpts...)
+	restHandler, err := rest.NewHandler(engine, auth, verifier, authz, restOpts...)
 	if err != nil {
 		return nil, err
 	}

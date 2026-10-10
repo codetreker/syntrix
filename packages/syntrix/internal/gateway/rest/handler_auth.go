@@ -4,7 +4,7 @@ import (
 	"log/slog"
 	"net/http"
 
-	"github.com/codetreker/syntrix/internal/core/identity"
+	"github.com/codetreker/syntrix/internal/identity"
 	"github.com/codetreker/syntrix/pkg/model"
 )
 

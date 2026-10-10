@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/codetreker/syntrix/internal/core/identity/config"
+	"github.com/codetreker/syntrix/internal/identity"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
@@ -16,6 +18,7 @@ func TestListUsers_Coverage(t *testing.T) {
 	mockStorage := new(MockStorage)
 	cfg := config.AuthNConfig{
 		PrivateKeyFile: getTestKeyPath(t),
+		AccessTokenTTL: time.Hour,
 	}
 	svc, err := NewAuthService(cfg, mockStorage, mockStorage)
 	require.NoError(t, err)
@@ -26,9 +29,9 @@ func TestListUsers_Coverage(t *testing.T) {
 
 		mockStorage.On("ListUsers", ctx, 10, 0).Return(expectedUsers, nil).Once()
 
-		users, err := svc.ListUsers(ctx, 10, 0)
+		users, err := svc.ListUsers(ctx, systemActor(t, svc), 10, 0)
 		assert.NoError(t, err)
-		assert.Equal(t, expectedUsers, users)
+		assert.Equal(t, []*identity.User{{ID: "u1", Username: "user1"}}, users)
 		mockStorage.AssertExpectations(t)
 	})
 
@@ -37,7 +40,7 @@ func TestListUsers_Coverage(t *testing.T) {
 
 		mockStorage.On("ListUsers", ctx, 10, 0).Return(nil, errors.New("db error")).Once()
 
-		users, err := svc.ListUsers(ctx, 10, 0)
+		users, err := svc.ListUsers(ctx, systemActor(t, svc), 10, 0)
 		assert.Error(t, err)
 		assert.Nil(t, users)
 		mockStorage.AssertExpectations(t)
@@ -49,6 +52,7 @@ func TestUpdateUser_Coverage(t *testing.T) {
 	mockStorage := new(MockStorage)
 	cfg := config.AuthNConfig{
 		PrivateKeyFile: getTestKeyPath(t),
+		AccessTokenTTL: time.Hour,
 	}
 	svc, err := NewAuthService(cfg, mockStorage, mockStorage)
 	require.NoError(t, err)
@@ -58,7 +62,7 @@ func TestUpdateUser_Coverage(t *testing.T) {
 
 		mockStorage.On("GetUserByID", ctx, "u1").Return(nil, errors.New("not found")).Once()
 
-		err := svc.UpdateUser(ctx, "u1", []string{"admin"}, nil, false)
+		err := svc.UpdateUser(ctx, systemActor(t, svc), "u1", []string{"admin"}, nil, false)
 		assert.Error(t, err)
 		mockStorage.AssertExpectations(t)
 	})
@@ -72,7 +76,7 @@ func TestUpdateUser_Coverage(t *testing.T) {
 			return u.ID == "u1" && u.Disabled == true && len(u.Roles) == 1 && u.Roles[0] == "admin"
 		})).Return(nil).Once()
 
-		err := svc.UpdateUser(ctx, "u1", []string{"admin"}, nil, true)
+		err := svc.UpdateUser(ctx, systemActor(t, svc), "u1", []string{"admin"}, nil, true)
 		assert.NoError(t, err)
 		mockStorage.AssertExpectations(t)
 	})
@@ -86,8 +90,17 @@ func TestUpdateUser_Coverage(t *testing.T) {
 			return u.ID == "u2" && len(u.DBAdmin) == 2 && u.DBAdmin[0] == "db1" && u.DBAdmin[1] == "db2"
 		})).Return(nil).Once()
 
-		err := svc.UpdateUser(ctx, "u2", []string{"user"}, []string{"db1", "db2"}, false)
+		err := svc.UpdateUser(ctx, systemActor(t, svc), "u2", []string{"user"}, []string{"db1", "db2"}, false)
 		assert.NoError(t, err)
 		mockStorage.AssertExpectations(t)
 	})
+}
+
+func systemActor(t *testing.T, svc *AuthService) *identity.VerifiedIdentity {
+	t.Helper()
+	token, err := svc.GenerateSystemToken("test-admin")
+	require.NoError(t, err)
+	actor, err := svc.VerifyToken(token)
+	require.NoError(t, err)
+	return actor
 }

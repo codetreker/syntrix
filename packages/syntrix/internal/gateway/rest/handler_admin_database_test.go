@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/codetreker/syntrix/internal/core/database"
-	"github.com/codetreker/syntrix/internal/core/identity"
+	"github.com/codetreker/syntrix/internal/ctxkeys"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -25,8 +25,8 @@ func newTestAdminHandler(dbService database.Service) *Handler {
 }
 
 func addAdminContext(req *http.Request) *http.Request {
-	ctx := context.WithValue(req.Context(), identity.ContextKeyUserID, "admin-user")
-	ctx = context.WithValue(ctx, identity.ContextKeyRoles, []string{"admin"})
+	ctx := context.WithValue(req.Context(), ctxkeys.KeyUserID, "admin-user")
+	ctx = context.WithValue(ctx, ctxkeys.KeyRoles, []string{"admin"})
 	return req.WithContext(ctx)
 }
 
@@ -130,6 +130,7 @@ func TestHandler_handleAdminCreateDatabase(t *testing.T) {
 
 			body, _ := json.Marshal(tt.body)
 			req := httptest.NewRequest("POST", "/admin/databases", bytes.NewReader(body))
+			req.Header.Set("Authorization", "Bearer test")
 			req.Header.Set("Content-Type", "application/json")
 			req = addAdminContext(req)
 
@@ -225,6 +226,7 @@ func TestHandler_handleAdminListDatabases(t *testing.T) {
 			h := newTestAdminHandler(mockService)
 
 			req := httptest.NewRequest("GET", "/admin/databases"+tt.query, nil)
+			req.Header.Set("Authorization", "Bearer test")
 			req = addAdminContext(req)
 
 			rec := httptest.NewRecorder()
@@ -304,6 +306,7 @@ func TestHandler_handleAdminGetDatabase(t *testing.T) {
 			h := newTestAdminHandler(mockService)
 
 			req := httptest.NewRequest("GET", "/admin/databases/"+tt.identifier, nil)
+			req.Header.Set("Authorization", "Bearer test")
 			req.SetPathValue("identifier", tt.identifier)
 			req = addAdminContext(req)
 
@@ -412,6 +415,7 @@ func TestHandler_handleAdminUpdateDatabase(t *testing.T) {
 
 			body, _ := json.Marshal(tt.body)
 			req := httptest.NewRequest("PATCH", "/admin/databases/"+tt.identifier, bytes.NewReader(body))
+			req.Header.Set("Authorization", "Bearer test")
 			req.SetPathValue("identifier", tt.identifier)
 			req.Header.Set("Content-Type", "application/json")
 			req = addAdminContext(req)
@@ -493,6 +497,7 @@ func TestHandler_handleAdminDeleteDatabase(t *testing.T) {
 			h := newTestAdminHandler(mockService)
 
 			req := httptest.NewRequest("DELETE", "/admin/databases/"+tt.identifier, nil)
+			req.Header.Set("Authorization", "Bearer test")
 			req.SetPathValue("identifier", tt.identifier)
 			req = addAdminContext(req)
 

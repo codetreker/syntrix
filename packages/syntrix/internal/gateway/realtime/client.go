@@ -12,12 +12,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/codetreker/syntrix/internal/core/identity"
 	"github.com/codetreker/syntrix/internal/ctxkeys"
 	api_config "github.com/codetreker/syntrix/internal/gateway/config"
+	"github.com/codetreker/syntrix/internal/identity"
 	"github.com/codetreker/syntrix/internal/query"
 	"github.com/codetreker/syntrix/pkg/model"
-
 	"github.com/gorilla/websocket"
 )
 
@@ -86,7 +85,7 @@ func safeCheckOrigin(r *http.Request) bool {
 type Client struct {
 	hub          *Hub
 	queryService query.Service
-	auth         identity.AuthN
+	auth         identity.TokenVerifier
 	cfg          api_config.RealtimeConfig
 
 	// The websocket connection.
@@ -311,12 +310,13 @@ func (c *Client) handleAuth(msg BaseMessage) {
 		return
 	}
 
-	claims, err := c.auth.ValidateToken(payload.Token)
-	if err != nil || claims == nil {
+	actor, err := c.auth.VerifyToken(payload.Token)
+	if err != nil || actor == nil {
 		c.sendControl(BaseMessage{ID: msg.ID, Type: TypeError, Payload: mustMarshal(ErrorPayload{Code: "unauthorized", Message: "invalid token"})})
 		return
 	}
 
+	claims := actor.Claims()
 	c.mu.Lock()
 	c.database = payload.Database // Database from auth payload, not token
 	c.allowAllDatabases = hasSystemRoleFromClaims(claims)
@@ -401,14 +401,14 @@ func hasSystemRole(ctx context.Context) bool {
 	if ctx == nil {
 		return false
 	}
-	if roles, ok := ctx.Value(identity.ContextKeyRoles).([]string); ok {
+	if roles, ok := ctx.Value(ctxkeys.KeyRoles).([]string); ok {
 		for _, r := range roles {
 			if strings.EqualFold(r, "system") {
 				return true
 			}
 		}
 	}
-	if claims, ok := ctx.Value(identity.ContextKeyClaims).(*identity.Claims); ok {
+	if claims, ok := ctx.Value(ctxkeys.KeyClaims).(*identity.Claims); ok {
 		return hasSystemRoleFromClaims(claims)
 	}
 	return false
@@ -487,7 +487,7 @@ func checkAllowedOrigin(origin string, reqHost string, cfg api_config.RealtimeCo
 }
 
 // ServeReplicationStream handles websocket requests from the peer.
-func ServeWs(hub *Hub, qs query.Service, auth identity.AuthN, cfg api_config.RealtimeConfig, w http.ResponseWriter, r *http.Request) {
+func ServeWs(hub *Hub, qs query.Service, auth identity.TokenVerifier, cfg api_config.RealtimeConfig, w http.ResponseWriter, r *http.Request) {
 	r = r.WithContext(r.Context())
 
 	conn, err := upgrader.Upgrade(w, r, nil)
@@ -524,7 +524,7 @@ func ServeWs(hub *Hub, qs query.Service, auth identity.AuthN, cfg api_config.Rea
 }
 
 // ServeSSE handles Server-Sent Events requests.
-func ServeSSE(hub *Hub, qs query.Service, auth identity.AuthN, cfg api_config.RealtimeConfig, w http.ResponseWriter, r *http.Request) {
+func ServeSSE(hub *Hub, qs query.Service, auth identity.TokenVerifier, cfg api_config.RealtimeConfig, w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	origin := r.Header.Get("Origin")

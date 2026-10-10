@@ -11,8 +11,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codetreker/syntrix/internal/core/identity"
+	"github.com/codetreker/syntrix/internal/ctxkeys"
 	api_config "github.com/codetreker/syntrix/internal/gateway/config"
+	"github.com/codetreker/syntrix/internal/identity"
 	"github.com/codetreker/syntrix/internal/streamer"
 	"github.com/codetreker/syntrix/pkg/model"
 	"github.com/gorilla/websocket"
@@ -21,44 +22,12 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// MockAuth is a flexible mock for identity.AuthN
+// MockAuth supplies token validation outcomes for realtime tests.
 type MockAuth struct {
 	ValidateTokenFunc func(token string) (*identity.Claims, error)
 }
 
-func (m *MockAuth) Middleware(next http.Handler) http.Handler {
-	return next
-}
-
-func (m *MockAuth) MiddlewareOptional(next http.Handler) http.Handler {
-	return next
-}
-
-func (m *MockAuth) SignIn(ctx context.Context, req identity.LoginRequest) (*identity.TokenPair, error) {
-	return nil, nil
-}
-
-func (m *MockAuth) SignUp(ctx context.Context, req identity.SignupRequest) (*identity.TokenPair, error) {
-	return nil, nil
-}
-
-func (m *MockAuth) Refresh(ctx context.Context, req identity.RefreshRequest) (*identity.TokenPair, error) {
-	return nil, nil
-}
-
-func (m *MockAuth) ListUsers(ctx context.Context, limit int, offset int) ([]*identity.User, error) {
-	return nil, nil
-}
-
-func (m *MockAuth) UpdateUser(ctx context.Context, id string, roles []string, dbAdmin []string, disabled bool) error {
-	return nil
-}
-
-func (m *MockAuth) Logout(ctx context.Context, refreshToken string) error { return nil }
-
-func (m *MockAuth) GenerateSystemToken(serviceName string) (string, error) { return "", nil }
-
-func (m *MockAuth) ValidateToken(tokenString string) (*identity.Claims, error) {
+func (m *MockAuth) validateClaims(tokenString string) (*identity.Claims, error) {
 	if m.ValidateTokenFunc != nil {
 		return m.ValidateTokenFunc(tokenString)
 	}
@@ -388,7 +357,7 @@ func TestClient_WritePump_PingError(t *testing.T) {
 }
 
 func TestHasSystemRole_ContextKeyRoles(t *testing.T) {
-	ctx := context.WithValue(context.Background(), identity.ContextKeyRoles, []string{"system"})
+	ctx := context.WithValue(context.Background(), ctxkeys.KeyRoles, []string{"system"})
 	assert.True(t, hasSystemRole(ctx))
 }
 
@@ -588,4 +557,9 @@ func TestServeSSE_Heartbeat(t *testing.T) {
 	body := rec.Body.String()
 	if !strings.Contains(body, ": heartbeat\n\n") {
 	}
+}
+
+func (m *MockAuth) VerifyToken(token string) (*identity.VerifiedIdentity, error) {
+	verifier, _ := identity.NewVerifier(m.validateClaims)
+	return verifier.VerifyToken(token)
 }

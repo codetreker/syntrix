@@ -11,7 +11,7 @@ import (
 	streamerv1 "github.com/codetreker/syntrix/api/gen/streamer/v1"
 	"github.com/codetreker/syntrix/internal/config"
 	"github.com/codetreker/syntrix/internal/core/database"
-	"github.com/codetreker/syntrix/internal/core/identity"
+	"github.com/codetreker/syntrix/internal/core/identity/authn"
 	"github.com/codetreker/syntrix/internal/core/pubsub"
 	"github.com/codetreker/syntrix/internal/core/pubsub/memory"
 	pubsubnats "github.com/codetreker/syntrix/internal/core/pubsub/nats"
@@ -19,6 +19,7 @@ import (
 	"github.com/codetreker/syntrix/internal/gateway"
 	"github.com/codetreker/syntrix/internal/gateway/authorization"
 	"github.com/codetreker/syntrix/internal/gateway/realtime"
+	"github.com/codetreker/syntrix/internal/identity"
 	"github.com/codetreker/syntrix/internal/indexer"
 	"github.com/codetreker/syntrix/internal/puller"
 	"github.com/codetreker/syntrix/internal/query"
@@ -251,7 +252,7 @@ func (m *Manager) initAuthService(ctx context.Context) error {
 	}
 
 	var authErr error
-	m.authService, authErr = identity.NewAuthN(m.cfg.Identity.AuthN, sf.User(), sf.Revocation())
+	m.authService, authErr = authn.NewAuthService(m.cfg.Identity.AuthN, sf.User(), sf.Revocation())
 	if authErr != nil {
 		return fmt.Errorf("failed to create auth service: %w", authErr)
 	}
@@ -388,7 +389,7 @@ func (m *Manager) initAPIServer(queryService query.Service) error {
 	}
 
 	// Register API routes to the unified server
-	m.gatewayServer, err = gateway.NewServer(queryService, m.authService, authzEngine, m.rtServer, gatewayOpts...)
+	m.gatewayServer, err = gateway.NewServer(queryService, m.authService, m.authService, authzEngine, m.rtServer, gatewayOpts...)
 	if err != nil {
 		return fmt.Errorf("failed to create gateway server: %w", err)
 	}

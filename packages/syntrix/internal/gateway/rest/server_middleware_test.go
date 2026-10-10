@@ -5,8 +5,9 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/codetreker/syntrix/internal/identity"
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 )
 
 func TestServeHTTP_OptionsSetsCORS(t *testing.T) {
@@ -34,70 +35,30 @@ func TestServeHTTP_CORSHeadersOnGET(t *testing.T) {
 	assert.Equal(t, "*", w.Header().Get("Access-Control-Allow-Origin"))
 }
 
-func TestProtected_NoAuth(t *testing.T) {
-	server := &Handler{auth: new(MockAuthService)}
-
-	handler := server.protected(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusCreated)
-	})
-
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/databases/default/documents/any", nil)
-	w := httptest.NewRecorder()
-
-	handler(w, req)
-
-	assert.Equal(t, http.StatusCreated, w.Code)
-}
-
-func TestProtected_WithAuth(t *testing.T) {
-	mockAuth := new(MockAuthService)
-	server := &Handler{auth: mockAuth}
-
-	mockAuth.On("Middleware", mock.Anything).Return(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusAccepted)
-	}))
-
-	handler := server.protected(func(w http.ResponseWriter, r *http.Request) {})
-
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/databases/default/documents/any", nil)
-	w := httptest.NewRecorder()
-
-	handler(w, req)
-
-	assert.Equal(t, http.StatusAccepted, w.Code)
-	mockAuth.AssertExpectations(t)
-}
-
-func TestMaybeProtected_NoAuth(t *testing.T) {
-	server := &Handler{auth: new(MockAuthService)}
-
-	handler := server.maybeProtected(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusCreated)
-	})
-
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/databases/default/documents/any", nil)
-	w := httptest.NewRecorder()
-
-	handler(w, req)
-
-	assert.Equal(t, http.StatusCreated, w.Code)
-}
-
-func TestMaybeProtected_WithAuth(t *testing.T) {
-	mockAuth := new(MockAuthService)
-	server := &Handler{auth: mockAuth}
-
-	mockAuth.On("MiddlewareOptional", mock.Anything).Return(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusAccepted)
-	}))
-
-	handler := server.maybeProtected(func(w http.ResponseWriter, r *http.Request) {})
-
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/databases/default/documents/any", nil)
-	w := httptest.NewRecorder()
-
-	handler(w, req)
-
-	assert.Equal(t, http.StatusAccepted, w.Code)
-	mockAuth.AssertExpectations(t)
+func TestProtectedAuthentication(t *testing.T) {
+	for _, optional := range []bool{false, true} {
+		for _, header := range []string{"", "Bearer good", "Bearer bad"} {
+			auth := new(MockAuthService)
+			if header == "Bearer bad" {
+				auth.On("VerifyToken", "bad").Return(nil, identity.ErrInvalidToken).Once()
+			}
+			server, err := NewHandler(nil, auth, auth, new(AllowAllAuthzService))
+			require.NoError(t, err)
+			next := func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusCreated) }
+			handler := server.protected(next)
+			if optional {
+				handler = server.maybeProtected(next)
+			}
+			request := httptest.NewRequest(http.MethodGet, "/", nil)
+			request.Header.Set("Authorization", header)
+			response := httptest.NewRecorder()
+			handler(response, request)
+			want := http.StatusCreated
+			if header == "Bearer bad" || (!optional && header == "") {
+				want = http.StatusUnauthorized
+			}
+			assert.Equal(t, want, response.Code)
+			auth.AssertExpectations(t)
+		}
+	}
 }

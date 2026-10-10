@@ -11,16 +11,16 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/golang-jwt/jwt/v5"
-
 	"github.com/codetreker/syntrix/internal/core/database"
-	"github.com/codetreker/syntrix/internal/core/identity"
 	"github.com/codetreker/syntrix/internal/ctxkeys"
+	"github.com/codetreker/syntrix/internal/gateway/authentication"
 	"github.com/codetreker/syntrix/internal/gateway/authorization"
+	"github.com/codetreker/syntrix/internal/identity"
 	"github.com/codetreker/syntrix/internal/query"
 	"github.com/codetreker/syntrix/internal/server"
 	"github.com/codetreker/syntrix/internal/server/ratelimit"
 	"github.com/codetreker/syntrix/pkg/model"
+	"github.com/golang-jwt/jwt/v5"
 )
 
 // contextKeyParsedBody uses the unified context key for parsed body
@@ -37,7 +37,8 @@ func getParsedBody(ctx context.Context) map[string]interface{} {
 
 type Handler struct {
 	engine          query.Service
-	auth            identity.AuthN
+	auth            identity.AccountService
+	authentication  *authentication.Authenticator
 	authz           authorization.Engine
 	database        database.Service
 	dbValidator     *DatabaseValidator
@@ -67,18 +68,22 @@ func WithAuthRateLimiter(limiter ratelimit.Limiter, window time.Duration) Handle
 }
 
 // NewHandler creates a new Handler with required dependencies and optional configurations.
-func NewHandler(engine query.Service, auth identity.AuthN, authz authorization.Engine, opts ...HandlerOption) (*Handler, error) {
+func NewHandler(engine query.Service, auth identity.AccountService, verifier identity.TokenVerifier, authz authorization.Engine, opts ...HandlerOption) (*Handler, error) {
 	if auth == nil {
 		return nil, errors.New("authn service cannot be nil")
+	}
+	if verifier == nil {
+		return nil, errors.New("token verifier cannot be nil")
 	}
 	if authz == nil {
 		return nil, errors.New("authz service cannot be nil")
 	}
 
 	h := &Handler{
-		engine: engine,
-		auth:   auth,
-		authz:  authz,
+		engine:         engine,
+		auth:           auth,
+		authentication: authentication.New(verifier),
+		authz:          authz,
 	}
 
 	for _, opt := range opts {
@@ -325,13 +330,13 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 
 func (h *Handler) protected(handler http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		h.auth.Middleware(handler).ServeHTTP(w, r)
+		h.authentication.Middleware(handler).ServeHTTP(w, r)
 	}
 }
 
 func (h *Handler) maybeProtected(handler http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		h.auth.MiddlewareOptional(handler).ServeHTTP(w, r)
+		h.authentication.MiddlewareOptional(handler).ServeHTTP(w, r)
 	}
 }
 
@@ -353,19 +358,19 @@ func (h *Handler) authorized(handler http.HandlerFunc, action string) http.Handl
 		}
 
 		// Extract Auth
-		if uid, ok := r.Context().Value(identity.ContextKeyUserID).(string); ok {
+		if uid, ok := r.Context().Value(ctxkeys.KeyUserID).(string); ok {
 			reqCtx.Auth.UID = uid
 		}
-		if username, ok := r.Context().Value(identity.ContextKeyUsername).(string); ok {
+		if username, ok := r.Context().Value(ctxkeys.KeyUsername).(string); ok {
 			reqCtx.Auth.Username = username
 		}
-		if roles, ok := r.Context().Value(identity.ContextKeyRoles).([]string); ok {
+		if roles, ok := r.Context().Value(ctxkeys.KeyRoles).([]string); ok {
 			reqCtx.Auth.Roles = append([]string{}, roles...)
 		}
-		if dbAdmin, ok := r.Context().Value(identity.ContextKeyDBAdmin).([]string); ok {
+		if dbAdmin, ok := r.Context().Value(ctxkeys.KeyDBAdmin).([]string); ok {
 			reqCtx.Auth.DBAdmin = append([]string{}, dbAdmin...)
 		}
-		if claims, ok := r.Context().Value(identity.ContextKeyClaims).(*identity.Claims); ok {
+		if claims, ok := r.Context().Value(ctxkeys.KeyClaims).(*identity.Claims); ok {
 			reqCtx.Auth.Claims = claimsToMap(claims)
 		}
 
@@ -481,9 +486,9 @@ func (h *Handler) triggerProtected(handler http.HandlerFunc) http.HandlerFunc {
 	// Auth is guaranteed to be non-nil (panic in NewHandler if nil)
 	return func(w http.ResponseWriter, r *http.Request) {
 		// First, run standard auth middleware to validate token
-		h.auth.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h.authentication.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// Check roles
-			roles, ok := r.Context().Value(identity.ContextKeyRoles).([]string)
+			roles, ok := r.Context().Value(ctxkeys.KeyRoles).([]string)
 			if !ok {
 				writeError(w, http.StatusForbidden, ErrCodeForbidden, "Access denied")
 				return
@@ -510,9 +515,9 @@ func (h *Handler) triggerProtected(handler http.HandlerFunc) http.HandlerFunc {
 func (h *Handler) adminOnly(handler http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		// First, run standard auth middleware to validate token
-		h.auth.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h.authentication.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// Check roles
-			roles, ok := r.Context().Value(identity.ContextKeyRoles).([]string)
+			roles, ok := r.Context().Value(ctxkeys.KeyRoles).([]string)
 			if !ok {
 				writeError(w, http.StatusForbidden, ErrCodeForbidden, "Access denied")
 				return

@@ -7,11 +7,11 @@ import (
 
 	"github.com/codetreker/syntrix/internal/config"
 	"github.com/codetreker/syntrix/internal/core/database"
-	"github.com/codetreker/syntrix/internal/core/identity"
 	"github.com/codetreker/syntrix/internal/core/pubsub"
 	"github.com/codetreker/syntrix/internal/core/storage"
 	"github.com/codetreker/syntrix/internal/gateway"
 	"github.com/codetreker/syntrix/internal/gateway/realtime"
+	"github.com/codetreker/syntrix/internal/identity"
 	"github.com/codetreker/syntrix/internal/indexer"
 	"github.com/codetreker/syntrix/internal/puller"
 	services_config "github.com/codetreker/syntrix/internal/services/config"
@@ -55,6 +55,12 @@ type deletionWorkerService interface {
 	Stop(ctx context.Context) error
 }
 
+type identityService interface {
+	identity.AccountService
+	identity.TokenVerifier
+	identity.SystemTokenIssuer
+}
+
 type Manager struct {
 	cfg  *config.Config
 	opts Options
@@ -63,7 +69,7 @@ type Manager struct {
 	storageFactoryOnce sync.Once
 	storageFactoryErr  error
 
-	authService           identity.AuthN
+	authService           identityService
 	gatewayServer         *gateway.Server
 	rtServer              *realtime.Server
 	streamerService       streamer.StreamerServer // local Streamer service (when RunStreamer=true)
@@ -98,7 +104,7 @@ func NewManager(cfg *config.Config, opts Options) *Manager {
 	}
 }
 
-func (m *Manager) AuthService() identity.AuthN {
+func (m *Manager) SystemTokenIssuer() identity.SystemTokenIssuer {
 	return m.authService
 }
 

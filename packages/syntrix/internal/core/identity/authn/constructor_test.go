@@ -1,4 +1,4 @@
-package identity
+package authn
 
 import (
 	"context"
@@ -101,7 +101,7 @@ func (m *MockTokenRevocationStore) RevokeTokenIfNotRevoked(ctx context.Context, 
 	return args.Error(0)
 }
 
-func TestNewAuthN(t *testing.T) {
+func TestNewAuthService(t *testing.T) {
 	// Create a temporary file for the private key
 	tmpFile := t.TempDir() + "/private.pem"
 
@@ -114,7 +114,7 @@ func TestNewAuthN(t *testing.T) {
 	mockUsers := new(MockUserStore)
 	mockRevocations := new(MockTokenRevocationStore)
 
-	authn, err := NewAuthN(cfg, mockUsers, mockRevocations)
+	authn, err := NewAuthService(cfg, mockUsers, mockRevocations)
 	assert.NoError(t, err)
 	assert.NotNil(t, authn)
 

@@ -20,8 +20,6 @@ func setupMockServiceForAuthz(mockService *MockQueryService) {
 func TestHandleReplaceDocument_IdMutation(t *testing.T) {
 	mockService := new(MockQueryService)
 	mockAuth := new(MockAuthService)
-	mockAuth.On("MiddlewareOptional", mock.Anything).Return(nil)
-	mockAuth.On("Middleware", mock.Anything).Return(nil)
 	// Mock GetDocument for authorization check (replace is not create, so existing resource is fetched)
 	mockService.On("GetDocument", mock.Anything, "default", "rooms/room-1/messages/msg-1").Return(nil, model.ErrNotFound)
 	server := createTestServer(mockService, mockAuth, nil)
@@ -29,6 +27,7 @@ func TestHandleReplaceDocument_IdMutation(t *testing.T) {
 	// Try to replace document msg-1 with body containing id: msg-2
 	body := []byte(`{"doc":{"id": "msg-2", "name": "Bob"}}`)
 	req, _ := http.NewRequest("PUT", "/api/v1/databases/default/documents/rooms/room-1/messages/msg-1", bytes.NewBuffer(body))
+	req.Header.Set("Authorization", "Bearer test")
 	rr := httptest.NewRecorder()
 
 	server.ServeHTTP(rr, req)
@@ -40,8 +39,6 @@ func TestHandleReplaceDocument_IdMutation(t *testing.T) {
 func TestHandleUpdateDocument_IdMutation(t *testing.T) {
 	mockService := new(MockQueryService)
 	mockAuth := new(MockAuthService)
-	mockAuth.On("MiddlewareOptional", mock.Anything).Return(nil)
-	mockAuth.On("Middleware", mock.Anything).Return(nil)
 	// Mock GetDocument for authorization check (update is not create, so existing resource is fetched)
 	mockService.On("GetDocument", mock.Anything, "default", "rooms/room-1/messages/msg-1").Return(nil, model.ErrNotFound)
 	server := createTestServer(mockService, mockAuth, nil)
@@ -49,6 +46,7 @@ func TestHandleUpdateDocument_IdMutation(t *testing.T) {
 	// Try to update document msg-1 with body containing id: msg-2
 	body := []byte(`{"doc":{"id": "msg-2", "name": "Bob"}}`)
 	req, _ := http.NewRequest("PATCH", "/api/v1/databases/default/documents/rooms/room-1/messages/msg-1", bytes.NewBuffer(body))
+	req.Header.Set("Authorization", "Bearer test")
 	rr := httptest.NewRecorder()
 
 	server.ServeHTTP(rr, req)
@@ -60,14 +58,13 @@ func TestHandleUpdateDocument_IdMutation(t *testing.T) {
 func TestHandleReplaceDocument_InvalidPath(t *testing.T) {
 	mockService := new(MockQueryService)
 	mockAuth := new(MockAuthService)
-	mockAuth.On("MiddlewareOptional", mock.Anything).Return(nil)
-	mockAuth.On("Middleware", mock.Anything).Return(nil)
 	setupMockServiceForAuthz(mockService)
 	server := createTestServer(mockService, mockAuth, nil)
 
 	body := []byte(`{"doc":{"name": "Bob"}}`)
 	// Invalid path - only collection, no document ID for PUT
 	req, _ := http.NewRequest("PUT", "/api/v1/databases/default/documents/rooms", bytes.NewBuffer(body))
+	req.Header.Set("Authorization", "Bearer test")
 	rr := httptest.NewRecorder()
 
 	server.ServeHTTP(rr, req)
@@ -80,14 +77,13 @@ func TestHandleReplaceDocument_InvalidPath(t *testing.T) {
 func TestHandleReplaceDocument_InvalidBody(t *testing.T) {
 	mockService := new(MockQueryService)
 	mockAuth := new(MockAuthService)
-	mockAuth.On("MiddlewareOptional", mock.Anything).Return(nil)
-	mockAuth.On("Middleware", mock.Anything).Return(nil)
 	setupMockServiceForAuthz(mockService)
 	server := createTestServer(mockService, mockAuth, nil)
 
 	// Invalid JSON body
 	body := []byte(`{invalid json}`)
 	req, _ := http.NewRequest("PUT", "/api/v1/databases/default/documents/rooms/room-1/messages/msg-1", bytes.NewBuffer(body))
+	req.Header.Set("Authorization", "Bearer test")
 	rr := httptest.NewRecorder()
 
 	server.ServeHTTP(rr, req)
@@ -99,14 +95,13 @@ func TestHandleReplaceDocument_InvalidBody(t *testing.T) {
 func TestHandleReplaceDocument_InvalidDocId(t *testing.T) {
 	mockService := new(MockQueryService)
 	mockAuth := new(MockAuthService)
-	mockAuth.On("MiddlewareOptional", mock.Anything).Return(nil)
-	mockAuth.On("Middleware", mock.Anything).Return(nil)
 	setupMockServiceForAuthz(mockService)
 	server := createTestServer(mockService, mockAuth, nil)
 
 	// Invalid doc data - empty id field
 	body := []byte(`{"doc":{"id": ""}}`)
 	req, _ := http.NewRequest("PUT", "/api/v1/databases/default/documents/rooms/room-1/messages/msg-1", bytes.NewBuffer(body))
+	req.Header.Set("Authorization", "Bearer test")
 	rr := httptest.NewRecorder()
 
 	server.ServeHTTP(rr, req)
@@ -118,14 +113,13 @@ func TestHandleReplaceDocument_InvalidDocId(t *testing.T) {
 func TestHandlePatchDocument_InvalidPath(t *testing.T) {
 	mockService := new(MockQueryService)
 	mockAuth := new(MockAuthService)
-	mockAuth.On("MiddlewareOptional", mock.Anything).Return(nil)
-	mockAuth.On("Middleware", mock.Anything).Return(nil)
 	setupMockServiceForAuthz(mockService)
 	server := createTestServer(mockService, mockAuth, nil)
 
 	body := []byte(`{"doc":{"name": "Bob"}}`)
 	// Invalid path - only collection for PATCH
 	req, _ := http.NewRequest("PATCH", "/api/v1/databases/default/documents/rooms", bytes.NewBuffer(body))
+	req.Header.Set("Authorization", "Bearer test")
 	rr := httptest.NewRecorder()
 
 	server.ServeHTTP(rr, req)
@@ -137,14 +131,13 @@ func TestHandlePatchDocument_InvalidPath(t *testing.T) {
 func TestHandlePatchDocument_InvalidBody(t *testing.T) {
 	mockService := new(MockQueryService)
 	mockAuth := new(MockAuthService)
-	mockAuth.On("MiddlewareOptional", mock.Anything).Return(nil)
-	mockAuth.On("Middleware", mock.Anything).Return(nil)
 	setupMockServiceForAuthz(mockService)
 	server := createTestServer(mockService, mockAuth, nil)
 
 	// Invalid JSON body
 	body := []byte(`{invalid json}`)
 	req, _ := http.NewRequest("PATCH", "/api/v1/databases/default/documents/rooms/room-1/messages/msg-1", bytes.NewBuffer(body))
+	req.Header.Set("Authorization", "Bearer test")
 	rr := httptest.NewRecorder()
 
 	server.ServeHTTP(rr, req)
@@ -156,14 +149,13 @@ func TestHandlePatchDocument_InvalidBody(t *testing.T) {
 func TestHandlePatchDocument_InvalidDocId(t *testing.T) {
 	mockService := new(MockQueryService)
 	mockAuth := new(MockAuthService)
-	mockAuth.On("MiddlewareOptional", mock.Anything).Return(nil)
-	mockAuth.On("Middleware", mock.Anything).Return(nil)
 	setupMockServiceForAuthz(mockService)
 	server := createTestServer(mockService, mockAuth, nil)
 
 	// Invalid doc data - empty id field
 	body := []byte(`{"doc":{"id": ""}}`)
 	req, _ := http.NewRequest("PATCH", "/api/v1/databases/default/documents/rooms/room-1/messages/msg-1", bytes.NewBuffer(body))
+	req.Header.Set("Authorization", "Bearer test")
 	rr := httptest.NewRecorder()
 
 	server.ServeHTTP(rr, req)
@@ -175,14 +167,13 @@ func TestHandlePatchDocument_InvalidDocId(t *testing.T) {
 func TestHandleDeleteDocument_InvalidBody(t *testing.T) {
 	mockService := new(MockQueryService)
 	mockAuth := new(MockAuthService)
-	mockAuth.On("MiddlewareOptional", mock.Anything).Return(nil)
-	mockAuth.On("Middleware", mock.Anything).Return(nil)
 	setupMockServiceForAuthz(mockService)
 	server := createTestServer(mockService, mockAuth, nil)
 
 	// Invalid JSON body
 	body := []byte(`{invalid json}`)
 	req, _ := http.NewRequest("DELETE", "/api/v1/databases/default/documents/rooms/room-1/messages/msg-1", bytes.NewBuffer(body))
+	req.Header.Set("Authorization", "Bearer test")
 	rr := httptest.NewRecorder()
 
 	server.ServeHTTP(rr, req)
@@ -194,14 +185,13 @@ func TestHandleDeleteDocument_InvalidBody(t *testing.T) {
 func TestHandleCreateDocument_InvalidBody(t *testing.T) {
 	mockService := new(MockQueryService)
 	mockAuth := new(MockAuthService)
-	mockAuth.On("MiddlewareOptional", mock.Anything).Return(nil)
-	mockAuth.On("Middleware", mock.Anything).Return(nil)
 	// Note: create action doesn't fetch existing document for authz
 	server := createTestServer(mockService, mockAuth, nil)
 
 	// Invalid JSON body
 	body := []byte(`{invalid json}`)
 	req, _ := http.NewRequest("POST", "/api/v1/databases/default/documents/rooms", bytes.NewBuffer(body))
+	req.Header.Set("Authorization", "Bearer test")
 	rr := httptest.NewRecorder()
 
 	server.ServeHTTP(rr, req)
@@ -213,14 +203,13 @@ func TestHandleCreateDocument_InvalidBody(t *testing.T) {
 func TestHandleCreateDocument_InvalidDocId(t *testing.T) {
 	mockService := new(MockQueryService)
 	mockAuth := new(MockAuthService)
-	mockAuth.On("MiddlewareOptional", mock.Anything).Return(nil)
-	mockAuth.On("Middleware", mock.Anything).Return(nil)
 	// Note: create action doesn't fetch existing document for authz
 	server := createTestServer(mockService, mockAuth, nil)
 
 	// Invalid doc data - empty id field
 	body := []byte(`{"id": ""}`)
 	req, _ := http.NewRequest("POST", "/api/v1/databases/default/documents/rooms", bytes.NewBuffer(body))
+	req.Header.Set("Authorization", "Bearer test")
 	rr := httptest.NewRecorder()
 
 	server.ServeHTTP(rr, req)

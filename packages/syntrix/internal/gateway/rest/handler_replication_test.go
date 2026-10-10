@@ -15,7 +15,6 @@ import (
 	"github.com/codetreker/syntrix/internal/core/storage"
 	querycore "github.com/codetreker/syntrix/internal/query/core"
 	"github.com/codetreker/syntrix/pkg/model"
-
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
@@ -41,6 +40,7 @@ func TestHandlePush(t *testing.T) {
 	}
 	body, _ := json.Marshal(pushReq)
 	req, _ := http.NewRequest("POST", "/replication/v1/databases/default/push", bytes.NewBuffer(body))
+	req.Header.Set("Authorization", "Bearer test")
 	rr := httptest.NewRecorder()
 
 	server.ServeHTTP(rr, req)
@@ -77,6 +77,7 @@ func TestHandlePushRejectsMalformedLaterChange(t *testing.T) {
 			require.NoError(t, err)
 			body := `{"collection":"users","changes":[` + string(first) + `,` + invalid + `]}`
 			req := httptest.NewRequest(http.MethodPost, "/replication/v1/databases/default/push", bytes.NewBufferString(body))
+			req.Header.Set("Authorization", "Bearer test")
 			rr := httptest.NewRecorder()
 			createTestServer(service, nil, nil).ServeHTTP(rr, req)
 			require.Equal(t, http.StatusBadRequest, rr.Code, rr.Body.String())
@@ -104,6 +105,7 @@ func TestHandlePushStructuredConflicts(t *testing.T) {
 		ReplicaChange{Action: "update", Doc: model.Document{"id": "alice", "version": int64(1)}},
 	)
 	req := httptest.NewRequest(http.MethodPost, "/replication/v1/databases/default/push", bytes.NewBufferString(body))
+	req.Header.Set("Authorization", "Bearer test")
 	rr := httptest.NewRecorder()
 	createTestServer(service, nil, nil).ServeHTTP(rr, req)
 	require.Equal(t, http.StatusOK, rr.Code, rr.Body.String())
@@ -137,6 +139,7 @@ func TestHandlePushRejectsInvalidResult(t *testing.T) {
 		service := new(MockQueryService)
 		service.On("Push", mock.Anything, "default", mock.Anything).Return(result, nil).Once()
 		request := httptest.NewRequest(http.MethodPost, "/replication/v1/databases/default/push", bytes.NewBufferString(typedPushBody(t, "users", ReplicaChange{Action: "update", Doc: model.Document{"id": "alice", "version": int64(1)}})))
+		request.Header.Set("Authorization", "Bearer test")
 		rr := httptest.NewRecorder()
 		createTestServer(service, nil, nil).ServeHTTP(rr, request)
 		require.Equal(t, http.StatusInternalServerError, rr.Code, rr.Body.String())
@@ -161,7 +164,9 @@ func TestHandlePushEncodeFailureDoesNotWritePartialResponse(t *testing.T) {
 		ReplicaChange{Action: "update", Doc: model.Document{"id": "invalid", "version": int64(1)}},
 	)
 	rr := httptest.NewRecorder()
-	createTestServer(service, nil, nil).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/replication/v1/databases/default/push", bytes.NewBufferString(body)))
+	request := httptest.NewRequest(http.MethodPost, "/replication/v1/databases/default/push", bytes.NewBufferString(body))
+	request.Header.Set("Authorization", "Bearer test")
+	createTestServer(service, nil, nil).ServeHTTP(rr, request)
 	require.Equal(t, http.StatusInternalServerError, rr.Code)
 	require.True(t, json.Valid(rr.Body.Bytes()))
 	require.NotContains(t, rr.Body.String(), `"conflicts"`)
@@ -180,7 +185,9 @@ func TestHandlePushRejectsInvalidTypedDocument(t *testing.T) {
 			require.NoError(t, err)
 			body := `{"collection":"users","changes":[` + string(first) + `,{"action":"update","document":` + document + `}]}`
 			rr := httptest.NewRecorder()
-			createTestServer(service, nil, nil).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/replication/v1/databases/default/push", bytes.NewBufferString(body)))
+			request := httptest.NewRequest(http.MethodPost, "/replication/v1/databases/default/push", bytes.NewBufferString(body))
+			request.Header.Set("Authorization", "Bearer test")
+			createTestServer(service, nil, nil).ServeHTTP(rr, request)
 			require.Equal(t, http.StatusBadRequest, rr.Code, rr.Body.String())
 			service.AssertNotCalled(t, "Push", mock.Anything, mock.Anything, mock.Anything)
 		})
@@ -192,6 +199,7 @@ func TestHandlePushQueryValidationAndWriteErrors(t *testing.T) {
 		service := new(MockQueryService)
 		service.On("Push", mock.Anything, "default", mock.Anything).Return(&storage.ReplicationPushResponse{}, queryErr).Once()
 		request := httptest.NewRequest(http.MethodPost, "/replication/v1/databases/default/push", bytes.NewBufferString(typedPushBody(t, "users", ReplicaChange{Action: "update", Doc: model.Document{"id": "alice"}})))
+		request.Header.Set("Authorization", "Bearer test")
 		if queryErr != nil {
 			rr := httptest.NewRecorder()
 			createTestServer(service, nil, nil).ServeHTTP(rr, request)
@@ -241,6 +249,7 @@ func TestHandlePush_VersionPrecondition(t *testing.T) {
 			}
 			body := typedPushBody(t, "rooms/room-1/messages", ReplicaChange{Action: tc.action, Doc: data})
 			req := httptest.NewRequest(http.MethodPost, "/replication/v1/databases/default/push", bytes.NewBufferString(body))
+			req.Header.Set("Authorization", "Bearer test")
 			rr := httptest.NewRecorder()
 			createTestServer(service, nil, nil).ServeHTTP(rr, req)
 			require.Equal(t, http.StatusOK, rr.Code, rr.Body.String())
@@ -288,6 +297,7 @@ func TestHandlePush_InvalidVersion(t *testing.T) {
 				}
 				body := `{"collection":"rooms","changes":[` + changes + `]}`
 				req := httptest.NewRequest(http.MethodPost, "/replication/v1/databases/default/push", bytes.NewBufferString(body))
+				req.Header.Set("Authorization", "Bearer test")
 				rr := httptest.NewRecorder()
 				createTestServer(service, nil, nil).ServeHTTP(rr, req)
 				require.Equal(t, http.StatusBadRequest, rr.Code, rr.Body.String())
@@ -394,6 +404,7 @@ func TestHandlePush_QueryEngineVersionPrecondition(t *testing.T) {
 				}
 				body := typedPushBody(t, "rooms", ReplicaChange{Action: action, Doc: doc})
 				req := httptest.NewRequest(http.MethodPost, "/replication/v1/databases/default/push", bytes.NewBufferString(body))
+				req.Header.Set("Authorization", "Bearer test")
 				rr := httptest.NewRecorder()
 				server.ServeHTTP(rr, req)
 
@@ -428,6 +439,7 @@ func TestHandlePush_InvalidBody(t *testing.T) {
 	server := createTestServer(mockService, nil, nil)
 
 	req, _ := http.NewRequest("POST", "/replication/v1/databases/default/push", bytes.NewBufferString("{invalid"))
+	req.Header.Set("Authorization", "Bearer test")
 	rr := httptest.NewRecorder()
 
 	server.ServeHTTP(rr, req)
@@ -442,6 +454,7 @@ func TestHandlePush_MissingCollection(t *testing.T) {
 	reqBody := ReplicaPushRequest{Collection: "", Changes: []ReplicaChange{{Action: "update", Doc: model.Document{"id": "1"}}}}
 	body, _ := json.Marshal(reqBody)
 	req, _ := http.NewRequest("POST", "/replication/v1/databases/default/push", bytes.NewBuffer(body))
+	req.Header.Set("Authorization", "Bearer test")
 	rr := httptest.NewRecorder()
 
 	server.ServeHTTP(rr, req)
@@ -456,6 +469,7 @@ func TestHandlePush_InvalidCollection(t *testing.T) {
 	reqBody := ReplicaPushRequest{Collection: "rooms!", Changes: []ReplicaChange{{Action: "update", Doc: model.Document{"id": "1"}}}}
 	body, _ := json.Marshal(reqBody)
 	req, _ := http.NewRequest("POST", "/replication/v1/databases/default/push", bytes.NewBuffer(body))
+	req.Header.Set("Authorization", "Bearer test")
 	rr := httptest.NewRecorder()
 
 	server.ServeHTTP(rr, req)
@@ -470,6 +484,7 @@ func TestHandlePush_DocValidationFail(t *testing.T) {
 	reqBody := ReplicaPushRequest{Collection: "rooms", Changes: []ReplicaChange{{Action: "update", Doc: model.Document{"id": ""}}}}
 	body, _ := json.Marshal(reqBody)
 	req, _ := http.NewRequest("POST", "/replication/v1/databases/default/push", bytes.NewBuffer(body))
+	req.Header.Set("Authorization", "Bearer test")
 	rr := httptest.NewRecorder()
 
 	server.ServeHTTP(rr, req)
@@ -484,6 +499,7 @@ func TestHandlePush_MissingDocID(t *testing.T) {
 	reqBody := ReplicaPushRequest{Collection: "rooms", Changes: []ReplicaChange{{Action: "update", Doc: model.Document{"name": "Bob"}}}}
 	body, _ := json.Marshal(reqBody)
 	req, _ := http.NewRequest("POST", "/replication/v1/databases/default/push", bytes.NewBuffer(body))
+	req.Header.Set("Authorization", "Bearer test")
 	rr := httptest.NewRecorder()
 
 	server.ServeHTTP(rr, req)
@@ -498,6 +514,7 @@ func TestHandlePush_NoChanges(t *testing.T) {
 	reqBody := ReplicaPushRequest{Collection: "rooms", Changes: []ReplicaChange{}}
 	body, _ := json.Marshal(reqBody)
 	req, _ := http.NewRequest("POST", "/replication/v1/databases/default/push", bytes.NewBuffer(body))
+	req.Header.Set("Authorization", "Bearer test")
 	rr := httptest.NewRecorder()
 
 	server.ServeHTTP(rr, req)
@@ -514,6 +531,7 @@ func TestHandlePush_EngineError(t *testing.T) {
 	reqBody := ReplicaPushRequest{Collection: "rooms", Changes: []ReplicaChange{{Action: "update", Doc: model.Document{"id": "1"}}}}
 	body, _ := json.Marshal(reqBody)
 	req, _ := http.NewRequest("POST", "/replication/v1/databases/default/push", bytes.NewBuffer(body))
+	req.Header.Set("Authorization", "Bearer test")
 	rr := httptest.NewRecorder()
 
 	server.ServeHTTP(rr, req)
@@ -546,6 +564,7 @@ func TestHandlePush_FlattensConflicts(t *testing.T) {
 	}
 	body, _ := json.Marshal(pushReq)
 	req, _ := http.NewRequest("POST", "/replication/v1/databases/default/push", bytes.NewBuffer(body))
+	req.Header.Set("Authorization", "Bearer test")
 	rr := httptest.NewRecorder()
 
 	server.ServeHTTP(rr, req)
@@ -573,6 +592,7 @@ func TestHandlePush_DeleteAction(t *testing.T) {
 	}
 	body, _ := json.Marshal(pushReq)
 	req, _ := http.NewRequest("POST", "/replication/v1/databases/default/push", bytes.NewBuffer(body))
+	req.Header.Set("Authorization", "Bearer test")
 	rr := httptest.NewRecorder()
 
 	server.ServeHTTP(rr, req)
@@ -593,6 +613,7 @@ func TestHandlePush_ValidateReplicationPushError(t *testing.T) {
 	}
 	body, _ := json.Marshal(pushReq)
 	req, _ := http.NewRequest("POST", "/replication/v1/databases/default/push", bytes.NewBuffer(body))
+	req.Header.Set("Authorization", "Bearer test")
 	rr := httptest.NewRecorder()
 
 	orig := validateReplicationPushFn

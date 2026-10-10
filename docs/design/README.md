@@ -14,7 +14,7 @@ and currently implemented contracts.
 | Developer-facing Console and its current embedded UI | [Console design](server/console/01.console.md) |
 | Employee-facing Management platform | [Management design](server/console/02.control_plane.md) |
 | Runtime services within one Syntrix instance | [Instance architecture](server/01.architecture.md) |
-| Project end-user realms, OAuth/OIDC, external login | [Identity design](server/core/identity/01.architecture.md) |
+| Identity contracts and target project end-user realms, OAuth/OIDC, external login | [Identity design](server/core/identity/01.architecture.md) |
 | Business-document CEL rules and evaluation | [Gateway authorization](server/gateway/authorization.md) |
 | Instance system metadata and logical database lifecycle | [Database design](server/core/database/01.architecture.md) |
 | Private system PostgreSQL and business-document MongoDB | [Storage design](server/core/storage/01.architecture.md) |
@@ -43,7 +43,9 @@ when editing prose and preserve the complete behavior being described.
 
 This is an instance-runtime diagram. Management and the developer Console sit at
 the platform layers described by the canonical architecture. Identity is the
-target peer module; current authentication is embedded under `core/identity`.
+target peer runtime module. Current transport-free contracts live under
+`internal/identity`, the password/JWT implementation remains under
+`core/identity/authn`, and Gateway owns HTTP authentication adapters.
 PostgreSQL stores private instance system records, while MongoDB holds developer
 business documents. Current code still stores revocation in MongoDB.
 

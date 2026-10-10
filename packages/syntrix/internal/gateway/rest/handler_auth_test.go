@@ -8,8 +8,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/codetreker/syntrix/internal/core/identity"
-
+	"github.com/codetreker/syntrix/internal/identity"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 )

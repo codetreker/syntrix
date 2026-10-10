@@ -4,13 +4,11 @@ import (
 	"context"
 	"net/http"
 
-	"github.com/codetreker/syntrix/internal/core/identity"
-	"github.com/codetreker/syntrix/internal/core/identity/authn"
 	"github.com/codetreker/syntrix/internal/core/storage"
 	"github.com/codetreker/syntrix/internal/gateway/authorization"
+	"github.com/codetreker/syntrix/internal/identity"
 	"github.com/codetreker/syntrix/internal/query"
 	"github.com/codetreker/syntrix/pkg/model"
-
 	"github.com/stretchr/testify/mock"
 )
 
@@ -98,46 +96,6 @@ type MockAuthService struct {
 	mock.Mock
 }
 
-func (m *MockAuthService) Middleware(next http.Handler) http.Handler {
-	if len(m.ExpectedCalls) == 0 {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// Database is now extracted from URL path, not context
-			ctx := context.WithValue(r.Context(), identity.ContextKeyRoles, []string{"system"})
-			next.ServeHTTP(w, r.WithContext(ctx))
-		})
-	}
-
-	args := m.Called(next)
-	if handler, ok := args.Get(0).(http.Handler); ok {
-		return handler
-	}
-
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ctx := context.WithValue(r.Context(), identity.ContextKeyRoles, []string{"system"})
-		next.ServeHTTP(w, r.WithContext(ctx))
-	})
-}
-
-func (m *MockAuthService) MiddlewareOptional(next http.Handler) http.Handler {
-	if len(m.ExpectedCalls) == 0 {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// Database is now extracted from URL path, not context
-			ctx := context.WithValue(r.Context(), identity.ContextKeyRoles, []string{"system"})
-			next.ServeHTTP(w, r.WithContext(ctx))
-		})
-	}
-
-	args := m.Called(next)
-	if handler, ok := args.Get(0).(http.Handler); ok {
-		return handler
-	}
-
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ctx := context.WithValue(r.Context(), identity.ContextKeyRoles, []string{"system"})
-		next.ServeHTTP(w, r.WithContext(ctx))
-	})
-}
-
 func (m *MockAuthService) SignIn(ctx context.Context, req identity.LoginRequest) (*identity.TokenPair, error) {
 	args := m.Called(ctx, req)
 	if args.Get(0) == nil {
@@ -162,35 +120,22 @@ func (m *MockAuthService) Refresh(ctx context.Context, req identity.RefreshReque
 	return args.Get(0).(*identity.TokenPair), args.Error(1)
 }
 
-func (m *MockAuthService) ListUsers(ctx context.Context, limit int, offset int) ([]*authn.User, error) {
-	args := m.Called(ctx, limit, offset)
+func (m *MockAuthService) ListUsers(ctx context.Context, actor *identity.VerifiedIdentity, limit int, offset int) ([]*identity.User, error) {
+	args := m.Called(ctx, actor, limit, offset)
 	if args.Get(0) == nil {
 		return nil, args.Error(1)
 	}
-	return args.Get(0).([]*authn.User), args.Error(1)
+	return args.Get(0).([]*identity.User), args.Error(1)
 }
 
-func (m *MockAuthService) UpdateUser(ctx context.Context, id string, roles []string, dbAdmin []string, disabled bool) error {
-	args := m.Called(ctx, id, roles, dbAdmin, disabled)
+func (m *MockAuthService) UpdateUser(ctx context.Context, actor *identity.VerifiedIdentity, id string, roles []string, dbAdmin []string, disabled bool) error {
+	args := m.Called(ctx, actor, id, roles, dbAdmin, disabled)
 	return args.Error(0)
 }
 
 func (m *MockAuthService) Logout(ctx context.Context, refreshToken string) error {
 	args := m.Called(ctx, refreshToken)
 	return args.Error(0)
-}
-
-func (m *MockAuthService) GenerateSystemToken(serviceName string) (string, error) {
-	args := m.Called(serviceName)
-	return args.String(0), args.Error(1)
-}
-
-func (m *MockAuthService) ValidateToken(tokenString string) (*identity.Claims, error) {
-	args := m.Called(tokenString)
-	if args.Get(0) == nil {
-		return nil, args.Error(1)
-	}
-	return args.Get(0).(*identity.Claims), args.Error(1)
 }
 
 // MockAuthzService is a mock implementation of AuthzService
@@ -272,7 +217,12 @@ func (s *TestServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.mux.ServeHTTP(w, r)
 }
 
-func createTestServer(engine query.Service, auth identity.AuthN, authz authorization.Engine) *TestServer {
+type testIdentityService interface {
+	identity.AccountService
+	identity.TokenVerifier
+}
+
+func createTestServer(engine query.Service, auth testIdentityService, authz authorization.Engine) *TestServer {
 	if auth == nil {
 		auth = new(MockAuthService)
 	}
@@ -280,11 +230,25 @@ func createTestServer(engine query.Service, auth identity.AuthN, authz authoriza
 		authz = new(AllowAllAuthzService)
 	}
 
-	h, _ := NewHandler(engine, auth, authz)
+	h, _ := NewHandler(engine, auth, auth, authz)
 	mux := http.NewServeMux()
 	h.RegisterRoutes(mux)
 	return &TestServer{
 		Handler: h,
 		mux:     mux,
 	}
+}
+
+func (m *MockAuthService) VerifyToken(token string) (*identity.VerifiedIdentity, error) {
+	for _, call := range m.ExpectedCalls {
+		if call.Method == "VerifyToken" {
+			args := m.Called(token)
+			if args.Get(0) == nil {
+				return nil, args.Error(1)
+			}
+			return args.Get(0).(*identity.VerifiedIdentity), args.Error(1)
+		}
+	}
+	verifier, _ := identity.NewVerifier(func(string) (*identity.Claims, error) { return &identity.Claims{Roles: []string{"system"}}, nil })
+	return verifier.VerifyToken(token)
 }
