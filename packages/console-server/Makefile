@@ -3,11 +3,10 @@
 build:
 	go build -o bin/console-server ./cmd/console-server
 
-test:
-	go test -race ./... -count=1 -timeout=3m
+test: coverage
 
 coverage:
-	go run github.com/codetreker/go-cov/cmd/go-cov@v0.1.0 --coverprofile=coverage.out --skip-result-packages cmd/
+	./scripts/coverage.sh
 
 clean:
 	rm -rf bin coverage.out

@@ -15,16 +15,27 @@ Its database is separate from every instance's private system PostgreSQL.
 
 ```bash
 make -C packages/console-server build
-make -C packages/console-server test
 CONSOLE_TEST_POSTGRES_DSN='postgres://console:console@localhost:5432/console_test?sslmode=disable' \
-  CI=true make -C packages/console-server coverage
+  make -C packages/console-server test
 ```
 
 Real PostgreSQL tests use temporary schemas in the explicitly selected test
-database. Without `CONSOLE_TEST_POSTGRES_DSN`, integration tests skip. Coverage
-uses the repository's pinned go-cov tool. CI supplies PostgreSQL, checks race and
-coverage, and builds the container. Build assets are independent of instance Go
-builds and frontend dependencies.
+database. Both `make test` and `make coverage` require
+`CONSOLE_TEST_POSTGRES_DSN` and run the pinned `go-cov@v0.1.0` through
+[scripts/coverage.sh](scripts/coverage.sh). The module-owned
+[.go-cov.toml](.go-cov.toml) requires total coverage of 90%, each package 85%,
+and each function 80%, with race detection and a three-minute test timeout.
+Critical uncovered blocks also fail the command. No packages, files, or functions
+are excluded, including the command entrypoint. Enforcement is explicit and does
+not depend on the ambient `CI` variable. The entrypoint clears go-cov environment
+overrides so they cannot weaken the module policy. Coverage is written to
+`coverage.out`.
+
+CI and the pre-push hook use this same gate; CI supplies PostgreSQL and also
+builds the container. Direct `go test` is available for focused development, but
+integration tests skip without their database environment and it does not enforce
+coverage. Build assets are independent of instance Go builds and frontend
+dependencies.
 
 ## Configuration and Local Run
 

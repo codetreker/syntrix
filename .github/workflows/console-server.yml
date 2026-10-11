@@ -39,6 +39,6 @@ jobs:
       - name: Build
         run: make -C packages/console-server build
       - name: Race and coverage
-        run: CI=true make -C packages/console-server coverage
+        run: make -C packages/console-server test
       - name: Container build
         run: docker build -t console-server:ci packages/console-server

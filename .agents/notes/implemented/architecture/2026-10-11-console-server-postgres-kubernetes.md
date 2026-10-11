@@ -71,6 +71,12 @@ delivered. Startup does not delete existing data. The [Console design](../../../
 and [API reference](../../../../docs/reference/console_api.md) own supported
 interfaces and lifecycle details.
 
+The module-owned [go-cov policy](../../../../packages/console-server/.go-cov.toml)
+enforces total 90%, package 85%, and function 80% coverage, race detection,
+and critical uncovered-block checks. `make test`, `make coverage`, CI, and
+pre-push share the explicit enforcing entrypoint and require a PostgreSQL test
+database. Command code is included; no coverage exclusions are configured.
+
 ## Alternatives
 
 **Keep the embedded instance frontend as developer Console.** Its account and

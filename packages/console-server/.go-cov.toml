@@ -1,0 +1,23 @@
+project = "console-server"
+module_prefix = "github.com/codetreker/syntrix/console-server/"
+
+[thresholds]
+total = 90
+package = 85
+function = 80
+print = 90
+
+[test]
+timeout = "3m"
+race = true
+
+[exclude]
+packages = []
+files = []
+funcs = []
+
+[html]
+enabled = false
+
+[critical_blocks]
+fail = true

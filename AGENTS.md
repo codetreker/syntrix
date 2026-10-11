@@ -118,6 +118,10 @@ contents or replacing the existing planning directories.
 - Run tests after code changes. Run `make -C packages/syntrix coverage` from the
   repository root to evaluate Go coverage and address gaps within the authorized
   task.
+- For Console changes, set `CONSOLE_TEST_POSTGRES_DSN` to a dedicated test
+  database and run `make -C packages/console-server test`. Its module-owned
+  go-cov policy enforces total/package/function coverage, race detection, and
+  critical uncovered-block checks in local and CI runs.
 - Ask "should I add more testing" when assessing testing needs. Keep tests
   robust without over-engineering them.
 - Add timeouts to tests or commands that may hang.

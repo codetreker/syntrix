@@ -115,6 +115,11 @@ configured infrastructure. The [pipeline environment](../deployment/pipeline/REA
 describes those services and the CI checks. SDK build scripts live in its
 `package.json`; the SDK uses pnpm for locked dependencies and Bun for scripts.
 The demo uses Bun. Console owns separate Go build/test/coverage targets.
+Its `make test` and `make coverage` share an enforced go-cov gate: total 90%,
+package 85%, function 80%, race detection, and critical uncovered-block checks.
+Provide `CONSOLE_TEST_POSTGRES_DSN` for that gate; the
+[Console README](../packages/console-server/README.md) owns database setup and
+commands. These checks run regardless of the ambient `CI` setting.
 
 `make -C packages/syntrix coverage` reports coverage. Setting `CI=true` also
 enables race detection and enforces the CI coverage thresholds.
