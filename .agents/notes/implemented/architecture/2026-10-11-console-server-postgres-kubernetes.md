@@ -61,7 +61,10 @@ Kubernetes is accessed through a separable provisioning adapter with an explicit
 kubeconfig/context or explicitly selected in-cluster credentials. Development
 clusters are operator-provided; this service does not manage k3d cluster setup or
 shutdown. Namespace/RBAC restrict resource authority, and ClusterIP remains an
-internal endpoint. Snapshots persist namespace and installation ID; the executor
+internal endpoint. The platform deployment namespace is `syntrix-platform`,
+hosting Console and providing a shared location for future Management services.
+Test workloads run in `syntrix-tests` through the current Console ServiceAccount
+and workload role. Snapshots persist namespace and installation ID; the executor
 rejects a mismatch against current configuration. Installation ID is stable for
 one Console/cluster target and changes on cluster relocation. Reusing it with a
 changed kubeconfig/context does not independently prove cluster identity.
@@ -121,6 +124,12 @@ publication, and explicit whole-instance cleanup/backup policy. Freezing templat
 and targets preserves the operation model while those capabilities are added.
 The current service rejects unsupported templates and cannot claim to deploy
 MongoDB/PostgreSQL/Syntrix as an instance.
+
+Management-specific service identities and permission policy remain part of
+Management delivery. Current deployment uses only the access needed to complete
+Console's request lifecycle. Adding Management will require its deployment and
+permission configuration; the separate provisioning adapter preserves that
+choice without changing developer accounts or accepted workload records.
 
 OAuth login, self-service profiles, UI, project realms, instance administration,
 and employee Management remain substantive follow-on work in the existing

@@ -110,21 +110,27 @@ docker build -t console-server:development packages/console-server
 k3d image import console-server:development --cluster default
 ```
 
-[deployment/kubernetes.yml](deployment/kubernetes.yml) creates separate Console
-and test namespaces, a dedicated ServiceAccount, namespaced RBAC, one Console
+[deployment/kubernetes.yml](deployment/kubernetes.yml) creates `syntrix-platform`
+for platform services and `syntrix-tests` for requested test workloads, one Console
+ServiceAccount with the workload permissions, one Console
 Deployment using Recreate, and a ClusterIP Service. Provide the configuration
 and PostgreSQL secrets before deploying. For the in-cluster configuration, use
 `server.address: "0.0.0.0:8090"`, an explicit public origin, and
 `provisioning.mode: "in_cluster"`.
 
+Console currently executes deployment requests directly. Future Management
+services can run in `syntrix-platform`; their service permissions are decided
+when those services are implemented. `provisioning.namespace` selects the test
+workload target and remains `syntrix-tests`.
+
 ```bash
-kubectl --context k3d-default create namespace syntrix-console
-kubectl --context k3d-default -n syntrix-console create secret generic console-config \
+kubectl --context k3d-default create namespace syntrix-platform
+kubectl --context k3d-default -n syntrix-platform create secret generic console-config \
   --from-file=config.yml=packages/console-server/configs/config.local.yml
-kubectl --context k3d-default -n syntrix-console create secret generic console-postgres \
+kubectl --context k3d-default -n syntrix-platform create secret generic console-postgres \
   --from-literal=dsn='postgres://console:console@postgres-host:5432/console?sslmode=require'
 kubectl --context k3d-default apply -f packages/console-server/deployment/kubernetes.yml
-kubectl --context k3d-default -n syntrix-console rollout status deployment/console-server --timeout=120s
+kubectl --context k3d-default -n syntrix-platform rollout status deployment/console-server --timeout=120s
 ```
 
 Use a production secret mechanism for credentials outside local testing. RBAC

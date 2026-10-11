@@ -101,7 +101,9 @@ owns the physical representation and routing contracts.
 
 Console owns an independent PostgreSQL database for its source data. Kubernetes
 provides actual resources and observations; it is not the developer account or
-request authority. Management's persistence backend remains unchosen. An
+request authority. The supplied deployment hosts Console in `syntrix-platform`,
+which also provides a location for future Management services; test workloads
+run in `syntrix-tests`. Management's persistence backend remains unchosen. An
 instance's PostgreSQL must not be treated as the global employee/developer
 account store or platform inventory authority.
 
