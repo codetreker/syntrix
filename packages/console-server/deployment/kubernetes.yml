@@ -1,0 +1,126 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: syntrix-console
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: syntrix-tests
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: console-server
+  namespace: syntrix-console
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: console-provisioner
+  namespace: syntrix-tests
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "create", "delete"]
+  - apiGroups: ["apps"]
+    resources: ["replicasets"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "list", "create", "delete"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+  - apiGroups: ["discovery.k8s.io"]
+    resources: ["endpointslices"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: console-provisioner
+  namespace: syntrix-tests
+subjects:
+  - kind: ServiceAccount
+    name: console-server
+    namespace: syntrix-console
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: console-provisioner
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: console-server
+  namespace: syntrix-console
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: console-server
+  template:
+    metadata:
+      labels:
+        app: console-server
+    spec:
+      serviceAccountName: console-server
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: console-server
+          image: console-server:development
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8090
+          env:
+            - name: CONSOLE_POSTGRES_DSN
+              valueFrom:
+                secretKeyRef:
+                  name: console-postgres
+                  key: dsn
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "250m"
+              memory: "256Mi"
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: 8090
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: 8090
+          volumeMounts:
+            - name: config
+              mountPath: /etc/console
+              readOnly: true
+      volumes:
+        - name: config
+          secret:
+            secretName: console-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: console-server
+  namespace: syntrix-console
+spec:
+  selector:
+    app: console-server
+  ports:
+    - port: 8090
+      targetPort: 8090

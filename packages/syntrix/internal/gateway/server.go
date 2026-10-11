@@ -2,8 +2,6 @@ package gateway
 
 import (
 	"net/http"
-	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/codetreker/syntrix/internal/core/database"
@@ -16,7 +14,7 @@ import (
 )
 
 // Server is a route registrar for the API layer.
-// It registers REST, realtime, and console routes to a given ServeMux.
+// It registers REST and realtime routes to a given ServeMux.
 type Server struct {
 	rest     *rest.Handler
 	realtime *realtime.Server
@@ -77,7 +75,7 @@ func NewServer(engine query.Service, auth identity.AccountService, verifier iden
 }
 
 // RegisterRoutes registers all API routes to the given ServeMux.
-// This includes REST API routes, realtime WebSocket/SSE routes, and console static files.
+// This includes REST API routes and realtime WebSocket/SSE routes.
 func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	// Register REST routes
 	s.rest.RegisterRoutes(mux)
@@ -88,22 +86,6 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 		mux.HandleFunc("GET /realtime/sse", s.realtime.HandleSSE)
 	}
 
-	// Console – serve built frontend with SPA fallback
-	consoleDir := "../console/dist"
-	mux.HandleFunc("GET /console/", func(w http.ResponseWriter, r *http.Request) {
-		// Strip the /console/ prefix to get the relative file path
-		relPath := r.URL.Path[len("/console/"):]
-		// Check if the requested file exists on disk
-		if relPath != "" {
-			absPath := filepath.Join(consoleDir, filepath.Clean("/"+relPath))
-			if info, err := os.Stat(absPath); err == nil && !info.IsDir() {
-				http.StripPrefix("/console/", http.FileServer(http.Dir(consoleDir))).ServeHTTP(w, r)
-				return
-			}
-		}
-		// SPA fallback: serve index.html for client-side routing
-		http.ServeFile(w, r, filepath.Join(consoleDir, "index.html"))
-	})
 }
 
 // SetDatabaseService injects the database service for database management operations.

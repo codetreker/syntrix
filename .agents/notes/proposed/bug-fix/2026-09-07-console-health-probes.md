@@ -4,7 +4,15 @@ Status: proposed
 
 ## Problem
 
-The current embedded instance administration [Settings page](../../../../packages/console/src/pages/SettingsPage.tsx) probes `/auth/v1/health` and the obsolete `/api/v1/query` route. When either request fails, `results[0]?.status === 'healthy'` converts the failed component check into a healthy result if the general API responds. Both the [public health handler](../../../../packages/syntrix/internal/gateway/rest/handler_health.go) and [admin health handler](../../../../packages/syntrix/internal/gateway/rest/handler_admin.go) simply return `OK`; they do not check authentication or database dependencies. The UI therefore reports inferred component health as observed health. This conclusion follows from static control flow.
+Developers need trustworthy instance dependency readiness rather than inferred
+success from process liveness. The former embedded [Settings page](https://github.com/codetreker/syntrix/blob/dc4439f4d2093d7d250f567a54ae9cdf762fb4b1/packages/console/src/pages/SettingsPage.tsx)
+used speculative auth/query probes and could turn a failed component probe into
+success when general API liveness succeeded. That frontend is removed; the
+failure mode remains a constraint for future scoped diagnostics. The current
+[public health handler](../../../../packages/syntrix/internal/gateway/rest/handler_health.go)
+and [admin health handler](../../../../packages/syntrix/internal/gateway/rest/handler_admin.go)
+return `OK` rather than checking all instance dependencies. Console's new
+Kubernetes workload readiness does not implement this instance aggregation API.
 
 ## Proposal
 

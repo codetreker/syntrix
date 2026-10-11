@@ -15,8 +15,11 @@ databases. Instance PostgreSQL supports system operation; MongoDB stores the
 developer's business documents.
 
 The current repository provides the instance document runtime, SDK, and an
-embedded instance administration frontend. The architecture document identifies
-the remaining platform, Console, project-identity, and OAuth implementation work.
+independent developer Console backend. Console uses its own PostgreSQL for source
+data and deploys predefined HTTP test workloads to Kubernetes. Full instance
+provisioning, employee Management, project Identity, and OAuth remain target work.
+See the [Console package](packages/console-server/README.md) for its separate
+configuration and operating commands.
 The runtime is a **splittable monolith**: services within an instance can run
 together using direct calls or use distributed service communication.
 

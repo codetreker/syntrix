@@ -18,7 +18,7 @@ Each component owns its sources, dependencies, and build configuration under
 |---|---|
 | `packages/syntrix/` | Go server, CLI, benchmark, protocol definitions, runtime configuration, integration tests, and Go tooling |
 | `packages/sdks/client-ts/` | TypeScript client SDK and its build, test, and packaging scripts |
-| `packages/console/` | Web administration console |
+| `packages/console-server/` | Independent developer Console Go module, PostgreSQL source data, and Kubernetes test-workload provisioning |
 | `packages/examples/realtime-demo/` | Browser replica demonstration |
 
 Repository infrastructure, shared maintenance scripts, workflows, documentation,
@@ -45,11 +45,13 @@ in serialized file-descriptor options; changing import text alone would leave
 runtime descriptors inconsistent with their source. Protocol field numbers,
 message shapes, and service methods retain their existing wire contracts.
 
-The gateway serves built console assets from `../console/dist` relative to the
-server package working directory. The console owns its frontend build; the Go
-build does not generate its assets. The
-[console build and delivery proposal](../../proposed/process/2026-09-07-console-build-delivery.md)
-owns a future combined distribution contract.
+The earlier layout included an embedded administration SPA whose frontend build
+was separate from the Go server. The [Console server decision](2026-10-11-console-server-postgres-kubernetes.md)
+replaces that package and static route with a separate developer Go module.
+Console owns its build/test/configuration and uses separate PostgreSQL source
+data; no combined frontend/runtime artifact remains. The [rejected build
+proposal](../../rejected/process/2026-09-07-console-build-delivery.md) preserves
+the former distribution concern.
 
 Workflows and local scripts resolve their repository and package directories
 explicitly. Cross-package build inputs, local SDK dependencies, documentation
@@ -64,9 +66,9 @@ its `scripts/lib/uncovered_blocks` implementation was absent, and uncovered-bloc
 reporting belongs to the pinned coverage tool.
 
 Repository skills name the owning package when running Go build, test, or
-coverage commands. Console route wrappers and toast context definitions live in
-separate modules so existing Fast Refresh and hook lint checks validate the
-sources without rule exceptions.
+coverage commands. The original frontend layout separated route wrappers and
+toast contexts to satisfy Fast Refresh and hook lint rules; that frontend was
+subsequently removed by the separate Console server decision.
 
 Development, pipeline, and devcontainer MongoDB services set both `nofile` limits
 to 64,000 according to
@@ -97,7 +99,7 @@ consistently; directory names do not become part of public module imports.
 
 Relative runtime paths continue to depend on the process working directory.
 Launching the server from another directory requires explicit configuration and
-appropriate data, log, and static-asset paths. Deployment infrastructure remains
+appropriate data and log paths. Deployment infrastructure remains
 repository-owned, so package tooling references it through the repository root.
 
 Coverage reports remain inside the Go package. Automation consuming a report

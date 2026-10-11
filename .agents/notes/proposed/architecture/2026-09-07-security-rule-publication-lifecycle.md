@@ -12,7 +12,9 @@ durable publication history, rollback, dry-run, or propagation to other nodes.
 The [Gateway authorization design](../../../../docs/design/server/gateway/authorization.md)
 already calls for versioned publication and rollback, and the
 [console design](../../../../docs/design/server/console/01.console.md) requires
-idempotent push/rollback results for 24 hours. A successful push cannot currently
+idempotent push/rollback results for 24 hours as a retained future instance
+administration contract. Console's test-workload lifecycle does not implement
+that runtime publication workflow. A successful push cannot currently
 establish which revision other nodes or a restarted process serve, or recover its
 original result after the response is lost.
 

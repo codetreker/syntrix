@@ -34,12 +34,12 @@ Maintain a change checklist connecting route, schema, SDK, and configuration cha
 
 - Active consumer references use registered routes, valid constructor options, and exported method signatures; supported examples pass their declared validation.
 - HTTP examples state actual response shapes, including typed query-page envelopes, and documented error behavior matches handlers.
-- README commands identify prerequisites and supported runtime modes, including current embedded instance administration assets and the target developer Console boundary.
+- README commands identify prerequisites and supported runtime modes, including independent Console PostgreSQL/Kubernetes prerequisites and the remaining full-instance target.
 - Planned replication, rule publication, account, and realtime guarantees are clearly separated from implemented behavior; active links resolve and archives remain unchanged.
 
 ## Dependencies
 
-[Console delivery](2026-09-07-console-build-delivery.md) owns build integration. [Security-rule publication](../architecture/2026-09-07-security-rule-publication-lifecycle.md), [account provisioning](../feature/2026-09-07-admin-account-provisioning.md), and [realtime resume](../feature/2026-09-07-realtime-client-resume.md) remain proposals until their implementations provide validation evidence.
+[Console implementation](../../implemented/architecture/2026-10-11-console-server-postgres-kubernetes.md) owns developer authentication and test-workload lifecycle. The embedded [build-delivery proposal](../../rejected/process/2026-09-07-console-build-delivery.md) was rejected after that frontend was removed. [Security-rule publication](../architecture/2026-09-07-security-rule-publication-lifecycle.md), [account provisioning](../feature/2026-09-07-admin-account-provisioning.md), and [realtime resume](../feature/2026-09-07-realtime-client-resume.md) remain proposals until their implementations provide validation evidence.
 
 ## Risks
 

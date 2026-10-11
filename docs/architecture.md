@@ -6,7 +6,9 @@ the runtime behavior that exists today and the remaining separation work.
 This document owns the platform's user categories, service boundaries, instance
 hierarchy, and database terminology. Component designs and references must use
 these meanings. The [boundary decision](../.agents/notes/proposed/architecture/2026-10-10-platform-console-instance-boundaries.md)
-records the rationale, alternatives, and implementation constraints.
+records the complete target. The [Console implementation decision](../.agents/notes/implemented/architecture/2026-10-11-console-server-postgres-kubernetes.md)
+records its PostgreSQL source data, developer authentication, and Kubernetes
+execution/recovery constraints.
 
 ## Users and Service Boundaries
 
@@ -31,6 +33,7 @@ process lifecycle; its name does not make it the Management platform.
 flowchart TB
     Employees[Platform employees] --> Management[Management platform]
     Developers[Developers] --> Console[Console service]
+    Console --> ConsolePostgres[(Console PostgreSQL)]
     Management -->|Platform operations and monitoring| Console
     Console -->|Manage owned instances| Instance[Syntrix instance]
     Management -->|Scheduling and resource operations| Instance
@@ -39,9 +42,10 @@ flowchart TB
     Instance --> MongoDB[(Business-document MongoDB)]
 ```
 
-The diagram expresses responsibility and ownership. Concrete platform APIs,
-provisioning transports, and platform persistence backends require their own
-designs; it does not prescribe an HTTP proxy chain for application requests.
+The diagram expresses the target responsibility and ownership hierarchy, not an
+HTTP proxy chain for application requests. Console currently invokes Kubernetes
+through a separate provisioning adapter to manage predefined HTTP test workloads.
+Full instance bundles and employee Management execution remain target work.
 
 ## Instances, Projects, and Logical Databases
 
@@ -83,6 +87,7 @@ deleting an instance retires its project and runtime resources.
 
 | Term | Meaning | Data ownership |
 |---|---|---|
+| Console PostgreSQL | Private developer control storage | Developer accounts and sessions, workload ownership, desired state, template snapshots, idempotency, operations, and Kubernetes observations |
 | Instance system PostgreSQL | Private storage supporting the operation of one Syntrix instance | Projects, application end users, credentials, OAuth/OIDC providers and clients, sessions, logical-database configuration and metadata, and other system records |
 | Syntrix database | The logical document-database product provided to developers | A project's business documents, accessed through Syntrix APIs and SDKs |
 | Physical MongoDB database or collection | An implementation storage namespace | Holds business documents for the configured logical Syntrix databases |
@@ -94,10 +99,11 @@ database need not correspond one-to-one to a physical MongoDB database or
 collection. The [storage design](design/server/core/storage/05.multi-database.md)
 owns the physical representation and routing contracts.
 
-Management's platform records and Console's developer accounts and instance
-inventory have their own service ownership. Their persistence backend is not
-specified here. An instance's PostgreSQL must not be treated as the global
-employee/developer account store or platform inventory authority.
+Console owns an independent PostgreSQL database for its source data. Kubernetes
+provides actual resources and observations; it is not the developer account or
+request authority. Management's persistence backend remains unchosen. An
+instance's PostgreSQL must not be treated as the global employee/developer
+account store or platform inventory authority.
 
 System records are exposed through authorized system operations. They are not
 ordinary business documents that application document APIs may read or modify.
@@ -166,16 +172,17 @@ queue. Go requires the version declared by `packages/syntrix/go.mod`.
 | Area | Current repository behavior | Accepted target |
 |---|---|---|
 | Platform Management | A cluster-control proposal exists; the Go Manager provides process composition | Employee-facing platform scheduling, monitoring, and resource management |
-| Console | `packages/console` is an instance administration frontend currently served by Gateway at `/console/` | A developer-facing service managing developer-owned instances |
+| Console | `packages/console-server` authenticates configured developers and manages predefined Kubernetes HTTP test workloads using its own PostgreSQL | Full developer-owned Syntrix instance lifecycle and administration |
 | Identity | `internal/identity` owns current account/authn/config/repositories/runtime and narrow capabilities; Gateway owns HTTP adapters | A peer instance Identity service with project-scoped accounts and both OAuth/OIDC roles |
-| Account scope | One runtime-global user model combines roles and database administration | Separate platform employee, Console developer, and project end-user domains |
-| System storage | PostgreSQL stores users and database metadata; revocation currently uses MongoDB | Instance system data, including identity/OAuth/session state, belongs in PostgreSQL |
+| Account scope | Independent Console developer accounts and sessions; instance users still combine runtime-global roles and database administration | Separate platform employee, Console developer, and project end-user domains |
+| System storage | Console owns separate PostgreSQL source data; instance PostgreSQL stores users/catalog and revocation currently uses MongoDB | Instance system data, including identity/OAuth/session state, belongs in PostgreSQL |
 | Project hierarchy | Existing database metadata and APIs have no project identity realm | Instance-owned projects, project-owned identity realms, and multiple databases per project |
 
 These implementation gaps must remain visible in API references and future
 changes. Describing the accepted architecture does not make project-scoped
-endpoints, OAuth grants, a developer Console backend, or platform Management
-available in the current runtime.
+endpoints, OAuth grants, full Syntrix provisioning, or platform Management
+available in the current runtime. The former embedded frontend and Gateway
+static route are removed; Console is independently deployed.
 
 Current Gateway [document authorization](design/server/gateway/authorization.md)
 owns CEL evaluation, rule configuration, and request/resource types separately
@@ -210,10 +217,11 @@ their behavior; key distribution, project/session/OAuth capabilities, and
 independent deployment remain target work.
 
 The existing database metadata ID and document namespace are also distinct in
-parts of the runtime. A project binding or module extraction must not silently
-change stored document, index, replay, or SDK identity. The
-[database architecture](design/server/core/database/01.architecture.md) owns
-those current contracts and their migration requirements.
+parts of the runtime. Their current meaning remains documented in the
+[database architecture](design/server/core/database/01.architecture.md). Future
+project/Identity changes may use destructive schema upgrades; no legacy-data
+migration or compatibility is required. An explicit development reset remains
+an operator action, not an implicit effect of starting Console.
 
 ## Related Design Owners
 
@@ -223,5 +231,6 @@ those current contracts and their migration requirements.
 - [Gateway Document Authorization](design/server/gateway/authorization.md)
 - [Instance Database Catalog and Lifecycle](design/server/core/database/01.architecture.md)
 - [Instance Storage](design/server/core/storage/01.architecture.md)
-- [Public API Reference](reference/api.md)
+- [Instance Public API Reference](reference/api.md)
+- [Console API Reference](reference/console_api.md)
 - [TypeScript SDK Reference](reference/typescript_sdk.md)

@@ -1,0 +1,44 @@
+name: Console Server CI
+
+on:
+  pull_request:
+    paths:
+      - 'packages/console-server/**'
+      - '.github/workflows/console-server.yml'
+      - '.github/workflows/scripts/check-fmt.sh'
+
+jobs:
+  console-server:
+    name: Console Server (Go)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:18-bookworm
+        env:
+          POSTGRES_USER: console
+          POSTGRES_PASSWORD: console
+          POSTGRES_DB: console_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U console -d console_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      CONSOLE_TEST_POSTGRES_DSN: postgres://console:console@localhost:5432/console_test?sslmode=disable
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: packages/console-server/go.mod
+          cache-dependency-path: packages/console-server/go.sum
+      - name: Formatting
+        run: .github/workflows/scripts/check-fmt.sh
+      - name: Build
+        run: make -C packages/console-server build
+      - name: Race and coverage
+        run: CI=true make -C packages/console-server coverage
+      - name: Container build
+        run: docker build -t console-server:ci packages/console-server

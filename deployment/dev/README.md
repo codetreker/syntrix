@@ -4,9 +4,10 @@ This Compose stack runs local instance infrastructure and development monitoring
 The [system architecture](../../docs/architecture.md) and
 [boundary decision](../../.agents/notes/proposed/architecture/2026-10-10-platform-console-instance-boundaries.md)
 separate employee Management, developer Console, and application instances.
-This stack is not a deployment of the global Management platform or the separate
-developer Console service. The current frontend embedded at `/console/` is
-instance administration tooling.
+This stack runs instance dependencies, not the employee Management platform.
+The separate [Console server](../../packages/console-server/README.md) uses its
+own PostgreSQL database and an operator-provided Kubernetes cluster. The former
+embedded administration frontend has been removed.
 
 ## Services and data ownership
 
@@ -72,7 +73,8 @@ Grafana auto-provisions the Syntrix Overview dashboard from
 `host.docker.internal:8080`; current runtime instrumentation is partial, so a
 configured target does not prove all proposed `/metrics` collectors exist.
 These local dashboards do not supply the future employee fleet monitor or
-resource-authorized developer Console views.
+resource-authorized developer Console views. Console workload observations are
+recorded separately with their observation time.
 
 Rules in `prometheus/alerts.yml` cover service loss, error rate above 5%, p95
 latency above 500 ms/p99 above one second, Puller backpressure, and goroutine

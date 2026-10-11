@@ -50,7 +50,10 @@ Preserve static configuration as an explicitly selected runtime operating mode,
 with one authority per managed setting. Scheduling and reconciliation retain
 instance ownership; membership grants neither project enduser identity authority
 nor application data access. Backup operations remain separately owned. This
-proposal does not choose routes, schemas, Console account protocols, or a backend.
+proposal does not choose Management routes, schemas, or its persistence backend.
+Console's [independent PostgreSQL/Kubernetes service](../../implemented/architecture/2026-10-11-console-server-postgres-kubernetes.md)
+owns developer authentication and test-workload execution, not this fleet
+membership/fencing mechanism.
 
 ## Alternatives
 

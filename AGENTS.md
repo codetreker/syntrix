@@ -36,7 +36,8 @@ available.
 | `packages/syntrix/internal/identity/` | Account contracts, authentication/configuration, credential repositories, and local runtime composition |
 | `packages/syntrix/internal/core/storage/` | Shared physical backend ownership and document/catalog storage infrastructure |
 | `packages/sdks/client-ts/` | TypeScript client SDK |
-| `packages/console/`, `packages/examples/` | Current instance administration frontend and example applications |
+| `packages/console-server/` | Independent developer Console, PostgreSQL source data, and Kubernetes test-workload provisioning |
+| `packages/examples/` | Example applications |
 | `docs/design/` | Requirements, architecture, and design discussions |
 | `docs/reference/` | API and SDK behavior |
 | `docs/plans/` | Task execution plans |
@@ -56,10 +57,12 @@ instances serving project end users. Each instance owns its projects, a private
 system PostgreSQL database, and MongoDB business-document storage. A project has
 an isolated Identity realm and can use multiple logical Syntrix databases.
 
-Keep this target distinct from current source locations and behavior. The
-embedded console is not the completed developer Console; the Go
-`services.Manager` owns process composition, not platform Management. References
-must describe only implemented interfaces and clearly identify target additions.
+Keep this target distinct from current source locations and behavior. Console
+has its own PostgreSQL database and currently provisions predefined Kubernetes
+test workloads, not complete Syntrix instances. The embedded administration SPA
+has been removed. The Go `services.Manager` owns instance process composition,
+not platform Management. References must describe only implemented interfaces
+and clearly identify target additions.
 
 ## Decision workflow
 
