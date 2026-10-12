@@ -2,68 +2,49 @@
 apiVersion: v1
 kind: Namespace
 metadata:
-  name:
-{{- printf " %s" (quote .Namespace) }}
+  name: {{ quote .Namespace }}
 ---
 apiVersion: v1
 kind: Secret
 metadata:
-  name:
-{{- printf " %s" (quote .CredentialsName) }}
-  namespace:
-{{- printf " %s" (quote .Namespace) }}
+  name: {{ quote .CredentialsName }}
+  namespace: {{ quote .Namespace }}
 type: Opaque
 stringData:
-  config.local.yml:
-{{- printf " %s" (quote (credentials)) }}
+  config.local.yml: {{ quote (credentials) }}
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name:
-{{- printf " %s" (quote .PullerPVCName) }}
-  namespace:
-{{- printf " %s" (quote $.Namespace) }}
+  name: {{ quote .PullerPVCName }}
+  namespace: {{ quote $.Namespace }}
 spec:
   accessModes: [ReadWriteOnce]
-{{- if $.StorageClass }}
-  storageClassName:
-{{- printf " %s" (quote $.StorageClass) }}
-{{- end }}
-  resources:
+{{ if $.StorageClass }}  storageClassName: {{ quote $.StorageClass }}
+{{ end }}  resources:
     requests:
-      storage:
-{{- printf " %vGi" ($.StorageGiB) }}
+      storage: {{ $.StorageGiB }}Gi
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name:
-{{- printf " %s" (quote .IndexerPVCName) }}
-  namespace:
-{{- printf " %s" (quote $.Namespace) }}
+  name: {{ quote .IndexerPVCName }}
+  namespace: {{ quote $.Namespace }}
 spec:
   accessModes: [ReadWriteOnce]
-{{- if $.StorageClass }}
-  storageClassName:
-{{- printf " %s" (quote $.StorageClass) }}
-{{- end }}
-  resources:
+{{ if $.StorageClass }}  storageClassName: {{ quote $.StorageClass }}
+{{ end }}  resources:
     requests:
-      storage:
-{{- printf " %vGi" ($.StorageGiB) }}
+      storage: {{ $.StorageGiB }}Gi
 {{ range .Workloads }}
 ---
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name:
-{{- printf " %s" (quote .ConfigName) }}
-  namespace:
-{{- printf " %s" (quote $.Namespace) }}
+  name: {{ quote .ConfigName }}
+  namespace: {{ quote $.Namespace }}
 data:
-  config.yml:
-{{- printf " %s" (quote (runtimeConfig .Role)) }}
+  config.yml: {{ quote (runtimeConfig .Role) }}
   rules.yml: |
     database: default
     rules_version: '1'
@@ -87,41 +68,29 @@ data:
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name:
-{{- printf " %s" (quote .Name) }}
-  namespace:
-{{- printf " %s" (quote $.Namespace) }}
+  name: {{ quote .Name }}
+  namespace: {{ quote $.Namespace }}
   labels:
-    app.kubernetes.io/instance:
-{{- printf " %s" (quote $.NamePrefix) }}
-    app.kubernetes.io/name:
-{{- printf " %s" (quote .Name) }}
+    app.kubernetes.io/instance: {{ quote $.NamePrefix }}
+    app.kubernetes.io/name: {{ quote .Name }}
 spec:
-  replicas:
-{{- printf " %v" (.Replicas) }}
+  replicas: {{ .Replicas }}
   progressDeadlineSeconds: 1980
   strategy:
-{{- if or .Stateful (eq .Role "trigger_evaluator") }}
-    type: Recreate
-{{- else }}
-    type: RollingUpdate
+{{ if or .Stateful (eq .Role "trigger_evaluator") }}    type: Recreate
+{{ else }}    type: RollingUpdate
     rollingUpdate:
       maxSurge: 1
       maxUnavailable: 0
-{{- end }}
-  selector:
+{{ end }}  selector:
     matchLabels:
-      app.kubernetes.io/instance:
-{{- printf " %s" (quote $.NamePrefix) }}
-      app.kubernetes.io/name:
-{{- printf " %s" (quote .Name) }}
+      app.kubernetes.io/instance: {{ quote $.NamePrefix }}
+      app.kubernetes.io/name: {{ quote .Name }}
   template:
     metadata:
       labels:
-        app.kubernetes.io/instance:
-{{- printf " %s" (quote $.NamePrefix) }}
-        app.kubernetes.io/name:
-{{- printf " %s" (quote .Name) }}
+        app.kubernetes.io/instance: {{ quote $.NamePrefix }}
+        app.kubernetes.io/name: {{ quote .Name }}
     spec:
       automountServiceAccountToken: false
       terminationGracePeriodSeconds: 30
@@ -135,11 +104,9 @@ spec:
           type: RuntimeDefault
       containers:
         - name: syntrix
-          image:
-{{- printf " %s" (quote $.Image) }}
+          image: {{ quote $.Image }}
           imagePullPolicy: IfNotPresent
-          args:
-{{- printf " [%s, \"--config-dir\", \"/etc/syntrix\"]" (quote .Flag) }}
+          args: [{{ quote .Flag }}, "--config-dir", "/etc/syntrix"]
           ports:
             - name: http
               containerPort: 8080
@@ -152,72 +119,50 @@ spec:
               drop: [ALL]
           resources:
             requests:
-              cpu:
-{{- printf " %s" (quote .Resources.Requests.CPU) }}
-              memory:
-{{- printf " %s" (quote .Resources.Requests.Memory) }}
+              cpu: {{ quote .Resources.Requests.CPU }}
+              memory: {{ quote .Resources.Requests.Memory }}
             limits:
-              cpu:
-{{- printf " %s" (quote .Resources.Limits.CPU) }}
-              memory:
-{{- printf " %s" (quote .Resources.Limits.Memory) }}
+              cpu: {{ quote .Resources.Limits.CPU }}
+              memory: {{ quote .Resources.Limits.Memory }}
           startupProbe:
-{{- if or (eq .Role "standalone") (eq .Role "api") }}
-            httpGet:
+{{ if or (eq .Role "standalone") (eq .Role "api") }}            httpGet:
               path: /health
               port: http
-{{- else }}
-            tcpSocket:
+{{ else }}            tcpSocket:
               port: grpc
-{{- end }}
-            periodSeconds: 5
+{{ end }}            periodSeconds: 5
             failureThreshold: 372
           readinessProbe:
-{{- if or (eq .Role "standalone") (eq .Role "api") }}
-            httpGet:
+{{ if or (eq .Role "standalone") (eq .Role "api") }}            httpGet:
               path: /health
               port: http
-{{- else }}
-            tcpSocket:
+{{ else }}            tcpSocket:
               port: grpc
-{{- end }}
-          livenessProbe:
-{{- if or (eq .Role "standalone") (eq .Role "api") }}
-            httpGet:
+{{ end }}          livenessProbe:
+{{ if or (eq .Role "standalone") (eq .Role "api") }}            httpGet:
               path: /health
               port: http
-{{- else }}
-            tcpSocket:
+{{ else }}            tcpSocket:
               port: grpc
-{{- end }}
-          volumeMounts:
+{{ end }}          volumeMounts:
             - name: config
               mountPath: /etc/syntrix
               readOnly: true
             - name: data
               mountPath: /data
-{{- if .Stateful }}
-            - name: persistent
-{{- if eq .Role "puller" }}
-              mountPath: "/data/puller"
-{{- else }}
-              mountPath: "/data/indexer"
-{{- end }}
-{{- end }}
-            - name: temporary
+{{ if .Stateful }}            - name: persistent
+              mountPath: {{ if eq .Role "puller" }}"/data/puller"{{ else }}"/data/indexer"{{ end }}
+{{ end }}            - name: temporary
               mountPath: /tmp
-{{- if .HasKey }}
-            - name: signing-key
+{{ if .HasKey }}            - name: signing-key
               mountPath: /etc/syntrix/keys
               readOnly: true
-{{- end }}
-      volumes:
+{{ end }}      volumes:
         - name: config
           projected:
             sources:
               - configMap:
-                  name:
-{{- printf " %s" (quote .ConfigName) }}
+                  name: {{ quote .ConfigName }}
                   items:
                     - key: config.yml
                       path: config.yml
@@ -228,70 +173,53 @@ spec:
                     - key: triggers.keep
                       path: triggers/.keep
               - secret:
-                  name:
-{{- printf " %s" (quote $.CredentialsName) }}
+                  name: {{ quote $.CredentialsName }}
                   items:
                     - key: config.local.yml
                       path: config.local.yml
         - name: data
           emptyDir: {}
-{{- if .Stateful }}
-        - name: persistent
+{{ if .Stateful }}        - name: persistent
           persistentVolumeClaim:
-            claimName:
-{{- printf " %s" (quote .PVCName) }}
-{{- end }}
-        - name: temporary
+            claimName: {{ quote .PVCName }}
+{{ end }}        - name: temporary
           emptyDir: {}
-{{- if .HasKey }}
-        - name: signing-key
+{{ if .HasKey }}        - name: signing-key
           secret:
-            secretName:
-{{- printf " %s" (quote $.SigningKeySecret) }}
+            secretName: {{ quote $.SigningKeySecret }}
             defaultMode: 0440
             items:
               - key: auth_private.pem
                 path: auth_private.pem
 {{ end }}
-{{ if or (eq .Role "standalone") (eq .Role "api") (eq .Role "query") (eq .Role "indexer") (eq .Role "puller") (eq .Role "streamer") -}}
----
+{{ if or (eq .Role "standalone") (eq .Role "api") (eq .Role "query") (eq .Role "indexer") (eq .Role "puller") (eq .Role "streamer") }}---
 apiVersion: v1
 kind: Service
 metadata:
-  name:
-{{- printf " %s" (quote .Name) }}
-  namespace:
-{{- printf " %s" (quote $.Namespace) }}
+  name: {{ quote .Name }}
+  namespace: {{ quote $.Namespace }}
 spec:
   selector:
-    app.kubernetes.io/instance:
-{{- printf " %s" (quote $.NamePrefix) }}
-    app.kubernetes.io/name:
-{{- printf " %s" (quote .Name) }}
+    app.kubernetes.io/instance: {{ quote $.NamePrefix }}
+    app.kubernetes.io/name: {{ quote .Name }}
   ports:
-{{- if or (eq .Role "standalone") (eq .Role "api") }}
-    - name: http
+{{ if or (eq .Role "standalone") (eq .Role "api") }}    - name: http
       port: 8080
       targetPort: http
-{{- else }}
-    - name: grpc
+{{ else }}    - name: grpc
       port: 9000
       targetPort: grpc
-{{ end }}
-{{- end }}
+{{ end }}{{ end }}
 {{ end }}
 {{ if .Bootstrap }}
 ---
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name:
-{{- printf " %s" (quote .BootstrapConfigName) }}
-  namespace:
-{{- printf " %s" (quote $.Namespace) }}
+  name: {{ quote .BootstrapConfigName }}
+  namespace: {{ quote $.Namespace }}
 data:
-  config.yml:
-{{- printf " %s" (quote (runtimeConfig "bootstrap")) }}
+  config.yml: {{ quote (runtimeConfig "bootstrap") }}
   rules.yml: |
     database: default
     rules_version: '1'
@@ -315,15 +243,11 @@ data:
 apiVersion: v1
 kind: Pod
 metadata:
-  name:
-{{- printf " %s" (quote .BootstrapName) }}
-  namespace:
-{{- printf " %s" (quote .Namespace) }}
+  name: {{ quote .BootstrapName }}
+  namespace: {{ quote .Namespace }}
   labels:
-    app.kubernetes.io/instance:
-{{- printf " %s" (quote .NamePrefix) }}
-    app.kubernetes.io/name:
-{{- printf " %s" (quote .BootstrapName) }}
+    app.kubernetes.io/instance: {{ quote .NamePrefix }}
+    app.kubernetes.io/name: {{ quote .BootstrapName }}
 spec:
   automountServiceAccountToken: false
   terminationGracePeriodSeconds: 30
@@ -338,8 +262,7 @@ spec:
   restartPolicy: Never
   containers:
     - name: syntrix
-      image:
-{{- printf " %s" (quote .Image) }}
+      image: {{ quote .Image }}
       imagePullPolicy: IfNotPresent
       args: ["--standalone", "--config-dir", "/etc/syntrix", "--bootstrap-indexes", "--writes-quiesced", "--bootstrap-timeout=30m"]
       ports:
@@ -352,15 +275,11 @@ spec:
           drop: [ALL]
       resources:
         requests:
-          cpu:
-{{- printf " %s" (quote .BootstrapResources.Requests.CPU) }}
-          memory:
-{{- printf " %s" (quote .BootstrapResources.Requests.Memory) }}
+          cpu: {{ quote .BootstrapResources.Requests.CPU }}
+          memory: {{ quote .BootstrapResources.Requests.Memory }}
         limits:
-          cpu:
-{{- printf " %s" (quote .BootstrapResources.Limits.CPU) }}
-          memory:
-{{- printf " %s" (quote .BootstrapResources.Limits.Memory) }}
+          cpu: {{ quote .BootstrapResources.Limits.CPU }}
+          memory: {{ quote .BootstrapResources.Limits.Memory }}
       startupProbe:
         httpGet:
           path: /health
@@ -383,18 +302,15 @@ spec:
           mountPath: /data/indexer
         - name: temporary
           mountPath: /tmp
-{{- if .SigningKeySecret }}
-        - name: signing-key
+{{ if .SigningKeySecret }}        - name: signing-key
           mountPath: /etc/syntrix/keys
           readOnly: true
-{{- end }}
-  volumes:
+{{ end }}  volumes:
     - name: config
       projected:
         sources:
           - configMap:
-              name:
-{{- printf " %s" (quote .BootstrapConfigName) }}
+              name: {{ quote .BootstrapConfigName }}
               items:
                 - key: config.yml
                   path: config.yml
@@ -405,8 +321,7 @@ spec:
                 - key: triggers.keep
                   path: triggers/.keep
           - secret:
-              name:
-{{- printf " %s" (quote $.CredentialsName) }}
+              name: {{ quote $.CredentialsName }}
               items:
                 - key: config.local.yml
                   path: config.local.yml
@@ -414,19 +329,15 @@ spec:
       emptyDir: {}
     - name: puller
       persistentVolumeClaim:
-        claimName:
-{{- printf " %s" (quote .PullerPVCName) }}
+        claimName: {{ quote .PullerPVCName }}
     - name: indexer
       persistentVolumeClaim:
-        claimName:
-{{- printf " %s" (quote .IndexerPVCName) }}
+        claimName: {{ quote .IndexerPVCName }}
     - name: temporary
       emptyDir: {}
-{{- if .SigningKeySecret }}
-    - name: signing-key
+{{ if .SigningKeySecret }}    - name: signing-key
       secret:
-        secretName:
-{{- printf " %s" (quote $.SigningKeySecret) }}
+        secretName: {{ quote $.SigningKeySecret }}
         defaultMode: 0440
         items:
           - key: auth_private.pem
