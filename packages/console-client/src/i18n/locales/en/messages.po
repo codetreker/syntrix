@@ -1,0 +1,235 @@
+msgid ""
+msgstr ""
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Language: en\n"
+
+#: src/components/PageTitle.tsx
+msgid "{title} · Syntrix Console"
+msgstr "{title} · Syntrix Console"
+
+#: src/pages/OverviewPage.tsx
+msgid "Account ID"
+msgstr "Account ID"
+
+#: src/components/AuthErrorMessage.tsx
+msgid "Another account action is in progress. Wait for it to finish."
+msgstr "Another account action is in progress. Wait for it to finish."
+
+#: src/components/ConsoleShell.tsx
+#: src/pages/SessionPage.tsx
+msgid "Check session again"
+msgstr "Check session again"
+
+#: src/pages/SessionPage.tsx
+msgid "Check your session to continue safely."
+msgstr "Check your session to continue safely."
+
+#: src/pages/SessionPage.tsx
+msgid "Checking session"
+msgstr "Checking session"
+
+#: src/pages/SessionPage.tsx
+msgid "Checking your session…"
+msgstr "Checking your session…"
+
+#: src/components/ConsoleShell.tsx
+msgid "Close navigation"
+msgstr "Close navigation"
+
+#: src/pages/SessionPage.tsx
+msgid "Could not confirm your session"
+msgstr "Could not confirm your session"
+
+#: src/components/AuthErrorMessage.tsx
+msgid "Could not reach the Console service. Check your connection and try again."
+msgstr "Could not reach the Console service. Check your connection and try again."
+
+#: src/pages/OverviewPage.tsx
+msgid "Developer account"
+msgstr "Developer account"
+
+#: src/pages/OverviewPage.tsx
+msgid "Developer Console"
+msgstr "Developer Console"
+
+#: src/components/LanguageSelect.tsx
+msgid "Follow system"
+msgstr "Follow system"
+
+#: src/pages/NotFoundPage.tsx
+msgid "Go to overview"
+msgstr "Go to overview"
+
+#: src/pages/NotFoundPage.tsx
+msgid "Go to sign in"
+msgstr "Go to sign in"
+
+#: src/pages/LoginPage.tsx
+msgid "Hide"
+msgstr "Hide"
+
+#: src/components/LanguageSelect.tsx
+msgid "Language"
+msgstr "Language"
+
+#: src/components/ConsoleShell.tsx
+msgid "Main navigation"
+msgstr "Main navigation"
+
+#: src/components/ConsoleShell.tsx
+msgid "Navigation"
+msgstr "Navigation"
+
+#: src/components/ConsoleShell.tsx
+msgid "Open navigation"
+msgstr "Open navigation"
+
+#: src/components/ConsoleShell.tsx
+#: src/pages/OverviewPage.tsx
+msgid "Overview"
+msgstr "Overview"
+
+#: src/pages/NotFoundPage.tsx
+msgid "Page not found"
+msgstr "Page not found"
+
+#: src/pages/LoginPage.tsx
+msgid "Password"
+msgstr "Password"
+
+#: src/pages/SessionPage.tsx
+msgid "Please wait while we confirm your account."
+msgstr "Please wait while we confirm your account."
+
+#. placeholder {0}: error.requestId
+#: src/components/AuthErrorMessage.tsx
+msgid "Request ID: {0}"
+msgstr "Request ID: {0}"
+
+#: src/pages/SessionPage.tsx
+msgid "Restoring your session…"
+msgstr "Restoring your session…"
+
+#: src/pages/SessionPage.tsx
+msgid "Session unavailable"
+msgstr "Session unavailable"
+
+#: src/pages/LoginPage.tsx
+msgid "Show"
+msgstr "Show"
+
+#: src/pages/LoginPage.tsx
+msgid "Sign in"
+msgstr "Sign in"
+
+#: src/components/ConsoleShell.tsx
+msgid "Sign out"
+msgstr "Sign out"
+
+#: src/components/ConsoleShell.tsx
+msgid "Sign-out was not confirmed. You are still signed in."
+msgstr "Sign-out was not confirmed. You are still signed in."
+
+#: src/pages/SessionPage.tsx
+msgid "Sign-out was not confirmed. Your session must be checked before continuing."
+msgstr "Sign-out was not confirmed. Your session must be checked before continuing."
+
+#: src/components/ConsoleShell.tsx
+msgid "Signed in as"
+msgstr "Signed in as"
+
+#: src/pages/LoginPage.tsx
+msgid "Signing in…"
+msgstr "Signing in…"
+
+#: src/pages/SessionPage.tsx
+msgid "Signing out…"
+msgstr "Signing out…"
+
+#: src/components/ConsoleShell.tsx
+msgid "Skip to content"
+msgstr "Skip to content"
+
+#: src/components/Brand.tsx
+msgid "Syntrix Console"
+msgstr "Syntrix Console"
+
+#: src/components/AuthErrorMessage.tsx
+msgid "The Console service could not find this request."
+msgstr "The Console service could not find this request."
+
+#: src/components/AuthErrorMessage.tsx
+msgid "The Console service is unavailable. Try again in a moment."
+msgstr "The Console service is unavailable. Try again in a moment."
+
+#: src/components/AuthErrorMessage.tsx
+msgid "The Console service returned an unexpected response. Check your session and try again."
+msgstr "The Console service returned an unexpected response. Check your session and try again."
+
+#: src/components/AuthErrorMessage.tsx
+msgid "The Console service took too long to respond. Try again."
+msgstr "The Console service took too long to respond. Try again."
+
+#: src/components/AuthErrorMessage.tsx
+msgid "The request could not be accepted. Check your details and try again."
+msgstr "The request could not be accepted. Check your details and try again."
+
+#: src/components/AuthErrorMessage.tsx
+msgid "The request was interrupted. Check your session before trying again."
+msgstr "The request was interrupted. Check your session before trying again."
+
+#: src/components/AuthErrorMessage.tsx
+msgid "The username or password is incorrect."
+msgstr "The username or password is incorrect."
+
+#: src/pages/NotFoundPage.tsx
+msgid "This page does not exist in the Console."
+msgstr "This page does not exist in the Console."
+
+#: src/components/AuthErrorMessage.tsx
+msgid "This request was denied. Check your session and try again."
+msgstr "This request was denied. Check your session and try again."
+
+#: src/components/ConsoleShell.tsx
+msgid "Try sign-out again"
+msgstr "Try sign-out again"
+
+#: src/pages/LoginPage.tsx
+msgid "Use your developer account to continue."
+msgstr "Use your developer account to continue."
+
+#: src/pages/LoginPage.tsx
+#: src/pages/OverviewPage.tsx
+msgid "Username"
+msgstr "Username"
+
+#: src/pages/SessionPage.tsx
+msgid "Waiting for the Console service to confirm sign-out."
+msgstr "Waiting for the Console service to confirm sign-out."
+
+#: src/pages/OverviewPage.tsx
+msgid "Welcome, {username}."
+msgstr "Welcome, {username}."
+
+#: src/pages/OverviewPage.tsx
+msgid "You are signed in to Syntrix Console."
+msgstr "You are signed in to Syntrix Console."
+
+#: src/components/LanguageSelect.tsx
+msgid "Your language choice could not be saved in this browser. It applies to this page."
+msgstr "Your language choice could not be saved in this browser. It applies to this page."
+
+#: src/components/LanguageSelect.tsx
+msgid "Your saved language could not be read. Your current language remains available."
+msgstr "Your saved language could not be read. Your current language remains available."
+
+#: src/components/AuthErrorMessage.tsx
+msgid "Your session changed. Check your session and try again."
+msgstr "Your session changed. Check your session and try again."
+
+#: src/components/AuthErrorMessage.tsx
+#: src/pages/LoginPage.tsx
+msgid "Your session has ended. Sign in again to continue."
+msgstr "Your session has ended. Sign in again to continue."

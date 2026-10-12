@@ -18,7 +18,9 @@ The [platform architecture](../../../../docs/architecture.md) owns the accepted
 target model. This note remains proposed for employee Management, full instance
 provisioning, project realms, and OAuth. The [Console implementation](../../implemented/architecture/2026-10-11-console-server-postgres-kubernetes.md)
 owns the delivered independent developer backend, PostgreSQL source data, opaque
-sessions, and predefined Kubernetes test workloads.
+sessions, and predefined Kubernetes test workloads. The [Console client](../../implemented/architecture/2026-10-12-console-client-session-and-distribution.md)
+owns the bilingual developer login/shell and separate static distribution; it
+does not complete resource-administration or full-instance provisioning.
 
 - The Management platform serves Syntrix employees and owns whole-platform
   scheduling, resource operations, monitoring, and administration.

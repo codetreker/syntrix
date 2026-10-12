@@ -27,6 +27,32 @@ Login requires trusted Origin but has no prior session token. HTTPS origins
 produce Secure cookies; plain HTTP is permitted only on localhost. Cookies use
 SameSite Strict. CORS is not enabled; browser clients use the Console origin.
 
+## Browser Session Integration
+
+The independent [Console client](../../packages/console-client/README.md) uses
+relative same-origin requests and the existing HttpOnly cookie. It keeps
+`developer`, `expires_at`, and `csrf_token` in memory and restores them through
+`/auth/v1/me`; these values and passwords are not persisted in browser storage.
+The client adds no authentication endpoint, refresh token, or sliding expiry.
+
+`/me` 401 confirms anonymous state. Login 401 is invalid credentials. Logout 204
+confirms revocation; a confirmed authenticated-operation 401 ends the session.
+403 remains permission/CSRF denial and does not mean anonymous. Response loss or
+invalid mutation success JSON can hide an applied login/logout, so the client
+performs bounded `/me` reconciliation without replaying that mutation. Failed
+reconciliation displays unavailable/unknown state and blocks protected content
+rather than treating the previous session snapshot as authority.
+
+Superseded reads cannot replace newer state. Same-tab auth mutations defer
+expiry/visibility/cross-tab reads until settlement and coalesce reconciliation.
+Cross-tab notifications contain no secrets and trigger authoritative reads; they
+do not guarantee global latest-action ordering of shared-cookie responses.
+
+Vite development fixes `http://localhost:5173` and proxies to backend 8090;
+`server.public_origin` matches the browser origin. Production static delivery
+proxies auth/API paths under the public HTTPS origin while preserving Host,
+Origin, and fetch metadata. Auth/API failures never become SPA HTML.
+
 ## Templates and Workloads
 
 `GET /api/v1/templates` lists predefined template IDs. Images, environment,
@@ -92,5 +118,6 @@ do not participate in one atomic transaction. Stable identities and retries
 provide recovery after uncertain remote effects.
 
 This API provisions HTTP test workloads. Full MongoDB/PostgreSQL/Syntrix instance
-provisioning, project management, developer OAuth and an interactive Console UI
-remain separate capabilities.
+provisioning, project management, developer OAuth, and resource-administration
+UI remain separate capabilities. The delivered browser client provides bilingual
+login/session restoration/logout and an authenticated Overview using this API.

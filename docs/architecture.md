@@ -8,7 +8,8 @@ hierarchy, and database terminology. Component designs and references must use
 these meanings. The [boundary decision](../.agents/notes/proposed/architecture/2026-10-10-platform-console-instance-boundaries.md)
 records the complete target. The [Console implementation decision](../.agents/notes/implemented/architecture/2026-10-11-console-server-postgres-kubernetes.md)
 records its PostgreSQL source data, developer authentication, and Kubernetes
-execution/recovery constraints.
+execution/recovery constraints. The [Console client decision](../.agents/notes/implemented/architecture/2026-10-12-console-client-session-and-distribution.md)
+owns bilingual browser sessions and independent static distribution.
 
 ## Users and Service Boundaries
 
@@ -174,7 +175,7 @@ queue. Go requires the version declared by `packages/syntrix/go.mod`.
 | Area | Current repository behavior | Accepted target |
 |---|---|---|
 | Platform Management | A cluster-control proposal exists; the Go Manager provides process composition | Employee-facing platform scheduling, monitoring, and resource management |
-| Console | `packages/console-server` authenticates configured developers and manages predefined Kubernetes HTTP test workloads using its own PostgreSQL | Full developer-owned Syntrix instance lifecycle and administration |
+| Console | `packages/console-server` owns configured developer authentication and PostgreSQL-backed Kubernetes test workloads; `packages/console-client` supplies bilingual cookie-based login, restoration, logout, and Overview | Full developer-owned Syntrix instance lifecycle and administration |
 | Identity | `internal/identity` owns current account/authn/config/repositories/runtime and narrow capabilities; Gateway owns HTTP adapters | A peer instance Identity service with project-scoped accounts and both OAuth/OIDC roles |
 | Account scope | Independent Console developer accounts and sessions; instance users still combine runtime-global roles and database administration | Separate platform employee, Console developer, and project end-user domains |
 | System storage | Console owns separate PostgreSQL source data; instance PostgreSQL stores users/catalog and revocation currently uses MongoDB | Instance system data, including identity/OAuth/session state, belongs in PostgreSQL |

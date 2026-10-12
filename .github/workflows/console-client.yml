@@ -1,0 +1,68 @@
+name: Console Client CI
+
+on:
+  pull_request:
+    paths:
+      - 'packages/console-client/**'
+      - 'packages/console-server/**'
+      - '.github/workflows/console-client.yml'
+      - 'git-hooks/pre-push'
+
+jobs:
+  console-client:
+    name: Console Client (React)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:18-bookworm
+        env:
+          POSTGRES_USER: console
+          POSTGRES_PASSWORD: console
+          POSTGRES_DB: console_browser
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U console -d console_browser"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      CONSOLE_BROWSER_POSTGRES_DSN: postgres://console:console@localhost:5432/console_browser?sslmode=disable
+      PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.tmp/playwright
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.19.0
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.34.5
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.3
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: packages/console-server/go.mod
+          cache-dependency-path: packages/console-server/go.sum
+      - name: Locked dependencies
+        working-directory: packages/console-client
+        run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Types, catalogs, behavior and coverage
+        working-directory: packages/console-client
+        run: bun run check
+      - name: Build static distribution
+        run: docker build --progress=plain -t console-client:acceptance packages/console-client
+      - name: Browser runtime
+        working-directory: packages/console-client
+        run: pnpm exec playwright install --with-deps chromium
+      - name: Real backend and HTTPS browser acceptance
+        working-directory: packages/console-client
+        run: bun run test:browser
+      - name: Acceptance artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: console-client-acceptance
+          path: packages/console-client/.tmp/browser
+          if-no-files-found: ignore

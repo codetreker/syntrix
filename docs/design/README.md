@@ -11,7 +11,7 @@ and currently implemented contracts.
 | Subject | Owner |
 |---|---|
 | Employees, developers, end users; Management, Console, instances | [Platform Architecture](../architecture.md) |
-| Developer Console authentication, PostgreSQL source data, and Kubernetes test workloads | [Console design](server/console/01.console.md) |
+| Developer Console login/shell, browser sessions/localization, PostgreSQL source data, and Kubernetes test workloads | [Console design](server/console/01.console.md) |
 | Employee-facing Management platform | [Management design](server/console/02.control_plane.md) |
 | Runtime services within one Syntrix instance | [Instance architecture](server/01.architecture.md) |
 | Identity contracts and target project end-user realms, OAuth/OIDC, external login | [Identity design](server/core/identity/01.architecture.md) |

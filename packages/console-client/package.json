@@ -1,0 +1,47 @@
+{
+  "name": "@syntrixbase/console-client",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.34.5",
+  "engines": { "node": ">=24.0.0" },
+  "scripts": {
+    "dev": "vite",
+    "mockup": "vite --mode mockup",
+    "typecheck": "tsc --noEmit",
+    "i18n:extract": "lingui extract --clean",
+    "i18n:check": "bun scripts/check-i18n.ts",
+    "test": "vitest run --coverage",
+    "test:browser": "bun scripts/browser-acceptance.ts",
+    "build": "bun scripts/build.ts",
+    "check": "bun scripts/check.ts"
+  },
+  "dependencies": {
+    "@lingui/core": "6.9.1",
+    "@lingui/react": "6.9.1",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "react-router-dom": "7.18.4"
+  },
+  "devDependencies": {
+    "@lingui/cli": "6.9.1",
+    "@lingui/conf": "6.9.1",
+    "@lingui/format-po": "6.9.1",
+    "@lingui/message-utils": "6.9.1",
+    "@lingui/vite-plugin": "6.9.1",
+    "@playwright/test": "1.64.0",
+    "@testing-library/jest-dom": "7.0.1",
+    "@testing-library/react": "16.3.3",
+    "@testing-library/user-event": "14.6.7",
+    "@types/bun": "1.4.2",
+    "@types/node": "24.19.2",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "@vitejs/plugin-react": "6.1.2",
+    "@vitest/coverage-v8": "5.0.3",
+    "jsdom": "30.1.2",
+    "typescript": "7.0.2",
+    "vite": "8.3.4",
+    "vitest": "5.0.3"
+  }
+}

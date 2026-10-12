@@ -101,6 +101,27 @@ Public template responses include only
 IDs, never environment secrets. The configured HTTP image must support port
 8080 and unprivileged execution for the example template.
 
+## Browser Console
+
+The independent [Console client](../console-client/README.md) supplies bilingual
+developer login, restored sessions, logout, and an authenticated Overview. This
+Go service remains API-only; its image does not embed or read frontend assets.
+The frontend uses the existing cookie/`me`/CSRF endpoints without changing
+developer account persistence.
+
+For Vite development, keep the backend listener at `127.0.0.1:8090` and set
+`server.public_origin: "http://localhost:5173"`. The client fixes that port and
+proxies relative auth/API requests without rewriting Host or Origin. Use
+`localhost` consistently in the browser; direct cross-origin requests are not
+covered by the backend's CORS contract.
+
+Production serves a separate static web image and same-origin API reverse proxy.
+Set `server.public_origin` to the exact externally visible HTTPS origin and
+configure TLS termination for that origin. The frontend's
+[deployment](../console-client/deployment/) owns static routing; the existing
+backend manifest below stays unchanged. The static container has no provisioner
+credentials or ServiceAccount token.
+
 ## Kubernetes Deployment
 
 Build the image and make it available to your prepared cluster:

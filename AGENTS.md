@@ -36,7 +36,8 @@ available.
 | `packages/syntrix/internal/identity/` | Account contracts, authentication/configuration, credential repositories, and local runtime composition |
 | `packages/syntrix/internal/core/storage/` | Shared physical backend ownership and document/catalog storage infrastructure |
 | `packages/sdks/client-ts/` | TypeScript client SDK |
-| `packages/console-server/` | Independent developer Console, PostgreSQL source data, and Kubernetes test-workload provisioning |
+| `packages/console-server/` | Independent developer Console API, PostgreSQL source data, and Kubernetes test-workload provisioning |
+| `packages/console-client/` | Bilingual developer login/shell, browser session integration, and same-origin static web distribution |
 | `packages/examples/` | Example applications |
 | `docs/design/` | Requirements, architecture, and design discussions |
 | `docs/reference/` | API and SDK behavior |
@@ -59,7 +60,9 @@ an isolated Identity realm and can use multiple logical Syntrix databases.
 
 Keep this target distinct from current source locations and behavior. Console
 has its own PostgreSQL database and currently provisions predefined Kubernetes
-test workloads, not complete Syntrix instances. The embedded administration SPA
+test workloads, not complete Syntrix instances. Its separate Console client
+delivers developer login and an authenticated shell using existing cookie APIs;
+resource-administration pages remain target work. The embedded administration SPA
 has been removed. The Go `services.Manager` owns instance process composition,
 not platform Management. References must describe only implemented interfaces
 and clearly identify target additions.
@@ -126,6 +129,12 @@ contents or replacing the existing planning directories.
   robust without over-engineering them.
 - Add timeouts to tests or commands that may hang.
 - Use `github.com/stretchr/testify` for Go tests and `bun` for frontend scripts.
+- Console client uses package-local pnpm locked dependencies and Bun scripts.
+  Run its shared `bun run check` gate after client changes; real-backend browser
+  validation uses a dedicated PostgreSQL fixture through `bun run test:browser`.
+  Preserve auth/locale coverage and the same-origin cookie/Origin/CSRF contract.
+  The interactive mockup uses final components/styles and remains absent from
+  production assets.
 - For skill and documentation changes, validate skill frontmatter, local links,
   note lifecycle consistency, and discovery paths. Explain the limits of any
   check that could not complete.

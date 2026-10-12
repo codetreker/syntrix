@@ -1,0 +1,235 @@
+msgid ""
+msgstr ""
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Language: zh-CN\n"
+
+#: src/components/PageTitle.tsx
+msgid "{title} · Syntrix Console"
+msgstr "{title} · Syntrix 控制台"
+
+#: src/pages/OverviewPage.tsx
+msgid "Account ID"
+msgstr "账号 ID"
+
+#: src/components/AuthErrorMessage.tsx
+msgid "Another account action is in progress. Wait for it to finish."
+msgstr "另一项账号操作正在进行，请等待完成。"
+
+#: src/components/ConsoleShell.tsx
+#: src/pages/SessionPage.tsx
+msgid "Check session again"
+msgstr "重新确认会话"
+
+#: src/pages/SessionPage.tsx
+msgid "Check your session to continue safely."
+msgstr "请确认会话后再继续操作。"
+
+#: src/pages/SessionPage.tsx
+msgid "Checking session"
+msgstr "确认会话"
+
+#: src/pages/SessionPage.tsx
+msgid "Checking your session…"
+msgstr "正在确认会话…"
+
+#: src/components/ConsoleShell.tsx
+msgid "Close navigation"
+msgstr "关闭导航"
+
+#: src/pages/SessionPage.tsx
+msgid "Could not confirm your session"
+msgstr "无法确认会话"
+
+#: src/components/AuthErrorMessage.tsx
+msgid "Could not reach the Console service. Check your connection and try again."
+msgstr "无法连接控制台服务，请检查网络连接后重试。"
+
+#: src/pages/OverviewPage.tsx
+msgid "Developer account"
+msgstr "开发者账号"
+
+#: src/pages/OverviewPage.tsx
+msgid "Developer Console"
+msgstr "开发者控制台"
+
+#: src/components/LanguageSelect.tsx
+msgid "Follow system"
+msgstr "跟随系统"
+
+#: src/pages/NotFoundPage.tsx
+msgid "Go to overview"
+msgstr "前往概览"
+
+#: src/pages/NotFoundPage.tsx
+msgid "Go to sign in"
+msgstr "前往登录"
+
+#: src/pages/LoginPage.tsx
+msgid "Hide"
+msgstr "隐藏"
+
+#: src/components/LanguageSelect.tsx
+msgid "Language"
+msgstr "语言"
+
+#: src/components/ConsoleShell.tsx
+msgid "Main navigation"
+msgstr "主导航"
+
+#: src/components/ConsoleShell.tsx
+msgid "Navigation"
+msgstr "导航"
+
+#: src/components/ConsoleShell.tsx
+msgid "Open navigation"
+msgstr "打开导航"
+
+#: src/components/ConsoleShell.tsx
+#: src/pages/OverviewPage.tsx
+msgid "Overview"
+msgstr "概览"
+
+#: src/pages/NotFoundPage.tsx
+msgid "Page not found"
+msgstr "页面不存在"
+
+#: src/pages/LoginPage.tsx
+msgid "Password"
+msgstr "密码"
+
+#: src/pages/SessionPage.tsx
+msgid "Please wait while we confirm your account."
+msgstr "正在确认账号，请稍候。"
+
+#. placeholder {0}: error.requestId
+#: src/components/AuthErrorMessage.tsx
+msgid "Request ID: {0}"
+msgstr "请求 ID：{0}"
+
+#: src/pages/SessionPage.tsx
+msgid "Restoring your session…"
+msgstr "正在恢复会话…"
+
+#: src/pages/SessionPage.tsx
+msgid "Session unavailable"
+msgstr "会话不可用"
+
+#: src/pages/LoginPage.tsx
+msgid "Show"
+msgstr "显示"
+
+#: src/pages/LoginPage.tsx
+msgid "Sign in"
+msgstr "登录"
+
+#: src/components/ConsoleShell.tsx
+msgid "Sign out"
+msgstr "退出登录"
+
+#: src/components/ConsoleShell.tsx
+msgid "Sign-out was not confirmed. You are still signed in."
+msgstr "退出登录尚未确认，你仍处于登录状态。"
+
+#: src/pages/SessionPage.tsx
+msgid "Sign-out was not confirmed. Your session must be checked before continuing."
+msgstr "退出登录尚未确认，请确认会话后再继续操作。"
+
+#: src/components/ConsoleShell.tsx
+msgid "Signed in as"
+msgstr "当前登录账号"
+
+#: src/pages/LoginPage.tsx
+msgid "Signing in…"
+msgstr "正在登录…"
+
+#: src/pages/SessionPage.tsx
+msgid "Signing out…"
+msgstr "正在退出登录…"
+
+#: src/components/ConsoleShell.tsx
+msgid "Skip to content"
+msgstr "跳转到正文"
+
+#: src/components/Brand.tsx
+msgid "Syntrix Console"
+msgstr "Syntrix 控制台"
+
+#: src/components/AuthErrorMessage.tsx
+msgid "The Console service could not find this request."
+msgstr "控制台服务找不到此请求。"
+
+#: src/components/AuthErrorMessage.tsx
+msgid "The Console service is unavailable. Try again in a moment."
+msgstr "控制台服务暂时不可用，请稍后重试。"
+
+#: src/components/AuthErrorMessage.tsx
+msgid "The Console service returned an unexpected response. Check your session and try again."
+msgstr "控制台服务返回了异常响应，请确认会话后重试。"
+
+#: src/components/AuthErrorMessage.tsx
+msgid "The Console service took too long to respond. Try again."
+msgstr "控制台服务响应超时，请重试。"
+
+#: src/components/AuthErrorMessage.tsx
+msgid "The request could not be accepted. Check your details and try again."
+msgstr "请求未被接受，请检查输入信息后重试。"
+
+#: src/components/AuthErrorMessage.tsx
+msgid "The request was interrupted. Check your session before trying again."
+msgstr "请求已中断，请确认会话后再重试。"
+
+#: src/components/AuthErrorMessage.tsx
+msgid "The username or password is incorrect."
+msgstr "用户名或密码错误。"
+
+#: src/pages/NotFoundPage.tsx
+msgid "This page does not exist in the Console."
+msgstr "控制台中不存在此页面。"
+
+#: src/components/AuthErrorMessage.tsx
+msgid "This request was denied. Check your session and try again."
+msgstr "请求被拒绝，请确认会话后重试。"
+
+#: src/components/ConsoleShell.tsx
+msgid "Try sign-out again"
+msgstr "重新退出登录"
+
+#: src/pages/LoginPage.tsx
+msgid "Use your developer account to continue."
+msgstr "请使用开发者账号登录。"
+
+#: src/pages/LoginPage.tsx
+#: src/pages/OverviewPage.tsx
+msgid "Username"
+msgstr "用户名"
+
+#: src/pages/SessionPage.tsx
+msgid "Waiting for the Console service to confirm sign-out."
+msgstr "正在等待控制台服务确认退出登录。"
+
+#: src/pages/OverviewPage.tsx
+msgid "Welcome, {username}."
+msgstr "欢迎，{username}。"
+
+#: src/pages/OverviewPage.tsx
+msgid "You are signed in to Syntrix Console."
+msgstr "你已登录 Syntrix 控制台。"
+
+#: src/components/LanguageSelect.tsx
+msgid "Your language choice could not be saved in this browser. It applies to this page."
+msgstr "无法在此浏览器中保存语言选择，当前页面仍会使用所选语言。"
+
+#: src/components/LanguageSelect.tsx
+msgid "Your saved language could not be read. Your current language remains available."
+msgstr "无法读取已保存的语言选择，当前语言仍可使用。"
+
+#: src/components/AuthErrorMessage.tsx
+msgid "Your session changed. Check your session and try again."
+msgstr "会话已发生变化，请确认会话后重试。"
+
+#: src/components/AuthErrorMessage.tsx
+#: src/pages/LoginPage.tsx
+msgid "Your session has ended. Sign in again to continue."
+msgstr "会话已结束，请重新登录后继续操作。"

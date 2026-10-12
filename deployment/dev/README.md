@@ -59,6 +59,24 @@ The commented application service in `docker-compose.yml` is an optional Docker
 build template; it requires a matching application image/build recipe before it
 can be used. The commands above run the current instance outside Docker.
 
+## Developer Console Browser
+
+The separate [Console client](../../packages/console-client/README.md) runs at
+`http://localhost:5173` for developer login, session restoration, logout, and
+Overview. The backend requires its own Console PostgreSQL configuration and an
+explicit Kubernetes target even when testing only account flows.
+
+Keep the backend at `127.0.0.1:8090`; its local `server.public_origin` must be
+`http://localhost:5173`. Vite's fixed strict port and same-origin proxy preserve
+the browser cookie, Origin, and CSRF contract. A port collision fails visibly.
+The frontend-only mockup runs the final styles/components with fixtures and needs
+no PostgreSQL or cluster; production assets exclude those fixtures.
+
+The frontend package README owns locked setup, dev/mockup/check commands, and
+static nginx deployment. Cluster creation and lifecycle remain operator-owned.
+The Compose stack above is still instance infrastructure, not a full Console
+or Management deployment.
+
 ## Local access and monitoring
 
 | Surface | URL | Development credentials |
