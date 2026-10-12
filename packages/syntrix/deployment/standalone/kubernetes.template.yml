@@ -1,0 +1,315 @@
+{{ requireMode "standalone" }}
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ quote .Namespace }}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ quote .CredentialsName }}
+  namespace: {{ quote .Namespace }}
+type: Opaque
+stringData:
+  config.local.yml: {{ quote (credentials) }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ quote .StandalonePVCName }}
+  namespace: {{ quote $.Namespace }}
+spec:
+  accessModes: [ReadWriteOnce]
+{{- if $.StorageClass }}
+  storageClassName: {{ quote $.StorageClass }}
+{{- end }}
+  resources:
+    requests:
+      storage: {{ $.StorageGiB }}Gi
+{{ range .Workloads }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ quote .ConfigName }}
+  namespace: {{ quote $.Namespace }}
+data:
+  config.yml: {{ quote (runtimeConfig .Role) }}
+  rules.yml: |
+    database: default
+    rules_version: '1'
+    service: syntrix
+    match:
+      /databases/{database}/documents:
+        match:
+          /{document=**}:
+            allow:
+              read, write: "request.auth != null && ('admin' in request.auth.roles || 'system' in request.auth.roles)"
+  templates.yml: |
+    database: default
+    templates:
+      - name: deployment-checks-by-created
+        collectionPattern: deployment_checks
+        fields:
+          - field: createdAt
+            order: desc
+  triggers.keep: ""
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ quote .Name }}
+  namespace: {{ quote $.Namespace }}
+  labels:
+    app.kubernetes.io/instance: {{ quote $.NamePrefix }}
+    app.kubernetes.io/name: {{ quote .Name }}
+spec:
+  replicas: {{ .Replicas }}
+  progressDeadlineSeconds: 1980
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ quote $.NamePrefix }}
+      app.kubernetes.io/name: {{ quote .Name }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/instance: {{ quote $.NamePrefix }}
+        app.kubernetes.io/name: {{ quote .Name }}
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: syntrix
+          image: {{ quote $.Image }}
+          imagePullPolicy: IfNotPresent
+          args: [{{ quote .Flag }}, "--config-dir", "/etc/syntrix"]
+          ports:
+            - name: http
+              containerPort: 8080
+            - name: grpc
+              containerPort: 9000
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests:
+              cpu: {{ quote .Resources.Requests.CPU }}
+              memory: {{ quote .Resources.Requests.Memory }}
+            limits:
+              cpu: {{ quote .Resources.Limits.CPU }}
+              memory: {{ quote .Resources.Limits.Memory }}
+          startupProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 5
+            failureThreshold: 372
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+          volumeMounts:
+            - name: config
+              mountPath: /etc/syntrix
+              readOnly: true
+            - name: data
+              mountPath: /data
+            - name: temporary
+              mountPath: /tmp
+{{- if .HasKey }}
+            - name: signing-key
+              mountPath: /etc/syntrix/keys
+              readOnly: true
+{{- end }}
+      volumes:
+        - name: config
+          projected:
+            sources:
+              - configMap:
+                  name: {{ quote .ConfigName }}
+                  items:
+                    - key: config.yml
+                      path: config.yml
+                    - key: rules.yml
+                      path: security_rules/default.yml
+                    - key: templates.yml
+                      path: index_templates/default.yml
+                    - key: triggers.keep
+                      path: triggers/.keep
+              - secret:
+                  name: {{ quote $.CredentialsName }}
+                  items:
+                    - key: config.local.yml
+                      path: config.local.yml
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ quote .PVCName }}
+        - name: temporary
+          emptyDir: {}
+{{- if .HasKey }}
+        - name: signing-key
+          secret:
+            secretName: {{ quote $.SigningKeySecret }}
+            defaultMode: 0440
+            items:
+              - key: auth_private.pem
+                path: auth_private.pem
+{{ end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ quote .Name }}
+  namespace: {{ quote $.Namespace }}
+spec:
+  selector:
+    app.kubernetes.io/instance: {{ quote $.NamePrefix }}
+    app.kubernetes.io/name: {{ quote .Name }}
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+{{ end }}
+{{ if .Bootstrap }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ quote .BootstrapConfigName }}
+  namespace: {{ quote $.Namespace }}
+data:
+  config.yml: {{ quote (runtimeConfig "bootstrap") }}
+  rules.yml: |
+    database: default
+    rules_version: '1'
+    service: syntrix
+    match:
+      /databases/{database}/documents:
+        match:
+          /{document=**}:
+            allow:
+              read, write: "request.auth != null && ('admin' in request.auth.roles || 'system' in request.auth.roles)"
+  templates.yml: |
+    database: default
+    templates:
+      - name: deployment-checks-by-created
+        collectionPattern: deployment_checks
+        fields:
+          - field: createdAt
+            order: desc
+  triggers.keep: ""
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ quote .BootstrapName }}
+  namespace: {{ quote .Namespace }}
+  labels:
+    app.kubernetes.io/instance: {{ quote .NamePrefix }}
+    app.kubernetes.io/name: {{ quote .BootstrapName }}
+spec:
+  automountServiceAccountToken: false
+  terminationGracePeriodSeconds: 30
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65532
+    runAsGroup: 65532
+    fsGroup: 65532
+    fsGroupChangePolicy: OnRootMismatch
+    seccompProfile:
+      type: RuntimeDefault
+  restartPolicy: Never
+  containers:
+    - name: syntrix
+      image: {{ quote .Image }}
+      imagePullPolicy: IfNotPresent
+      args: ["--standalone", "--config-dir", "/etc/syntrix", "--bootstrap-indexes", "--writes-quiesced", "--bootstrap-timeout=30m"]
+      ports:
+        - name: http
+          containerPort: 8080
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: [ALL]
+      resources:
+        requests:
+          cpu: {{ quote .BootstrapResources.Requests.CPU }}
+          memory: {{ quote .BootstrapResources.Requests.Memory }}
+        limits:
+          cpu: {{ quote .BootstrapResources.Limits.CPU }}
+          memory: {{ quote .BootstrapResources.Limits.Memory }}
+      startupProbe:
+        httpGet:
+          path: /health
+          port: http
+        periodSeconds: 5
+        failureThreshold: 372
+      readinessProbe:
+        httpGet:
+          path: /health
+          port: http
+      volumeMounts:
+        - name: config
+          mountPath: /etc/syntrix
+          readOnly: true
+        - name: data
+          mountPath: /data
+        - name: temporary
+          mountPath: /tmp
+{{- if .SigningKeySecret }}
+        - name: signing-key
+          mountPath: /etc/syntrix/keys
+          readOnly: true
+{{- end }}
+  volumes:
+    - name: config
+      projected:
+        sources:
+          - configMap:
+              name: {{ quote .BootstrapConfigName }}
+              items:
+                - key: config.yml
+                  path: config.yml
+                - key: rules.yml
+                  path: security_rules/default.yml
+                - key: templates.yml
+                  path: index_templates/default.yml
+                - key: triggers.keep
+                  path: triggers/.keep
+          - secret:
+              name: {{ quote $.CredentialsName }}
+              items:
+                - key: config.local.yml
+                  path: config.local.yml
+    - name: data
+      persistentVolumeClaim:
+        claimName: {{ quote .StandalonePVCName }}
+    - name: temporary
+      emptyDir: {}
+{{- if .SigningKeySecret }}
+    - name: signing-key
+      secret:
+        secretName: {{ quote $.SigningKeySecret }}
+        defaultMode: 0440
+        items:
+          - key: auth_private.pem
+            path: auth_private.pem
+{{ end }}
+{{ end }}

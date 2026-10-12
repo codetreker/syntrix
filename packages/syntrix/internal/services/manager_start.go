@@ -2,16 +2,19 @@ package services
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log/slog"
 	"time"
 
 	"github.com/codetreker/syntrix/internal/server"
 )
 
-func (m *Manager) Start(bgCtx context.Context) {
+// Start launches background tasks and starts the local Puller and Indexer.
+// The caller owns cancellation and Shutdown, including after a startup failure.
+func (m *Manager) Start(bgCtx context.Context) error {
 	if m.opts.BootstrapIndexes && !m.bootstrapReady {
-		slog.Error("Cannot start services before index bootstrap readiness")
-		return
+		return errors.New("cannot start services before index bootstrap readiness")
 	}
 	// Start Unified Server Service
 	if s := server.Default(); s != nil && !m.serverStarted {
@@ -99,7 +102,7 @@ func (m *Manager) Start(bgCtx context.Context) {
 		if !m.pullerStarted {
 			slog.Info("Starting Change Stream Puller...")
 			if err := m.pullerService.Start(bgCtx); err != nil {
-				slog.Error("Failed to start Change Stream Puller", "error", err)
+				return fmt.Errorf("start Change Stream Puller: %w", err)
 			}
 		}
 
@@ -114,7 +117,7 @@ func (m *Manager) Start(bgCtx context.Context) {
 	if m.indexerService != nil && !m.indexerStarted {
 		slog.Info("Starting Indexer Service...")
 		if err := m.indexerService.Start(bgCtx); err != nil {
-			slog.Error("Failed to start Indexer Service", "error", err)
+			return fmt.Errorf("start Indexer Service: %w", err)
 		}
 	}
 
@@ -128,4 +131,5 @@ func (m *Manager) Start(bgCtx context.Context) {
 			}
 		}()
 	}
+	return nil
 }

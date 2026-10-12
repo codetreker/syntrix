@@ -266,6 +266,114 @@ func TestRateLimitMiddleware(t *testing.T) {
 	assert.Equal(t, "Too many requests", errResp.Message)
 }
 
+func TestRateLimitMiddleware_HealthProbes(t *testing.T) {
+	for _, source := range []struct {
+		name          string
+		apiRemoteAddr string
+		forwardedFor  string
+	}{
+		{name: "shared_source", apiRemoteAddr: "192.0.2.10:49152"},
+		{name: "spoofed_forwarded_source", apiRemoteAddr: "198.51.100.20:49152", forwardedFor: "192.0.2.10"},
+	} {
+		t.Run(source.name, func(t *testing.T) {
+			newHandler := func(t *testing.T) http.Handler {
+				cfg := Config{
+					EnableCORS:     true,
+					AllowedOrigins: []string{"https://example.com"},
+					RateLimit: RateLimitConfig{
+						Enabled:  true,
+						Requests: 2,
+						// Refill cannot restore a token during the test timeout.
+						Window: 24 * time.Hour,
+					},
+				}
+				cfg.ApplyDefaults()
+				srv := New(cfg, nil).(*serverImpl)
+				t.Cleanup(func() {
+					ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+					defer cancel()
+					require.NoError(t, srv.Stop(ctx))
+				})
+				serveOK := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					assert.Equal(t, "probe-request", GetRequestID(r.Context()))
+					if r.URL.Query().Has("panic") {
+						panic("health check failed")
+					}
+					w.WriteHeader(http.StatusOK)
+				})
+				srv.RegisterHTTPHandler("GET /health", serveOK)
+				srv.RegisterHTTPHandler("GET /api/documents", serveOK)
+				srv.initHTTPServer()
+				return srv.httpServer.Handler
+			}
+			request := func(handler http.Handler, method, target string, probe bool) *httptest.ResponseRecorder {
+				req := httptest.NewRequest(method, target, nil)
+				req.RemoteAddr = source.apiRemoteAddr
+				if source.forwardedFor != "" {
+					req.Header.Set("X-Forwarded-For", source.forwardedFor)
+				}
+				if probe {
+					req.RemoteAddr = "192.0.2.10:10250"
+					req.Header.Del("X-Forwarded-For")
+				}
+				req.Header.Set("Origin", "https://example.com")
+				req.Header.Set("X-Request-ID", "probe-request")
+				w := httptest.NewRecorder()
+				handler.ServeHTTP(w, req)
+				return w
+			}
+
+			t.Run("exhausted_API_budget", func(t *testing.T) {
+				handler := newHandler(t)
+				for range 2 {
+					require.Equal(t, http.StatusOK, request(handler, http.MethodGet, "/api/documents", false).Code)
+				}
+				require.Equal(t, http.StatusTooManyRequests, request(handler, http.MethodGet, "/api/documents", false).Code)
+
+				for _, method := range []string{http.MethodGet, http.MethodHead} {
+					w := request(handler, method, "/health", true)
+					assert.Equal(t, http.StatusOK, w.Code, "%s /health", method)
+					assert.Empty(t, w.Header().Get("Retry-After"))
+					assert.Equal(t, "probe-request", w.Header().Get("X-Request-ID"))
+					assert.Equal(t, "nosniff", w.Header().Get("X-Content-Type-Options"))
+					assert.Equal(t, "DENY", w.Header().Get("X-Frame-Options"))
+					assert.Equal(t, "https://example.com", w.Header().Get("Access-Control-Allow-Origin"))
+				}
+				w := request(handler, http.MethodGet, "/health?panic", true)
+				assert.Equal(t, http.StatusInternalServerError, w.Code)
+				var errResp APIError
+				require.NoError(t, json.NewDecoder(w.Body).Decode(&errResp))
+				assert.Equal(t, "INTERNAL_ERROR", errResp.Code)
+
+				for _, req := range []struct{ method, target string }{
+					{http.MethodPost, "/health"},
+					{http.MethodGet, "/health/"},
+					{http.MethodHead, "/health/"},
+					{http.MethodGet, "/health/status"},
+					{http.MethodGet, "/healthy"},
+				} {
+					w := request(handler, req.method, req.target, false)
+					assert.Equal(t, http.StatusTooManyRequests, w.Code, "%s %s", req.method, req.target)
+					assert.Equal(t, "86400", w.Header().Get("Retry-After"))
+				}
+			})
+
+			t.Run("probes_preserve_API_budget", func(t *testing.T) {
+				handler := newHandler(t)
+				for range 2 {
+					for _, method := range []string{http.MethodGet, http.MethodHead} {
+						require.Equal(t, http.StatusOK, request(handler, method, "/health", true).Code, "%s /health", method)
+					}
+				}
+				for range 2 {
+					require.Equal(t, http.StatusOK, request(handler, http.MethodGet, "/api/documents", false).Code)
+				}
+				assert.Equal(t, http.StatusTooManyRequests, request(handler, http.MethodGet, "/api/documents", false).Code)
+			})
+		})
+	}
+}
+
 func TestWrapMiddleware(t *testing.T) {
 	cfg := Config{EnableCORS: true}
 	srv := New(cfg, nil).(*serverImpl)

@@ -49,7 +49,6 @@ func New(cfg Config, logger *slog.Logger) Service {
 
 	// Initialize rate limiters if enabled
 	if cfg.RateLimit.Enabled {
-		// General rate limiter for all endpoints
 		s.rateLimiter = ratelimit.NewMemoryLimiter(ratelimit.Config{
 			Enabled:  cfg.RateLimit.Enabled,
 			Requests: cfg.RateLimit.Requests,
@@ -88,6 +87,11 @@ func (s *serverImpl) Start(ctx context.Context) error {
 	if s.started {
 		s.mu.Unlock()
 		return errors.New("server already started")
+	}
+	// Shutdown may finish before this background startup is scheduled.
+	if ctx.Err() != nil {
+		s.mu.Unlock()
+		return nil
 	}
 	s.started = true
 

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -14,6 +15,8 @@ import (
 	"github.com/codetreker/syntrix/internal/logging"
 	"github.com/codetreker/syntrix/internal/services"
 	services_config "github.com/codetreker/syntrix/internal/services/config"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 func main() {
@@ -156,7 +159,12 @@ func serve(cfg *config.Config, opts services.Options) error {
 		}
 	}
 
-	mgr.Start(bgCtx)
+	if err := mgr.Start(bgCtx); err != nil {
+		if bgCtx.Err() != nil && (errors.Is(err, bgCtx.Err()) || status.Code(err) == codes.Canceled) {
+			return nil
+		}
+		return fmt.Errorf("start services: %w", err)
+	}
 	if opts.BootstrapIndexes {
 		slog.Info("Index bootstrap and subscription application are ready; external writers and MongoDB tombstone TTL deletion may resume")
 	}

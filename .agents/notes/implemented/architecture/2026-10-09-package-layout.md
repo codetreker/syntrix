@@ -55,6 +55,12 @@ decision](2026-10-12-console-client-session-and-distribution.md) delivers a sibl
 frontend package with its own pnpm lockfile, Bun scripts, and static image. Its
 same-origin proxy forwards auth/API traffic to the API-only Go service; neither
 Go build reads sibling assets nor frontend build produces an instance artifact.
+The [instance deployment decision](2026-10-12-instance-container-kubernetes.md)
+adds a package-owned Docker build context, standalone/distributed Kubernetes
+templates, and configuration-driven generation through the existing `syntrix-cli`
+entrypoint. The image contains only the instance binary; Kubernetes mounts
+configuration assets separately, keeping credentials and generated signing keys
+outside the image.
 The [rejected build
 proposal](../../rejected/process/2026-09-07-console-build-delivery.md) preserves
 the former distribution concern.
@@ -106,7 +112,9 @@ consistently; directory names do not become part of public module imports.
 Relative runtime paths continue to depend on the process working directory.
 Launching the server from another directory requires explicit configuration and
 appropriate data and log paths. Deployment infrastructure remains
-repository-owned, so package tooling references it through the repository root.
+repository-owned for shared development and pipeline dependencies, so package
+tooling references those stacks through the repository root. Package deployment
+artifacts remain with the service they distribute.
 
 Coverage reports remain inside the Go package. Automation consuming a report
 must use that location rather than assume a repository-root `coverage.out`.

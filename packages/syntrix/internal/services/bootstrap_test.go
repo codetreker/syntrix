@@ -350,7 +350,7 @@ func TestBootstrapCoordinatorPreservesLifetimeAndFailure(t *testing.T) {
 			} else {
 				require.ErrorIs(t, err, failure)
 				require.False(t, m.bootstrapReady)
-				m.Start(lifeCtx)
+				require.ErrorContains(t, m.Start(lifeCtx), "bootstrap readiness")
 			}
 			require.Equal(t, []string{"capture-start", "scan-publish", "indexer-start", "applied-ready"}, calls)
 			require.Equal(t, bootstrapTestBoundary(), i.request.ExpectedBoundary)
@@ -414,7 +414,7 @@ func TestBootstrapCoordinatorRejectsChangedInventoryBeforePublication(t *testing
 	require.ErrorContains(t, err, "inventory changed")
 	require.False(t, m.indexerStarted)
 	require.False(t, m.bootstrapReady)
-	m.Start(lifeCtx)
+	require.ErrorContains(t, m.Start(lifeCtx), "bootstrap readiness")
 	require.Equal(t, []string{"capture-start", "scan-publish"}, calls)
 }
 
@@ -480,7 +480,11 @@ func TestBootstrapDistributedListenerOrderingAndFailure(t *testing.T) {
 				require.NoError(t, err)
 				require.True(t, m.bootstrapReady)
 			}
-			m.Start(lifeCtx)
+			if listenerFailure {
+				require.ErrorContains(t, m.Start(lifeCtx), "bootstrap readiness")
+			} else {
+				require.NoError(t, m.Start(lifeCtx))
+			}
 			lifeCancel()
 			m.wg.Wait()
 			require.Equal(t, int32(1), starts.Load())
@@ -537,7 +541,7 @@ func TestBootstrapFailuresDoNotAdvanceLifecycle(t *testing.T) {
 			}
 			require.False(t, m.bootstrapReady)
 			require.False(t, m.indexerStarted)
-			m.Start(ctx)
+			require.ErrorContains(t, m.Start(ctx), "bootstrap readiness")
 			require.Equal(t, expectedCalls, calls)
 		})
 	}

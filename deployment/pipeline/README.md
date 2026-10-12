@@ -53,12 +53,24 @@ changing limits so its process inherits them.
 
 ## Go CI checks
 
-The current server workflow runs build and race/coverage jobs in parallel, each
-with a five-minute timeout. Only the test job starts this stack. Tests do not
+The current server workflow runs Go build, race/coverage, and container-build
+jobs in parallel. The Go jobs have five-minute timeouts; the image job has a
+ten-minute timeout. Only the test job starts this stack. Tests do not
 require build artifacts; generated protocol sources are committed. Separate
 jobs keep cold-cache build compilation out of the race-test budget.
 
-The required `Syntrix Server (Go)` check succeeds only when both jobs succeed;
+After building `syntrix-cli`, the Go build job renders both standalone and
+distributed templates in normal and explicit-bootstrap modes. These four renders
+use the committed example values and validate generation without contacting
+databases or applying resources.
+
+The container job builds the package-owned image and runs its help command with
+a read-only root, no network, and no Linux capabilities. It does not deploy the
+Kubernetes artifact. The
+[instance deployment guide](../../packages/syntrix/deployment/README.md) owns
+operator setup and the write-quiesced bootstrap procedure.
+
+The required `Syntrix Server (Go)` check succeeds only when all three jobs succeed;
 it executes and rejects failed, cancelled, or skipped dependencies. Pinned
 go-cov enforces race detection, package/function/overall coverage, and critical
 uncovered blocks in CI.

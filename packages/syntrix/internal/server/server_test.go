@@ -64,6 +64,25 @@ func TestServer_StartStop(t *testing.T) {
 	}
 }
 
+func TestServer_StartAfterCanceledShutdownDoesNotLaunchListeners(t *testing.T) {
+	srv := New(Config{Host: "127.0.0.1", HTTPPort: 0, GRPCPort: 0}, nil).(*serverImpl)
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		require.NoError(t, srv.Stop(ctx))
+	})
+	ownerCtx, ownerCancel := context.WithCancel(context.Background())
+	ownerCancel()
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), time.Second)
+	defer shutdownCancel()
+	require.NoError(t, srv.Stop(shutdownCtx))
+
+	// Startup can be scheduled after its owner has canceled and closed the server.
+	require.NoError(t, srv.Start(ownerCtx))
+	require.False(t, srv.started)
+	require.Nil(t, srv.httpServer)
+}
+
 func TestServer_RegisterHTTP(t *testing.T) {
 	cfg := Config{
 		Host:     "localhost",
