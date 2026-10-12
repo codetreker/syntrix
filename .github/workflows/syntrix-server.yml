@@ -41,6 +41,21 @@ jobs:
       - name: Build
         run: make -C packages/syntrix build
 
+      - name: Render standalone and distributed Kubernetes manifests
+        run: |
+          mkdir -p .tmp
+          for mode in standalone distributed; do
+            packages/syntrix/bin/syntrix-cli render-kubernetes \
+              --template "packages/syntrix/deployment/$mode/kubernetes.template.yml" \
+              --config "packages/syntrix/deployment/$mode/values.example.yml" \
+              --output ".tmp/syntrix-$mode.yml"
+            packages/syntrix/bin/syntrix-cli render-kubernetes \
+              --template "packages/syntrix/deployment/$mode/kubernetes.template.yml" \
+              --config "packages/syntrix/deployment/$mode/values.example.yml" \
+              --bootstrap --writes-quiesced \
+              --output ".tmp/syntrix-$mode-bootstrap.yml"
+          done
+
   test:
     name: Go Race and Coverage
     runs-on: ubuntu-latest

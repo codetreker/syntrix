@@ -22,8 +22,9 @@ sessions, and predefined Kubernetes test workloads. The [Console client](../../i
 owns the bilingual developer login/shell and separate static distribution; it
 does not complete resource-administration or full-instance provisioning. The
 [instance deployment decision](../../implemented/architecture/2026-10-12-instance-container-kubernetes.md)
-supplies a manual standalone service deployment against existing databases without implementing
-Console-owned instance lifecycle.
+supplies standalone/distributed service templates and values-driven manifest
+generation against existing backends without implementing Console-owned instance
+lifecycle.
 
 - The Management platform serves Syntrix employees and owns whole-platform
   scheduling, resource operations, monitoring, and administration.

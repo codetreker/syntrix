@@ -11,7 +11,8 @@ records its PostgreSQL source data, developer authentication, and Kubernetes
 execution/recovery constraints. The [Console client decision](../.agents/notes/implemented/architecture/2026-10-12-console-client-session-and-distribution.md)
 owns bilingual browser sessions and independent static distribution.
 The [instance deployment decision](../.agents/notes/implemented/architecture/2026-10-12-instance-container-kubernetes.md)
-owns the current standalone service container and operator-managed Kubernetes manifest.
+owns the instance container, standalone/distributed Kubernetes templates, and
+configuration-driven manifest generation.
 
 ## Users and Service Boundaries
 
@@ -49,8 +50,8 @@ The diagram expresses the target responsibility and ownership hierarchy, not an
 HTTP proxy chain for application requests. Console currently invokes Kubernetes
 through a separate provisioning adapter to manage predefined HTTP test workloads.
 Console-managed full instance bundles and employee Management execution remain
-target work. Operators can deploy the current standalone service against existing
-MongoDB/PostgreSQL dependencies using the
+target work. Operators can deploy current standalone or distributed runtime services
+against existing MongoDB/PostgreSQL dependencies using the
 [instance deployment guide](../packages/syntrix/deployment/README.md).
 
 ## Instances, Projects, and Logical Databases
@@ -113,10 +114,13 @@ run in `syntrix-tests`. Management's persistence backend remains unchosen. An
 instance's PostgreSQL must not be treated as the global employee/developer
 account store or platform inventory authority.
 
-The manual standalone service deployment uses a separate `syntrix-instance`
-namespace and one runtime data claim while connecting to existing databases.
-It leaves Console's `syntrix-platform` and test-workload namespaces unchanged. This artifact
-does not establish project realms or Console-owned instance lifecycle records.
+The operator-managed templates select a namespace, workload names, resource
+requests/limits, and replicas through deployment values. Standalone retains one
+runtime data claim; distributed placement uses separate Puller and Indexer claims
+plus an existing shared signing-key Secret and NATS JetStream. Database installation
+and source-data persistence remain external to the manifests. The templates leave
+Console's `syntrix-platform` and test-workload namespaces unchanged and do not
+establish project realms or Console-owned instance lifecycle records.
 
 System records are exposed through authorized system operations. They are not
 ordinary business documents that application document APIs may read or modify.
@@ -186,7 +190,7 @@ queue. Go requires the version declared by `packages/syntrix/go.mod`.
 |---|---|---|
 | Platform Management | A cluster-control proposal exists; the Go Manager provides process composition | Employee-facing platform scheduling, monitoring, and resource management |
 | Console | `packages/console-server` owns configured developer authentication and PostgreSQL-backed Kubernetes test workloads; `packages/console-client` supplies bilingual cookie-based login, restoration, logout, and Overview | Full developer-owned Syntrix instance lifecycle and administration |
-| Instance deployment | `packages/syntrix` supplies a package-only image and manually staged standalone service deployment with persistent runtime data and existing database connections | Console-managed full-instance provisioning and employee fleet operations |
+| Instance deployment | `packages/syntrix` supplies a package-only image, standalone/distributed templates, and strict values-driven manifest generation with persistent runtime data and existing backend connections | Console-managed full-instance provisioning and employee fleet operations |
 | Identity | `internal/identity` owns current account/authn/config/repositories/runtime and narrow capabilities; Gateway owns HTTP adapters | A peer instance Identity service with project-scoped accounts and both OAuth/OIDC roles |
 | Account scope | Independent Console developer accounts and sessions; instance users still combine runtime-global roles and database administration | Separate platform employee, Console developer, and project end-user domains |
 | System storage | Console owns separate PostgreSQL source data; instance PostgreSQL stores users/catalog and revocation currently uses MongoDB | Instance system data, including identity/OAuth/session state, belongs in PostgreSQL |

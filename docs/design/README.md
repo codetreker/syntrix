@@ -14,7 +14,7 @@ and currently implemented contracts.
 | Developer Console login/shell, browser sessions/localization, PostgreSQL source data, and Kubernetes test workloads | [Console design](server/console/01.console.md) |
 | Employee-facing Management platform | [Management design](server/console/02.control_plane.md) |
 | Runtime services within one Syntrix instance | [Instance architecture](server/01.architecture.md) |
-| Runtime modes and manual standalone service container/Kubernetes deployment | [Deployment design](server/03.deployment_modes.md) |
+| Runtime modes, standalone/distributed Kubernetes templates, and manifest generation | [Deployment design](server/03.deployment_modes.md) |
 | Identity contracts and target project end-user realms, OAuth/OIDC, external login | [Identity design](server/core/identity/01.architecture.md) |
 | Business-document CEL rules and evaluation | [Gateway authorization](server/gateway/authorization.md) |
 | Instance system metadata and logical database lifecycle | [Database design](server/core/database/01.architecture.md) |
@@ -25,7 +25,7 @@ project has one isolated Identity realm and can use multiple logical Syntrix
 databases. Employee, developer, and application-user authority remain distinct.
 Console's separate backend and developer accounts are implemented; Console-managed
 full-instance provisioning, Management, and project realms remain target work.
-Operators can deploy the current standalone service against existing databases
+Operators can generate standalone or distributed service manifests against existing databases
 using the [package deployment guide](../../packages/syntrix/deployment/README.md). The platform
 status table identifies these gaps independently of source-package locations.
 

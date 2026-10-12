@@ -56,8 +56,9 @@ frontend package with its own pnpm lockfile, Bun scripts, and static image. Its
 same-origin proxy forwards auth/API traffic to the API-only Go service; neither
 Go build reads sibling assets nor frontend build produces an instance artifact.
 The [instance deployment decision](2026-10-12-instance-container-kubernetes.md)
-adds a package-owned Docker build context and service-only Kubernetes manifest under
-`packages/syntrix`. The image contains only the instance binary; Kubernetes mounts
+adds a package-owned Docker build context, standalone/distributed Kubernetes
+templates, and configuration-driven generation through the existing `syntrix-cli`
+entrypoint. The image contains only the instance binary; Kubernetes mounts
 configuration assets separately, keeping credentials and generated signing keys
 outside the image.
 The [rejected build

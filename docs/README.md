@@ -30,7 +30,7 @@ syntrix/
 │   │   ├── api/             # Protocol definitions and generated code
 │   │   ├── tests/           # Integration tests
 │   │   ├── configs/         # Runtime configuration and rule examples
-│   │   ├── deployment/      # Standalone service Kubernetes deployment
+│   │   ├── deployment/      # Standalone/distributed Kubernetes templates and values
 │   │   ├── scripts/         # Protocol generation and Go coverage helpers
 │   │   ├── go.mod           # Go module dependencies
 │   │   └── Makefile         # Go build, test, coverage, and generation targets
@@ -83,9 +83,12 @@ see the [deployment design](design/server/03.deployment_modes.md).
 
 The package-owned [Dockerfile](../packages/syntrix/Dockerfile) builds only the
 instance runtime. The [instance deployment guide](../packages/syntrix/deployment/README.md)
-owns its Kubernetes manifest, persistent runtime stores, configuration secrets, and
-operator-controlled bootstrap against existing MongoDB and PostgreSQL. The
-service uses a separate `syntrix-instance` namespace and does not add full-instance
+owns standalone/distributed Kubernetes templates and the `syntrix-cli
+render-kubernetes` command. Strict deployment values select namespace, workload
+names, replicas, resource requests/limits, and existing backend connections.
+Distributed mode also requires existing NATS JetStream and an operator-managed
+shared signing-key Secret. Explicit bootstrap uses a temporary non-restarting Pod
+while normal Deployments remain stopped. These artifacts do not add full-instance
 provisioning to Console's API.
 
 Run instance binaries with `packages/syntrix` as the working directory to use the
@@ -154,7 +157,7 @@ enables race detection and enforces the CI coverage thresholds.
 ## Design and Reference
 
 - [Platform Architecture and Implementation Status](architecture.md)
-- [Syntrix Service Container and Kubernetes Deployment](../packages/syntrix/deployment/README.md)
+- [Syntrix Container, Kubernetes Templates, and Manifest Generation](../packages/syntrix/deployment/README.md)
 - [Developer Console](design/server/console/01.console.md)
 - [Employee Management Platform](design/server/console/02.control_plane.md)
 - [Instance Identity](design/server/core/identity/01.architecture.md)

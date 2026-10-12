@@ -1,0 +1,62 @@
+mode: distributed
+namespace: syntrix-instance
+name_prefix: instance
+image: syntrix:development
+storage_class: ""
+storage_gib: 10
+connections:
+  mongodb_uri: "mongodb://mongodb.example.internal:27017/?replicaSet=rs0"
+  mongodb_database: syntrix
+  postgres_dsn: "postgres://syntrix:CHANGE_ME@postgres.example.internal:5432/syntrix?sslmode=require"
+  nats_url: "nats://nats.example.internal:4222"
+signing_key_secret: instance-signing-key
+identity:
+  admin_username: syntrix
+  admin_password: "CHANGE_ME_Admin123!"
+allowed_origins: ["http://localhost:8080"]
+bootstrap_resources:
+  requests: {cpu: 500m, memory: 512Mi}
+  limits: {cpu: "2", memory: 2Gi}
+workloads:
+  api:
+    name: instance-api
+    replicas: 1
+    resources:
+      requests: {cpu: 100m, memory: 128Mi}
+      limits: {cpu: "1", memory: 1Gi}
+  query:
+    name: instance-query
+    replicas: 1
+    resources:
+      requests: {cpu: 100m, memory: 128Mi}
+      limits: {cpu: "1", memory: 1Gi}
+  indexer:
+    name: instance-indexer
+    replicas: 1
+    resources:
+      requests: {cpu: 100m, memory: 128Mi}
+      limits: {cpu: "1", memory: 1Gi}
+  puller:
+    name: instance-puller
+    replicas: 1
+    resources:
+      requests: {cpu: 100m, memory: 128Mi}
+      limits: {cpu: "1", memory: 1Gi}
+  streamer:
+    name: instance-streamer
+    replicas: 1
+    resources:
+      requests: {cpu: 100m, memory: 128Mi}
+      limits: {cpu: "1", memory: 1Gi}
+  trigger_evaluator:
+    name: instance-trigger-evaluator
+    replicas: 1
+    resources:
+      requests: {cpu: 100m, memory: 128Mi}
+      limits: {cpu: "1", memory: 1Gi}
+  trigger_worker:
+    name: instance-trigger-worker
+    replicas: 1
+    resources:
+      requests: {cpu: 100m, memory: 128Mi}
+      limits: {cpu: "1", memory: 1Gi}
