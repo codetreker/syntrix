@@ -132,6 +132,8 @@ contents or replacing the existing planning directories.
 - Console client uses package-local pnpm locked dependencies and Bun scripts.
   Run its shared `bun run check` gate after client changes; real-backend browser
   validation uses a dedicated PostgreSQL fixture through `bun run test:browser`.
+  Run `bun run test:browser:cleanup` for browser-harness lifecycle changes;
+  it verifies failed interrupted work with successful resource cleanup.
   Preserve auth/locale coverage and the same-origin cookie/Origin/CSRF contract.
   The interactive mockup uses final components/styles and remains absent from
   production assets.

@@ -134,7 +134,9 @@ commands. These checks run regardless of the ambient `CI` setting.
 From `packages/console-client`, install with `pnpm install --frozen-lockfile`
 and run `bun run check` for translation, type, behavior/coverage, and build gates.
 `bun run test:browser` separately exercises real account flows against dedicated
-PostgreSQL and the built same-origin web distribution. Its
+PostgreSQL and the built same-origin web distribution.
+`bun run test:browser:cleanup` verifies SIGTERM stops acquisition descendants
+and prevents late resources after the nested run exits. Its
 [README](../packages/console-client/README.md) owns fixture/browser prerequisites;
 mockup evidence does not establish real-cookie or HTTPS acceptance.
 

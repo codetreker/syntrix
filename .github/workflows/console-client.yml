@@ -59,10 +59,15 @@ jobs:
       - name: Real backend and HTTPS browser acceptance
         working-directory: packages/console-client
         run: bun run test:browser
+      - name: Interrupted acquisition cleanup
+        working-directory: packages/console-client
+        run: bun run test:browser:cleanup
       - name: Acceptance artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: console-client-acceptance
-          path: packages/console-client/.tmp/browser
+          path: |
+            packages/console-client/.tmp/browser
+            packages/console-client/.tmp/browser-cleanup
           if-no-files-found: ignore

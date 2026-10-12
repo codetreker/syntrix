@@ -93,8 +93,14 @@ catalog, type, behavior, coverage, and production-build checks. Real-backend
 browser validation supplements those checks; coverage cannot establish request
 ordering, focus, or cookie acceptance on its own. Build and test share Lingui's
 native Vite macro/catalog pipeline. Browser fixtures use isolated PostgreSQL
-schemas through Bun SQL and the prebuilt static image; they own process/container/
-profile/certificate cleanup and retain package-local receipts/screenshots.
+schemas through Bun SQL and the prebuilt static image. Spawned processes are
+immediately owned with their POSIX process groups. Closing rejects acquisitions
+and drains active work before resource disposal; cleanup commands have separate
+ownership. Interrupted work cannot continue acquiring resources after cleanup.
+Process/container/profile/certificate cleanup and its failure status are recorded
+in retained package-local receipts/screenshots. A separate marker-controlled
+SIGTERM probe requires interrupted work to fail, descendants to stop, and late
+containers to remain absent before reporting probe success.
 
 ## Alternatives
 

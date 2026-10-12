@@ -7,6 +7,7 @@ import { request as httpRequest } from 'node:http';
 import { createServer as netServer } from 'node:net';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createProcessOwner } from './browser/processes';
 
 const packageRoot = fileURLToPath(new URL('..', import.meta.url));
 const repositoryRoot = resolve(packageRoot, '../..');
@@ -21,39 +22,66 @@ if (!['postgres:', 'postgresql:'].includes(databaseURL.protocol)) throw new Erro
 const password = randomBytes(20).toString('base64url');
 const cleanup: (() => Promise<void>)[] = [];
 const receipts: { check: string; origin?: string; status?: number; requestId?: string }[] = [];
-const deadline = Date.now() + 270_000;
+const deadline = Date.now() + 210_000;
 let closing: Promise<void> | undefined;
 let disposing = false;
 let browser: Browser | undefined;
 let failure = false;
 let cleanupFailure = false;
+let work: Promise<void> | undefined;
+const acquisitionProcesses = createProcessOwner();
+const cleanupProcesses = createProcessOwner();
+
+const assertOpen = () => { if (disposing) throw new Error('Browser acceptance is closing.'); };
+const registerCleanup = (dispose: () => Promise<void>) => { assertOpen(); cleanup.push(dispose); };
 
 const remaining = () => Math.max(1, deadline - Date.now());
 const clean = () => closing ??= (async () => {
   disposing = true;
-  for (const dispose of cleanup.reverse()) {
-    try { await dispose(); }
-    catch { failure = true; cleanupFailure = true; console.error('Acceptance cleanup failed for an owned resource.'); }
-  }
-  await rm(temporary, { recursive: true, force: true });
-  await writeFile(join(output, 'receipts.json'), JSON.stringify({ passed: !failure, receipts, cleanup_completed: !cleanupFailure }, null, 2));
+  const limit = setTimeout(() => {
+    failure = true;
+    cleanupFailure = true;
+    console.error('Acceptance cleanup exceeded its bounded runtime.');
+    const forceExit = setTimeout(() => process.exit(1), 1000);
+    void writeFile(join(output, 'receipts.json'), JSON.stringify({ passed: false, receipts, cleanup_completed: false }, null, 2)).finally(() => { clearTimeout(forceExit); process.exit(1); });
+  }, 60_000);
+  try {
+    try { await acquisitionProcesses.close(); await browser?.close(); await Promise.allSettled(work ? [work] : []); }
+    catch { failure = true; cleanupFailure = true; console.error('Acceptance acquisition shutdown failed.'); }
+    for (const dispose of cleanup.reverse()) {
+      try { await dispose(); }
+      catch { failure = true; cleanupFailure = true; console.error('Acceptance cleanup failed for an owned resource.'); }
+    }
+    try { await cleanupProcesses.close(); }
+    catch { failure = true; cleanupFailure = true; console.error('Acceptance cleanup process shutdown failed.'); }
+    await rm(temporary, { recursive: true, force: true });
+    await writeFile(join(output, 'receipts.json'), JSON.stringify({ passed: !failure, receipts, cleanup_completed: !cleanupFailure }, null, 2));
+  } finally { clearTimeout(limit); }
 })();
 
-const command = async (args: string[], options: { cwd?: string; env?: Record<string, string | undefined>; quiet?: boolean } = {}) => {
-  const child = Bun.spawn(args, {
+const command = async (args: string[], options: { cwd?: string; env?: Record<string, string | undefined>; quiet?: boolean; cleanup?: boolean } = {}) => {
+  if (!options.cleanup) assertOpen();
+  const owned = (options.cleanup ? cleanupProcesses : acquisitionProcesses).start(args, {
     cwd: options.cwd ?? packageRoot,
     env: { ...process.env, ...options.env },
-    stdin: 'ignore', stdout: options.quiet ? 'pipe' : 'inherit', stderr: options.quiet ? 'pipe' : 'inherit',
-    timeout: disposing ? 10_000 : Math.min(remaining(), 120_000),
+    stdout: options.quiet ? 'pipe' : 'inherit', stderr: options.quiet ? 'pipe' : 'inherit',
   });
+  const { child } = owned;
+  let timedOut = false;
+  const timer = setTimeout(() => { timedOut = true; void owned.stop().catch(() => { failure = true; cleanupFailure = true; }); }, options.cleanup ? 10_000 : Math.min(remaining(), 120_000));
   const out = options.quiet ? new Response(child.stdout as ReadableStream).text() : Promise.resolve('');
   const error = options.quiet ? new Response(child.stderr as ReadableStream).text() : Promise.resolve('');
-  const [code, text] = await Promise.all([child.exited, out, error]);
-  if (code !== 0) throw new Error(`${args[0]} failed during browser acceptance (exit ${code}).`);
-  return text.trim();
+  try {
+    const [code, text] = await Promise.all([owned.finished, out, error]);
+    if (!options.cleanup) assertOpen();
+    if (timedOut) throw new Error(`${args[0]} exceeded its browser acceptance deadline.`);
+    if (code !== 0) throw new Error(`${args[0]} failed during browser acceptance (exit ${code}).`);
+    return text.trim();
+  } finally { clearTimeout(timer); }
 };
 
-const sql = async (query: string, dsn = configuredDSN) => {
+const sql = async (query: string, dsn = configuredDSN, cleanup = false) => {
+  if (!cleanup) assertOpen();
   const scoped = new URL(dsn);
   const schema = scoped.searchParams.get('search_path');
   const connection = new SQL(dsn, { max: 1, connectionTimeout: 5, idleTimeout: 0, connection: { ...(schema !== null ? { search_path: schema } : {}), statement_timeout: 10_000, lock_timeout: 5000 } });
@@ -61,6 +89,7 @@ const sql = async (query: string, dsn = configuredDSN) => {
   finally { await connection.close({ timeout: 1 }); }
 };
 const freePort = () => new Promise<number>((accept, reject) => {
+  assertOpen();
   const listener = netServer();
   listener.once('error', reject);
   listener.listen(0, '127.0.0.1', () => {
@@ -73,7 +102,8 @@ const freePort = () => new Promise<number>((accept, reject) => {
 const waitHTTP = async (url: string) => {
   const until = Math.min(deadline, Date.now() + 20_000);
   while (Date.now() < until) {
-    try { const response = await fetch(url, { signal: AbortSignal.timeout(1000) }); if (response.ok) return; }
+    assertOpen();
+    try { const response = await fetch(url, { signal: AbortSignal.timeout(1000) }); if (response.ok) { assertOpen(); return; } }
     catch { /* Startup readiness is retried until the bounded deadline. */ }
     await Bun.sleep(100);
   }
@@ -81,24 +111,15 @@ const waitHTTP = async (url: string) => {
 };
 
 const service = (args: string[], name: string, env: Record<string, string | undefined> = {}) => {
-  const child = Bun.spawn(args, { cwd: packageRoot, env: { ...process.env, ...env }, stdin: 'ignore', stdout: Bun.file(join(output, `${name}.log`)), stderr: Bun.file(join(output, `${name}.stderr.log`)) });
-  let stopped = false;
-  const stop = async () => {
-    if (stopped) return;
-    stopped = true;
-    child.kill('SIGTERM');
-    const result = await Promise.race([child.exited, Bun.sleep(5000).then(() => null)]);
-    if (result === null) { child.kill('SIGKILL'); await child.exited; }
-  };
-  cleanup.push(stop);
-  return stop;
+  assertOpen();
+  return acquisitionProcesses.start(args, { cwd: packageRoot, env: { ...process.env, ...env }, stdout: Bun.file(join(output, `${name}.log`)), stderr: Bun.file(join(output, `${name}.stderr.log`)) }).stop;
 };
 
 const pass = (check: string, origin?: string) => { receipts.push({ check, origin }); console.log(`PASS ${check}`); };
 const backend = async (origin: string, name: string) => {
   const schema = `console_browser_${identity}_${name}`;
+  registerCleanup(async () => { await sql(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`, configuredDSN, true); });
   await sql(`CREATE SCHEMA "${schema}"`);
-  cleanup.push(async () => { await sql(`DROP SCHEMA "${schema}" CASCADE`); });
   const scoped = new URL(databaseURL);
   scoped.searchParams.set('search_path', schema);
   const dsn = scoped.toString();
@@ -214,7 +235,10 @@ const production = async () => {
   const webPort = await freePort();
   const container = `console-client-browser-${identity}`;
   await command(['docker', 'image', 'inspect', image], { quiet: true });
-  cleanup.push(async () => { await command(['docker', 'rm', '--force', container], { quiet: true }); });
+  registerCleanup(async () => {
+    const existing = await command(['docker', 'container', 'ls', '--all', '--filter', `name=^/${container}$`, '--format', '{{.Names}}'], { quiet: true, cleanup: true });
+    if (existing !== '') await command(['docker', 'rm', '--force', container], { quiet: true, cleanup: true });
+  });
   await command(['docker', 'run', '--detach', '--name', container, '--add-host', 'host.docker.internal:host-gateway', '--publish', `127.0.0.1:${webPort}:8080`, '--env', `CONSOLE_API_ORIGIN=http://host.docker.internal:${api.port}`, image], { quiet: true });
   await waitHTTP(`http://127.0.0.1:${webPort}/login`);
   const key = join(temporary, 'localhost.key');
@@ -243,8 +267,8 @@ const production = async () => {
     response.on('close', () => upstream.destroy());
     request.pipe(upstream);
   });
+  registerCleanup(async () => { web.closeAllConnections(); await new Promise<void>((accept) => web.close(() => accept())); });
   await new Promise<void>((accept, reject) => { web.once('error', reject); web.listen(port, '127.0.0.1', accept); });
-  cleanup.push(async () => { web.closeAllConnections(); await new Promise<void>((accept) => web.close(() => accept())); });
   return { origin, api, webPort };
 };
 
@@ -314,13 +338,14 @@ const main = async () => {
   // Chromium's Unix socket limit requires a shorter path than nested worktrees.
   const commonDirectory = await command(['git', 'rev-parse', '--path-format=absolute', '--git-common-dir'], { cwd: repositoryRoot, quiet: true });
   const browserTemporary = join(dirname(commonDirectory), '.tmp', `browser-${identity}`);
+  registerCleanup(async () => { await rm(browserTemporary, { recursive: true, force: true }); });
   await mkdir(browserTemporary, { recursive: true, mode: 0o700 });
-  cleanup.push(async () => { await rm(browserTemporary, { recursive: true, force: true }); });
   process.env.TMPDIR = browserTemporary;
   console.log('Building the real Console backend for browser acceptance.');
   await command(['go', 'build', '-o', join(temporary, 'console-server'), './cmd/console-server'], { cwd: join(repositoryRoot, 'packages', 'console-server') });
-  browser = await chromium.launch({ ...(process.env.CONSOLE_BROWSER_EXECUTABLE ? { executablePath: process.env.CONSOLE_BROWSER_EXECUTABLE } : {}), headless: true });
-  cleanup.push(async () => { await browser?.close(); });
+  registerCleanup(async () => { await browser?.close(); });
+  assertOpen();
+  browser = await chromium.launch({ ...(process.env.CONSOLE_BROWSER_EXECUTABLE ? { executablePath: process.env.CONSOLE_BROWSER_EXECUTABLE } : {}), headless: true, timeout: Math.min(remaining(), 20_000) });
   const vitePort = await freePort();
   const viteOrigin = `http://localhost:${vitePort}`;
   const development = await backend(viteOrigin, 'development');
@@ -352,9 +377,9 @@ const watchdog = setTimeout(() => {
   failure = true;
   console.error('Browser acceptance exceeded its bounded runtime.');
   void clean().finally(() => process.exit(1));
-}, 280_000);
+}, 220_000);
 for (const signal of ['SIGINT', 'SIGTERM'] as const) process.once(signal, () => { failure = true; void clean().finally(() => process.exit(1)); });
-try { await main(); }
+try { work = main(); await work; }
 catch (error) { failure = true; console.error(error instanceof Error ? error.message : 'Browser acceptance failed.'); process.exitCode = 1; }
 finally { clearTimeout(watchdog); await clean(); }
 console.log(`Browser acceptance receipts: ${output}`);

@@ -13,6 +13,7 @@
     "i18n:check": "bun scripts/check-i18n.ts",
     "test": "vitest run --coverage",
     "test:browser": "bun scripts/browser-acceptance.ts",
+    "test:browser:cleanup": "bun scripts/browser/cleanup-probe.ts",
     "build": "bun scripts/build.ts",
     "check": "bun scripts/check.ts"
   },

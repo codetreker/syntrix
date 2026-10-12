@@ -87,6 +87,7 @@ without another request.
 | `bun run build` | Check catalogs/types and produce production assets |
 | `bun run check` | Run the shared local/pre-push/CI package gate |
 | `bun run test:browser` | Verify real-backend development and built-distribution browser flows |
+| `bun run test:browser:cleanup` | Verify interrupted acquisition stops descendants and cannot create late resources |
 
 The test gate enforces 90% statement/line, 85% function, and 80% branch coverage.
 It includes application TypeScript/TSX and retains auth, locale, and transport
@@ -96,8 +97,9 @@ login, cookies, restoration/logout, language changes, routes, focus, and
 production proxy behavior. A mockup or coverage result does not establish those
 runtime contracts.
 
-`bun run test:browser` requires Docker, OpenSSL, Go, and a dedicated PostgreSQL
-URL exported as `CONSOLE_BROWSER_POSTGRES_DSN`. Its built-in Bun SQL client
+`bun run test:browser` requires a POSIX environment with process groups, Docker,
+Git, OpenSSL, Go, Bun, and a dedicated PostgreSQL URL exported as
+`CONSOLE_BROWSER_POSTGRES_DSN`. Its built-in Bun SQL client
 creates isolated schemas; no system `psql` binary is needed. Build the tested
 image first, from the repository root:
 
@@ -112,11 +114,25 @@ including local HTTPS/Secure cookies; it does not create Kubernetes workloads.
 Use `CONSOLE_BROWSER_EXECUTABLE` to select an installed Chromium executable;
 otherwise it uses an installed Playwright Chromium. Keep browser installations
 temporary under the repository's `.tmp` when a browser is needed for CI.
-The harness removes owned schemas, processes, containers, profile/socket files,
-certificates, and fixture configuration. Screenshots/logs and `receipts.json`
-remain under package-local `.tmp/browser/<id>`, including cleanup status.
+The harness registers spawned processes immediately and owns their process groups,
+including descendants. Closing rejects new acquisitions, stops and drains active
+work before disposing owned resources, and uses separately owned cleanup commands.
+It removes owned schemas, processes, containers, profile/socket files, certificates,
+and fixture configuration. Screenshots/logs and `receipts.json` remain under
+package-local `.tmp/browser/<id>`. Cleanup failure is recorded separately from
+test failure and makes the run fail.
 Use a dedicated test database rather than shared production or developer source
 data.
+
+After building the same image and setting the same browser/database environment,
+run `bun run test:browser:cleanup` from this package. The probe pauses Docker
+acquisition behind a marker, starts a descendant that resists SIGTERM, and
+interrupts the nested acceptance run. That nested run must fail while recording
+completed cleanup; releasing the marker after exit must not create a late
+container. The probe itself exits successfully only when descendant shutdown,
+resource absence, and cleanup receipts agree. Its retained evidence lives in
+`.tmp/browser-cleanup/<id>`. CI runs both browser commands and publishes both
+artifact directories.
 
 ## Static Distribution
 
