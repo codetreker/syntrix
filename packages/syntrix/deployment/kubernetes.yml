@@ -81,7 +81,7 @@ data:
         match:
           /{document=**}:
             allow:
-              read, write: "request.auth != null && request.auth.roles.hasAny(['admin', 'system'])"
+              read, write: "request.auth != null && ('admin' in request.auth.roles || 'system' in request.auth.roles)"
   templates.yml: |
     database: default
     templates:
