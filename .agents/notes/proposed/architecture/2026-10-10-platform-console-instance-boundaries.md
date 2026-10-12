@@ -15,12 +15,15 @@ platform meaning and confuse private system records with developer documents.
 ## Proposal
 
 The [platform architecture](../../../../docs/architecture.md) owns the accepted
-target model. This note remains proposed for employee Management, full instance
-provisioning, project realms, and OAuth. The [Console implementation](../../implemented/architecture/2026-10-11-console-server-postgres-kubernetes.md)
+target model. This note remains proposed for employee Management, Console-managed
+full-instance provisioning, project realms, and OAuth. The [Console implementation](../../implemented/architecture/2026-10-11-console-server-postgres-kubernetes.md)
 owns the delivered independent developer backend, PostgreSQL source data, opaque
 sessions, and predefined Kubernetes test workloads. The [Console client](../../implemented/architecture/2026-10-12-console-client-session-and-distribution.md)
 owns the bilingual developer login/shell and separate static distribution; it
-does not complete resource-administration or full-instance provisioning.
+does not complete resource-administration or full-instance provisioning. The
+[instance deployment decision](../../implemented/architecture/2026-10-12-instance-container-kubernetes.md)
+supplies a manual standalone service deployment against existing databases without implementing
+Console-owned instance lifecycle.
 
 - The Management platform serves Syntrix employees and owns whole-platform
   scheduling, resource operations, monitoring, and administration.

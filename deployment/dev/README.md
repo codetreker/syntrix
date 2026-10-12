@@ -55,9 +55,12 @@ make -C packages/syntrix build
 The package working directory supplies default `configs/` and keeps runtime data
 and logs with the server package. Standalone assembles services in one process;
 it does not combine employee, developer, and application identity domains.
-The commented application service in `docker-compose.yml` is an optional Docker
-build template; it requires a matching application image/build recipe before it
-can be used. The commands above run the current instance outside Docker.
+This Compose file runs dependencies and monitoring. The package-owned
+[Dockerfile](../../packages/syntrix/Dockerfile) and
+[Kubernetes guide](../../packages/syntrix/deployment/README.md) provide a separate
+containerized standalone service connecting to existing MongoDB and PostgreSQL.
+The Kubernetes deployment requires an operator-prepared cluster and explicit index
+bootstrap while all writers, including MongoDB TTL deletion, are paused.
 
 ## Developer Console Browser
 

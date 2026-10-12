@@ -30,6 +30,7 @@ syntrix/
 │   │   ├── api/             # Protocol definitions and generated code
 │   │   ├── tests/           # Integration tests
 │   │   ├── configs/         # Runtime configuration and rule examples
+│   │   ├── deployment/      # Standalone service Kubernetes deployment
 │   │   ├── scripts/         # Protocol generation and Go coverage helpers
 │   │   ├── go.mod           # Go module dependencies
 │   │   └── Makefile         # Go build, test, coverage, and generation targets
@@ -80,6 +81,13 @@ Service-selection flags do not override a configured standalone mode. These
 runtime modes do not describe the Management/Console/instance product layers;
 see the [deployment design](design/server/03.deployment_modes.md).
 
+The package-owned [Dockerfile](../packages/syntrix/Dockerfile) builds only the
+instance runtime. The [instance deployment guide](../packages/syntrix/deployment/README.md)
+owns its Kubernetes manifest, persistent runtime stores, configuration secrets, and
+operator-controlled bootstrap against existing MongoDB and PostgreSQL. The
+service uses a separate `syntrix-instance` namespace and does not add full-instance
+provisioning to Console's API.
+
 Run instance binaries with `packages/syntrix` as the working directory to use the
 supplied configuration and package-local data and logs. Instance configuration loads
 defaults, `configs/config.yml`, `configs/config.local.yml`, then supported
@@ -94,8 +102,8 @@ ownership, accepted deployment intent, template snapshots, and operation records
 Its API currently creates, observes, and deletes predefined Kubernetes HTTP test
 workloads. The independent [Console client](../packages/console-client/README.md)
 delivers bilingual developer login, session restoration, logout, and an
-authenticated Overview. Workload administration pages and full Syntrix bundles
-remain target work. The former embedded administration frontend and Gateway
+authenticated Overview. Workload administration pages and Console-managed full
+Syntrix bundles remain target work. The former embedded administration frontend and Gateway
 static route are removed.
 
 Local deployment uses an operator-provided Kubernetes cluster, such as k3d, with
@@ -146,6 +154,7 @@ enables race detection and enforces the CI coverage thresholds.
 ## Design and Reference
 
 - [Platform Architecture and Implementation Status](architecture.md)
+- [Syntrix Service Container and Kubernetes Deployment](../packages/syntrix/deployment/README.md)
 - [Developer Console](design/server/console/01.console.md)
 - [Employee Management Platform](design/server/console/02.control_plane.md)
 - [Instance Identity](design/server/core/identity/01.architecture.md)

@@ -97,15 +97,34 @@ jobs:
         run: |
           .github/workflows/scripts/test_and_coverage.sh
 
+  container:
+    name: Container Build and Smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Build runtime image
+        run: timeout 540s docker build --progress=plain -t syntrix:ci packages/syntrix
+
+      - name: Run hardened image without configuration
+        run: >-
+          timeout 20s docker run --rm --network none --read-only
+          --cap-drop ALL --security-opt no-new-privileges
+          --tmpfs /tmp:rw,nosuid,nodev,noexec,size=16m
+          syntrix:ci --help
+
   syntrix-server:
     name: Syntrix Server (Go)
-    needs: [build, test]
+    needs: [build, test, container]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Require build and coverage success
+      - name: Require build, coverage and container success
         env:
           BUILD_RESULT: ${{ needs.build.result }}
           TEST_RESULT: ${{ needs.test.result }}
-        run: test "$BUILD_RESULT" = success && test "$TEST_RESULT" = success
+          CONTAINER_RESULT: ${{ needs.container.result }}
+        run: test "$BUILD_RESULT" = success && test "$TEST_RESULT" = success && test "$CONTAINER_RESULT" = success

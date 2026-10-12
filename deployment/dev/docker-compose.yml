@@ -145,31 +145,6 @@ services:
     networks:
       - syntrix-net
 
-  # =============================================================================
-  # Syntrix Application (Optional - for local development, run outside Docker)
-  # =============================================================================
-
-  # Uncomment to run Syntrix in Docker
-  # syntrix:
-  #   build:
-  #     context: ../..
-  #     dockerfile: Dockerfile
-  #   container_name: syntrix-server
-  #   ports:
-  #     - "8080:8080"   # HTTP API + /metrics
-  #     - "9000:9000"   # gRPC
-  #   environment:
-  #     - MONGO_URI=mongodb://mongodb:27017
-  #     - NATS_URL=nats://nats:4222
-  #     - DB_NAME=syntrix
-  #   depends_on:
-  #     mongodb:
-  #       condition: service_healthy
-  #     nats:
-  #       condition: service_healthy
-  #   networks:
-  #     - syntrix-net
-
 networks:
   syntrix-net:
     driver: bridge

@@ -1,0 +1,214 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: syntrix-instance
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: syntrix-config-secret
+  namespace: syntrix-instance
+type: Opaque
+stringData:
+  config.local.yml: |
+    storage:
+      backends:
+        default_mongo:
+          type: mongo
+          mongo:
+            uri: "mongodb://mongodb.example.internal:27017/?replicaSet=rs0"
+            database_name: syntrix
+        default_postgres:
+          type: postgres
+          postgres:
+            dsn: "postgres://syntrix:CHANGE_ME@postgres.example.internal:5432/syntrix?sslmode=require"
+    identity:
+      admin:
+        username: syntrix
+        password: "CHANGE_ME_Admin123!"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: syntrix-config
+  namespace: syntrix-instance
+data:
+  config.yml: |
+    deployment:
+      mode: standalone
+    data_dir: /data
+    server:
+      host: 0.0.0.0
+      http_port: 8080
+      enable_cors: false
+    identity:
+      authn:
+        admin_username: syntrix
+        private_key_file: /data/keys/auth_private.pem
+    gateway:
+      authz:
+        rules_path: security_rules
+      realtime:
+        allow_dev_origin: false
+        allowed_origins: ["http://localhost:8080"]
+    indexer:
+      template_path: index_templates
+      storage_mode: pebble
+      store:
+        path: indexer/indexes.db
+    puller:
+      backends:
+        - name: default_mongo
+          collections: [documents, sys]
+      buffer:
+        path: puller/events
+        max_size: 1GiB
+    trigger:
+      rules_path: triggers
+    logging:
+      dir: logs
+      console:
+        enabled: true
+        format: json
+      file:
+        enabled: false
+  rules.yml: |
+    database: default
+    rules_version: '1'
+    service: syntrix
+    match:
+      /databases/{database}/documents:
+        match:
+          /{document=**}:
+            allow:
+              read, write: "request.auth != null && request.auth.roles.hasAny(['admin', 'system'])"
+  templates.yml: |
+    database: default
+    templates:
+      - name: deployment-checks-by-created
+        collectionPattern: deployment_checks
+        fields:
+          - field: createdAt
+            order: desc
+  triggers.keep: ""
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: syntrix-data
+  namespace: syntrix-instance
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: syntrix
+  namespace: syntrix-instance
+spec:
+  # An operator starts the initial maintenance process, then selects normal args.
+  replicas: 0
+  progressDeadlineSeconds: 1980
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: syntrix
+  template:
+    metadata:
+      labels:
+        app: syntrix
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: syntrix
+          image: syntrix:development
+          imagePullPolicy: IfNotPresent
+          args: ["--standalone", "--config-dir", "/etc/syntrix"]
+          ports:
+            - name: http
+              containerPort: 8080
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          startupProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 5
+            failureThreshold: 372
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+          volumeMounts:
+            - name: config
+              mountPath: /etc/syntrix
+              readOnly: true
+            - name: data
+              mountPath: /data
+            - name: temporary
+              mountPath: /tmp
+      volumes:
+        - name: config
+          projected:
+            sources:
+              - configMap:
+                  name: syntrix-config
+                  items:
+                    - key: config.yml
+                      path: config.yml
+                    - key: rules.yml
+                      path: security_rules/default.yml
+                    - key: templates.yml
+                      path: index_templates/default.yml
+                    - key: triggers.keep
+                      path: triggers/.keep
+              - secret:
+                  name: syntrix-config-secret
+                  items:
+                    - key: config.local.yml
+                      path: config.local.yml
+        - name: data
+          persistentVolumeClaim:
+            claimName: syntrix-data
+        - name: temporary
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: syntrix
+  namespace: syntrix-instance
+spec:
+  selector:
+    app: syntrix
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http

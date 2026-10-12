@@ -18,8 +18,12 @@ The current repository provides the instance document runtime, SDK, and an
 independent developer Console backend and bilingual browser login/shell. Console
 uses its own PostgreSQL for source data and deploys predefined HTTP test workloads
 through its API to Kubernetes. The browser shell currently provides account login,
-session restoration, and logout; resource-administration pages remain target work. Full instance
-provisioning, employee Management, project Identity, and OAuth remain target work.
+session restoration, and logout; resource-administration pages remain target work.
+The [instance deployment](packages/syntrix/deployment/README.md) supplies a separate
+container and an operator-managed Kubernetes manifest for the current standalone
+service, connecting to existing MongoDB and PostgreSQL. Console-managed
+full-instance provisioning, employee Management, project Identity, and OAuth
+remain target work.
 See the [Console client](packages/console-client/README.md) for browser development
 and static distribution, and the [Console server](packages/console-server/README.md)
 for backend configuration and operating commands.
@@ -32,7 +36,7 @@ together using direct calls or use distributed service communication.
 - **Query Engine**: Filter and sort documents with a powerful query syntax
 - **Realtime Updates**: WebSocket/SSE-based real-time events (Create, Update, Delete)
 - **Triggers**: Server-side event reactions (Webhooks, Cloud Functions) with CEL conditions
-- **Flexible Deployment**: Standalone mode for development, distributed mode for production
+- **Flexible Deployment**: Standalone direct calls or distributed service communication
 
 ## Documentation
 
@@ -48,6 +52,10 @@ These commands start and test the current instance runtime. Run from the
 repository root; the server runs from its package directory so configuration,
 data, and logs resolve against that package. Infrastructure prerequisites are
 described in the [development guide](deployment/dev/README.md).
+
+For Kubernetes, follow the [instance deployment guide](packages/syntrix/deployment/README.md).
+Its staged bootstrap preserves the existing write-quiescence and persistent
+Indexer startup requirements; cluster creation remains operator-owned.
 
 ```bash
 # Build

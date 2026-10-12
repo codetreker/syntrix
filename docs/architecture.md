@@ -10,6 +10,8 @@ records the complete target. The [Console implementation decision](../.agents/no
 records its PostgreSQL source data, developer authentication, and Kubernetes
 execution/recovery constraints. The [Console client decision](../.agents/notes/implemented/architecture/2026-10-12-console-client-session-and-distribution.md)
 owns bilingual browser sessions and independent static distribution.
+The [instance deployment decision](../.agents/notes/implemented/architecture/2026-10-12-instance-container-kubernetes.md)
+owns the current standalone service container and operator-managed Kubernetes manifest.
 
 ## Users and Service Boundaries
 
@@ -46,7 +48,10 @@ flowchart TB
 The diagram expresses the target responsibility and ownership hierarchy, not an
 HTTP proxy chain for application requests. Console currently invokes Kubernetes
 through a separate provisioning adapter to manage predefined HTTP test workloads.
-Full instance bundles and employee Management execution remain target work.
+Console-managed full instance bundles and employee Management execution remain
+target work. Operators can deploy the current standalone service against existing
+MongoDB/PostgreSQL dependencies using the
+[instance deployment guide](../packages/syntrix/deployment/README.md).
 
 ## Instances, Projects, and Logical Databases
 
@@ -107,6 +112,11 @@ which also provides a location for future Management services; test workloads
 run in `syntrix-tests`. Management's persistence backend remains unchosen. An
 instance's PostgreSQL must not be treated as the global employee/developer
 account store or platform inventory authority.
+
+The manual standalone service deployment uses a separate `syntrix-instance`
+namespace and one runtime data claim while connecting to existing databases.
+It leaves Console's `syntrix-platform` and test-workload namespaces unchanged. This artifact
+does not establish project realms or Console-owned instance lifecycle records.
 
 System records are exposed through authorized system operations. They are not
 ordinary business documents that application document APIs may read or modify.
@@ -176,6 +186,7 @@ queue. Go requires the version declared by `packages/syntrix/go.mod`.
 |---|---|---|
 | Platform Management | A cluster-control proposal exists; the Go Manager provides process composition | Employee-facing platform scheduling, monitoring, and resource management |
 | Console | `packages/console-server` owns configured developer authentication and PostgreSQL-backed Kubernetes test workloads; `packages/console-client` supplies bilingual cookie-based login, restoration, logout, and Overview | Full developer-owned Syntrix instance lifecycle and administration |
+| Instance deployment | `packages/syntrix` supplies a package-only image and manually staged standalone service deployment with persistent runtime data and existing database connections | Console-managed full-instance provisioning and employee fleet operations |
 | Identity | `internal/identity` owns current account/authn/config/repositories/runtime and narrow capabilities; Gateway owns HTTP adapters | A peer instance Identity service with project-scoped accounts and both OAuth/OIDC roles |
 | Account scope | Independent Console developer accounts and sessions; instance users still combine runtime-global roles and database administration | Separate platform employee, Console developer, and project end-user domains |
 | System storage | Console owns separate PostgreSQL source data; instance PostgreSQL stores users/catalog and revocation currently uses MongoDB | Instance system data, including identity/OAuth/session state, belongs in PostgreSQL |
@@ -183,7 +194,8 @@ queue. Go requires the version declared by `packages/syntrix/go.mod`.
 
 These implementation gaps must remain visible in API references and future
 changes. Describing the accepted architecture does not make project-scoped
-endpoints, OAuth grants, full Syntrix provisioning, or platform Management
+endpoints, OAuth grants, Console-managed full Syntrix provisioning, or platform
+Management
 available in the current runtime. The former embedded frontend and Gateway
 static route are removed; Console is independently deployed.
 
