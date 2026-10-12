@@ -90,7 +90,8 @@ export const createSessionController = (transport: AuthTransport, runtime: Sessi
     const previous = state.session;
     const notice = options.notice === undefined ? state.notice : options.notice;
     const retainedError = options.error === undefined ? state.error : options.error;
-    publish({ ...state, status: state.status === 'restoring' ? 'restoring' : 'reconciling', notice });
+    const publicForm = state.status === 'anonymous' && previous === null && retainedError === null;
+    publish({ ...state, status: state.status === 'restoring' ? 'restoring' : publicForm ? 'anonymous' : 'reconciling', notice });
     try {
       const session = await transport.me(controller.signal);
       if (!connected || epoch !== generation) return;
