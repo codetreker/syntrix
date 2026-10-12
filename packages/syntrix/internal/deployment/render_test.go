@@ -214,6 +214,28 @@ func TestGenerateAtomicPrivateOutput(t *testing.T) {
 	assert.Len(t, entries, 3)
 }
 
+func TestGenerateRejectsFractionalIntegersWithoutReplacingOutput(t *testing.T) {
+	options, _ := createInputs(t)
+	data, err := yaml.Marshal(fixtureConfig("distributed"))
+	require.NoError(t, err)
+	prior := []byte("existing private manifest")
+	require.NoError(t, os.WriteFile(options.OutputPath, prior, 0600))
+	for _, change := range []struct{ original, replacement, field string }{
+		{"replicas: 1", "replicas: 1.5", "replicas"},
+		{"replicas: 1", "replicas: -0.5", "replicas"},
+		{"storage_gib: 10", "storage_gib: 10.5", "storage_gib"},
+	} {
+		malformed := strings.Replace(string(data), change.original, change.replacement, 1)
+		require.NoError(t, os.WriteFile(options.ConfigPath, []byte(malformed), 0600))
+		var stdout bytes.Buffer
+		require.ErrorContains(t, Generate(options, &stdout), change.field+" must be a YAML integer")
+		assert.Empty(t, stdout.String())
+		unchanged, err := os.ReadFile(options.OutputPath)
+		require.NoError(t, err)
+		assert.Equal(t, prior, unchanged)
+	}
+}
+
 func TestGenerateRejectsOutputInputAliases(t *testing.T) {
 	for _, source := range []string{"template", "config"} {
 		options, dir := createInputs(t)

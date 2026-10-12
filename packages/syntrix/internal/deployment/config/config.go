@@ -79,6 +79,13 @@ func Load(reader io.Reader) (Config, error) {
 	if err != nil {
 		return c, sanitizedError{message: "read deployment configuration", cause: err}
 	}
+	var syntax yaml.Node
+	if err := yaml.Unmarshal(data, &syntax); err != nil {
+		return c, sanitizedError{message: "deployment configuration must use valid YAML, known fields, unique keys, and correct value types", cause: err}
+	}
+	if err := validateIntegerNodes(&syntax, make(map[*yaml.Node]bool)); err != nil {
+		return c, err
+	}
 	decoder := yaml.NewDecoder(bytes.NewReader(data))
 	decoder.KnownFields(true)
 	if err := decoder.Decode(&c); err != nil {
@@ -92,6 +99,39 @@ func Load(reader io.Reader) (Config, error) {
 		return c, err
 	}
 	return c, nil
+}
+
+func validateIntegerNodes(node *yaml.Node, seen map[*yaml.Node]bool) error {
+	if seen[node] {
+		return nil
+	}
+	seen[node] = true
+	if node.Kind == yaml.AliasNode {
+		return validateIntegerNodes(node.Alias, seen)
+	}
+	if node.Kind == yaml.MappingNode {
+		for i := 0; i < len(node.Content); i += 2 {
+			key, value := node.Content[i], node.Content[i+1]
+			if key.Kind == yaml.AliasNode {
+				key = key.Alias
+			}
+			if key.Value != "storage_gib" && key.Value != "replicas" {
+				continue
+			}
+			if value.Kind == yaml.AliasNode {
+				value = value.Alias
+			}
+			if value.Kind != yaml.ScalarNode || value.ShortTag() != "!!int" {
+				return fmt.Errorf("%s must be a YAML integer", key.Value)
+			}
+		}
+	}
+	for _, child := range node.Content {
+		if err := validateIntegerNodes(child, seen); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (c Config) Validate() error {

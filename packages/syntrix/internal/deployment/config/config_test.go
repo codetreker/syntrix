@@ -64,6 +64,46 @@ func TestLoadPreservesReadErrorWithoutCredentialDisclosure(t *testing.T) {
 	assert.NotContains(t, err.Error(), "secret-password")
 }
 
+func TestLoadRequiresIntegerSyntaxForReplicasAndStorage(t *testing.T) {
+	data, err := yaml.Marshal(validConfig("standalone"))
+	require.NoError(t, err)
+	base := string(data)
+	for _, field := range []string{"replicas", "storage_gib"} {
+		old := "replicas: 1"
+		if field == "storage_gib" {
+			old = "storage_gib: 10"
+		}
+		for _, value := range []string{"1.5", "-0.5", "1.0", "1e0", `"1"`, "true", "null", "[1]"} {
+			t.Run(field+"/"+value, func(t *testing.T) {
+				_, err := Load(strings.NewReader(strings.Replace(base, old, field+": "+value, 1)))
+				require.ErrorContains(t, err, field+" must be a YAML integer")
+			})
+		}
+	}
+	for _, integer := range []string{"1", "!!int 1", "0x1", "0o1", "+1"} {
+		_, err := Load(strings.NewReader(strings.Replace(base, "replicas: 1", "replicas: "+integer, 1)))
+		require.NoError(t, err, integer)
+	}
+	for _, malformed := range []string{
+		strings.Replace(base, "replicas: 1", "<<: {replicas: 1.5}", 1),
+		strings.Replace(strings.Replace(base, "image: syntrix:development", "image: &fraction 1.5", 1), "replicas: 1", "replicas: *fraction", 1),
+		strings.Replace(strings.Replace(base, "image: syntrix:development", "image: &fraction -0.5", 1), "replicas: 1", "replicas: *fraction", 1),
+		strings.Replace(strings.Replace(base, "image: syntrix:development", "image: &replica-field replicas", 1), "replicas: 1", "*replica-field : 1.5", 1),
+	} {
+		_, err := Load(strings.NewReader(malformed))
+		require.ErrorContains(t, err, "replicas must be a YAML integer")
+	}
+	_, err = Load(strings.NewReader(strings.Replace(strings.Replace(base, "image: syntrix:development", "image: &fraction 1.5", 1), "storage_gib: 10", "storage_gib: *fraction", 1)))
+	require.ErrorContains(t, err, "storage_gib must be a YAML integer")
+	for _, valid := range []string{
+		strings.Replace(base, "replicas: 1", "<<: {replicas: 1}", 1),
+		strings.Replace(strings.Replace(base, "storage_gib: 10", "storage_gib: &integer 1", 1), "replicas: 1", "replicas: *integer", 1),
+	} {
+		_, err := Load(strings.NewReader(valid))
+		require.NoError(t, err)
+	}
+}
+
 func TestConfigValidation(t *testing.T) {
 	tests := []struct {
 		name   string
