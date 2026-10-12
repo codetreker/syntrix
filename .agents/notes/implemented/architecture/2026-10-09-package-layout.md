@@ -19,6 +19,7 @@ Each component owns its sources, dependencies, and build configuration under
 | `packages/syntrix/` | Go server, CLI, benchmark, protocol definitions, runtime configuration, integration tests, and Go tooling |
 | `packages/sdks/client-ts/` | TypeScript client SDK and its build, test, and packaging scripts |
 | `packages/console-server/` | Independent developer Console Go module, PostgreSQL source data, and Kubernetes test-workload provisioning |
+| `packages/console-client/` | Independent React/Lingui developer login/shell, package checks, and static web image |
 | `packages/examples/realtime-demo/` | Browser replica demonstration |
 
 Repository infrastructure, shared maintenance scripts, workflows, documentation,
@@ -49,7 +50,12 @@ The earlier layout included an embedded administration SPA whose frontend build
 was separate from the Go server. The [Console server decision](2026-10-11-console-server-postgres-kubernetes.md)
 replaces that package and static route with a separate developer Go module.
 Console owns its build/test/configuration and uses separate PostgreSQL source
-data; no combined frontend/runtime artifact remains. The [rejected build
+data; no combined frontend/runtime artifact remains. The [Console client
+decision](2026-10-12-console-client-session-and-distribution.md) delivers a sibling
+frontend package with its own pnpm lockfile, Bun scripts, and static image. Its
+same-origin proxy forwards auth/API traffic to the API-only Go service; neither
+Go build reads sibling assets nor frontend build produces an instance artifact.
+The [rejected build
 proposal](../../rejected/process/2026-09-07-console-build-delivery.md) preserves
 the former distribution concern.
 

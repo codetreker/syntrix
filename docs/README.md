@@ -35,6 +35,7 @@ syntrix/
 │   │   └── Makefile         # Go build, test, coverage, and generation targets
 │   ├── sdks/client-ts/      # TypeScript SDK
 │   ├── console-server/      # Developer Console backend and Kubernetes provisioning
+│   ├── console-client/      # Bilingual developer login/shell and static distribution
 │   └── examples/realtime-demo/ # Browser replica example
 ├── deployment/              # Development and CI infrastructure
 ├── scripts/                 # Repository maintenance helpers
@@ -91,12 +92,19 @@ The [Console server](../packages/console-server/README.md) runs separately from 
 instance runtime. Its PostgreSQL owns developer accounts, sessions, workload
 ownership, accepted deployment intent, template snapshots, and operation records.
 Its API currently creates, observes, and deletes predefined Kubernetes HTTP test
-workloads. Full Syntrix bundles and a browser UI remain target work; the former
-embedded administration frontend and Gateway static route are removed.
+workloads. The independent [Console client](../packages/console-client/README.md)
+delivers bilingual developer login, session restoration, logout, and an
+authenticated Overview. Workload administration pages and full Syntrix bundles
+remain target work. The former embedded administration frontend and Gateway
+static route are removed.
 
 Local deployment uses an operator-provided Kubernetes cluster, such as k3d, with
 an explicit kubeconfig/context and configured namespace. Console does not manage
-cluster installation or lifecycle. See the [Console design](design/server/console/01.console.md)
+cluster installation or lifecycle. Browser development uses a fixed
+`http://localhost:5173` origin with a same-origin proxy to backend 8090; set
+backend `server.public_origin` to that browser origin. Production static delivery
+preserves the same cookie/Origin/CSRF contract behind the public HTTPS origin.
+See the [Console design](design/server/console/01.console.md)
 and [API reference](reference/console_api.md).
 
 ## Validation
@@ -114,12 +122,23 @@ These commands cover Go packages, including integration tests that require the
 configured infrastructure. The [pipeline environment](../deployment/pipeline/README.md)
 describes those services and the CI checks. SDK build scripts live in its
 `package.json`; the SDK uses pnpm for locked dependencies and Bun for scripts.
-The demo uses Bun. Console owns separate Go build/test/coverage targets.
+The demo uses Bun. Console client owns pnpm-locked dependencies and Bun scripts
+for catalogs, types, behavior/coverage checks, and production builds. Console
+server owns separate Go build/test/coverage targets.
 Its `make test` and `make coverage` share an enforced go-cov gate: total 90%,
 package 85%, function 80%, race detection, and critical uncovered-block checks.
 Provide `CONSOLE_TEST_POSTGRES_DSN` for that gate; the
 [Console README](../packages/console-server/README.md) owns database setup and
 commands. These checks run regardless of the ambient `CI` setting.
+
+From `packages/console-client`, install with `pnpm install --frozen-lockfile`
+and run `bun run check` for translation, type, behavior/coverage, and build gates.
+`bun run test:browser` separately exercises real account flows against dedicated
+PostgreSQL and the built same-origin web distribution.
+`bun run test:browser:cleanup` verifies SIGTERM stops acquisition descendants
+and prevents late resources after the nested run exits. Its
+[README](../packages/console-client/README.md) owns fixture/browser prerequisites;
+mockup evidence does not establish real-cookie or HTTPS acceptance.
 
 `make -C packages/syntrix coverage` reports coverage. Setting `CI=true` also
 enables race detection and enforces the CI coverage thresholds.

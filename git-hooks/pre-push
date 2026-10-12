@@ -15,7 +15,8 @@ trap 'rm -f "$COVERAGE_OUTPUT"' EXIT
 # Run module coverage and capture output
 if ! (
     make -C "$PROJECT_ROOT/packages/syntrix" coverage &&
-    make -C "$PROJECT_ROOT/packages/console-server" coverage
+    make -C "$PROJECT_ROOT/packages/console-server" coverage &&
+    (cd "$PROJECT_ROOT/packages/console-client" && bun run check)
 ) 2>&1 | tee "$COVERAGE_OUTPUT"; then
     echo ""
     echo "Push rejected: Tests failed"

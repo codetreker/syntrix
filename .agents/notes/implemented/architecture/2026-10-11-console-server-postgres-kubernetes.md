@@ -23,6 +23,9 @@ An independent Go module at `packages/console-server` serves developers.
 The old `packages/console` frontend and Gateway static route are removed.
 Module configurations own their types, defaults, and validation; the root loader
 composes them. Instance runtime APIs and end-user Identity remain separate.
+The later [Console client decision](2026-10-12-console-client-session-and-distribution.md)
+adds an independent bilingual login/shell and static image without changing this
+backend's authentication endpoints, PostgreSQL authority, or API-only build.
 
 Console has its own PostgreSQL database. It is authoritative for developer IDs
 and password hashes, opaque sessions and CSRF state, resource ownership, desired
@@ -131,9 +134,11 @@ Console's request lifecycle. Adding Management will require its deployment and
 permission configuration; the separate provisioning adapter preserves that
 choice without changing developer accounts or accepted workload records.
 
-OAuth login, self-service profiles, UI, project realms, instance administration,
-and employee Management remain substantive follow-on work in the existing
-Console/boundary proposals. Stable developer IDs preserve ownership when account
+OAuth login, self-service profiles, resource-administration UI, project realms,
+full instance administration, and employee Management remain substantive
+follow-on work in the existing Console/boundary proposals. The independent
+client now provides login, session restoration, logout, and Overview; it does
+not expose workload administration. Stable developer IDs preserve ownership when account
 flows are expanded; separate provisioning modules avoid moving developer source
 data into Management. UI work requires final-style interactive mockups and must
 use server-validated authority. No instance application token grants Console

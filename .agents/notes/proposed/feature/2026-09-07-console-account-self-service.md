@@ -10,8 +10,9 @@ and [boundary decision](../architecture/2026-10-10-platform-console-instance-bou
 separate those developer accounts from platform employees and application
 end users. Console now has configured developer accounts, PostgreSQL password
 hashes and opaque sessions, plus an authenticated current-account read. It has
-no profile page or profile-update/credential-change API; the old instance
-administration frontend has been removed.
+a bilingual developer login/Overview shell but no profile page or
+profile-update/credential-change API; the old instance administration frontend
+has been removed.
 
 The [Console design](../../../../docs/design/server/console/01.console.md) owns the
 separate developer service. Profile self-service requires an authoritative
