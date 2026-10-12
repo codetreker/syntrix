@@ -161,5 +161,10 @@ The templates expose ClusterIP application/internal service access. Public TLS
 ingress, source-database backups/lifecycle, sharding, rule distribution, and trigger
 durability remain outside the delivered deployment guarantees. Configurable
 replicas do not establish those mechanisms. Console-managed full-instance
-provisioning and fleet operations remain owned by the
+provisioning is planned in the
+[Console instance-lifecycle proposal](../../proposed/architecture/2026-10-12-console-instance-lifecycle.md),
+which owns future backend allocation, runtime-renderer integration, and explicit
+shared-account broker isolation. Those mechanisms are not delivered by these
+templates; the current dedicated NATS server/account requirement remains in
+effect. Employee fleet operations and project Identity retain the
 [platform-boundary proposal](../../proposed/architecture/2026-10-10-platform-console-instance-boundaries.md).

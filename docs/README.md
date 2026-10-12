@@ -14,8 +14,12 @@ databases.
 
 Instance PostgreSQL is private system storage for projects, application users,
 OAuth and session state, and logical-database configuration. MongoDB stores
-developer business documents. The architecture's implementation-status table
-distinguishes this accepted target from current runtime accounts, schemas, APIs,
+developer business documents. Private per-instance databases and scoped
+credentials may use shared database servers. The planned
+[Console instance lifecycle](design/server/console/03.instance_lifecycle.md)
+allocates those databases and distributed trigger artifacts from
+administrator-registered infrastructure. The architecture's implementation-status
+table distinguishes this accepted target from current runtime accounts, schemas, APIs,
 and the Console test-workload service.
 
 ## Project Structure
@@ -105,9 +109,14 @@ ownership, accepted deployment intent, template snapshots, and operation records
 Its API currently creates, observes, and deletes predefined Kubernetes HTTP test
 workloads. The independent [Console client](../packages/console-client/README.md)
 delivers bilingual developer login, session restoration, logout, and an
-authenticated Overview. Workload administration pages and Console-managed full
-Syntrix bundles remain target work. The former embedded administration frontend and Gateway
-static route are removed.
+authenticated Overview. Workload administration pages and Console-managed
+instances remain target work. The
+[managed-instance design and task sequence](design/server/console/03.instance_lifecycle.md)
+cover administrator-registered shared MongoDB/PostgreSQL/NATS, private database
+allocation, runtime lifecycle, revisioned configuration, and bilingual instance
+UI in five implementation PRs. Database/NATS server deployment, employee
+Management, and project/OAuth capabilities retain separate scope. The former
+embedded administration frontend and Gateway static route are removed.
 
 Local deployment uses an operator-provided Kubernetes cluster, such as k3d, with
 an explicit kubeconfig/context and configured namespace. Console does not manage
@@ -159,6 +168,7 @@ enables race detection and enforces the CI coverage thresholds.
 - [Platform Architecture and Implementation Status](architecture.md)
 - [Syntrix Container, Kubernetes Templates, and Manifest Generation](../packages/syntrix/deployment/README.md)
 - [Developer Console](design/server/console/01.console.md)
+- [Console Managed-Instance Lifecycle and Implementation Tasks](design/server/console/03.instance_lifecycle.md)
 - [Employee Management Platform](design/server/console/02.control_plane.md)
 - [Instance Identity](design/server/core/identity/01.architecture.md)
 - [Gateway Document Authorization](design/server/gateway/authorization.md)

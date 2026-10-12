@@ -4,8 +4,13 @@ The independent developer Console browser application provides username/password
 login, session restoration, logout, and an authenticated Overview in English and
 Simplified Chinese. It uses the existing [Console server](../console-server/README.md)
 cookie API. Instance end users and Management employees are separate account
-domains. Workload administration, full instance provisioning, project pages,
+domains. Workload administration, managed instance lifecycle, project pages,
 OAuth, registration, profile editing, and theme switching are future capabilities.
+The planned [managed-instance design](../../docs/design/server/console/03.instance_lifecycle.md)
+owns the bilingual instance UI, final-component interactive mockups, and
+real shared-backend browser acceptance. Its instance UI selects a name, mode,
+profile, and allowed origins; administrators own backend servers and privileged
+credentials. The current mockup and checks below cover the delivered login/shell.
 
 ## Local Development
 

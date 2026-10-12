@@ -6,6 +6,10 @@ Standalone and distributed templates connect to existing databases; the
 values. The [platform architecture](../../../docs/architecture.md) keeps these
 operator-managed runtime resources separate from developer Console and employee
 Management. Console's API continues to provision predefined HTTP test workloads.
+The planned [managed-instance lifecycle](../../../docs/design/server/console/03.instance_lifecycle.md)
+will reuse the renderer contract to allocate private databases on registered
+shared infrastructure and reconcile complete runtime bundles. It does not
+provision MongoDB, PostgreSQL, or NATS server Pods.
 
 ## Templates and requirements
 
@@ -25,7 +29,10 @@ Generated configurations use the runtime-default `TRIGGERS` stream and subject
 prefix with durable consumer `consumer`. `namespace` and `name_prefix` rename
 Kubernetes resources; they do not isolate broker delivery or source data. Database
 installation, source persistence, backups, and cluster lifecycle remain
-operator-owned.
+operator-owned. The planned managed mode uses per-instance stream, subject,
+and consumer names in a shared NATS account, with all workers of one instance
+sharing one consumer. It requires runtime and renderer changes; the current
+operator templates retain the isolated-account requirement above.
 
 Claims use `ReadWriteOnce`. An empty `storage_class` selects the cluster default;
 `storage_gib` sets each claim's requested capacity. Distributed bootstrap must

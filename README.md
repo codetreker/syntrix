@@ -22,9 +22,12 @@ session restoration, and logout; resource-administration pages remain target wor
 The [instance deployment](packages/syntrix/deployment/README.md) supplies a separate
 container, standalone/distributed Kubernetes templates, and a configuration-driven
 manifest generator. They connect to existing MongoDB and PostgreSQL; distributed
-Trigger transport additionally requires existing NATS JetStream. Console-managed
-full-instance provisioning, employee Management, project Identity, and OAuth
-remain target work.
+Trigger transport additionally requires existing NATS JetStream. The planned
+[Console instance lifecycle](docs/design/server/console/03.instance_lifecycle.md)
+allocates private databases and scoped accounts on administrator-configured shared
+servers, manages per-instance artifacts on a shared NATS account, and delivers
+instance administration through five implementation PRs. Employee Management,
+project Identity, and OAuth remain separate target work.
 See the [Console client](packages/console-client/README.md) for browser development
 and static distribution, and the [Console server](packages/console-server/README.md)
 for backend configuration and operating commands.

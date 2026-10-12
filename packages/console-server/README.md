@@ -11,7 +11,8 @@ The [API reference](../../docs/reference/console_api.md) owns requests and respo
 Use Go 1.25 or later, a dedicated PostgreSQL database, and a Kubernetes cluster
 with a working pod network and image registry access. The maintainer prepares
 the local k3d cluster. This package does not create, stop or delete clusters.
-Its database is separate from every instance's private system PostgreSQL.
+Its physical database and privileges are separate from every instance's private
+system PostgreSQL database; they may use the same PostgreSQL server.
 
 ```bash
 make -C packages/console-server build
@@ -179,5 +180,12 @@ curl --fail http://localhost:18080/
 ClusterIP DNS is internal to Kubernetes. Deleting a workload through Console
 persists cleanup intent; poll until `deleted`. Deleted records and idempotency
 keys remain in PostgreSQL and continue to be reconciled for late remote effects.
-The service does not provision full Syntrix instances,
-OAuth, projects or employee Management yet.
+The service does not provision managed Syntrix instances, OAuth, projects, or
+employee Management yet. The planned
+[managed-instance lifecycle](../../docs/design/server/console/03.instance_lifecycle.md)
+owns administrator registration of shared MongoDB/PostgreSQL/NATS servers,
+private database and scoped credential allocation, runtime lifecycle, revisioned
+configuration, and the five-PR implementation sequence. It allocates database
+namespaces and trigger artifacts, without deploying database or NATS servers.
+Current configuration and API examples above describe only the delivered
+test-workload service.
