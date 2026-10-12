@@ -5,8 +5,9 @@ Status: proposed
 ## Problem
 
 The existing account, console, and database descriptions use `user`, `admin`,
-`management`, and `database` for several different authority domains. The runtime
-has a global user model and an embedded administration frontend. Those facts
+`management`, and `database` for several different authority domains. The
+instance runtime has a global user model. The former embedded administration frontend did not
+provide separate developer authority and has been removed. Those runtime facts
 do not define employee platform accounts, developer accounts, or application
 end-user realms. Treating them as one domain would give application roles
 platform meaning and confuse private system records with developer documents.
@@ -14,8 +15,10 @@ platform meaning and confuse private system records with developer documents.
 ## Proposal
 
 The [platform architecture](../../../../docs/architecture.md) owns the accepted
-target model. This note remains proposed because the runtime and deployment
-separation has not been implemented.
+target model. This note remains proposed for employee Management, full instance
+provisioning, project realms, and OAuth. The [Console implementation](../../implemented/architecture/2026-10-11-console-server-postgres-kubernetes.md)
+owns the delivered independent developer backend, PostgreSQL source data, opaque
+sessions, and predefined Kubernetes test workloads.
 
 - The Management platform serves Syntrix employees and owns whole-platform
   scheduling, resource operations, monitoring, and administration.
@@ -61,8 +64,9 @@ their business documents. System records are reached through authorized system
 operations, not application document APIs.
 
 Management and Console have their own platform/developer account and inventory
-ownership. Their backend choices remain open. Neither adopts a developer
-instance's PostgreSQL as global platform authority. The
+ownership. Console uses independent PostgreSQL source data, while the Management
+backend remains unchosen. Neither adopts a developer instance's PostgreSQL as
+global platform authority. The
 [cluster-control proposal](2026-09-07-cluster-control-plane.md) owns membership,
 leases, fencing, and configuration reconciliation within the Management domain.
 
@@ -105,16 +109,19 @@ account sharing would require an explicit separate contract.
 - Database deletion, project deletion, and instance deletion have separate
   scopes. Deleting one project database does not delete users still belonging
   to the project.
-- Current embedded console, global accounts, JWT endpoints, and Mongo revocation
-  are documented as current implementation facts, not the completed target.
+- Console developer accounts and test-workload operations are documented as
+  implemented, while full instance provisioning and Management remain target work.
+  Runtime-global accounts, JWT endpoints, and Mongo revocation do not imply
+  project realms; the removed embedded frontend is not a supported interface.
 
 ## Risks
 
-The current account model cannot identify the three domains through role names
-alone. Implementation needs an explicit account classification, project binding,
-and session transition. Metadata IDs and data namespaces cannot be rewritten
-silently during extraction. Existing business references and SDK replica identity
-must be accounted for by the migration design.
+Runtime-global roles do not identify project realms. Project binding and session
+authority require explicit new contracts. Console developers are independently
+identified in Console PostgreSQL; no runtime account mapping makes them developers.
+The approved upgrade policy allows destructive changes without legacy-data
+migration or compatibility. Existing database namespace/SDK semantics describe
+current APIs and must not be claimed as project isolation.
 
 Identity's current repository/runtime ownership preserves initialization,
 borrowed-connection lifetime, and capability behavior. Until verification-key
@@ -124,9 +131,11 @@ keys despite the verifier object's public-only ownership. Project/session/OAuth
 work must adopt those boundaries without reintroducing signing access into
 verification-only consumers.
 
-Provisioning, deletion coordination, public issuer configuration, token
-revocation deadlines, platform storage backends, and service-to-service
-authorization require further design. These open mechanisms do not change the
+Full Syntrix provisioning, whole-instance deletion coordination, public issuer
+configuration, token revocation deadlines, Management storage, and inter-service
+authorization require further design. Console's persisted intent/UID-checked
+Kubernetes test-workload lifecycle does not establish these full-instance
+contracts. These open mechanisms do not change the
 accepted actor, ownership, project, or database boundaries.
 
 The [reference-alignment proposal](../process/2026-09-07-reference-contract-alignment.md)

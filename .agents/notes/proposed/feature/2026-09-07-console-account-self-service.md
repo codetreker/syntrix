@@ -8,9 +8,10 @@ Developers need to inspect and maintain their own account profile while managing
 owned Syntrix instances. The [system architecture](../../../../docs/architecture.md)
 and [boundary decision](../architecture/2026-10-10-platform-console-instance-boundaries.md)
 separate those developer accounts from platform employees and application
-end users. The current embedded instance administration frontend has no account
-page and derives identity from current runtime token claims. Its unused profile
-API declaration does not provide a developer account backend.
+end users. Console now has configured developer accounts, PostgreSQL password
+hashes and opaque sessions, plus an authenticated current-account read. It has
+no profile page or profile-update/credential-change API; the old instance
+administration frontend has been removed.
 
 The [Console design](../../../../docs/design/server/console/01.console.md) owns the
 separate developer service. Profile self-service requires an authoritative
@@ -27,10 +28,10 @@ ownership/delegation grants, account enablement, hashes, and credential material
 are outside profile writes.
 
 Specify field validation, update concurrency, and persistence semantics with the
-backend contract. Refresh displayed state from successful responses. Failed or
+Console PostgreSQL backend contract. Refresh displayed state from successful responses. Failed or
 conflicting writes retain draft fields and expose actionable errors. Token
-claims identify a session rather than a mutable profile database. Any persisted
-schema transition requires an explicit migration.
+claims identify a session rather than a mutable profile database. Schema upgrades may be destructive under the approved upgrade policy; no legacy
+profile migration is required.
 
 Developer credential change belongs to the developer account authority and must
 specify verification and session invalidation. Application end-user password
@@ -73,6 +74,6 @@ operation. The instance password proposal owns application credentials only.
 
 Permissive profile payloads can expose privileged grants. Explicit field ownership,
 principal-derived account selection, and server authorization are required.
-The current embedded frontend and runtime-global user model do not supply the
-separate Console account authority; its persistence backend remains a separate
-design decision.
+Console PostgreSQL supplies independent account authority, while current
+instance users remain runtime-global. Bootstrap credentials do not provide
+self-service updates or define their session invalidation semantics.

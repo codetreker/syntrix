@@ -2,11 +2,8 @@ package gateway
 
 import (
 	"context"
-	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"testing"
 
 	"github.com/codetreker/syntrix/internal/core/database"
@@ -237,69 +234,6 @@ func TestServer_SetAuthRateLimiter(t *testing.T) {
 	limiter := &stubRateLimiter{allowResult: true}
 	// Should not panic
 	server.SetAuthRateLimiter(limiter, 60000000000)
-}
-
-func TestServer_RegisterRoutes_Console(t *testing.T) {
-	tmpDir := t.TempDir()
-	serverDir := filepath.Join(tmpDir, "syntrix")
-	assert.NoError(t, os.Mkdir(serverDir, 0o755))
-	distDir := filepath.Join(tmpDir, "console", "dist")
-	assetsDir := filepath.Join(distDir, "assets")
-	assert.NoError(t, os.MkdirAll(assetsDir, 0o755))
-	assert.NoError(t, os.WriteFile(filepath.Join(distDir, "index.html"), []byte(`<!DOCTYPE html><html><body>SPA</body></html>`), 0o644))
-	assert.NoError(t, os.WriteFile(filepath.Join(assetsDir, "app.js"), []byte(`console.log("app")`), 0o644))
-
-	t.Chdir(serverDir)
-
-	mockQuery := new(MockQueryService)
-	mockAuth := new(MockAuthService)
-	mockAuthz := new(MockAuthzEngine)
-
-	server, err := NewServer(mockQuery, mockAuth, mockAuth, mockAuthz, nil)
-	assert.NoError(t, err)
-
-	mux := http.NewServeMux()
-	server.RegisterRoutes(mux)
-
-	t.Run("serves index.html at root", func(t *testing.T) {
-		req := httptest.NewRequest("GET", "/console/", nil)
-		w := httptest.NewRecorder()
-		mux.ServeHTTP(w, req)
-
-		assert.Equal(t, http.StatusOK, w.Code)
-		body, _ := io.ReadAll(w.Result().Body)
-		assert.Contains(t, string(body), "SPA")
-	})
-
-	t.Run("serves real static file", func(t *testing.T) {
-		req := httptest.NewRequest("GET", "/console/assets/app.js", nil)
-		w := httptest.NewRecorder()
-		mux.ServeHTTP(w, req)
-
-		assert.Equal(t, http.StatusOK, w.Code)
-		body, _ := io.ReadAll(w.Result().Body)
-		assert.Contains(t, string(body), `console.log("app")`)
-	})
-
-	t.Run("SPA fallback for non-existent path", func(t *testing.T) {
-		req := httptest.NewRequest("GET", "/console/databases", nil)
-		w := httptest.NewRecorder()
-		mux.ServeHTTP(w, req)
-
-		assert.Equal(t, http.StatusOK, w.Code)
-		body, _ := io.ReadAll(w.Result().Body)
-		assert.Contains(t, string(body), "SPA")
-	})
-
-	t.Run("SPA fallback for deep non-existent path", func(t *testing.T) {
-		req := httptest.NewRequest("GET", "/console/nonexistent/deep/path", nil)
-		w := httptest.NewRecorder()
-		mux.ServeHTTP(w, req)
-
-		assert.Equal(t, http.StatusOK, w.Code)
-		body, _ := io.ReadAll(w.Result().Body)
-		assert.Contains(t, string(body), "SPA")
-	})
 }
 
 // stubDatabaseService is a minimal stub implementing database.Service

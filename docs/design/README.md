@@ -11,7 +11,7 @@ and currently implemented contracts.
 | Subject | Owner |
 |---|---|
 | Employees, developers, end users; Management, Console, instances | [Platform Architecture](../architecture.md) |
-| Developer-facing Console and its current embedded UI | [Console design](server/console/01.console.md) |
+| Developer Console authentication, PostgreSQL source data, and Kubernetes test workloads | [Console design](server/console/01.console.md) |
 | Employee-facing Management platform | [Management design](server/console/02.control_plane.md) |
 | Runtime services within one Syntrix instance | [Instance architecture](server/01.architecture.md) |
 | Identity contracts and target project end-user realms, OAuth/OIDC, external login | [Identity design](server/core/identity/01.architecture.md) |
@@ -22,8 +22,9 @@ and currently implemented contracts.
 A developer can own multiple instances. Every instance owns its projects, and a
 project has one isolated Identity realm and can use multiple logical Syntrix
 databases. Employee, developer, and application-user authority remain distinct.
-The source package layout does not prove these service separations are already
-implemented; the platform document's status table identifies the current gaps.
+Console's separate backend and developer accounts are implemented; full instance
+provisioning, Management, and project realms remain target work. The platform
+status table identifies these gaps independently of source-package locations.
 
 ## Writing and Decision Ownership
 

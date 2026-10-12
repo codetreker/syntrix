@@ -1,0 +1,4 @@
+bin
+console-server
+coverage.out
+configs/config.local.yml

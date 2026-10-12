@@ -16,7 +16,7 @@ Instance PostgreSQL is private system storage for projects, application users,
 OAuth and session state, and logical-database configuration. MongoDB stores
 developer business documents. The architecture's implementation-status table
 distinguishes this accepted target from current runtime accounts, schemas, APIs,
-and the embedded administration UI.
+and the Console test-workload service.
 
 ## Project Structure
 
@@ -34,7 +34,7 @@ syntrix/
 │   │   ├── go.mod           # Go module dependencies
 │   │   └── Makefile         # Go build, test, coverage, and generation targets
 │   ├── sdks/client-ts/      # TypeScript SDK
-│   ├── console/             # Current instance administration frontend
+│   ├── console-server/      # Developer Console backend and Kubernetes provisioning
 │   └── examples/realtime-demo/ # Browser replica example
 ├── deployment/              # Development and CI infrastructure
 ├── scripts/                 # Repository maintenance helpers
@@ -42,8 +42,9 @@ syntrix/
 └── .agents/                 # Repository skills and decision notes
 ```
 
-Packages own their build configuration and dependency manifests. The Go module
-is `github.com/codetreker/syntrix`, and the SDK package is `@syntrixbase/client`.
+Packages own their build configuration and dependency manifests. The instance Go module
+is `github.com/codetreker/syntrix`; Console owns an independent Go module and the
+SDK package is `@syntrixbase/client`.
 The [package layout decision](../.agents/notes/implemented/architecture/2026-10-09-package-layout.md)
 records the build and working-directory boundaries.
 
@@ -78,15 +79,25 @@ Service-selection flags do not override a configured standalone mode. These
 runtime modes do not describe the Management/Console/instance product layers;
 see the [deployment design](design/server/03.deployment_modes.md).
 
-Run server binaries with `packages/syntrix` as the working directory to use the
-supplied configuration, package-local data and logs, and console assets from
-`packages/console/dist`. This is the current embedded instance administration UI.
-Build it separately with `bun run build` from `packages/console` before using it.
-The [Console design](design/server/console/01.console.md) owns its relationship
-to the target developer-facing service. Configuration loads
+Run instance binaries with `packages/syntrix` as the working directory to use the
+supplied configuration and package-local data and logs. Instance configuration loads
 defaults, `configs/config.yml`, `configs/config.local.yml`, then supported
 environment overrides. Select another directory with `--config-dir` or
 `SYNTRIX_CONFIG_DIR`.
+
+## Developer Console
+
+The [Console server](../packages/console-server/README.md) runs separately from the
+instance runtime. Its PostgreSQL owns developer accounts, sessions, workload
+ownership, accepted deployment intent, template snapshots, and operation records.
+Its API currently creates, observes, and deletes predefined Kubernetes HTTP test
+workloads. Full Syntrix bundles and a browser UI remain target work; the former
+embedded administration frontend and Gateway static route are removed.
+
+Local deployment uses an operator-provided Kubernetes cluster, such as k3d, with
+an explicit kubeconfig/context and configured namespace. Console does not manage
+cluster installation or lifecycle. See the [Console design](design/server/console/01.console.md)
+and [API reference](reference/console_api.md).
 
 ## Validation
 
@@ -101,9 +112,14 @@ make -C packages/syntrix generate
 
 These commands cover Go packages, including integration tests that require the
 configured infrastructure. The [pipeline environment](../deployment/pipeline/README.md)
-describes those services and the CI checks. SDK and console build scripts live
-in their own `package.json` files. The SDK uses pnpm for its locked dependencies
-and Bun for its scripts; the console and demo use Bun.
+describes those services and the CI checks. SDK build scripts live in its
+`package.json`; the SDK uses pnpm for locked dependencies and Bun for scripts.
+The demo uses Bun. Console owns separate Go build/test/coverage targets.
+Its `make test` and `make coverage` share an enforced go-cov gate: total 90%,
+package 85%, function 80%, race detection, and critical uncovered-block checks.
+Provide `CONSOLE_TEST_POSTGRES_DSN` for that gate; the
+[Console README](../packages/console-server/README.md) owns database setup and
+commands. These checks run regardless of the ambient `CI` setting.
 
 `make -C packages/syntrix coverage` reports coverage. Setting `CI=true` also
 enables race detection and enforces the CI coverage thresholds.
@@ -119,7 +135,8 @@ enables race detection and enforces the CI coverage thresholds.
 - [Server Design](design/server/)
 - [SDK Design](design/sdk/)
 - [Monitoring Design](design/monitor/)
-- [REST API](reference/api.md)
+- [Instance REST API](reference/api.md)
+- [Console API](reference/console_api.md)
 - [Filter Syntax](reference/filters.md)
 - [Trigger Rules](reference/trigger_rules.md)
 - [TypeScript SDK](reference/typescript_sdk.md)

@@ -12,8 +12,11 @@ mkdir -p "$PROJECT_ROOT/.tmp"
 COVERAGE_OUTPUT=$(mktemp "$PROJECT_ROOT/.tmp/pre-push-coverage.XXXXXX")
 trap 'rm -f "$COVERAGE_OUTPUT"' EXIT
 
-# Run make coverage and capture output
-if ! make -C "$PROJECT_ROOT/packages/syntrix" coverage 2>&1 | tee "$COVERAGE_OUTPUT"; then
+# Run module coverage and capture output
+if ! (
+    make -C "$PROJECT_ROOT/packages/syntrix" coverage &&
+    make -C "$PROJECT_ROOT/packages/console-server" coverage
+) 2>&1 | tee "$COVERAGE_OUTPUT"; then
     echo ""
     echo "Push rejected: Tests failed"
     exit 1

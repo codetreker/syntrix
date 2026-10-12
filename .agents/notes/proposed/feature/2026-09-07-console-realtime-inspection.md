@@ -4,7 +4,14 @@ Status: proposed
 
 ## Problem
 
-The [console design](../../../../docs/design/server/console/01.console.md) specifies active subscriptions, a live event viewer, connection diagnostics, and a subscription test tool. The current [router](../../../../packages/console/src/router/index.tsx) has no realtime inspector page. SDK 的[公开 WS 入口已移除](../../../../docs/reference/typescript_sdk.md#4-realtime)，私有 replica 数据运输不提供普通订阅检查器。Operators cannot inspect the intended subscription behavior through the console. This is a planned feature gap, not evidence that existing realtime delivery fails.
+The [Console design](../../../../docs/design/server/console/01.console.md)
+retains active subscription inspection, a live event viewer, connection
+diagnostics, and a subscription test tool as future instance administration.
+The independent Console backend currently delivers no browser inspector or
+instance subscription API. The SDK's [public WebSocket entrypoint is removed](../../../../docs/reference/typescript_sdk.md#4-realtime);
+private replica transport does not provide ordinary subscription inspection.
+Developers cannot inspect the intended behavior through Console. This is a
+planned feature gap, not evidence that existing realtime delivery fails.
 
 ## Proposal
 

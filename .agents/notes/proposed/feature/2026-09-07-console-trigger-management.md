@@ -4,7 +4,13 @@ Status: proposed
 
 ## Problem
 
-The current embedded instance administration [Triggers page](../../../../packages/console/src/pages/TriggersPage.tsx) contains only `Trigger rules management coming soon...`. The [console design](../../../../docs/design/server/console/01.console.md) calls for configuration inspection, execution history, manual tests, and error logs. The current [gateway routes](../../../../packages/syntrix/internal/gateway/rest/handler.go) expose trigger document operations, not a complete trigger administration API. This is an incomplete planned capability, established through static inspection.
+Developers need configuration inspection, execution history, manual tests,
+and error logs for their instance triggers. The [Console design](../../../../docs/design/server/console/01.console.md)
+retains those requirements, but the independent backend currently handles only
+Kubernetes test-workload lifecycle and delivers no trigger administration UI.
+The current [instance Gateway routes](../../../../packages/syntrix/internal/gateway/rest/handler.go)
+expose trigger document operations, not a complete administration API. Removing
+the former placeholder page does not supply the missing operational contract.
 
 ## Proposal
 

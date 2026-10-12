@@ -53,7 +53,7 @@ budget in the product contract.
   prohibited growth until usage falls below it.
 - Restart and interrupted baseline/reconciliation cannot reset usage or report
   enforcement before a valid baseline exists.
-- Separate databases retain separate counters; the current runtime user database-count quota and deletion behavior remain explicit until a separately designed ownership migration establishes project/instance limits.
+- Separate databases retain separate counters; the current runtime user database-count quota and deletion behavior remain explicit until separately designed project ownership and quota contracts establish project/instance limits. The approved project upgrade may replace legacy state destructively without migration.
 - Rejections expose database, limit kind, revision, and measured usage without
   document contents.
 
