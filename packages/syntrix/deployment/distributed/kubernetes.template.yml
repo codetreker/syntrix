@@ -20,8 +20,10 @@ metadata:
   namespace: {{ quote $.Namespace }}
 spec:
   accessModes: [ReadWriteOnce]
-{{ if $.StorageClass }}  storageClassName: {{ quote $.StorageClass }}
-{{ end }}  resources:
+{{- if $.StorageClass }}
+  storageClassName: {{ quote $.StorageClass }}
+{{- end }}
+  resources:
     requests:
       storage: {{ $.StorageGiB }}Gi
 ---
@@ -32,8 +34,10 @@ metadata:
   namespace: {{ quote $.Namespace }}
 spec:
   accessModes: [ReadWriteOnce]
-{{ if $.StorageClass }}  storageClassName: {{ quote $.StorageClass }}
-{{ end }}  resources:
+{{- if $.StorageClass }}
+  storageClassName: {{ quote $.StorageClass }}
+{{- end }}
+  resources:
     requests:
       storage: {{ $.StorageGiB }}Gi
 {{ range .Workloads }}
@@ -77,12 +81,15 @@ spec:
   replicas: {{ .Replicas }}
   progressDeadlineSeconds: 1980
   strategy:
-{{ if or .Stateful (eq .Role "trigger_evaluator") }}    type: Recreate
-{{ else }}    type: RollingUpdate
+{{- if or .Stateful (eq .Role "trigger_evaluator") }}
+    type: Recreate
+{{- else }}
+    type: RollingUpdate
     rollingUpdate:
       maxSurge: 1
       maxUnavailable: 0
-{{ end }}  selector:
+{{- end }}
+  selector:
     matchLabels:
       app.kubernetes.io/instance: {{ quote $.NamePrefix }}
       app.kubernetes.io/name: {{ quote .Name }}
@@ -125,39 +132,56 @@ spec:
               cpu: {{ quote .Resources.Limits.CPU }}
               memory: {{ quote .Resources.Limits.Memory }}
           startupProbe:
-{{ if or (eq .Role "standalone") (eq .Role "api") }}            httpGet:
+{{- if or (eq .Role "standalone") (eq .Role "api") }}
+            httpGet:
               path: /health
               port: http
-{{ else }}            tcpSocket:
+{{- else }}
+            tcpSocket:
               port: grpc
-{{ end }}            periodSeconds: 5
+{{- end }}
+            periodSeconds: 5
             failureThreshold: 372
           readinessProbe:
-{{ if or (eq .Role "standalone") (eq .Role "api") }}            httpGet:
+{{- if or (eq .Role "standalone") (eq .Role "api") }}
+            httpGet:
               path: /health
               port: http
-{{ else }}            tcpSocket:
+{{- else }}
+            tcpSocket:
               port: grpc
-{{ end }}          livenessProbe:
-{{ if or (eq .Role "standalone") (eq .Role "api") }}            httpGet:
+{{- end }}
+          livenessProbe:
+{{- if or (eq .Role "standalone") (eq .Role "api") }}
+            httpGet:
               path: /health
               port: http
-{{ else }}            tcpSocket:
+{{- else }}
+            tcpSocket:
               port: grpc
-{{ end }}          volumeMounts:
+{{- end }}
+          volumeMounts:
             - name: config
               mountPath: /etc/syntrix
               readOnly: true
             - name: data
               mountPath: /data
-{{ if .Stateful }}            - name: persistent
-              mountPath: {{ if eq .Role "puller" }}"/data/puller"{{ else }}"/data/indexer"{{ end }}
-{{ end }}            - name: temporary
+{{- if .Stateful }}
+            - name: persistent
+{{- if eq .Role "puller" }}
+              mountPath: "/data/puller"
+{{- else }}
+              mountPath: "/data/indexer"
+{{- end }}
+{{- end }}
+            - name: temporary
               mountPath: /tmp
-{{ if .HasKey }}            - name: signing-key
+{{- if .HasKey }}
+            - name: signing-key
               mountPath: /etc/syntrix/keys
               readOnly: true
-{{ end }}      volumes:
+{{- end }}
+      volumes:
         - name: config
           projected:
             sources:
@@ -179,12 +203,15 @@ spec:
                       path: config.local.yml
         - name: data
           emptyDir: {}
-{{ if .Stateful }}        - name: persistent
+{{- if .Stateful }}
+        - name: persistent
           persistentVolumeClaim:
             claimName: {{ quote .PVCName }}
-{{ end }}        - name: temporary
+{{- end }}
+        - name: temporary
           emptyDir: {}
-{{ if .HasKey }}        - name: signing-key
+{{- if .HasKey }}
+        - name: signing-key
           secret:
             secretName: {{ quote $.SigningKeySecret }}
             defaultMode: 0440
@@ -192,7 +219,8 @@ spec:
               - key: auth_private.pem
                 path: auth_private.pem
 {{ end }}
-{{ if or (eq .Role "standalone") (eq .Role "api") (eq .Role "query") (eq .Role "indexer") (eq .Role "puller") (eq .Role "streamer") }}---
+{{ if or (eq .Role "standalone") (eq .Role "api") (eq .Role "query") (eq .Role "indexer") (eq .Role "puller") (eq .Role "streamer") -}}
+---
 apiVersion: v1
 kind: Service
 metadata:
@@ -203,13 +231,16 @@ spec:
     app.kubernetes.io/instance: {{ quote $.NamePrefix }}
     app.kubernetes.io/name: {{ quote .Name }}
   ports:
-{{ if or (eq .Role "standalone") (eq .Role "api") }}    - name: http
+{{- if or (eq .Role "standalone") (eq .Role "api") }}
+    - name: http
       port: 8080
       targetPort: http
-{{ else }}    - name: grpc
+{{- else }}
+    - name: grpc
       port: 9000
       targetPort: grpc
-{{ end }}{{ end }}
+{{ end }}
+{{- end }}
 {{ end }}
 {{ if .Bootstrap }}
 ---
@@ -302,10 +333,12 @@ spec:
           mountPath: /data/indexer
         - name: temporary
           mountPath: /tmp
-{{ if .SigningKeySecret }}        - name: signing-key
+{{- if .SigningKeySecret }}
+        - name: signing-key
           mountPath: /etc/syntrix/keys
           readOnly: true
-{{ end }}  volumes:
+{{- end }}
+  volumes:
     - name: config
       projected:
         sources:
@@ -335,7 +368,8 @@ spec:
         claimName: {{ quote .IndexerPVCName }}
     - name: temporary
       emptyDir: {}
-{{ if .SigningKeySecret }}    - name: signing-key
+{{- if .SigningKeySecret }}
+    - name: signing-key
       secret:
         secretName: {{ quote $.SigningKeySecret }}
         defaultMode: 0440
