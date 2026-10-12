@@ -208,9 +208,15 @@ func (s *serverImpl) securityHeadersMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-// rateLimitMiddleware applies rate limiting based on client IP.
+// rateLimitMiddleware applies application rate limiting based on client IP.
 func (s *serverImpl) rateLimitMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Health probes must remain available when clients exhaust a shared IP budget.
+		if r.URL.Path == "/health" && (r.Method == http.MethodGet || r.Method == http.MethodHead) {
+			next.ServeHTTP(w, r)
+			return
+		}
+
 		key := ratelimit.GetClientIP(r)
 
 		if !s.rateLimiter.Allow(key) {

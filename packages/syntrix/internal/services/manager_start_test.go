@@ -18,6 +18,7 @@ import (
 	"github.com/codetreker/syntrix/internal/identity"
 	"github.com/codetreker/syntrix/internal/indexer"
 	indexer_config "github.com/codetreker/syntrix/internal/indexer/config"
+	"github.com/codetreker/syntrix/internal/indexer/store"
 	"github.com/codetreker/syntrix/internal/puller"
 	puller_config "github.com/codetreker/syntrix/internal/puller/config"
 	"github.com/codetreker/syntrix/internal/puller/events"
@@ -28,8 +29,11 @@ import (
 	"github.com/codetreker/syntrix/pkg/model"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 	"go.mongodb.org/mongo-driver/mongo"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 type MockQueryService struct {
@@ -162,6 +166,100 @@ func TestManager_Start_PullerAndGRPC(t *testing.T) {
 	mgr.Shutdown(context.Background())
 
 	assert.Equal(t, int32(1), pullerSvc.startCount.Load())
+}
+
+func TestManager_Start_PropagatesSynchronousFailures(t *testing.T) {
+	previousServer := server.Default()
+	server.SetDefault(nil)
+	t.Cleanup(func() { server.SetDefault(previousServer) })
+	for _, component := range []string{"Puller", "Indexer"} {
+		for _, failure := range []error{
+			context.DeadlineExceeded,
+			context.Canceled,
+			status.Error(codes.FailedPrecondition, "resume boundary expired"),
+		} {
+			t.Run(component+"/"+failure.Error(), func(t *testing.T) {
+				var calls []string
+				p := &bootstrapPuller{calls: &calls}
+				i := &bootstrapIndexer{calls: &calls}
+				if component == "Puller" {
+					p.startErr = failure
+				} else {
+					i.startErr = failure
+				}
+				worker := &mockDeletionWorker{}
+				mgr := &Manager{pullerService: p, indexerService: i, deletionWorker: worker}
+				err := mgr.Start(context.Background())
+				require.ErrorIs(t, err, failure)
+				require.Equal(t, status.Code(failure), status.Code(err))
+				require.ErrorContains(t, err, "start ")
+				if component == "Puller" {
+					require.Equal(t, []string{"capture-start"}, calls)
+				} else {
+					require.Equal(t, []string{"capture-start", "indexer-start"}, calls)
+				}
+				require.Zero(t, worker.startCalled.Load())
+			})
+		}
+	}
+}
+
+type startupBoundaryPuller struct {
+	puller.Service
+	validationErr error
+	subscriptions atomic.Int32
+}
+
+func (*startupBoundaryPuller) BootstrapBoundary(context.Context) (string, error) {
+	return "startup-boundary", nil
+}
+
+func (p *startupBoundaryPuller) ValidateBoundary(context.Context, string) error {
+	return p.validationErr
+}
+
+func (p *startupBoundaryPuller) SubscribeReady(ctx context.Context, _, after string, _ func(string)) <-chan *puller.Event {
+	p.subscriptions.Add(1)
+	stream := make(chan *puller.Event, 1)
+	stream <- &puller.Event{Ready: true, Progress: after}
+	go func() {
+		<-ctx.Done()
+		close(stream)
+	}()
+	return stream
+}
+
+func TestManager_Start_IndexerCanStartAfterFailedValidation(t *testing.T) {
+	previousServer := server.Default()
+	server.SetDefault(nil)
+	t.Cleanup(func() { server.SetDefault(previousServer) })
+	p := &startupBoundaryPuller{validationErr: context.DeadlineExceeded}
+	i, err := indexer.NewService(indexer_config.Config{}, p, slog.Default())
+	require.NoError(t, err)
+	require.NoError(t, i.Manager().Store().PublishBootstrapCatalog(store.BootstrapCatalog{
+		Database: "default", Generation: "startup-generation", BootstrapProgress: "startup-boundary",
+	}))
+	mgr := &Manager{indexerService: i}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	t.Cleanup(func() {
+		cancel()
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), time.Second)
+		defer shutdownCancel()
+		mgr.Shutdown(shutdownCtx)
+	})
+	require.ErrorIs(t, mgr.Start(ctx), context.DeadlineExceeded)
+	health, err := i.Health(ctx)
+	require.NoError(t, err)
+	require.Equal(t, indexer.HealthUnhealthy, health.Status)
+	require.Zero(t, p.subscriptions.Load())
+
+	p.validationErr = nil
+	require.NoError(t, mgr.Start(ctx))
+	require.NoError(t, i.(indexer.BootstrapService).WaitReady(ctx))
+	health, err = i.Health(ctx)
+	require.NoError(t, err)
+	require.Equal(t, indexer.HealthOK, health.Status)
+	require.Equal(t, int32(1), p.subscriptions.Load())
 }
 
 type rtQueryStub struct {
@@ -510,12 +608,14 @@ func TestManager_Start_IndexerService(t *testing.T) {
 	bgCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	mgr.Start(bgCtx)
-
-	// Wait for Start to be called
-	time.Sleep(100 * time.Millisecond)
-
-	// Just verify it doesn't panic - the indexer was started
+	require.NoError(t, mgr.Start(bgCtx))
+	health, err := mockIndexer.Health(bgCtx)
+	require.NoError(t, err)
+	require.Equal(t, indexer.HealthOK, health.Status)
+	cancel()
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), time.Second)
+	defer shutdownCancel()
+	mgr.Shutdown(shutdownCtx)
 }
 
 func TestManager_DatabaseService(t *testing.T) {

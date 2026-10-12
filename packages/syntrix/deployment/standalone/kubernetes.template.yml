@@ -67,14 +67,7 @@ spec:
   replicas: {{ .Replicas }}
   progressDeadlineSeconds: 1980
   strategy:
-{{- if or .Stateful (eq .Role "trigger_evaluator") }}
     type: Recreate
-{{- else }}
-    type: RollingUpdate
-    rollingUpdate:
-      maxSurge: 1
-      maxUnavailable: 0
-{{- end }}
   selector:
     matchLabels:
       app.kubernetes.io/instance: {{ quote $.NamePrefix }}
@@ -118,34 +111,19 @@ spec:
               cpu: {{ quote .Resources.Limits.CPU }}
               memory: {{ quote .Resources.Limits.Memory }}
           startupProbe:
-{{- if or (eq .Role "standalone") (eq .Role "api") }}
             httpGet:
               path: /health
               port: http
-{{- else }}
-            tcpSocket:
-              port: grpc
-{{- end }}
             periodSeconds: 5
             failureThreshold: 372
           readinessProbe:
-{{- if or (eq .Role "standalone") (eq .Role "api") }}
             httpGet:
               path: /health
               port: http
-{{- else }}
-            tcpSocket:
-              port: grpc
-{{- end }}
           livenessProbe:
-{{- if or (eq .Role "standalone") (eq .Role "api") }}
             httpGet:
               path: /health
               port: http
-{{- else }}
-            tcpSocket:
-              port: grpc
-{{- end }}
           volumeMounts:
             - name: config
               mountPath: /etc/syntrix
@@ -193,7 +171,6 @@ spec:
               - key: auth_private.pem
                 path: auth_private.pem
 {{ end }}
-{{ if or (eq .Role "standalone") (eq .Role "api") (eq .Role "query") (eq .Role "indexer") (eq .Role "puller") (eq .Role "streamer") -}}
 ---
 apiVersion: v1
 kind: Service
@@ -205,16 +182,9 @@ spec:
     app.kubernetes.io/instance: {{ quote $.NamePrefix }}
     app.kubernetes.io/name: {{ quote .Name }}
   ports:
-{{- if or (eq .Role "standalone") (eq .Role "api") }}
     - name: http
       port: 8080
       targetPort: http
-{{- else }}
-    - name: grpc
-      port: 9000
-      targetPort: grpc
-{{ end }}
-{{- end }}
 {{ end }}
 {{ if .Bootstrap }}
 ---

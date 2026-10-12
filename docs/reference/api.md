@@ -340,8 +340,15 @@ source shapes fail visibly rather than being silently coerced or omitted.
 
 ## Health Check
 
-Check if the service is running.
+Check whether the Gateway process and HTTP listener respond. This does not prove
+storage, Puller, Indexer replay, or consumer readiness.
 
-**Endpoint:** `GET /health`
+**Endpoints:** `GET /health`, `HEAD /health`
 
-**Response (200 OK):** `OK`
+**Response (200 OK):** `OK` for GET; HEAD returns headers without a response body.
+
+Requests whose path is exactly `/health` and method is GET or HEAD bypass the
+general application rate limiter and do not consume its request budget. Other
+paths/methods remain subject to existing application limiting; authentication
+endpoint limits are unchanged. Shared recovery, logging, request IDs, security
+headers, and configured CORS still apply.

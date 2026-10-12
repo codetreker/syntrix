@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"text/template"
 
 	runtimeconfig "github.com/codetreker/syntrix/internal/config"
 	"github.com/codetreker/syntrix/internal/deployment/config"
@@ -173,6 +174,27 @@ func TestRenderRejectsIncompleteAndInvalidTemplates(t *testing.T) {
 	assert.NotContains(t, err.Error(), "private-credential")
 }
 
+func TestTemplateErrorsHideCredentialsAndPreserveCause(t *testing.T) {
+	marker := "CRED_LEAK_FAKE_Password123!"
+	c := fixtureConfig("standalone")
+	c.Identity.AdminPassword = marker
+	output, err := Render([]byte("{{credentials}}\n{{range credentials}}value{{end}}"), c, Options{})
+	require.Error(t, err)
+	assert.Empty(t, output)
+	assert.NotContains(t, err.Error(), marker)
+	assert.NotContains(t, err.Error(), c.Connections.PostgresDSN)
+	var execution template.ExecError
+	require.ErrorAs(t, err, &execution)
+	assert.Contains(t, execution.Error(), marker, "the actual template failure evaluated credentials")
+	assert.Equal(t, execution, errors.Unwrap(err))
+	parseMarker := "CRED_LEAK_FAKE_TEMPLATE_VALUE"
+	_, err = Render([]byte("{{"+parseMarker+"}}"), c, Options{})
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), parseMarker)
+	require.NotNil(t, errors.Unwrap(err))
+	assert.Contains(t, errors.Unwrap(err).Error(), parseMarker)
+}
+
 type failingWriter struct{}
 
 func (failingWriter) Write([]byte) (int, error) { return 0, errors.New("broken pipe") }
@@ -212,6 +234,34 @@ func TestGenerateAtomicPrivateOutput(t *testing.T) {
 	entries, err := os.ReadDir(dir)
 	require.NoError(t, err)
 	assert.Len(t, entries, 3)
+}
+
+func TestGenerateTemplateFailureKeepsOutputPrivateAndUnchanged(t *testing.T) {
+	options, _ := createInputs(t)
+	marker := "CRED_LEAK_FAKE_Password123!"
+	c := fixtureConfig("standalone")
+	c.Identity.AdminPassword = marker
+	data, err := yaml.Marshal(c)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(options.ConfigPath, data, 0600))
+	require.NoError(t, os.WriteFile(options.TemplatePath, []byte("{{credentials}}\n{{range credentials}}value{{end}}"), 0600))
+	prior := []byte("prior private manifest")
+	require.NoError(t, os.WriteFile(options.OutputPath, prior, 0600))
+	var stdout bytes.Buffer
+	err = Generate(options, &stdout)
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), marker)
+	var execution template.ExecError
+	require.ErrorAs(t, err, &execution)
+	assert.Empty(t, stdout.String())
+	unchanged, err := os.ReadFile(options.OutputPath)
+	require.NoError(t, err)
+	assert.Equal(t, prior, unchanged)
+	options.OutputPath = "-"
+	err = Generate(options, &stdout)
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), marker)
+	assert.Empty(t, stdout.String())
 }
 
 func TestGenerateRejectsFractionalIntegersWithoutReplacingOutput(t *testing.T) {

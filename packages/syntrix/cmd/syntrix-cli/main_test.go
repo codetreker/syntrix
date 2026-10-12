@@ -2,8 +2,13 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -43,5 +48,39 @@ func TestRunRendersCheckedInConfigurations(t *testing.T) {
 			assert.Contains(t, stdout.String(), "kind: Secret")
 			assert.Equal(t, bootstrap, bytes.Contains(stdout.Bytes(), []byte("kind: Pod\n")))
 		}
+	}
+}
+
+func TestCLITemplateFailureDoesNotPrintCredentials(t *testing.T) {
+	marker := "CRED_LEAK_FAKE_Password123!"
+	values, err := os.ReadFile(filepath.Join("..", "..", "deployment", "standalone", "values.example.yml"))
+	require.NoError(t, err)
+	values = bytes.ReplaceAll(values, []byte("CHANGE_ME_Admin123!"), []byte(marker))
+	require.Contains(t, string(values), marker)
+	dir := t.TempDir()
+	configPath, templatePath, outputPath := filepath.Join(dir, "values.yml"), filepath.Join(dir, "template.yml"), filepath.Join(dir, "output.yml")
+	require.NoError(t, os.WriteFile(configPath, values, 0600))
+	require.NoError(t, os.WriteFile(templatePath, []byte("{{credentials}}\n{{range credentials}}value{{end}}"), 0600))
+	prior := []byte("prior private manifest")
+	require.NoError(t, os.WriteFile(outputPath, prior, 0600))
+	for _, output := range []string{outputPath, "-"} {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		command := exec.CommandContext(ctx, "go", "run", ".", "render-kubernetes", "--template", templatePath, "--config", configPath, "--output", output)
+		var stdout, stderr bytes.Buffer
+		command.Stdout, command.Stderr = &stdout, &stderr
+		err := command.Run()
+		require.Error(t, err)
+		require.NoError(t, ctx.Err(), "CLI validation must complete within its timeout")
+		var exit *exec.ExitError
+		require.ErrorAs(t, err, &exit)
+		assert.Equal(t, 1, exit.ExitCode())
+		assert.Empty(t, stdout.String())
+		assert.Contains(t, stderr.String(), "render Kubernetes template: execution failed")
+		assert.NotContains(t, stderr.String(), marker)
+		assert.NotContains(t, strings.ToLower(stderr.String()), "password")
+		unchanged, err := os.ReadFile(outputPath)
+		require.NoError(t, err)
+		assert.Equal(t, prior, unchanged)
 	}
 }

@@ -149,11 +149,22 @@ it directly only when the derived stores contain a complete, compatible Indexer
 catalog and valid Puller lineage/history. Fresh claims require bootstrap even
 when source databases are empty. Invalid state fails rather than rebuilding.
 
+Synchronous Puller/Indexer startup failures propagate through `services.Manager`.
+The runtime CLI cancels owned work, invokes shutdown, and exits nonzero. Normal
+Kubernetes workloads restart the failed container and revalidate persisted state,
+so an Indexer that initially cannot reach a delayed Puller can start on a later
+attempt. Invalid catalogs or replay history continue to fail without implicit
+bootstrap or reset; initial restart does not replace the Indexer's bounded
+transport recovery after successful startup.
+
 File output is written atomically with mode 0600; its parent directory must
 already exist. Inputs are not overwritten. Generated output contains credentials,
 so keep it outside Git and ordinary logs. Stdout is available only with explicit
-`--output -`. Template errors and invalid rendered YAML fail before replacing
-output; the renderer does not apply resources.
+`--output -`. Template parsing, execution, and rendered-YAML validation complete
+before output emission. Their failures leave stdout empty and the previous private
+output file unchanged. Displayed template diagnostics omit template contents and
+runtime values while retaining the raw cause through `Unwrap` for callers. The
+renderer does not apply resources.
 
 For compatible initialized state, apply the normal render and wait:
 
@@ -255,9 +266,13 @@ instance. Confirm indexed-query behavior before resuming writers and MongoDB TTL
 cleanup through their existing administration. If a source or cleanup process was
 replaced during maintenance, recheck quiescence before continuing.
 
-API/standalone probes use HTTP `/health` on port 8080. Other distributed roles
-use TCP 9000, not an unimplemented gRPC health RPC or an HTTP route. Probes show
-listener availability, not dependency, replay, or consumer readiness. Configuration
+API/standalone probes use HTTP `/health` on port 8080. Exact `GET`/`HEAD` requests
+to that path bypass the general application limiter without consuming its budget;
+other paths/methods and authentication limits keep their existing behavior.
+Other distributed roles use TCP 9000, not a gRPC health RPC or an HTTP route.
+These probes show listener availability, not dependency, replay, or consumer
+readiness. TCP probes can briefly pass while startup validation or replay is still
+running; a synchronous startup failure then terminates the process. Configuration
 is loaded at startup; restart affected Deployments after updating rendered values
 or policy/templates.
 

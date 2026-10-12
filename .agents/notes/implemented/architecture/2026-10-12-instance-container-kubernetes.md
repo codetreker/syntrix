@@ -13,6 +13,12 @@ quiescence; ordinary container restart cannot safely imply rebuilding. Workload
 names, replicas, and resources must remain configurable without making service
 addresses or singleton state ownership inconsistent.
 
+Application request budgets must not deny process-liveness probes. Initial
+dependency failure must also remain visible to the process owner so a normal
+container can restart instead of retaining an inactive Indexer. Template
+diagnostics can include source expressions and runtime values; their display
+must preserve useful failure categories without exposing credentials.
+
 ## Decision
 
 `packages/syntrix` owns the multi-stage Dockerfile and standalone/distributed
@@ -25,6 +31,12 @@ writes validated YAML atomically with mode 0600. It has no cluster/database side
 effects. The [deployment guide](../../../../packages/syntrix/deployment/README.md)
 owns values and commands; the [deployment design](../../../../docs/design/server/03.deployment_modes.md)
 places these artifacts within runtime modes.
+
+Template parsing, execution, and manifest validation finish before output
+emission. Their failures leave stdout empty and the prior private output file
+unchanged. Template diagnostic strings omit source contents and runtime values;
+the raw underlying cause remains available through `Unwrap` for programmatic
+classification.
 
 The image contains the nonroot distroless instance binary, keeping runtime
 configuration, credentials, and signing keys outside its build context. Both
@@ -63,11 +75,26 @@ normally; invalid state fails rather than silently resetting. The existing
 [Indexer storage contract](../../../../docs/design/server/indexer/04.storage.md)
 owns recovery and replay invariants.
 
-API/bootstrap HTTP probes and other roles' TCP probes report listener availability,
-not dependency/replay/consumer readiness. Real normal-runtime indexed-query
-acceptance is required before resuming writers. API rule caches remain local to
-each process. Distributed Trigger composition currently uses a MEMORY JetStream
-stream and the durable consumer `consumer`; pending tasks do not survive NATS
+Exact GET/HEAD `/health` requests bypass the general application limiter without
+consuming its budget; remaining middleware, other paths/methods, and authentication
+limits retain their existing behavior. HTTP and TCP probes report listener
+availability, not dependency/replay/consumer readiness. A TCP probe can briefly
+pass while startup validation or replay is pending.
+
+Manager returns synchronous local Puller/Indexer startup errors and rejects
+startup before bootstrap readiness. The CLI owner cancels work and invokes
+shutdown before exiting nonzero. Normal Kubernetes containers restart and
+revalidate persistent state when dependencies become available. Invalid state
+still fails closed without implicit bootstrap/reset. Manager does not introduce
+a separate dependency retry loop; active Indexer transport recovery retains its
+existing bounded policy. Owner cancellation is normal shutdown only when the
+returned startup error also represents cancellation. The network server checks
+its canceled owner under the startup mutex before initializing listeners, so late
+background startup cannot reopen sockets after owned cleanup.
+
+Real normal-runtime indexed-query acceptance is required before resuming writers.
+API rule caches remain local to each process. Distributed Trigger composition
+currently uses a MEMORY JetStream stream and the durable consumer `consumer`; pending tasks do not survive NATS
 restart merely because NATS has a volume. Standalone pubsub is also in-memory.
 The templates preserve these runtime limits without claiming new coordination
 or durability guarantees.
@@ -108,6 +135,14 @@ request/limit ordering, exact roles, and singleton replica counts before produci
 resources, but it does not validate live connectivity, Secret existence, storage
 placement, or runtime readiness. Generated manifests contain credentials and
 remain operator-controlled artifacts outside Git and routine logs.
+
+Failed initial Puller/Indexer startup remains observable as a nonzero process
+exit and ordinary container restart. Probe success during startup cannot replace
+the indexed-query acceptance step, and invalid persisted state remains an explicit
+maintenance failure. Template rendering failures preserve output integrity.
+Displayed diagnostics identify the failure stage while omitting template
+expressions and runtime values; programmatic callers can classify the retained
+raw cause through the error chain.
 
 Operators select instance-private MongoDB and PostgreSQL databases. Distributed
 connections must use an instance-dedicated NATS server or account with JetStream:

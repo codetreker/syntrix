@@ -25,6 +25,14 @@ func (e manifestYAMLError) Error() string {
 
 func (e manifestYAMLError) Unwrap() error { return e.cause }
 
+type templateError struct {
+	message string
+	cause   error
+}
+
+func (e templateError) Error() string { return e.message }
+func (e templateError) Unwrap() error { return e.cause }
+
 func (o Options) validate() error {
 	if o.Bootstrap != o.WritesQuiesced {
 		return fmt.Errorf("--bootstrap and --writes-quiesced must be specified together; attest all external writers and MongoDB tombstone TTL deletion are paused")
@@ -54,11 +62,11 @@ func Render(source []byte, c config.Config, options Options) ([]byte, error) {
 	}
 	tmpl, err := template.New("kubernetes").Option("missingkey=error").Funcs(functions).Parse(string(source))
 	if err != nil {
-		return nil, fmt.Errorf("parse Kubernetes template: %w", err)
+		return nil, templateError{message: "parse Kubernetes template: invalid template syntax", cause: err}
 	}
 	var output bytes.Buffer
 	if err := tmpl.Execute(&output, model); err != nil {
-		return nil, fmt.Errorf("render Kubernetes template: %w", err)
+		return nil, templateError{message: "render Kubernetes template: execution failed; verify template fields and deployment mode", cause: err}
 	}
 	if err := validateManifest(output.Bytes()); err != nil {
 		return nil, err
