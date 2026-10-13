@@ -43,7 +43,9 @@ type Server struct {
 	subs        *core.SubscriberManager
 
 	// eventChan receives events from the puller for broadcasting
-	eventChan chan *events.StoreChangeEvent
+	eventChan       chan *events.StoreChangeEvent
+	ingressGate     chan struct{}
+	ingressBarriers chan chan struct{}
 
 	// ctx controls the server lifecycle
 	ctx    context.Context
@@ -74,13 +76,15 @@ func NewServer(cfg config.GRPCConfig, eventSource EventSource, logger *slog.Logg
 
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Server{
-		cfg:         cfg,
-		eventSource: eventSource,
-		logger:      logger.With("component", "puller-grpc"),
-		subs:        core.NewSubscriberManager(logger),
-		eventChan:   make(chan *events.StoreChangeEvent, channelSize),
-		ctx:         ctx,
-		cancel:      cancel,
+		cfg:             cfg,
+		eventSource:     eventSource,
+		logger:          logger.With("component", "puller-grpc"),
+		subs:            core.NewSubscriberManager(logger),
+		eventChan:       make(chan *events.StoreChangeEvent, channelSize),
+		ingressBarriers: make(chan chan struct{}),
+		ingressGate:     make(chan struct{}, 1),
+		ctx:             ctx,
+		cancel:          cancel,
 	}
 }
 
@@ -97,23 +101,33 @@ func (s *Server) Init() {
 	s.mu.Unlock()
 
 	// Set up event handler to receive events from puller
-	s.eventSource.SetEventHandler(func(ctx context.Context, backendName string, event *events.StoreChangeEvent) error {
-		// Ensure backend name is set
-		if event.Backend == "" {
-			event.Backend = backendName
-		}
-		select {
-		case s.eventChan <- event:
-			return nil
-		case <-ctx.Done():
-			return ctx.Err()
-		}
-	})
+	s.eventSource.SetEventHandler(s.enqueueNativeEvent)
 
 	s.logger.Info("Puller gRPC service initialized")
 
 	// Start event processing loop
 	go s.processEvents()
+}
+
+func (s *Server) enqueueNativeEvent(ctx context.Context, backendName string, event *events.StoreChangeEvent) error {
+	if err := s.acquireIngress(ctx); err != nil {
+		return err
+	}
+	defer func() { <-s.ingressGate }()
+	if err := s.ctx.Err(); err != nil {
+		return err
+	}
+	if event.Backend == "" {
+		event.Backend = backendName
+	}
+	select {
+	case s.eventChan <- event:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-s.ctx.Done():
+		return s.ctx.Err()
+	}
 }
 
 // processEvents reads events from the channel and broadcasts them to subscribers.
@@ -125,9 +139,71 @@ func (s *Server) processEvents() {
 				return
 			}
 			s.subs.Broadcast(event)
+		case barrier := <-s.ingressBarriers:
+			// The requester fences native enqueue while this finite FIFO prefix
+			// is broadcast; no admission control can overtake acknowledged ingress.
+			draining := true
+			for draining {
+				select {
+				case event, open := <-s.eventChan:
+					if !open {
+						close(barrier)
+						return
+					}
+					s.subs.Broadcast(event)
+				case <-s.ctx.Done():
+					return
+				default:
+					draining = false
+				}
+			}
+			close(barrier)
 		case <-s.ctx.Done():
 			return
 		}
+	}
+}
+
+func (s *Server) fenceIngress(ctx context.Context) error {
+	s.mu.RLock()
+	initialized := s.initialized
+	s.mu.RUnlock()
+	if !initialized {
+		return errors.New("puller event ingestion not initialized")
+	}
+	if err := s.acquireIngress(ctx); err != nil {
+		return err
+	}
+	defer func() { <-s.ingressGate }()
+	barrier := make(chan struct{})
+	select {
+	case s.ingressBarriers <- barrier:
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-s.ctx.Done():
+		return s.ctx.Err()
+	}
+	select {
+	case <-barrier:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-s.ctx.Done():
+		return s.ctx.Err()
+	}
+}
+
+func (s *Server) acquireIngress(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	select {
+	case s.ingressGate <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-s.ctx.Done():
+		return s.ctx.Err()
 	}
 }
 
@@ -191,7 +267,9 @@ func (s *Server) ValidateBoundary(ctx context.Context, req *pullerv1.ValidateBou
 
 // Subscribe implements the PullerService Subscribe RPC.
 func (s *Server) Subscribe(req *pullerv1.SubscribeRequest, stream pullerv1.PullerService_SubscribeServer) error {
-	ctx := stream.Context()
+	ctx, cancel := context.WithCancel(stream.Context())
+	stopServer := context.AfterFunc(s.ctx, cancel)
+	defer func() { stopServer(); cancel() }()
 
 	// Parse the 'after' progress marker
 	after, err := cursor.DecodeProgressMarker(req.GetAfter())
@@ -201,13 +279,13 @@ func (s *Server) Subscribe(req *pullerv1.SubscribeRequest, stream pullerv1.Pulle
 
 	// Serialize capacity checks and registration with other admissions and Shutdown.
 	s.mu.Lock()
-	if ctx.Err() != nil {
-		s.mu.Unlock()
-		return nil
-	}
 	if s.ctx.Err() != nil {
 		s.mu.Unlock()
 		return status.Error(codes.Unavailable, "puller service is shut down")
+	}
+	if ctx.Err() != nil {
+		s.mu.Unlock()
+		return nil
 	}
 	active := s.subs.Count()
 	if active >= s.cfg.MaxConnections {
@@ -242,6 +320,17 @@ func (s *Server) Subscribe(req *pullerv1.SubscribeRequest, stream pullerv1.Pulle
 	)
 
 	var source boundarySource
+	var admissionSource interface{ Readiness(context.Context) error }
+	if req.ReportAdmissionReady {
+		var ok bool
+		admissionSource, ok = s.eventSource.(interface{ Readiness(context.Context) error })
+		if !ok {
+			return status.Error(codes.Unimplemented, "subscription admission unavailable")
+		}
+		if req.RequireReady {
+			return status.Error(codes.InvalidArgument, "admission and verified boundary modes are exclusive")
+		}
+	}
 	if req.RequireReady {
 		var ok bool
 		source, ok = s.eventSource.(boundarySource)
@@ -262,6 +351,9 @@ func (s *Server) Subscribe(req *pullerv1.SubscribeRequest, stream pullerv1.Pulle
 	heartbeatInterval := s.cfg.HeartbeatInterval
 	if heartbeatInterval <= 0 {
 		heartbeatInterval = 30 * time.Second
+	}
+	if req.ReportAdmissionReady {
+		heartbeatInterval = events.AdmissionRefresh
 	}
 	heartbeatTicker := time.NewTicker(heartbeatInterval)
 	defer heartbeatTicker.Stop()
@@ -312,6 +404,14 @@ func (s *Server) Subscribe(req *pullerv1.SubscribeRequest, stream pullerv1.Pulle
 			return sendResponse(stream, &pullerv1.PullerEvent{Ready: true, Progress: progress})
 		}
 	}
+	if req.ReportAdmissionReady {
+		driver.CheckAdmission = admissionSource.Readiness
+		driver.FenceAdmission = s.fenceIngress
+		driver.Maintain = nil
+		driver.Admission = func(_ context.Context, state string, generation uint64, reason string) error {
+			return sendResponse(stream, &pullerv1.PullerEvent{Ready: state == events.AdmissionAdmitted, AdmissionState: state, AdmissionGeneration: generation, AdmissionReason: reason})
+		}
+	}
 
 	exit := core.RunSubscription(ctx, sub, req.GetAfter() != "", driver)
 	if exit.CleanupErr != nil {
@@ -320,6 +420,9 @@ func (s *Server) Subscribe(req *pullerv1.SubscribeRequest, stream pullerv1.Pulle
 	switch exit.Kind {
 	case core.SubscriptionExitContextCanceled:
 		s.logger.Info("subscriber disconnected", "consumerId", sub.ID)
+		if s.ctx.Err() != nil && stream.Context().Err() == nil {
+			return status.Error(codes.Canceled, "puller service shut down")
+		}
 		return nil
 	case core.SubscriptionExitSubscriberClosed:
 		s.logger.Info("subscriber closed", "consumerId", sub.ID)
@@ -330,8 +433,14 @@ func (s *Server) Subscribe(req *pullerv1.SubscribeRequest, stream pullerv1.Pulle
 			replayErr = exit.CleanupErr
 		}
 		s.logger.Error("replay error", "error", replayErr)
+		if req.ReportAdmissionReady {
+			return status.Error(codes.FailedPrecondition, "subscription replay failed")
+		}
 		return status.Errorf(codes.Internal, "replay error: %v", replayErr)
 	case core.SubscriptionExitDeliveryFailed, core.SubscriptionExitReadyFailed, core.SubscriptionExitMaintenanceFailed:
+		if req.ReportAdmissionReady && exit.Kind == core.SubscriptionExitMaintenanceFailed {
+			return status.Error(codes.FailedPrecondition, "subscription source failed")
+		}
 		return exit.Err
 	default:
 		return status.Error(codes.Internal, "subscription stopped unexpectedly")

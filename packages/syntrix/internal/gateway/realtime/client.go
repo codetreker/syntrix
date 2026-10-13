@@ -7,11 +7,11 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"net/url"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/codetreker/syntrix/internal/core/origin"
 	"github.com/codetreker/syntrix/internal/ctxkeys"
 	api_config "github.com/codetreker/syntrix/internal/gateway/config"
 	"github.com/codetreker/syntrix/internal/identity"
@@ -51,34 +51,8 @@ var upgrader = websocket.Upgrader{
 	CheckOrigin:     safeCheckOrigin,
 }
 
-// safeCheckOrigin validates WebSocket connection origins.
-// It allows:
-// - Empty origin (non-browser clients)
-// - Same host:port as the request
-// - Same host (ignoring port) for development scenarios
-// This mitigates cross-site WebSocket abuse while keeping same-origin and local dev clients working.
 func safeCheckOrigin(r *http.Request) bool {
-	origin := r.Header.Get("Origin")
-	if origin == "" {
-		return true
-	}
-
-	u, err := url.Parse(origin)
-	if err != nil {
-		return false
-	}
-
-	// Compare host (includes port) to ensure exact match with request host.
-	if strings.EqualFold(u.Host, r.Host) {
-		return true
-	}
-
-	// Allow same-host connections across different ports for development.
-	// This covers localhost, 127.0.0.1, and LAN IPs like 192.168.x.x.
-	originHost := strings.Split(u.Host, ":")[0]
-	requestHost := strings.Split(r.Host, ":")[0]
-
-	return strings.EqualFold(originHost, requestHost)
+	return (origin.Policy{}).Check(r, false) == nil
 }
 
 // Client is a middleman between the websocket connection and the hub.
@@ -199,7 +173,7 @@ func (c *Client) readPump() {
 		_, message, err := c.conn.ReadMessage()
 		if err != nil {
 			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
-				slog.Warn("WS: Websocket connection closed", "error", err)
+				slog.Warn("WS: Websocket connection closed", "component", "realtime", "category", "transport_closed")
 			} else {
 				slog.Info("WS: WebSocket connection closed")
 			}
@@ -208,7 +182,7 @@ func (c *Client) readPump() {
 
 		var msg BaseMessage
 		if err := json.Unmarshal(message, &msg); err != nil {
-			slog.Warn("WS: unmarshalling message", "error", err)
+			slog.Warn("WS: unmarshalling message", "component", "realtime", "category", "invalid_message")
 			continue
 		}
 
@@ -228,15 +202,15 @@ func (c *Client) handleMessage(msg BaseMessage) {
 		}
 		var payload SubscribePayload
 		if err := json.Unmarshal(msg.Payload, &payload); err != nil {
-			slog.Error("WS: unmarshalling subscribe payload", "error", err)
+			slog.Error("WS: unmarshalling subscribe payload", "component", "realtime", "category", "invalid_subscribe")
 			return
 		}
 
 		// Subscribe to Streamer
 		streamerSubID, err := c.hub.SubscribeToStream(c.database, payload.Query.Collection, payload.Query.Filters)
 		if err != nil {
-			slog.Error("WS: Failed to subscribe", "error", err)
-			errPayload, _ := json.Marshal(map[string]string{"message": "Subscribe failed: " + err.Error()})
+			slog.Error("WS: Failed to subscribe", "component", "realtime", "category", "subscription_unavailable")
+			errPayload, _ := json.Marshal(map[string]string{"message": "Subscription could not be established"})
 			c.sendControl(BaseMessage{
 				ID:      msg.ID,
 				Type:    TypeError,
@@ -267,7 +241,14 @@ func (c *Client) handleMessage(msg BaseMessage) {
 		c.sendControl(BaseMessage{ID: msg.ID, Type: TypeSubscribeAck})
 
 		if payload.SendSnapshot {
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			c.hub.runCtxMu.RLock()
+			parent := c.hub.runCtx
+			c.hub.runCtxMu.RUnlock()
+			if parent == nil {
+				c.sendControl(BaseMessage{ID: msg.ID, Type: TypeError, Payload: mustMarshal(ErrorPayload{Code: "unavailable", Message: "Realtime owner is unavailable"})})
+				return
+			}
+			ctx, cancel := context.WithTimeout(parent, 10*time.Second)
 			defer cancel()
 			c.sendSnapshot(ctx, msg.ID, payload.Query.Collection)
 		}
@@ -278,7 +259,7 @@ func (c *Client) handleMessage(msg BaseMessage) {
 		}
 		var payload UnsubscribePayload
 		if err := json.Unmarshal(msg.Payload, &payload); err != nil {
-			slog.Warn("WS: unmarshalling unsubscribe payload", "error", err)
+			slog.Warn("WS: unmarshalling unsubscribe payload", "component", "realtime", "category", "invalid_unsubscribe")
 			return
 		}
 		c.mu.Lock()
@@ -447,52 +428,19 @@ func hasCredentials(r *http.Request) bool {
 	return r.Header.Get("Authorization") != ""
 }
 
-func checkAllowedOrigin(origin string, reqHost string, cfg api_config.RealtimeConfig, credentialed bool) error {
-	if origin == "" {
-		if credentialed && !cfg.AllowDevOrigin {
-			return errors.New("origin required when using credentials")
-		}
-		return nil
-	}
-
-	parsed, err := url.Parse(origin)
-	if err != nil {
-		return errors.New("origin not allowed")
-	}
-
-	// Allow same host origin
-	originHost := strings.Split(parsed.Host, ":")[0]
-	reqHostPart := strings.Split(reqHost, ":")[0]
-	if strings.EqualFold(originHost, reqHostPart) {
-		return nil
-	}
-
-	if cfg.AllowDevOrigin {
-		if originHost == "localhost" || originHost == "127.0.0.1" {
-			return nil
-		}
-	}
-
-	trimmedOrigin := strings.TrimRight(origin, "/")
-	for _, allowed := range cfg.AllowedOrigins {
-		if allowed == "" {
-			continue
-		}
-		if strings.EqualFold(strings.TrimRight(allowed, "/"), trimmedOrigin) {
-			return nil
-		}
-	}
-
-	return errors.New("origin not allowed")
+func checkRequestOrigin(r *http.Request, cfg api_config.RealtimeConfig) error {
+	return (origin.Policy{AllowedOrigins: cfg.AllowedOrigins, AllowDevelopment: cfg.AllowDevOrigin}).Check(r, hasCredentials(r) && !cfg.AllowDevOrigin)
 }
 
 // ServeReplicationStream handles websocket requests from the peer.
 func ServeWs(hub *Hub, qs query.Service, auth identity.TokenVerifier, cfg api_config.RealtimeConfig, w http.ResponseWriter, r *http.Request) {
 	r = r.WithContext(r.Context())
 
-	conn, err := upgrader.Upgrade(w, r, nil)
+	u := upgrader
+	u.CheckOrigin = func(request *http.Request) bool { return checkRequestOrigin(request, cfg) == nil }
+	conn, err := u.Upgrade(w, r, nil)
 	if err != nil {
-		slog.Error("Failed to upgrade WebSocket connection", "error", err)
+		slog.Error("Failed to upgrade WebSocket connection", "component", "realtime", "category", "upgrade_failed")
 		return
 	}
 
@@ -517,10 +465,13 @@ func ServeWs(hub *Hub, qs query.Service, auth identity.TokenVerifier, cfg api_co
 		return
 	}
 
-	// Allow collection of memory referenced by the caller by doing all work in
-	// new goroutines.
-	go client.writePump()
-	go client.readPump()
+	// Keep transport lifetime within its HTTP owner so shutdown can drain both
+	// pumps before releasing the borrowed services they use.
+	written := make(chan struct{})
+	go func() { defer close(written); client.writePump() }()
+	client.readPump()
+	client.closeOutbound()
+	<-written
 }
 
 // ServeSSE handles Server-Sent Events requests.
@@ -528,7 +479,7 @@ func ServeSSE(hub *Hub, qs query.Service, auth identity.TokenVerifier, cfg api_c
 	ctx := r.Context()
 
 	origin := r.Header.Get("Origin")
-	if err := checkAllowedOrigin(origin, r.Host, cfg, hasCredentials(r)); err != nil {
+	if err := checkRequestOrigin(r, cfg); err != nil {
 		http.Error(w, err.Error(), http.StatusForbidden)
 		return
 	}
@@ -610,7 +561,7 @@ func ServeSSE(hub *Hub, qs query.Service, auth identity.TokenVerifier, cfg api_c
 	// Subscribe to stream
 	streamerSubID, err := client.hub.SubscribeToStream(client.database, collection, nil)
 	if err != nil {
-		http.Error(w, "failed to subscribe: "+err.Error(), http.StatusInternalServerError)
+		http.Error(w, "Subscription could not be established", http.StatusInternalServerError)
 		return
 	}
 

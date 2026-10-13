@@ -2,20 +2,30 @@ package deployment
 
 import (
 	"bytes"
+	_ "embed"
 	"encoding/json"
 	"fmt"
 	"io"
 	"strings"
 	"text/template"
 
-	"github.com/codetreker/syntrix/internal/deployment/config"
+	"github.com/codetreker/syntrix/deployment/config"
 	"gopkg.in/yaml.v3"
 )
 
 type Options struct {
 	Bootstrap      bool
 	WritesQuiesced bool
+	AcceptanceOnly bool
 }
+
+const ManagedRuntimeContract = 1
+
+//go:embed standalone/kubernetes.template.yml
+var standaloneTemplate []byte
+
+//go:embed distributed/kubernetes.template.yml
+var distributedTemplate []byte
 
 type manifestYAMLError struct{ cause error }
 
@@ -33,21 +43,31 @@ type templateError struct {
 func (e templateError) Error() string { return e.message }
 func (e templateError) Unwrap() error { return e.cause }
 
-func (o Options) validate() error {
+func (o Options) Validate() error {
+	if o.Bootstrap && o.AcceptanceOnly {
+		return fmt.Errorf("--bootstrap and --acceptance-only are mutually exclusive")
+	}
 	if o.Bootstrap != o.WritesQuiesced {
 		return fmt.Errorf("--bootstrap and --writes-quiesced must be specified together; attest all external writers and MongoDB tombstone TTL deletion are paused")
 	}
 	return nil
 }
 
-func Render(source []byte, c config.Config, options Options) ([]byte, error) {
-	if err := options.validate(); err != nil {
+func Render(c config.Config, options Options) ([]byte, error) {
+	if c.Mode == "standalone" {
+		return RenderSource(standaloneTemplate, c, options)
+	}
+	return RenderSource(distributedTemplate, c, options)
+}
+
+func RenderSource(source []byte, c config.Config, options Options) ([]byte, error) {
+	if err := options.Validate(); err != nil {
 		return nil, err
 	}
 	if err := c.Validate(); err != nil {
 		return nil, err
 	}
-	model := buildModel(c, options.Bootstrap)
+	model := buildModel(c, options)
 	functions := template.FuncMap{
 		"quote":         quote,
 		"indent":        indent,

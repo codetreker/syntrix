@@ -212,6 +212,17 @@ func TestBackendsCloseIsConcurrentIdempotentAndRetainsCauses(t *testing.T) {
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
+func TestBackendsCloseContextPropagatesBoundedCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	provider := &backendTestProvider{}
+	backends := &Backends{providers: map[string]Provider{"owned": provider}}
+	assert.NoError(t, backends.CloseContext(ctx))
+	assert.ErrorIs(t, provider.closeContextErr, context.Canceled)
+	assert.NoError(t, backends.Close())
+	assert.Equal(t, 1, provider.closes)
+}
+
 type backendGenericProvider struct{}
 
 func (*backendGenericProvider) Close(context.Context) error { return nil }

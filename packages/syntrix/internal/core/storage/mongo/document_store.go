@@ -620,29 +620,12 @@ func (m *documentStore) Query(ctx context.Context, database string, q model.Quer
 	return docs, nil
 }
 
-// EnsureIndexes creates necessary indexes
 func (s *documentStore) EnsureIndexes(ctx context.Context) error {
 	if err := s.ensureSourceIndexes(ctx); err != nil {
 		return err
 	}
-	coll := s.getCollection("")
-
-	// (database, collection_hash)
-	_, err := coll.Indexes().CreateOne(ctx, mongo.IndexModel{
-		Keys:    bson.D{{Key: "database", Value: 1}, {Key: "collection_hash", Value: 1}},
-		Options: options.Index().SetUnique(false),
-	})
-	if err != nil {
-		return err
-	}
-
-	// Revocation TTL index (wait, revocation is separate now. But soft delete uses sys_expires_at)
-	// "sys_expires_at" is used for soft delete retention.
-	_, err = coll.Indexes().CreateOne(ctx, mongo.IndexModel{
-		Keys:    bson.D{{Key: "sys_expires_at", Value: 1}},
-		Options: options.Index().SetExpireAfterSeconds(0),
-	})
-	return err
+	required, cleanup := DocumentIndexDefinitions()
+	return EnsureIndexDefinitions(ctx, s.getCollection(""), append(required, cleanup...))
 }
 
 func (m *documentStore) Close(ctx context.Context) error {

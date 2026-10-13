@@ -17,8 +17,26 @@ add project parameters or new grants to the API below.
 
 Document and query routes use `/api/v1/databases/{database}`. Authentication
 uses `/auth/v1`, replication uses `/replication/v1`, Trigger RPC uses
-`/trigger/v1`, and health uses `/health`. Preserve any deployment prefix before
+`/trigger/v1`, and probes use `/health` and `/ready`. Preserve any deployment prefix before
 these paths.
+
+## Browser Origins
+
+REST and realtime use one validated HTTP(S) scheme/host/effective-port policy.
+Same-origin requests and exact configured origins are permitted; credentials,
+paths, queries and fragments are not valid origin configuration. `null`, malformed
+origins and multiple Origin headers are rejected. REST permits absent Origin for
+native clients. Classic WebSocket, replica WebSocket and SSE permit absent Origin
+only without an Authorization header, unless explicit operator development
+allowances are enabled. WebSocket tokens cannot be supplied in URL query fields;
+replica authentication uses its auth frame and SSE uses Authorization.
+
+The configuration owners are `server.allowed_origins`/`server.allow_dev_origin`
+and `gateway.realtime.allowed_origins`/`gateway.realtime.allow_dev_origin`;
+composition requires their policies to agree. Explicit operator development mode
+permits localhost/loopback ports and `*` only when listed. Managed runtime forbids
+development allowances and wildcard origins. CORS response methods, headers and
+credential settings remain network-owned.
 
 ## Authentication
 
@@ -338,17 +356,27 @@ Unknown operators are rejected by request validation; all eight recognized
 operators have execution strategies subject to index eligibility. Unsupported
 source shapes fail visibly rather than being silently coerced or omitted.
 
-## Health Check
+## Liveness and Readiness
 
-Check whether the Gateway process and HTTP listener respond. This does not prove
-storage, Puller, Indexer replay, or consumer readiness.
+Probe process liveness separately from current enabled-role readiness.
 
-**Endpoints:** `GET /health`, `HEAD /health`
+**Endpoints:** `GET /health`, `HEAD /health`, `GET /ready`, `HEAD /ready`
 
-**Response (200 OK):** `OK` for GET; HEAD returns headers without a response body.
+`/health` reports process liveness. `/ready` returns HTTP 200 with
+`{"ready":true}` only when all active runtime-role verification remains current;
+it returns HTTP 503 with `{"ready":false}` otherwise. HEAD uses the same status
+without a body. Disabled and explicitly held roles do not enter the active
+aggregate; held writer roles remain individually NOT_SERVING and cannot satisfy
+full instance acceptance. Readiness does not certify bootstrap completion,
+cleanup finalization or an accepted external indexed query.
 
-Requests whose path is exactly `/health` and method is GET or HEAD bypass the
-general application rate limiter and do not consume its request budget. Other
-paths/methods remain subject to existing application limiting; authentication
-endpoint limits are unchanged. Shared recovery, logging, request IDs, security
-headers, and configured CORS still apply.
+Exact GET/HEAD requests to these paths bypass application/authentication budgets.
+Other methods and lookalike paths retain normal middleware behavior. Request IDs,
+security headers and configured Origin/CORS policy still apply. Responses omit
+raw dependency failures and credentials.
+
+The instance gRPC listener exposes standard `grpc.health.v1.Health`. An empty
+service name checks the active aggregate; `syntrix.liveness` checks liveness.
+Named readiness services are `syntrix.api`, `syntrix.query`, `syntrix.indexer`,
+`syntrix.puller`, `syntrix.streamer`, `syntrix.trigger_evaluator` and
+`syntrix.trigger_worker`. Roles initialize NOT_SERVING before listeners open.

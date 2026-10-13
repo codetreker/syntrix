@@ -9,11 +9,13 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/codetreker/syntrix/internal/core/origin"
 	"gopkg.in/yaml.v3"
 )
 
 type Config struct {
 	Mode               string              `yaml:"mode"`
+	ResourceMode       string              `yaml:"resource_mode"`
 	Namespace          string              `yaml:"namespace"`
 	NamePrefix         string              `yaml:"name_prefix"`
 	Image              string              `yaml:"image"`
@@ -22,6 +24,7 @@ type Config struct {
 	SigningKeySecret   string              `yaml:"signing_key_secret"`
 	BootstrapResources Resources           `yaml:"bootstrap_resources"`
 	Connections        Connections         `yaml:"connections"`
+	Broker             *BrokerBinding      `yaml:"broker"`
 	Identity           Identity            `yaml:"identity"`
 	AllowedOrigins     []string            `yaml:"allowed_origins"`
 	Workloads          map[string]Workload `yaml:"workloads"`
@@ -115,7 +118,7 @@ func validateIntegerNodes(node *yaml.Node, seen map[*yaml.Node]bool) error {
 			if key.Kind == yaml.AliasNode {
 				key = key.Alias
 			}
-			if key.Value != "storage_gib" && key.Value != "replicas" {
+			if key.Value != "storage_gib" && key.Value != "replicas" && key.Value != "spec_revision" && key.Value != "max_bytes" && key.Value != "max_messages" {
 				continue
 			}
 			if value.Kind == yaml.AliasNode {
@@ -138,6 +141,9 @@ func (c Config) Validate() error {
 	if c.Mode != "standalone" && c.Mode != "distributed" {
 		return fmt.Errorf("mode must be standalone or distributed")
 	}
+	if c.ResourceMode != "managed" && c.ResourceMode != "operator" {
+		return fmt.Errorf("resource_mode must be managed or operator")
+	}
 	for _, item := range []struct{ field, value string }{
 		{"namespace", c.Namespace}, {"name_prefix", c.NamePrefix},
 	} {
@@ -159,6 +165,19 @@ func (c Config) Validate() error {
 	if err := c.validateConnections(); err != nil {
 		return err
 	}
+	if c.Mode == "distributed" {
+		if c.Broker == nil {
+			return fmt.Errorf("broker is required in distributed mode")
+		}
+		if c.Broker.ResourceMode != c.ResourceMode {
+			return fmt.Errorf("broker.resource_mode must match resource_mode")
+		}
+		if _, err := c.Broker.Specification(); err != nil {
+			return fmt.Errorf("broker: %w", err)
+		}
+	} else if c.Broker != nil {
+		return fmt.Errorf("broker is only supported in distributed mode")
+	}
 	if err := c.BootstrapResources.Validate(); err != nil {
 		return fmt.Errorf("bootstrap_resources: %w", err)
 	}
@@ -168,11 +187,8 @@ func (c Config) Validate() error {
 	if len(c.AllowedOrigins) == 0 {
 		return fmt.Errorf("allowed_origins must contain at least one HTTP or HTTPS origin")
 	}
-	for _, origin := range c.AllowedOrigins {
-		u, err := url.Parse(origin)
-		if err != nil || u == nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" || u.User != nil || u.Path != "" || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" {
-			return fmt.Errorf("allowed_origins must contain HTTP or HTTPS origins without credentials, paths, queries, or fragments")
-		}
+	if err := (origin.Policy{AllowedOrigins: c.AllowedOrigins}).Validate(c.ResourceMode == "managed"); err != nil {
+		return fmt.Errorf("allowed_origins: %w", err)
 	}
 	return c.validateWorkloads()
 }

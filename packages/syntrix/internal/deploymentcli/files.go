@@ -1,4 +1,4 @@
-package deployment
+package deploymentcli
 
 import (
 	"errors"
@@ -7,19 +7,20 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/codetreker/syntrix/internal/deployment/config"
+	"github.com/codetreker/syntrix/deployment"
+	"github.com/codetreker/syntrix/deployment/config"
 )
 
 type FileOptions struct {
 	TemplatePath, ConfigPath, OutputPath string
-	Options
+	deployment.Options
 }
 
 func Generate(options FileOptions, stdout io.Writer) error {
 	if options.TemplatePath == "" || options.ConfigPath == "" || options.OutputPath == "" {
 		return fmt.Errorf("--template, --config, and --output are required; use --output - explicitly for stdout")
 	}
-	if err := options.Options.validate(); err != nil {
+	if err := options.Options.Validate(); err != nil {
 		return err
 	}
 	if options.OutputPath != "-" {
@@ -45,7 +46,7 @@ func Generate(options FileOptions, stdout io.Writer) error {
 	if err != nil {
 		return fmt.Errorf("read Kubernetes template: %w", err)
 	}
-	manifest, err := Render(source, c, options.Options)
+	manifest, err := deployment.RenderSource(source, c, options.Options)
 	if err != nil {
 		return err
 	}

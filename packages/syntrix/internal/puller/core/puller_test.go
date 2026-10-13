@@ -279,6 +279,7 @@ func TestPuller_runBackend_RecoveryActions(t *testing.T) {
 	cfg := newTestConfig(t)
 	cfg.Buffer.BatchInterval = 5 * time.Millisecond
 	p := New(cfg, nil)
+	t.Cleanup(func() { require.NoError(t, p.Stop(context.Background())) })
 
 	client, err := mongo.NewClient(options.Client().ApplyURI("mongodb://localhost:27017"))
 	if err != nil {
@@ -524,6 +525,7 @@ func TestPuller_runBackend_ProcessingFailureStopsBeforeNextEvent(t *testing.T) {
 			assert.Equal(t, 1, stream.nextCalls, "the second event must remain unread")
 			assert.Zero(t, published)
 			assert.True(t, stream.closed.Load())
+			require.NoError(t, p.Stop(ctx))
 			reopened, err := buffer.NewForBackend(cfg.Buffer.Path, "backend1", nil)
 			require.NoError(t, err)
 			defer reopened.Close()
@@ -578,6 +580,7 @@ func TestPuller_runBackend_NativeErrorsKeepDurableCheckpoint(t *testing.T) {
 					wantOpened = 2
 				}
 				assert.Equal(t, wantOpened, opened)
+				require.NoError(t, p.Stop(ctx))
 				reopened, err := buffer.NewForBackend(cfg.Buffer.Path, "backend1", nil)
 				require.NoError(t, err)
 				defer reopened.Close()

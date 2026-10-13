@@ -1,4 +1,5 @@
 mode: distributed
+resource_mode: operator
 namespace: syntrix-instance
 name_prefix: instance
 image: syntrix:development
@@ -9,6 +10,22 @@ connections:
   mongodb_database: syntrix
   postgres_dsn: "postgres://syntrix:CHANGE_ME@postgres.example.internal:5432/syntrix?sslmode=require"
   nats_url: "nats://nats.example.internal:4222"
+broker:
+  resource_mode: operator
+  spec_revision: 1
+  ownership:
+    installation_id: operator-development
+    instance_id: "11111111111111111111111111111111"
+    allocation_id: "22222222222222222222222222222222"
+  stream_name: INSTANCE_TRIGGERS
+  subject_prefix: INSTANCE_TRIGGERS
+  consumer_name: INSTANCE_DELIVERY
+  policy:
+    storage: file
+    replicas: 1
+    max_bytes: 1073741824
+    max_messages: 100000
+    max_age: 24h
 signing_key_secret: instance-signing-key
 identity:
   admin_username: syntrix

@@ -24,13 +24,16 @@ silently rerun destructive maintenance.
 The [instance lifecycle design](../../../../docs/design/server/console/03.instance_lifecycle.md)
 owns the mechanism and five ordered delivery PRs. The
 [managed runtime contract](../../../../docs/design/server/console/04.managed_runtime_contract.md)
-specifies PR 1 public rendering, attachment, initialization, and readiness. This
-note owns the proposed
-allocation, ownership, and recovery decisions. The
+specifies delivered public rendering, attachment, initialization and readiness.
+The [runtime decision](../../implemented/architecture/2026-10-13-managed-runtime-contract.md)
+owns those prerequisites. This note retains proposed Console allocation,
+ownership and recovery decisions. The
 [platform-boundary proposal](2026-10-10-platform-console-instance-boundaries.md)
 retains employee Management, project Identity realms, and OAuth responsibilities.
 The [runtime deployment decision](../../implemented/architecture/2026-10-12-instance-container-kubernetes.md)
-remains the owner of delivered CLI, templates, and current runtime limitations.
+retains placement, persistent claims, shared signing keys and operator maintenance.
+The managed-runtime decision owns its updated probes, initialization and broker
+attachment; neither decision delivers Console lifecycle authority.
 The [workload-interface proposal](../feature/2026-10-12-console-workload-interface.md)
 continues to own the browser interface for existing HTTP test workloads; it is
 independent of the full-instance interface specified here.

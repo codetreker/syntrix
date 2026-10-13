@@ -92,7 +92,14 @@ spec:
         - name: syntrix
           image: {{ quote $.Image }}
           imagePullPolicy: IfNotPresent
-          args: [{{ quote .Flag }}, "--config-dir", "/etc/syntrix"]
+          args:
+            - {{ quote .Flag }}
+            - "--config-dir"
+            - "/etc/syntrix"
+{{- if $.AcceptanceOnly }}
+            - "--initialization-acceptance"
+            - "--writes-quiesced"
+{{- end }}
           ports:
             - name: http
               containerPort: 8080
@@ -112,13 +119,13 @@ spec:
               memory: {{ quote .Resources.Limits.Memory }}
           startupProbe:
             httpGet:
-              path: /health
+              path: /ready
               port: http
             periodSeconds: 5
             failureThreshold: 372
           readinessProbe:
             httpGet:
-              path: /health
+              path: /ready
               port: http
           livenessProbe:
             httpGet:
@@ -257,13 +264,13 @@ spec:
           memory: {{ quote .BootstrapResources.Limits.Memory }}
       startupProbe:
         httpGet:
-          path: /health
+          path: /ready
           port: http
         periodSeconds: 5
         failureThreshold: 372
       readinessProbe:
         httpGet:
-          path: /health
+          path: /ready
           port: http
       volumeMounts:
         - name: config

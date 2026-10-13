@@ -584,6 +584,10 @@ func (m *testPullerService) Subscribe(ctx context.Context, consumerID string, af
 	return m.events
 }
 
+func (m *testPullerService) SubscribeStatus(ctx context.Context, consumerID, after string) (<-chan *puller.Event, *puller.SubscriptionStatus) {
+	return m.Subscribe(ctx, consumerID, after), events.NewSubscriptionStatus(ctx)
+}
+
 func TestStart_WithMockPuller(t *testing.T) {
 	t.Parallel()
 	mockPuller := newTestPullerService()

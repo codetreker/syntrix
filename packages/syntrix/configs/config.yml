@@ -85,9 +85,31 @@ query:
 
 trigger:
   nats_url: "nats://localhost:4222"
-  rules_path: "triggers"
-  worker_count: 32
-  stream_name: "TRIGGERS"
+  broker:
+    resource_mode: operator
+    spec_revision: 1
+    ownership:
+      installation_id: syntrix-operator
+      instance_id: "00000000000000000000000000000001"
+      allocation_id: "00000000000000000000000000000001"
+    stream_name: TRIGGERS
+    subject_prefix: TRIGGERS
+    consumer_name: trigger-delivery
+    policy:
+      storage: file
+      replicas: 1
+      max_bytes: 1073741824
+      max_messages: 1000000
+      max_age: 24h
+  evaluator:
+    rules_path: "triggers"
+    stream_name: TRIGGERS
+    storage_type: file
+  delivery:
+    num_workers: 32
+    stream_name: TRIGGERS
+    consumer_name: trigger-delivery
+    storage_type: file
 
 puller:
   grpc:

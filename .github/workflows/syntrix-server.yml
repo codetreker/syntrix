@@ -47,9 +47,18 @@ jobs:
       - name: Build
         run: make -C packages/syntrix build
 
-      - name: Render standalone and distributed Kubernetes manifests
+      - name: Verify the CLI contract and render every deployment phase
         run: |
           mkdir -p .tmp
+          packages/syntrix/bin/syntrix-cli deployment-contract > .tmp/syntrix-deployment-contract.json
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          contract = json.loads(Path(".tmp/syntrix-deployment-contract.json").read_bytes())
+          assert type(contract["managed_runtime_contract"]) is int and contract["managed_runtime_contract"] == 1
+          assert contract["modes"] == ["standalone", "distributed"]
+          assert contract["render_phases"] == ["bootstrap", "acceptance", "full"]
+          PY
           for mode in standalone distributed; do
             packages/syntrix/bin/syntrix-cli render-kubernetes \
               --template "packages/syntrix/deployment/$mode/kubernetes.template.yml" \
@@ -60,6 +69,10 @@ jobs:
               --config "packages/syntrix/deployment/$mode/values.example.yml" \
               --bootstrap --writes-quiesced \
               --output ".tmp/syntrix-$mode-bootstrap.yml"
+            packages/syntrix/bin/syntrix-cli render-kubernetes \
+              --template "packages/syntrix/deployment/$mode/kubernetes.template.yml" \
+              --config "packages/syntrix/deployment/$mode/values.example.yml" \
+              --acceptance-only --output ".tmp/syntrix-$mode-acceptance.yml"
           done
 
   test:

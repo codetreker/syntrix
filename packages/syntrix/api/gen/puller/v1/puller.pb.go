@@ -160,9 +160,11 @@ type SubscribeRequest struct {
 	// document may be merged within that replay.
 	CoalesceOnCatchUp bool `protobuf:"varint,3,opt,name=coalesce_on_catch_up,json=coalesceOnCatchUp,proto3" json:"coalesce_on_catch_up,omitempty"`
 	// Require source readiness and verified replay; receive a ready control frame.
-	RequireReady  bool `protobuf:"varint,4,opt,name=require_ready,json=requireReady,proto3" json:"require_ready,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	RequireReady bool `protobuf:"varint,4,opt,name=require_ready,json=requireReady,proto3" json:"require_ready,omitempty"`
+	// Observe ordinary live admission without requiring a bootstrap boundary.
+	ReportAdmissionReady bool `protobuf:"varint,5,opt,name=report_admission_ready,json=reportAdmissionReady,proto3" json:"report_admission_ready,omitempty"`
+	unknownFields        protoimpl.UnknownFields
+	sizeCache            protoimpl.SizeCache
 }
 
 func (x *SubscribeRequest) Reset() {
@@ -223,6 +225,13 @@ func (x *SubscribeRequest) GetRequireReady() bool {
 	return false
 }
 
+func (x *SubscribeRequest) GetReportAdmissionReady() bool {
+	if x != nil {
+		return x.ReportAdmissionReady
+	}
+	return false
+}
+
 // PullerEvent is the top-level wrapper for events emitted by the Puller service.
 type PullerEvent struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -232,10 +241,16 @@ type PullerEvent struct {
 	// Consumer should save this value and pass it as 'after'
 	// when reconnecting to resume from this position.
 	Progress string `protobuf:"bytes,2,opt,name=progress,proto3" json:"progress,omitempty"`
-	// Set once after registration and validated replay have reached live mode.
-	Ready         bool `protobuf:"varint,3,opt,name=ready,proto3" json:"ready,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	// Ordered live barrier for verified replay or ordinary admission. Opted-in
+	// ordinary refresh controls repeat it without advancing progress.
+	Ready bool `protobuf:"varint,3,opt,name=ready,proto3" json:"ready,omitempty"`
+	// Admission controls never advance consumer progress.
+	AdmissionState      string `protobuf:"bytes,4,opt,name=admission_state,json=admissionState,proto3" json:"admission_state,omitempty"`
+	AdmissionGeneration uint64 `protobuf:"varint,5,opt,name=admission_generation,json=admissionGeneration,proto3" json:"admission_generation,omitempty"`
+	// Bounded category, never a raw source error.
+	AdmissionReason string `protobuf:"bytes,6,opt,name=admission_reason,json=admissionReason,proto3" json:"admission_reason,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *PullerEvent) Reset() {
@@ -287,6 +302,27 @@ func (x *PullerEvent) GetReady() bool {
 		return x.Ready
 	}
 	return false
+}
+
+func (x *PullerEvent) GetAdmissionState() string {
+	if x != nil {
+		return x.AdmissionState
+	}
+	return ""
+}
+
+func (x *PullerEvent) GetAdmissionGeneration() uint64 {
+	if x != nil {
+		return x.AdmissionGeneration
+	}
+	return 0
+}
+
+func (x *PullerEvent) GetAdmissionReason() string {
+	if x != nil {
+		return x.AdmissionReason
+	}
+	return ""
 }
 
 // ChangeEvent represents a normalized change event from the database.
@@ -491,17 +527,21 @@ const file_puller_proto_rawDesc = "" +
 	"\x17ValidateBoundaryRequest\x12\x1a\n" +
 	"\bprogress\x18\x01 \x01(\tR\bprogress\".\n" +
 	"\x10BoundaryResponse\x12\x1a\n" +
-	"\bprogress\x18\x01 \x01(\tR\bprogress\"\x9f\x01\n" +
+	"\bprogress\x18\x01 \x01(\tR\bprogress\"\xd5\x01\n" +
 	"\x10SubscribeRequest\x12\x1f\n" +
 	"\vconsumer_id\x18\x01 \x01(\tR\n" +
 	"consumerId\x12\x14\n" +
 	"\x05after\x18\x02 \x01(\tR\x05after\x12/\n" +
 	"\x14coalesce_on_catch_up\x18\x03 \x01(\bR\x11coalesceOnCatchUp\x12#\n" +
-	"\rrequire_ready\x18\x04 \x01(\bR\frequireReady\"\x82\x01\n" +
+	"\rrequire_ready\x18\x04 \x01(\bR\frequireReady\x124\n" +
+	"\x16report_admission_ready\x18\x05 \x01(\bR\x14reportAdmissionReady\"\x89\x02\n" +
 	"\vPullerEvent\x12A\n" +
 	"\fchange_event\x18\x01 \x01(\v2\x1e.syntrix.puller.v1.ChangeEventR\vchangeEvent\x12\x1a\n" +
 	"\bprogress\x18\x02 \x01(\tR\bprogress\x12\x14\n" +
-	"\x05ready\x18\x03 \x01(\bR\x05ready\"\xec\x02\n" +
+	"\x05ready\x18\x03 \x01(\bR\x05ready\x12'\n" +
+	"\x0fadmission_state\x18\x04 \x01(\tR\x0eadmissionState\x121\n" +
+	"\x14admission_generation\x18\x05 \x01(\x04R\x13admissionGeneration\x12)\n" +
+	"\x10admission_reason\x18\x06 \x01(\tR\x0fadmissionReason\"\xec\x02\n" +
 	"\vChangeEvent\x12\x19\n" +
 	"\bevent_id\x18\x01 \x01(\tR\aeventId\x12\x1a\n" +
 	"\bdatabase\x18\x02 \x01(\tR\bdatabase\x12\x19\n" +

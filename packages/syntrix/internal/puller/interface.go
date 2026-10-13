@@ -63,6 +63,15 @@ type Service interface {
 	Subscribe(ctx context.Context, consumerID string, after string) <-chan *Event
 }
 
+type SubscriptionStatus = events.SubscriptionStatus
+type AdmissionSnapshot = events.AdmissionSnapshot
+
+// AdmissionService observes readiness of the actual ordinary event subscription.
+type AdmissionService interface {
+	Service
+	SubscribeStatus(context.Context, string, string) (<-chan *Event, *SubscriptionStatus)
+}
+
 // BoundaryService supports an offline bootstrap and verified replay subscription.
 // SubscribeReady requires a valid, nonempty boundary and delivers one ordered
 // Event.Ready barrier after verified replay. Consumers must apply preceding

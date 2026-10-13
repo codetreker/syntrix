@@ -35,13 +35,17 @@ published. Initial GHCR package visibility requires a one-time maintainer Public
 setting: repository access inheritance does not inherit visibility, and the
 official package APIs expose no visibility mutation.
 
-The archive contains metadata, both statically linked Linux CLIs, tracked
-deployment files, and extraction instructions. Staged example values pin the
+The archive contains metadata, both statically linked Linux CLIs, deployment documentation/template trees, and extraction instructions. Staged example values pin the
 published index digest. Repository links leaving the archive become SHA-pinned
-source links. The workflow renders both modes using the bundled native CLI before
-uploading the archive to a draft Release and publishing it. The
+source links. Packaging injects the same release version/full source SHA into both CLIs,
+checks bounded `deployment-contract` JSON against the integer managed-runtime
+marker and required modes/phases, and renders bootstrap/acceptance/full for both
+modes using the bundled native CLI before uploading the archive to a draft Release and publishing it. The
 [release guide](../../../../packages/syntrix/deployment/RELEASE.md) owns the
-operational procedure and metadata fields.
+operational procedure and metadata fields. The
+[managed-runtime decision](../architecture/2026-10-13-managed-runtime-contract.md)
+owns capability version 1 and its runtime semantics; previously published
+archives are unchanged.
 
 ## Alternatives
 

@@ -170,10 +170,10 @@ type stubPubSubProvider struct {
 	closeCount int
 }
 
-func (s *stubPubSubProvider) NewPublisher(opts pubsub.PublisherOptions) (pubsub.Publisher, error) {
+func (s *stubPubSubProvider) NewPublisher(ctx context.Context, opts pubsub.PublisherOptions) (pubsub.Publisher, error) {
 	return nil, nil
 }
-func (s *stubPubSubProvider) NewConsumer(opts pubsub.ConsumerOptions) (pubsub.Consumer, error) {
+func (s *stubPubSubProvider) NewConsumer(ctx context.Context, opts pubsub.ConsumerOptions) (pubsub.Consumer, error) {
 	return nil, nil
 }
 func (s *stubPubSubProvider) Close() error {

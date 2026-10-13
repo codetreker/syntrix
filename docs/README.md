@@ -34,7 +34,7 @@ syntrix/
 │   │   ├── api/             # Protocol definitions and generated code
 │   │   ├── tests/           # Integration tests
 │   │   ├── configs/         # Runtime configuration and rule examples
-│   │   ├── deployment/      # Standalone/distributed Kubernetes templates and values
+│   │   ├── deployment/      # Public renderer/config plus Kubernetes templates and values
 │   │   ├── scripts/         # Protocol generation and Go coverage helpers
 │   │   ├── go.mod           # Go module dependencies
 │   │   └── Makefile         # Go build, test, coverage, and generation targets
@@ -91,7 +91,11 @@ owns versioning, public GHCR publication, and deployment archives with matching
 Linux CLIs and build metadata. The [instance deployment guide](../packages/syntrix/deployment/README.md)
 owns standalone/distributed Kubernetes templates and the `syntrix-cli
 render-kubernetes` command. Strict deployment values select namespace, workload
-names, replicas, resource requests/limits, and existing backend connections. The
+names, replicas, resource requests/limits, existing backend connections and
+explicit broker authority/policy. The
+[managed runtime contract](design/server/console/04.managed_runtime_contract.md)
+provides public pure rendering, staged initialization, held read-path acceptance,
+actual role readiness and version-matched CLI capability metadata. The
 planned Console lifecycle selects the newest complete successfully published
 Syntrix package at instance creation, uses its matching CLI/templates, and records
 the verified package and fixed image version tag for every initialization/deployment
@@ -100,7 +104,8 @@ and diagnostics rather than managed Pod image references.
 A main merge or PR build alone does not publish a runtime release.
 Distributed mode also requires existing NATS JetStream and an operator-managed
 shared signing-key Secret. Explicit bootstrap uses a temporary non-restarting Pod
-while normal Deployments remain stopped. These artifacts do not add full-instance
+while normal Deployments remain stopped; query acceptance, cleanup finalization
+and full-role activation precede writer release. These artifacts do not add full-instance
 provisioning to Console's API.
 
 Run instance binaries with `packages/syntrix` as the working directory to use the

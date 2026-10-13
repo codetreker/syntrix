@@ -307,7 +307,10 @@ func NewMockProvider() *MockProvider {
 }
 
 // NewPublisher returns the configured publisher or error.
-func (p *MockProvider) NewPublisher(opts pubsub.PublisherOptions) (pubsub.Publisher, error) {
+func (p *MockProvider) NewPublisher(ctx context.Context, opts pubsub.PublisherOptions) (pubsub.Publisher, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.publisherOpts = append(p.publisherOpts, opts)
@@ -318,7 +321,10 @@ func (p *MockProvider) NewPublisher(opts pubsub.PublisherOptions) (pubsub.Publis
 }
 
 // NewConsumer returns the configured consumer or error.
-func (p *MockProvider) NewConsumer(opts pubsub.ConsumerOptions) (pubsub.Consumer, error) {
+func (p *MockProvider) NewConsumer(ctx context.Context, opts pubsub.ConsumerOptions) (pubsub.Consumer, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.consumerOpts = append(p.consumerOpts, opts)

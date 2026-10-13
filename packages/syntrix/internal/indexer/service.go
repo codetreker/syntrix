@@ -836,3 +836,12 @@ func (s *service) InvalidateDatabase(ctx context.Context, database string) error
 	s.logger.Info("invalidated database indexes", "database", database)
 	return nil
 }
+
+func (s *service) TerminalError() error {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.retrying {
+		return nil
+	}
+	return s.lifecycleErr
+}

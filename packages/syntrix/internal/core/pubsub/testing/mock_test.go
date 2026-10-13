@@ -223,7 +223,7 @@ func TestMockProvider_NewPublisher(t *testing.T) {
 		SubjectPrefix: "test.prefix",
 	}
 
-	pub, err := provider.NewPublisher(opts)
+	pub, err := provider.NewPublisher(context.Background(), opts)
 	require.NoError(t, err)
 	assert.NotNil(t, pub)
 
@@ -242,7 +242,7 @@ func TestMockProvider_NewConsumer(t *testing.T) {
 		FilterSubject: "test.>",
 	}
 
-	cons, err := provider.NewConsumer(opts)
+	cons, err := provider.NewConsumer(context.Background(), opts)
 	require.NoError(t, err)
 	assert.NotNil(t, cons)
 
@@ -258,7 +258,7 @@ func TestMockProvider_PublisherError(t *testing.T) {
 	expectedErr := errors.New("publisher creation failed")
 	provider.SetPublisherError(expectedErr)
 
-	_, err := provider.NewPublisher(pubsub.PublisherOptions{})
+	_, err := provider.NewPublisher(context.Background(), pubsub.PublisherOptions{})
 	assert.Equal(t, expectedErr, err)
 }
 
@@ -267,7 +267,7 @@ func TestMockProvider_ConsumerError(t *testing.T) {
 	expectedErr := errors.New("consumer creation failed")
 	provider.SetConsumerError(expectedErr)
 
-	_, err := provider.NewConsumer(pubsub.ConsumerOptions{})
+	_, err := provider.NewConsumer(context.Background(), pubsub.ConsumerOptions{})
 	assert.Equal(t, expectedErr, err)
 }
 
@@ -297,7 +297,7 @@ func TestMockProvider_SetPublisher(t *testing.T) {
 
 	provider.SetPublisher(customPub)
 
-	pub, err := provider.NewPublisher(pubsub.PublisherOptions{})
+	pub, err := provider.NewPublisher(context.Background(), pubsub.PublisherOptions{})
 	require.NoError(t, err)
 
 	// Verify it's the custom publisher
@@ -313,7 +313,19 @@ func TestMockProvider_SetConsumer(t *testing.T) {
 
 	provider.SetConsumer(customCons)
 
-	cons, err := provider.NewConsumer(pubsub.ConsumerOptions{})
+	cons, err := provider.NewConsumer(context.Background(), pubsub.ConsumerOptions{})
 	require.NoError(t, err)
 	assert.Equal(t, customCons, cons)
+}
+
+func TestMockProviderFactoryCancellation(t *testing.T) {
+	provider := NewMockProvider()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := provider.NewPublisher(ctx, pubsub.PublisherOptions{})
+	require.ErrorIs(t, err, context.Canceled)
+	_, err = provider.NewConsumer(ctx, pubsub.ConsumerOptions{})
+	require.ErrorIs(t, err, context.Canceled)
+	require.Empty(t, provider.PublisherOpts())
+	require.Empty(t, provider.ConsumerOpts())
 }

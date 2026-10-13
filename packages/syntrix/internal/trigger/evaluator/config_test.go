@@ -1,8 +1,10 @@
 package evaluator
 
 import (
+	"context"
 	"testing"
 
+	deploymentconfig "github.com/codetreker/syntrix/deployment/config"
 	"github.com/codetreker/syntrix/internal/core/pubsub"
 	services "github.com/codetreker/syntrix/internal/services/config"
 	"github.com/stretchr/testify/assert"
@@ -114,7 +116,7 @@ func TestNewPublisher_NilConnection(t *testing.T) {
 	cfg := Config{}
 
 	// Test with nil connection - should fail to create JetStream
-	pub, err := NewPublisher(nil, cfg)
+	pub, err := NewPublisher(context.Background(), nil, cfg, deploymentconfig.DefaultOperatorBinding())
 	assert.Error(t, err)
 	assert.Nil(t, pub)
 	assert.Contains(t, err.Error(), "failed to create JetStream")

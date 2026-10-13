@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 
+	deploymentconfig "github.com/codetreker/syntrix/deployment/config"
 	services "github.com/codetreker/syntrix/internal/services/config"
 	"github.com/codetreker/syntrix/internal/trigger/delivery"
 	"github.com/codetreker/syntrix/internal/trigger/evaluator"
@@ -12,7 +13,8 @@ import (
 
 // Config is the top-level trigger configuration.
 type Config struct {
-	NatsURL string `yaml:"nats_url"`
+	NatsURL string                          `yaml:"nats_url"`
+	Broker  *deploymentconfig.BrokerBinding `yaml:"broker"`
 
 	// Evaluator service configuration
 	Evaluator evaluator.Config `yaml:"evaluator"`
@@ -23,11 +25,30 @@ type Config struct {
 
 // DefaultConfig returns the default trigger configuration.
 func DefaultConfig() Config {
-	return Config{
+	broker := deploymentconfig.DefaultOperatorBinding()
+	cfg := Config{
 		NatsURL:   "nats://localhost:4222",
+		Broker:    &broker,
 		Evaluator: evaluator.DefaultConfig(),
 		Delivery:  delivery.DefaultConfig(),
 	}
+	cfg.Evaluator.StreamName = broker.StreamName
+	cfg.Evaluator.StorageType = broker.Policy.Storage
+	cfg.Delivery.StreamName = broker.StreamName
+	cfg.Delivery.ConsumerName = broker.ConsumerName
+	cfg.Delivery.StorageType = broker.Policy.Storage
+	return cfg
+}
+
+// PrepareForLoad leaves file-owned broker authority unset until loading is complete.
+// Routing defaults are derived from that binding after all files are decoded.
+func (c *Config) PrepareForLoad() {
+	c.Broker = nil
+	c.Evaluator.StreamName = ""
+	c.Evaluator.StorageType = ""
+	c.Delivery.StreamName = ""
+	c.Delivery.ConsumerName = ""
+	c.Delivery.StorageType = ""
 }
 
 // ApplyDefaults fills in zero values with defaults.
@@ -35,6 +56,23 @@ func (c *Config) ApplyDefaults() {
 	defaults := DefaultConfig()
 	if c.NatsURL == "" {
 		c.NatsURL = defaults.NatsURL
+	}
+	if c.Broker != nil {
+		if c.Evaluator.StreamName == "" {
+			c.Evaluator.StreamName = c.Broker.StreamName
+		}
+		if c.Evaluator.StorageType == "" {
+			c.Evaluator.StorageType = c.Broker.Policy.Storage
+		}
+		if c.Delivery.StreamName == "" {
+			c.Delivery.StreamName = c.Broker.StreamName
+		}
+		if c.Delivery.ConsumerName == "" {
+			c.Delivery.ConsumerName = c.Broker.ConsumerName
+		}
+		if c.Delivery.StorageType == "" {
+			c.Delivery.StorageType = c.Broker.Policy.Storage
+		}
 	}
 	c.Evaluator.ApplyDefaults()
 	c.Delivery.ApplyDefaults()
@@ -63,9 +101,29 @@ func (c *Config) ResolvePaths(configDir, dataDir string) {
 
 // Validate returns an error if the configuration is invalid.
 func (c *Config) Validate(mode services.DeploymentMode) error {
-	// Delegate to sub-configs; returns nil if all valid
 	if err := c.Evaluator.Validate(mode); err != nil {
 		return fmt.Errorf("evaluator: %w", err)
 	}
-	return c.Delivery.Validate(mode)
+	if err := c.Delivery.Validate(mode); err != nil {
+		return fmt.Errorf("delivery: %w", err)
+	}
+	if !mode.IsDistributed() {
+		return nil
+	}
+	if c.Broker == nil {
+		return fmt.Errorf("broker is required in distributed mode")
+	}
+	if _, err := c.Broker.Specification(); err != nil {
+		return fmt.Errorf("broker: %w", err)
+	}
+	if c.Evaluator.StreamName != c.Broker.StreamName || c.Delivery.StreamName != c.Broker.StreamName {
+		return fmt.Errorf("evaluator and delivery stream_name must match broker stream_name")
+	}
+	if c.Delivery.ConsumerName != c.Broker.ConsumerName {
+		return fmt.Errorf("delivery consumer_name must match broker consumer_name")
+	}
+	if c.Evaluator.StorageType != c.Broker.Policy.Storage || c.Delivery.StorageType != c.Broker.Policy.Storage {
+		return fmt.Errorf("evaluator and delivery storage_type must match broker policy storage")
+	}
+	return nil
 }

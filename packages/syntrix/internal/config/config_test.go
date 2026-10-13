@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -39,7 +40,7 @@ func TestLoadConfig_EnvVars(t *testing.T) {
 		os.Unsetenv("TRIGGER_RULES_PATH")
 	}()
 
-	cfg := LoadConfig()
+	cfg := loadConfigFixture(t, "")
 
 	assert.Equal(t, "mongodb://test:27017", cfg.Storage.Backends["default_mongo"].Mongo.URI)
 	assert.Equal(t, "testdb", cfg.Storage.Backends["default_mongo"].Mongo.DatabaseName)
@@ -49,20 +50,24 @@ func TestLoadConfig_EnvVars(t *testing.T) {
 }
 
 func TestLoadConfig_LoadFileErrors(t *testing.T) {
-	require.NoError(t, os.Mkdir("configs", 0755))
-	defer os.RemoveAll("configs")
-
-	// Create a directory where a file is expected to trigger read error path
-	require.NoError(t, os.Mkdir("configs/config.yml", 0755))
-
-	// Malformed YAML to trigger parse error path
-	require.NoError(t, os.WriteFile("configs/config.local.yml", []byte("not: [valid"), 0644))
-
-	cfg := LoadConfig()
-
-	// Defaults should remain when files fail to load/parse
-	assert.Equal(t, 8080, cfg.Server.HTTPPort)
-	assert.Equal(t, "mongodb://localhost:27017", cfg.Storage.Backends["default_mongo"].Mongo.URI)
+	dir := t.TempDir()
+	require.NoError(t, os.Mkdir(filepath.Join(dir, "config.yml"), 0755))
+	cfg, err := ReadConfigFrom(dir)
+	require.Nil(t, cfg)
+	var diagnostic *LoadError
+	require.ErrorAs(t, err, &diagnostic)
+	require.Equal(t, "read", diagnostic.Phase)
+	require.NoError(t, os.Remove(filepath.Join(dir, "config.yml")))
+	secret := "fixture-private-password"
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.local.yml"), []byte("server:\n  http_port: "+secret), 0600))
+	cfg, err = ReadConfigFrom(dir)
+	require.Nil(t, cfg)
+	require.ErrorAs(t, err, &diagnostic)
+	require.Equal(t, "decode", diagnostic.Phase)
+	require.NotContains(t, err.Error(), secret)
+	require.ErrorContains(t, diagnostic.Cause, "cannot unmarshal")
+	require.ErrorIs(t, errors.Unwrap(err), diagnostic.Cause)
+	require.PanicsWithError(t, "configuration decode failed", func() { LoadConfigFrom(dir) })
 }
 
 func TestLoadConfig_File(t *testing.T) {
@@ -84,7 +89,7 @@ gateway:
 	err = os.WriteFile("configs/config.yml", configContent, 0644)
 	require.NoError(t, err)
 
-	cfg := LoadConfig()
+	cfg := loadConfigFixture(t, "")
 
 	assert.Equal(t, "mongodb://file:27017", cfg.Storage.Backends["default_mongo"].Mongo.URI)
 	assert.Equal(t, "filedb", cfg.Storage.Backends["default_mongo"].Mongo.DatabaseName)
@@ -121,7 +126,7 @@ gateway:
     rules_path: local_rules
 `), 0600))
 
-			cfg := LoadConfigFrom(configDir)
+			cfg := loadConfigFixture(t, configDir)
 			assert.Equal(t, mode, cfg.Deployment.Mode)
 			assert.Equal(t, 20*time.Minute, cfg.Identity.AuthN.AccessTokenTTL)
 			assert.Equal(t, 48*time.Hour, cfg.Identity.AuthN.RefreshTokenTTL)
@@ -189,7 +194,7 @@ storage:
 	err := os.WriteFile(filepath.Join(customDir, "config.yml"), configContent, 0644)
 	require.NoError(t, err)
 
-	cfg := LoadConfigFrom(customDir)
+	cfg := loadConfigFixture(t, customDir)
 
 	assert.Equal(t, customDir, cfg.ConfigDir)
 	assert.Equal(t, 9999, cfg.Server.HTTPPort)
@@ -212,7 +217,7 @@ server:
 	defer os.Unsetenv("SYNTRIX_CONFIG_DIR")
 
 	// Empty string should fall back to env var
-	cfg := LoadConfigFrom("")
+	cfg := loadConfigFixture(t, "")
 
 	assert.Equal(t, customDir, cfg.ConfigDir)
 	assert.Equal(t, 8888, cfg.Server.HTTPPort)
@@ -240,7 +245,7 @@ func TestLoadConfigFrom_ParameterOverridesEnvVar(t *testing.T) {
 	defer os.Unsetenv("SYNTRIX_CONFIG_DIR")
 
 	// Parameter should override env var
-	cfg := LoadConfigFrom(paramDir)
+	cfg := loadConfigFixture(t, paramDir)
 
 	assert.Equal(t, paramDir, cfg.ConfigDir)
 	assert.Equal(t, 2222, cfg.Server.HTTPPort)
@@ -250,7 +255,93 @@ func TestLoadConfigFrom_DefaultFallback(t *testing.T) {
 	// Clear env var to ensure default is used
 	os.Unsetenv("SYNTRIX_CONFIG_DIR")
 
-	cfg := LoadConfigFrom("")
+	cfg := loadConfigFixture(t, "")
 
 	assert.Equal(t, DefaultConfigDir, cfg.ConfigDir)
+}
+
+func loadConfigFixture(t *testing.T, dir string) *Config {
+	t.Helper()
+	actual := dir
+	if actual == "" {
+		actual = os.Getenv("SYNTRIX_CONFIG_DIR")
+	}
+	if actual == "" {
+		actual = DefaultConfigDir
+	}
+	_, dirErr := os.Stat(actual)
+	require.NoError(t, os.MkdirAll(actual, 0755))
+	if os.IsNotExist(dirErr) {
+		defer os.RemoveAll(actual)
+	}
+	path := filepath.Join(actual, "config.local.yml")
+	original, readErr := os.ReadFile(path)
+	var values map[string]any
+	if readErr == nil {
+		if yaml.Unmarshal(original, &values) != nil {
+			old, present := os.LookupEnv("SYNTRIX_DEPLOYMENT_MODE")
+			require.NoError(t, os.Setenv("SYNTRIX_DEPLOYMENT_MODE", "standalone"))
+			defer func() {
+				if present {
+					_ = os.Setenv("SYNTRIX_DEPLOYMENT_MODE", old)
+				} else {
+					_ = os.Unsetenv("SYNTRIX_DEPLOYMENT_MODE")
+				}
+			}()
+			return LoadConfigFrom(dir)
+		}
+	}
+	if values == nil {
+		values = map[string]any{}
+	}
+	triggerValues, ok := values["trigger"].(map[string]any)
+	if !ok {
+		triggerValues = map[string]any{}
+	}
+	triggerValues["broker"] = DefaultConfig().Trigger.Broker
+	values["trigger"] = triggerValues
+	encoded, err := yaml.Marshal(values)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(path, encoded, 0600))
+	defer func() {
+		if readErr == nil {
+			require.NoError(t, os.WriteFile(path, original, 0600))
+		} else {
+			require.NoError(t, os.Remove(path))
+		}
+	}()
+	return LoadConfigFrom(dir)
+}
+
+func TestLoadedBrokerBindingOwnsDerivedRoutesAndRejectsExplicitContradictions(t *testing.T) {
+	binding := DefaultConfig().Trigger.Broker
+	binding.StreamName = "CUSTOM_STREAM"
+	binding.SubjectPrefix = "CUSTOM_NAMESPACE"
+	binding.ConsumerName = "CUSTOM_DELIVERY"
+	for _, contradiction := range []bool{false, true} {
+		t.Run(map[bool]string{false: "binding-only", true: "contradiction"}[contradiction], func(t *testing.T) {
+			dir := t.TempDir()
+			trigger := map[string]any{"broker": binding}
+			if contradiction {
+				trigger["evaluator"] = map[string]any{"stream_name": "FOREIGN_STREAM"}
+			}
+			encoded, err := yaml.Marshal(map[string]any{"trigger": trigger})
+			require.NoError(t, err)
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yml"), encoded, 0600))
+			cfg, err := ReadConfigFrom(dir)
+			if contradiction {
+				require.Nil(t, cfg)
+				var diagnostic *LoadError
+				require.ErrorAs(t, err, &diagnostic)
+				require.Equal(t, "validation", diagnostic.Phase)
+				return
+			}
+			require.NoError(t, err)
+			require.Equal(t, binding.StreamName, cfg.Trigger.Evaluator.StreamName)
+			require.Equal(t, binding.StreamName, cfg.Trigger.Delivery.StreamName)
+			require.Equal(t, binding.ConsumerName, cfg.Trigger.Delivery.ConsumerName)
+			require.Equal(t, binding.Policy.Storage, cfg.Trigger.Evaluator.StorageType)
+			require.Equal(t, binding.Policy.Storage, cfg.Trigger.Delivery.StorageType)
+		})
+	}
 }

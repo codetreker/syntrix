@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"time"
 
@@ -11,8 +12,10 @@ import (
 	pullerv1 "github.com/codetreker/syntrix/api/gen/puller/v1"
 	pb "github.com/codetreker/syntrix/api/gen/query/v1"
 	streamerv1 "github.com/codetreker/syntrix/api/gen/streamer/v1"
+	deploymentconfig "github.com/codetreker/syntrix/deployment/config"
 	"github.com/codetreker/syntrix/internal/config"
 	"github.com/codetreker/syntrix/internal/core/database"
+	"github.com/codetreker/syntrix/internal/core/origin"
 	"github.com/codetreker/syntrix/internal/core/pubsub"
 	"github.com/codetreker/syntrix/internal/core/pubsub/memory"
 	pubsubnats "github.com/codetreker/syntrix/internal/core/pubsub/nats"
@@ -24,9 +27,12 @@ import (
 	identityconfig "github.com/codetreker/syntrix/internal/identity/config"
 	identityruntime "github.com/codetreker/syntrix/internal/identity/runtime"
 	"github.com/codetreker/syntrix/internal/indexer"
+	"github.com/codetreker/syntrix/internal/initialization"
+	initializationconfig "github.com/codetreker/syntrix/internal/initialization/config"
 	"github.com/codetreker/syntrix/internal/puller"
 	"github.com/codetreker/syntrix/internal/query"
 	"github.com/codetreker/syntrix/internal/server"
+	servicesconfig "github.com/codetreker/syntrix/internal/services/config"
 	"github.com/codetreker/syntrix/internal/streamer"
 	"github.com/codetreker/syntrix/internal/trigger/delivery"
 	"github.com/codetreker/syntrix/internal/trigger/evaluator"
@@ -53,8 +59,11 @@ var deliveryServiceFactory = func(deps delivery.Dependencies, cfg delivery.Confi
 }
 
 // pubsubProviderFactory creates pubsub providers for distributed mode - injectable for testing
-var pubsubProviderFactory = func(url string) (pubsub.Provider, error) {
-	return pubsubnats.NewProvider(url)
+var pubsubProviderFactory = func(url string, binding deploymentconfig.BrokerBinding) (pubsub.Provider, error) {
+	return pubsubnats.NewProvider(url, binding)
+}
+var initializationFactory = func(ctx context.Context, cfg storageconfig.Config, backends *storage.Backends) (initializationCoordinator, error) {
+	return initialization.New(ctx, cfg, backends)
 }
 
 func (m *Manager) Init(ctx context.Context) (initErr error) {
@@ -66,6 +75,13 @@ func (m *Manager) Init(ctx context.Context) (initErr error) {
 		}
 	}()
 	slog.Info("Initializing Service Manager", "mode", m.opts.Mode)
+
+	if err := m.validateManagedOrigins(); err != nil {
+		return err
+	}
+	if err := m.prepareInitialization(ctx); err != nil {
+		return err
+	}
 
 	// Common infrastructure initialization
 	if err := m.initAuthService(ctx); err != nil {
@@ -84,6 +100,7 @@ func (m *Manager) Init(ctx context.Context) (initErr error) {
 
 	// Initialize Unified Server Service
 	server.InitDefault(m.cfg.Server, nil)
+	m.initHealth()
 
 	// Mode-specific initialization
 	if m.opts.Mode.IsStandalone() {
@@ -132,8 +149,11 @@ func (m *Manager) initStandalone(ctx context.Context) error {
 	}
 
 	// Initialize trigger services with embedded NATS if configured
-	if err := m.initTriggerServicesStandalone(ctx); err != nil {
-		return err
+	if !m.writersHeld() {
+		if err := m.initTriggerServicesStandalone(ctx); err != nil {
+			return err
+		}
+
 	}
 
 	// Initialize database service (for Gateway/API)
@@ -198,7 +218,7 @@ func (m *Manager) initDistributed(ctx context.Context) error {
 	}
 
 	// Initialize trigger services with remote NATS
-	if m.opts.RunTriggerEvaluator || m.opts.RunTriggerWorker {
+	if !m.writersHeld() && (m.opts.RunTriggerEvaluator || m.opts.RunTriggerWorker) {
 		if err := m.initTriggerServices(ctx); err != nil {
 			return err
 		}
@@ -339,6 +359,7 @@ func (m *Manager) initQueryService(ctx context.Context) (query.Service, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to indexer: %w", err)
 	}
+	m.trackClient(client)
 	slog.Info("Query Engine using remote Indexer service", "url", m.cfg.Query.IndexerAddr)
 
 	return query.NewService(sf.Document(), client), nil
@@ -403,6 +424,7 @@ func (m *Manager) initStreamerService() error {
 	if err != nil {
 		return fmt.Errorf("failed to create Puller gRPC client: %w", err)
 	}
+	m.trackClient(pullerClient)
 	slog.Info("Streamer using remote Puller service", "url", cfg.PullerAddr)
 
 	opts := []streamer.ServiceConfigOption{streamer.WithPullerClient(pullerClient)}
@@ -435,6 +457,7 @@ func (m *Manager) initGateway() error {
 	if err != nil {
 		return fmt.Errorf("failed to create Query gRPC client: %w", err)
 	}
+	m.trackClient(queryClient)
 	slog.Info("Gateway using remote Query service", "url", m.cfg.Gateway.QueryServiceURL)
 
 	// Create Streamer gRPC client using streamer.client config
@@ -504,6 +527,7 @@ func (m *Manager) initIndexerService(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("failed to create Puller gRPC client for Indexer: %w", err)
 	}
+	m.trackClient(pullerClient)
 	slog.Info("Indexer using remote Puller service", "url", m.cfg.Indexer.PullerAddr)
 
 	svc, err := indexer.NewService(m.cfg.Indexer, pullerClient, slog.Default())
@@ -542,19 +566,22 @@ func (m *Manager) initTriggerServicesStandalone(ctx context.Context) error {
 	slog.Info("Initialized in-memory pubsub engine (standalone)")
 
 	// Initialize Evaluator Service with memory publisher
-	publisher, err := m.pubsubProvider.NewPublisher(pubsub.PublisherOptions{
+	publisher, err := m.pubsubProvider.NewPublisher(ctx, pubsub.PublisherOptions{
 		StreamName:    m.cfg.Trigger.Evaluator.StreamName,
 		SubjectPrefix: m.cfg.Trigger.Evaluator.StreamName,
+		RetryAttempts: m.cfg.Trigger.Evaluator.RetryAttempts,
+		Storage:       m.cfg.Trigger.Evaluator.StorageTypeValue(),
 	})
 	if err != nil {
 		return fmt.Errorf("failed to create trigger publisher: %w", err)
 	}
 
 	evalSvc, err := evaluatorServiceFactory(evaluator.Dependencies{
-		Store:     sf.Document(),
-		Puller:    m.pullerService,
-		Publisher: publisher,
-		Metrics:   nil,
+		Store:         sf.Document(),
+		Puller:        m.pullerService,
+		Publisher:     publisher,
+		SubjectPrefix: m.cfg.Trigger.Evaluator.StreamName,
+		Metrics:       nil,
 	}, m.cfg.Trigger.Evaluator)
 	if err != nil {
 		return fmt.Errorf("failed to create trigger evaluator service: %w", err)
@@ -563,9 +590,12 @@ func (m *Manager) initTriggerServicesStandalone(ctx context.Context) error {
 	slog.Info("Initialized Trigger Evaluator Service (standalone, memory pubsub)")
 
 	// Initialize Delivery Service with memory consumer
-	consumer, err := m.pubsubProvider.NewConsumer(pubsub.ConsumerOptions{
-		StreamName:    m.cfg.Trigger.Delivery.StreamName,
-		FilterSubject: m.cfg.Trigger.Delivery.StreamName + ".>",
+	consumer, err := m.pubsubProvider.NewConsumer(ctx, pubsub.ConsumerOptions{
+		StreamName:     m.cfg.Trigger.Delivery.StreamName,
+		FilterSubject:  m.cfg.Trigger.Delivery.StreamName + ".>",
+		ConsumerName:   m.cfg.Trigger.Delivery.ConsumerName,
+		Storage:        m.cfg.Trigger.Delivery.StorageTypeValue(),
+		ChannelBufSize: m.cfg.Trigger.Delivery.ChannelBufSize,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to create trigger consumer: %w", err)
@@ -590,7 +620,7 @@ func (m *Manager) initTriggerServicesStandalone(ctx context.Context) error {
 // Uses gRPC client to connect to remote Puller and remote NATS.
 func (m *Manager) initTriggerServices(ctx context.Context) error {
 	// Distributed mode uses NATS provider (or mock for testing)
-	provider, err := pubsubProviderFactory(m.cfg.Trigger.NatsURL)
+	provider, err := pubsubProviderFactory(m.cfg.Trigger.NatsURL, *m.cfg.Trigger.Broker)
 	if err != nil {
 		return fmt.Errorf("failed to create pubsub provider: %w", err)
 	}
@@ -614,21 +644,25 @@ func (m *Manager) initTriggerServices(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("failed to create Puller gRPC client for Trigger Evaluator: %w", err)
 		}
+		m.trackClient(pullerClient)
 		slog.Info("Trigger Evaluator using remote Puller service", "url", m.cfg.Trigger.Evaluator.PullerAddr)
 
-		publisher, err := m.pubsubProvider.NewPublisher(pubsub.PublisherOptions{
+		publisher, err := m.pubsubProvider.NewPublisher(ctx, pubsub.PublisherOptions{
 			StreamName:    m.cfg.Trigger.Evaluator.StreamName,
-			SubjectPrefix: m.cfg.Trigger.Evaluator.StreamName,
+			SubjectPrefix: m.cfg.Trigger.Broker.SubjectPrefix,
+			RetryAttempts: m.cfg.Trigger.Evaluator.RetryAttempts,
+			Storage:       m.cfg.Trigger.Evaluator.StorageTypeValue(),
 		})
 		if err != nil {
 			return fmt.Errorf("failed to create trigger publisher: %w", err)
 		}
 
 		evalSvc, err := evaluatorServiceFactory(evaluator.Dependencies{
-			Store:     sf.Document(),
-			Puller:    pullerClient,
-			Publisher: publisher,
-			Metrics:   nil,
+			Store:         sf.Document(),
+			Puller:        pullerClient,
+			Publisher:     publisher,
+			SubjectPrefix: m.cfg.Trigger.Broker.SubjectPrefix,
+			Metrics:       nil,
 		}, m.cfg.Trigger.Evaluator)
 		if err != nil {
 			return fmt.Errorf("failed to create trigger evaluator service: %w", err)
@@ -639,9 +673,12 @@ func (m *Manager) initTriggerServices(ctx context.Context) error {
 
 	// Initialize Delivery Service
 	if m.opts.RunTriggerWorker {
-		consumer, err := m.pubsubProvider.NewConsumer(pubsub.ConsumerOptions{
-			StreamName:    m.cfg.Trigger.Delivery.StreamName,
-			FilterSubject: m.cfg.Trigger.Delivery.StreamName + ".>",
+		consumer, err := m.pubsubProvider.NewConsumer(ctx, pubsub.ConsumerOptions{
+			StreamName:     m.cfg.Trigger.Delivery.StreamName,
+			FilterSubject:  m.cfg.Trigger.Broker.SubjectPrefix + ".>",
+			ConsumerName:   m.cfg.Trigger.Delivery.ConsumerName,
+			Storage:        m.cfg.Trigger.Delivery.StorageTypeValue(),
+			ChannelBufSize: m.cfg.Trigger.Delivery.ChannelBufSize,
 		})
 		if err != nil {
 			return fmt.Errorf("failed to create trigger consumer: %w", err)
@@ -697,7 +734,7 @@ func (m *Manager) initDatabaseService(ctx context.Context) error {
 // initDeletionWorker initializes the deletion worker for background cleanup.
 // Used by Query nodes (which have access to Indexer).
 func (m *Manager) initDeletionWorker(ctx context.Context) error {
-	if !m.cfg.Database.Deletion.Enabled {
+	if m.writersHeld() || !m.cfg.Database.Deletion.Enabled {
 		slog.Debug("Deletion worker disabled in config")
 		return nil
 	}
@@ -724,4 +761,54 @@ func (m *Manager) initDeletionWorker(ctx context.Context) error {
 	slog.Info("Initialized Deletion Worker")
 
 	return nil
+}
+
+func (m *Manager) needsStorage() bool {
+	return m.opts.Mode.IsStandalone() || m.opts.RunAPI || m.opts.RunQuery || m.opts.RunPuller || m.opts.RunTriggerEvaluator || m.opts.RunTriggerWorker
+}
+
+func (m *Manager) prepareInitialization(ctx context.Context) error {
+	if !m.needsStorage() {
+		return nil
+	}
+	backends, err := m.getBackends(ctx)
+	if err != nil {
+		return err
+	}
+	m.initialization, err = initializationFactory(ctx, m.cfg.Storage, backends)
+	if err != nil {
+		return fmt.Errorf("create initialization coordinator: %w", err)
+	}
+	if m.cfg.Initialization.Mode != initializationconfig.Managed {
+		_, err = m.initialization.Prepare(ctx)
+	} else if m.opts.BootstrapIndexes {
+		_, err = m.initialization.PrepareFresh(ctx)
+	} else if m.opts.InitializationAcceptance {
+		_, err = m.initialization.Prepare(ctx)
+	} else {
+		var observed initialization.Status
+		observed, err = m.initialization.Inspect(ctx)
+		if err == nil && observed.State != initialization.Finalized {
+			err = initialization.ErrNotPrepared
+		}
+	}
+	if err != nil {
+		return fmt.Errorf("initialize runtime storage: %w", err)
+	}
+	return nil
+}
+
+func (m *Manager) trackClient(client any) {
+	if closer, ok := client.(io.Closer); ok {
+		m.ownedClients = append(m.ownedClients, closer)
+	}
+}
+
+func (m *Manager) validateManagedOrigins() error {
+	if !m.opts.RunAPI && !m.opts.Mode.IsStandalone() {
+		return nil
+	}
+	return servicesconfig.ValidateOrigins(m.cfg.Initialization.Mode == initializationconfig.Managed, m.cfg.Server.EnableCORS,
+		origin.Policy{AllowedOrigins: m.cfg.Server.AllowedOrigins, AllowDevelopment: m.cfg.Server.AllowDevOrigin},
+		origin.Policy{AllowedOrigins: m.cfg.Gateway.Realtime.AllowedOrigins, AllowDevelopment: m.cfg.Gateway.Realtime.AllowDevOrigin})
 }

@@ -3,8 +3,11 @@ package evaluator
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -38,6 +41,232 @@ func (m *MockDocumentWatcher) SaveCheckpoint(ctx context.Context, token interfac
 func (m *MockDocumentWatcher) Close() error {
 	args := m.Called()
 	return args.Error(0)
+}
+
+type admissionWatcher struct {
+	MockDocumentWatcher
+	ready   atomic.Bool
+	ack     atomic.Uint64
+	mu      sync.Mutex
+	err     error
+	stopErr error
+}
+
+func (w *admissionWatcher) Readiness(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if !w.ready.Load() {
+		return errors.New("watcher recovering")
+	}
+	return nil
+}
+
+func (w *admissionWatcher) TerminalError() error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.err
+}
+
+func (w *admissionWatcher) Acknowledge(sequence uint64) { w.ack.Store(sequence) }
+
+func (w *admissionWatcher) Shutdown(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.stopErr
+}
+
+func TestService_AdmissionAcknowledgesCompletedProcessing(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	w := new(admissionWatcher)
+	stream := make(chan events.SyntrixChangeEvent, 2)
+	w.On("Watch", mock.Anything).Return((<-chan events.SyntrixChangeEvent)(stream), nil)
+	w.On("SaveCheckpoint", mock.Anything, "completed").Return(nil).Maybe()
+	processing, release := make(chan struct{}), make(chan struct{})
+	s := &service{
+		watcher: w,
+		evaluator: evaluatorFunc(func(context.Context, *types.Trigger, events.SyntrixChangeEvent) (bool, error) {
+			close(processing)
+			select {
+			case <-release:
+			case <-ctx.Done():
+			}
+			return false, nil
+		}),
+		triggers: []*types.Trigger{{ID: "admission"}},
+	}
+	require.Error(t, s.Readiness(ctx))
+	require.NoError(t, s.TerminalError())
+	done := make(chan error, 1)
+	go func() { done <- s.Start(ctx) }()
+	stream <- events.SyntrixChangeEvent{AdmissionSequence: 1, Progress: "completed", Document: &storage.StoredDoc{Id: "one"}}
+	select {
+	case <-processing:
+	case <-ctx.Done():
+		t.Fatal("evaluator did not begin processing")
+	}
+	require.Zero(t, w.ack.Load(), "receipt cannot acknowledge unfinished evaluation")
+	require.Error(t, s.Readiness(ctx))
+	require.ErrorContains(t, s.Start(ctx), "already running")
+	close(release)
+	require.Eventually(t, func() bool { return w.ack.Load() == 1 }, time.Second, time.Millisecond)
+	w.ready.Store(true)
+	require.NoError(t, s.Readiness(ctx))
+	w.ready.Store(false)
+	require.Error(t, s.Readiness(ctx), "recovery must clear evaluator readiness")
+	stream <- events.SyntrixChangeEvent{AdmissionSequence: 2}
+	require.Eventually(t, func() bool { return w.ack.Load() == 2 }, time.Second, time.Millisecond)
+	cancel()
+	require.NoError(t, <-done)
+	require.Error(t, s.Readiness(context.Background()))
+	require.NoError(t, s.TerminalError())
+}
+
+func TestService_WatcherWithoutAdmissionCannotServe(t *testing.T) {
+	w := new(MockDocumentWatcher)
+	stream := make(chan events.SyntrixChangeEvent)
+	w.On("Watch", mock.Anything).Return((<-chan events.SyntrixChangeEvent)(stream), nil)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	s := &service{watcher: w}
+	require.NoError(t, s.Shutdown(ctx))
+	require.NoError(t, s.TerminalError())
+	done := make(chan error, 1)
+	go func() { done <- s.Start(ctx) }()
+	require.Eventually(t, func() bool {
+		err := s.Readiness(ctx)
+		return err != nil && strings.Contains(err.Error(), "admission state is unavailable")
+	}, time.Second, time.Millisecond)
+	close(stream)
+	require.ErrorContains(t, <-done, "stopped unexpectedly")
+	require.ErrorContains(t, s.Shutdown(context.Background()), "settlement is unavailable")
+}
+
+func TestService_MissingPublisherRejectsMatchedEvent(t *testing.T) {
+	s := &service{
+		evaluator: evaluatorFunc(func(context.Context, *types.Trigger, events.SyntrixChangeEvent) (bool, error) { return true, nil }),
+		triggers:  []*types.Trigger{{ID: "match"}},
+	}
+	require.ErrorContains(t, s.processEvent(context.Background(), events.SyntrixChangeEvent{}), "publisher is not configured")
+}
+
+func TestService_WatcherTerminationPreservesCause(t *testing.T) {
+	for _, withCause := range []bool{false, true} {
+		t.Run(fmt.Sprint(withCause), func(t *testing.T) {
+			w := new(admissionWatcher)
+			stream := make(chan events.SyntrixChangeEvent)
+			close(stream)
+			w.On("Watch", mock.Anything).Return((<-chan events.SyntrixChangeEvent)(stream), nil)
+			if withCause {
+				w.err = errors.New("source terminated")
+			}
+			s := &service{watcher: w}
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			err := s.Start(ctx)
+			require.Error(t, err)
+			if withCause {
+				require.ErrorIs(t, err, w.err)
+			}
+			require.ErrorIs(t, s.TerminalError(), err)
+			require.ErrorIs(t, s.Readiness(ctx), err)
+		})
+	}
+}
+
+func TestService_InvalidProgressDoesNotAcknowledge(t *testing.T) {
+	w := new(admissionWatcher)
+	stream := make(chan events.SyntrixChangeEvent, 1)
+	stream <- events.SyntrixChangeEvent{AdmissionSequence: 1, Document: &storage.StoredDoc{Id: "one"}}
+	w.On("Watch", mock.Anything).Return((<-chan events.SyntrixChangeEvent)(stream), nil)
+	s := &service{watcher: w}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	require.ErrorContains(t, s.Start(ctx), "has no puller progress")
+	require.Zero(t, w.ack.Load())
+	require.Error(t, s.TerminalError())
+}
+
+func TestService_CancellationClearsServingBeforeEvaluationReturns(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	w := new(admissionWatcher)
+	w.ready.Store(true)
+	stream := make(chan events.SyntrixChangeEvent, 1)
+	stream <- events.SyntrixChangeEvent{AdmissionSequence: 1, Progress: "unfinished", Document: &storage.StoredDoc{Id: "one"}}
+	w.On("Watch", mock.Anything).Return((<-chan events.SyntrixChangeEvent)(stream), nil)
+	processing, release := make(chan struct{}), make(chan struct{})
+	s := &service{
+		watcher: w,
+		evaluator: evaluatorFunc(func(context.Context, *types.Trigger, events.SyntrixChangeEvent) (bool, error) {
+			close(processing)
+			<-release
+			return false, nil
+		}),
+		triggers: []*types.Trigger{{ID: "blocked"}},
+	}
+	done := make(chan error, 1)
+	go func() { done <- s.Start(ctx) }()
+	select {
+	case <-processing:
+	case <-ctx.Done():
+		t.Fatal("evaluator did not start")
+	}
+	require.NoError(t, s.Readiness(ctx))
+	cancel()
+	require.ErrorIs(t, s.Readiness(context.Background()), context.Canceled)
+	bounded, stop := context.WithTimeout(context.Background(), time.Millisecond)
+	defer stop()
+	require.ErrorIs(t, s.Shutdown(bounded), context.DeadlineExceeded)
+	close(release)
+	require.NoError(t, <-done)
+	require.Zero(t, w.ack.Load(), "cancelled evaluation cannot acknowledge its event")
+	require.NoError(t, s.Shutdown(context.Background()))
+}
+
+func TestService_ShutdownRequiresWatcherSettlement(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	w := new(admissionWatcher)
+	w.ready.Store(true)
+	stream := make(chan events.SyntrixChangeEvent)
+	w.On("Watch", mock.Anything).Return((<-chan events.SyntrixChangeEvent)(stream), nil)
+	s := &service{watcher: w}
+	done := make(chan error, 1)
+	go func() { done <- s.Start(ctx) }()
+	require.Eventually(t, func() bool { return s.Readiness(ctx) == nil }, time.Second, time.Millisecond)
+	cause := errors.New("watcher still stopping")
+	w.mu.Lock()
+	w.stopErr = cause
+	w.mu.Unlock()
+	require.ErrorIs(t, s.Shutdown(ctx), cause)
+	require.NoError(t, <-done)
+	w.mu.Lock()
+	w.stopErr = nil
+	w.mu.Unlock()
+	require.NoError(t, s.Shutdown(ctx))
+	w.AssertNotCalled(t, "Close")
+}
+
+func TestService_ProcessingFailureIsTerminal(t *testing.T) {
+	w := new(admissionWatcher)
+	stream := make(chan events.SyntrixChangeEvent, 1)
+	stream <- events.SyntrixChangeEvent{AdmissionSequence: 1, Progress: "unfinished", Document: &storage.StoredDoc{Id: "one"}}
+	w.On("Watch", mock.Anything).Return((<-chan events.SyntrixChangeEvent)(stream), nil)
+	s := &service{
+		watcher:   w,
+		evaluator: evaluatorFunc(func(context.Context, *types.Trigger, events.SyntrixChangeEvent) (bool, error) { return true, nil }),
+		triggers:  []*types.Trigger{{ID: "matched"}},
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	require.ErrorContains(t, s.Start(ctx), "publisher is not configured")
+	require.Error(t, s.TerminalError())
+	require.Zero(t, w.ack.Load())
 }
 
 // MockTaskPublisher mocks TaskPublisher

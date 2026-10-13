@@ -1,6 +1,7 @@
 package memory
 
 import (
+	"context"
 	"github.com/codetreker/syntrix/internal/core/pubsub"
 )
 
@@ -21,7 +22,10 @@ func New() *Engine {
 }
 
 // NewPublisher creates a new in-memory Publisher.
-func (e *Engine) NewPublisher(opts pubsub.PublisherOptions) (pubsub.Publisher, error) {
+func (e *Engine) NewPublisher(ctx context.Context, opts pubsub.PublisherOptions) (pubsub.Publisher, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if e.IsClosed() {
 		return nil, ErrEngineClosed
 	}
@@ -33,7 +37,10 @@ func (e *Engine) NewPublisher(opts pubsub.PublisherOptions) (pubsub.Publisher, e
 }
 
 // NewConsumer creates a new in-memory Consumer.
-func (e *Engine) NewConsumer(opts pubsub.ConsumerOptions) (pubsub.Consumer, error) {
+func (e *Engine) NewConsumer(ctx context.Context, opts pubsub.ConsumerOptions) (pubsub.Consumer, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if e.IsClosed() {
 		return nil, ErrEngineClosed
 	}

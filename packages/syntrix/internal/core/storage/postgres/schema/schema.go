@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"github.com/lib/pq"
 )
 
 // All initialization entry points reserve this database-local advisory key
@@ -15,6 +16,14 @@ const lockKey int64 = 0x53594e5452495801
 
 // Ensure commits statements atomically under the shared initialization lock.
 func Ensure(ctx context.Context, db *sql.DB, statements ...string) (err error) {
+	return ensure(ctx, db, "", statements...)
+}
+
+func EnsureIn(ctx context.Context, db *sql.DB, namespace string, statements ...string) error {
+	return ensure(ctx, db, namespace, statements...)
+}
+
+func ensure(ctx context.Context, db *sql.DB, namespace string, statements ...string) (err error) {
 	tx, err := db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
 		return fmt.Errorf("begin schema initialization: %w", err)
@@ -32,6 +41,11 @@ func Ensure(ctx context.Context, db *sql.DB, statements ...string) (err error) {
 	// includes the preceding initializer's commit after a lock wait.
 	if _, err = tx.ExecContext(ctx, "SELECT pg_advisory_xact_lock($1)", lockKey); err != nil {
 		return fmt.Errorf("lock schema initialization: %w", err)
+	}
+	if namespace != "" {
+		if _, err = tx.ExecContext(ctx, "SELECT set_config('search_path',$1,true)", pq.QuoteIdentifier(namespace)); err != nil {
+			return fmt.Errorf("select initialization namespace: %w", err)
+		}
 	}
 	for _, statement := range statements {
 		if _, err = tx.ExecContext(ctx, statement); err != nil {

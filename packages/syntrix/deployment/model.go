@@ -4,45 +4,46 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/codetreker/syntrix/internal/deployment/config"
+	"github.com/codetreker/syntrix/deployment/config"
 	"gopkg.in/yaml.v3"
 )
 
-type Model struct {
+type model struct {
 	Mode, Namespace, NamePrefix, Image, ConfigName, CredentialsName    string
 	SigningKeySecret, StorageClass, BootstrapName, BootstrapConfigName string
 	StandalonePVCName, PullerPVCName, IndexerPVCName                   string
 	StorageGiB                                                         int
 	Bootstrap                                                          bool
+	AcceptanceOnly                                                     bool
 	BootstrapResources                                                 config.Resources
-	Workloads                                                          []Workload
+	Workloads                                                          []workload
 	configuration                                                      config.Config
 }
 
-type Workload struct {
+type workload struct {
 	Role, Name, Flag, PVCName, ConfigName string
 	Replicas                              int
 	Resources                             config.Resources
 	Stateful, HasKey                      bool
 }
 
-func buildModel(c config.Config, bootstrap bool) Model {
-	m := Model{
+func buildModel(c config.Config, options Options) model {
+	m := model{
 		Mode: c.Mode, Namespace: c.Namespace, NamePrefix: c.NamePrefix, Image: c.Image,
 		ConfigName: c.NamePrefix + "-config", CredentialsName: c.NamePrefix + "-credentials",
 		SigningKeySecret: c.SigningKeySecret, StorageClass: c.StorageClass, StorageGiB: c.StorageGiB,
-		Bootstrap: bootstrap, BootstrapName: c.NamePrefix + "-bootstrap", BootstrapConfigName: c.NamePrefix + "-bootstrap-config",
+		Bootstrap: options.Bootstrap, AcceptanceOnly: options.AcceptanceOnly, BootstrapName: c.NamePrefix + "-bootstrap", BootstrapConfigName: c.NamePrefix + "-bootstrap-config",
 		StandalonePVCName: c.NamePrefix + "-data", PullerPVCName: c.NamePrefix + "-puller-data", IndexerPVCName: c.NamePrefix + "-indexer-data",
 		BootstrapResources: c.BootstrapResources, configuration: c,
 	}
 	for _, role := range c.Roles() {
 		w := c.Workloads[role]
-		item := Workload{
+		item := workload{
 			Role: role, Name: w.Name, Flag: "--" + strings.ReplaceAll(role, "_", "-"),
 			Replicas: *w.Replicas, Resources: w.Resources, ConfigName: w.Name + "-config",
 			HasKey: c.SigningKeySecret != "" && (role == "standalone" || role == "api" || role == "trigger_worker"),
 		}
-		if bootstrap {
+		if options.Bootstrap || (options.AcceptanceOnly && (role == "trigger_evaluator" || role == "trigger_worker")) {
 			item.Replicas = 0
 		}
 		switch role {
@@ -58,7 +59,7 @@ func buildModel(c config.Config, bootstrap bool) Model {
 	return m
 }
 
-func (m Model) runtimeConfig(role string) (string, error) {
+func (m model) runtimeConfig(role string) (string, error) {
 	mode := m.Mode
 	if role == "bootstrap" {
 		mode = "standalone"
@@ -70,10 +71,11 @@ func (m Model) runtimeConfig(role string) (string, error) {
 		keyPath = "/etc/syntrix/keys/auth_private.pem"
 	}
 	values := map[string]any{
-		"deployment": map[string]any{"mode": mode},
-		"data_dir":   "/data",
-		"server":     map[string]any{"host": "0.0.0.0", "http_port": 8080, "grpc_port": 9000, "enable_cors": false},
-		"identity":   map[string]any{"authn": map[string]any{"private_key_file": keyPath}},
+		"deployment":     map[string]any{"mode": mode},
+		"initialization": map[string]any{"mode": m.configuration.ResourceMode},
+		"data_dir":       "/data",
+		"server":         map[string]any{"host": "0.0.0.0", "http_port": 8080, "grpc_port": 9000, "enable_cors": true, "allow_dev_origin": false, "allowed_origins": m.configuration.AllowedOrigins},
+		"identity":       map[string]any{"authn": map[string]any{"private_key_file": keyPath}},
 		"gateway": map[string]any{
 			"authz":    map[string]any{"rules_path": "security_rules"},
 			"realtime": map[string]any{"allow_dev_origin": false, "allowed_origins": m.configuration.AllowedOrigins},
@@ -93,6 +95,12 @@ func (m Model) runtimeConfig(role string) (string, error) {
 		},
 	}
 	if mode == "distributed" {
+		broker := m.configuration.Broker
+		trigger := values["trigger"].(map[string]any)
+		trigger["broker"] = broker
+		evaluator := trigger["evaluator"].(map[string]any)
+		evaluator["stream_name"], evaluator["storage_type"] = broker.StreamName, broker.Policy.Storage
+		trigger["delivery"] = map[string]any{"stream_name": broker.StreamName, "consumer_name": broker.ConsumerName, "storage_type": broker.Policy.Storage}
 		address := func(role string) string { return m.configuration.Workloads[role].Name + ":9000" }
 		values["gateway"].(map[string]any)["query_service_url"] = address("query")
 		values["gateway"].(map[string]any)["streamer_service_url"] = address("streamer")
@@ -105,7 +113,7 @@ func (m Model) runtimeConfig(role string) (string, error) {
 	return string(data), err
 }
 
-func (m Model) credentials() (string, error) {
+func (m model) credentials() (string, error) {
 	c := m.configuration
 	values := map[string]any{
 		"storage": map[string]any{"backends": map[string]any{

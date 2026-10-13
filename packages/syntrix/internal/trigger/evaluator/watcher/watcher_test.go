@@ -93,6 +93,10 @@ func (m *MockPullerService) Subscribe(ctx context.Context, consumerID string, af
 	return args.Get(0).(<-chan *events.PullerEvent)
 }
 
+func (m *MockPullerService) SubscribeStatus(ctx context.Context, consumerID, after string) (<-chan *events.PullerEvent, *events.SubscriptionStatus) {
+	return m.Subscribe(ctx, consumerID, after), events.NewSubscriptionStatus(ctx)
+}
+
 func TestNewWatcher(t *testing.T) {
 	mockStore := new(MockDocumentStore)
 	mockPuller := new(MockPullerService)

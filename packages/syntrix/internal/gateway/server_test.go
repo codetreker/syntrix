@@ -175,6 +175,7 @@ func TestServer_SetDatabaseServiceUpdatesRESTAndReplicaAdmission(t *testing.T) {
 		response := httptest.NewRecorder()
 		request := httptest.NewRequest(http.MethodGet, path, nil)
 		request.Header.Set("Authorization", "Bearer test")
+		request.Header.Set("Origin", "http://example.com")
 		mux.ServeHTTP(response, request)
 		return response.Code
 	}

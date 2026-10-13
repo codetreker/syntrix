@@ -99,11 +99,14 @@ func TestRecoveryValidatesAppliedBoundaryBeforeReattaching(t *testing.T) {
 			p.failures <- tc.failure
 			first.events <- &puller.Event{Error: status.Error(codes.Unavailable, "transport lost"), Retryable: true}
 			require.Eventually(t, func() bool { s.mu.RLock(); defer s.mu.RUnlock(); return !s.ready }, time.Second, time.Millisecond)
+			require.NoError(t, s.TerminalError(), "an active reconnect must not terminate the runtime")
 			if !tc.retryable {
 				require.ErrorIs(t, s.WaitReady(ctx), tc.failure)
+				require.ErrorIs(t, s.TerminalError(), tc.failure)
 				require.Empty(t, p.connections)
 			} else {
 				second := nextRecoveryConnection(t, ctx, p)
+				require.NoError(t, s.TerminalError())
 				require.Equal(t, applied, second.after)
 				_, err := s.OpenCandidates(ctx, "db", Plan{Collection: doc.Collection})
 				require.ErrorIs(t, err, ErrIndexNotReady)

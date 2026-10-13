@@ -2,6 +2,7 @@ package realtime
 
 import (
 	"context"
+	"net/http"
 	"net/http/httptest"
 	"testing"
 
@@ -79,36 +80,38 @@ func TestHasCredentials(t *testing.T) {
 	assert.True(t, hasCredentials(req2))
 }
 
-func TestCheckAllowedOrigin(t *testing.T) {
-	// Case 1: Empty origin, no credentials -> Allowed
-	assert.NoError(t, checkAllowedOrigin("", "host", api_config.RealtimeConfig{}, false))
+func originRequest(value, host string, credentialed bool) *http.Request {
+	r := httptest.NewRequest("GET", "http://"+host+"/", nil)
+	if value != "" {
+		r.Header.Set("Origin", value)
+	}
+	if credentialed {
+		r.Header.Set("Authorization", "Bearer test")
+	}
+	return r
+}
 
-	// Case 2: Empty origin, credentials, dev allowed -> Allowed
-	assert.NoError(t, checkAllowedOrigin("", "host", api_config.RealtimeConfig{AllowDevOrigin: true}, true))
-
-	// Case 3: Empty origin, credentials, dev not allowed -> Error
-	assert.Error(t, checkAllowedOrigin("", "host", api_config.RealtimeConfig{AllowDevOrigin: false}, true))
-
-	// Case 4: Invalid URL -> Error
-	assert.Error(t, checkAllowedOrigin(":", "host", api_config.RealtimeConfig{}, false))
-
-	// Case 5: Same host -> Allowed
-	assert.NoError(t, checkAllowedOrigin("http://host:8080", "host:8080", api_config.RealtimeConfig{}, false))
-
-	// Case 6: Dev origin (localhost) allowed
-	assert.NoError(t, checkAllowedOrigin("http://localhost:3000", "host", api_config.RealtimeConfig{AllowDevOrigin: true}, false))
-
-	// Case 7: Dev origin (127.0.0.1) allowed
-	assert.NoError(t, checkAllowedOrigin("http://127.0.0.1:3000", "host", api_config.RealtimeConfig{AllowDevOrigin: true}, false))
-
-	// Case 8: Dev origin not allowed
-	assert.Error(t, checkAllowedOrigin("http://localhost:3000", "host", api_config.RealtimeConfig{AllowDevOrigin: false}, false))
-
-	// Case 9: Allowed origins list match
-	assert.NoError(t, checkAllowedOrigin("http://example.com", "host", api_config.RealtimeConfig{AllowedOrigins: []string{"http://example.com"}}, false))
-
-	// Case 10: Allowed origins list mismatch
-	assert.Error(t, checkAllowedOrigin("http://other.com", "host", api_config.RealtimeConfig{AllowedOrigins: []string{"http://example.com"}}, false))
+func TestCheckRequestOrigin(t *testing.T) {
+	cases := []struct {
+		origin, host          string
+		cfg                   api_config.RealtimeConfig
+		credentialed, allowed bool
+	}{
+		{"", "host", api_config.RealtimeConfig{}, false, true},
+		{"", "host", api_config.RealtimeConfig{AllowDevOrigin: true}, true, true},
+		{"", "host", api_config.RealtimeConfig{}, true, false},
+		{":", "host", api_config.RealtimeConfig{}, false, false},
+		{"http://host:8080", "host:8080", api_config.RealtimeConfig{}, false, true},
+		{"http://host:3000", "host:8080", api_config.RealtimeConfig{}, false, false},
+		{"http://localhost:3000", "host", api_config.RealtimeConfig{AllowDevOrigin: true}, false, true},
+		{"http://127.0.0.1:3000", "host", api_config.RealtimeConfig{AllowDevOrigin: true}, false, true},
+		{"http://localhost:3000", "host", api_config.RealtimeConfig{}, false, false},
+		{"http://example.com", "host", api_config.RealtimeConfig{AllowedOrigins: []string{"http://example.com"}}, false, true},
+		{"http://other.com", "host", api_config.RealtimeConfig{AllowedOrigins: []string{"http://example.com"}}, false, false},
+	}
+	for _, tc := range cases {
+		assert.Equal(t, tc.allowed, checkRequestOrigin(originRequest(tc.origin, tc.host, tc.credentialed), tc.cfg) == nil)
+	}
 }
 
 func TestDatabaseFromContext(t *testing.T) {

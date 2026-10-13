@@ -33,7 +33,14 @@ func NewUserStore(db *sql.DB, tableName string) repository.UserStore {
 
 // EnsureSchema creates the auth_users table and indexes if they don't exist.
 func EnsureSchema(ctx context.Context, db *sql.DB) error {
-	statements := `
+	return schema.Ensure(ctx, db, schemaStatements)
+}
+
+func EnsureSchemaIn(ctx context.Context, db *sql.DB, namespace string) error {
+	return schema.EnsureIn(ctx, db, namespace, schemaStatements)
+}
+
+const schemaStatements = `
 CREATE TABLE IF NOT EXISTS auth_users (
     id              VARCHAR(64) PRIMARY KEY,
     username        VARCHAR(255) NOT NULL,
@@ -53,8 +60,6 @@ CREATE TABLE IF NOT EXISTS auth_users (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_auth_users_username ON auth_users(username);
 CREATE INDEX IF NOT EXISTS idx_auth_users_disabled ON auth_users(disabled) WHERE disabled = true;
 `
-	return schema.Ensure(ctx, db, statements)
-}
 
 func (s *userStore) CreateUser(ctx context.Context, user *repository.UserRecord) error {
 	// Ensure username is lowercase

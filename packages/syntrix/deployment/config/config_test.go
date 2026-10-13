@@ -4,7 +4,9 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/codetreker/syntrix/internal/core/origin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v3"
@@ -14,12 +16,13 @@ func validConfig(mode string) Config {
 	replicas := 1
 	resources := Resources{Requests: Quantities{CPU: "250m", Memory: "256Mi"}, Limits: Quantities{CPU: "1", Memory: "1Gi"}}
 	c := Config{
-		Mode: mode, Namespace: "example", NamePrefix: "example", Image: "syntrix:development", StorageGiB: 10,
+		Mode: mode, ResourceMode: "operator", Namespace: "example", NamePrefix: "example", Image: "syntrix:development", StorageGiB: 10,
 		Connections: Connections{MongoDBURI: "mongodb://db:27017/?replicaSet=rs0", MongoDBDatabase: "example", PostgresDSN: "postgres://developer:password@postgres:5432/example?sslmode=require"},
 		Identity:    Identity{AdminUsername: "operator", AdminPassword: "Example_Admin123!"}, AllowedOrigins: []string{"https://example.test"},
 		BootstrapResources: resources, Workloads: make(map[string]Workload),
 	}
 	if mode == "distributed" {
+		c.Broker = &BrokerBinding{ResourceMode: "operator", SpecRevision: 1, Ownership: Ownership{InstallationID: "operator", InstanceID: "11111111111111111111111111111111", AllocationID: "22222222222222222222222222222222"}, StreamName: "EXAMPLE_TRIGGERS", SubjectPrefix: "EXAMPLE_TRIGGERS", ConsumerName: "EXAMPLE_DELIVERY", Policy: BrokerPolicy{Storage: "file", Replicas: 1, MaxBytes: 1073741824, MaxMessages: 100000, MaxAge: 24 * time.Hour}}
 		c.Connections.NATSURL = "nats://nats:4222"
 		c.SigningKeySecret = "shared-signing-key"
 	}
@@ -111,11 +114,15 @@ func TestConfigValidation(t *testing.T) {
 		field  string
 	}{
 		{"mode", func(c *Config) { c.Mode = "unsupported" }, "mode"},
+		{"resource-mode", func(c *Config) { c.ResourceMode = "" }, "resource_mode"},
+		{"broker-mode-mismatch", func(c *Config) { c.ResourceMode = "managed" }, "broker.resource_mode"},
 		{"namespace", func(c *Config) { c.Namespace = "Invalid" }, "namespace"},
 		{"namespace-leading-digit", func(c *Config) { c.Namespace = "1example" }, "namespace"},
 		{"prefix", func(c *Config) { c.NamePrefix = "" }, "name_prefix"},
 		{"prefix-derived-length", func(c *Config) { c.NamePrefix = strings.Repeat("p", 51) }, "derived resource"},
 		{"image", func(c *Config) { c.Image = "bad image" }, "image"},
+		{"broker-required", func(c *Config) { c.Broker = nil }, "broker"},
+		{"broker-invalid", func(c *Config) { c.Broker.SpecRevision = 0 }, "broker"},
 		{"storage-size", func(c *Config) { c.StorageGiB = 0 }, "storage_gib"},
 		{"storage-class", func(c *Config) { c.StorageClass = "Invalid" }, "storage_class"},
 		{"bootstrap-resources", func(c *Config) { c.BootstrapResources.Requests.CPU = "0" }, "bootstrap_resources"},
@@ -185,11 +192,52 @@ func TestConfigValidation(t *testing.T) {
 		require.NoError(t, c.Validate())
 	}
 	c := validConfig("standalone")
+	c.Broker = validConfig("distributed").Broker
+	require.ErrorContains(t, c.Validate(), "broker is only supported")
+	c.Broker = nil
 	c.SigningKeySecret = "shared-key"
 	c.Connections.NATSURL = "tls://nats:4222"
 	c.Connections.MongoDBURI = "mongodb+srv://mongo.example.test/example"
 	c.Connections.PostgresDSN = "postgresql://db/example"
 	require.NoError(t, c.Validate())
+}
+
+func TestDeploymentOriginsAgreeWithRuntimePolicy(t *testing.T) {
+	for _, resourceMode := range []string{"operator", "managed"} {
+		for _, test := range []struct {
+			value string
+			valid bool
+		}{
+			{"https://example.test", true},
+			{"http://example.test:80", true},
+			{"https://example.test:65535", true},
+			{"http://[::1]:8080", true},
+			{"https://[2001:db8::1]", true},
+			{"http://*", false},
+			{"https://*.example.test", false},
+			{"*", false},
+			{"https://example.test:0", false},
+			{"https://example.test:65536", false},
+			{"https://example.test:", false},
+			{"https://example.test:port", false},
+			{"http://[not-ipv6]", false},
+		} {
+			t.Run(resourceMode+"/"+test.value, func(t *testing.T) {
+				c := validConfig("standalone")
+				c.ResourceMode, c.AllowedOrigins = resourceMode, []string{test.value}
+				policyError := (origin.Policy{AllowedOrigins: c.AllowedOrigins}).Validate(resourceMode == "managed")
+				err := c.Validate()
+				if test.valid {
+					require.NoError(t, policyError)
+					require.NoError(t, err)
+				} else {
+					require.Error(t, policyError)
+					require.ErrorContains(t, err, "allowed_origins")
+					assert.Equal(t, policyError.Error(), errors.Unwrap(err).Error())
+				}
+			})
+		}
+	}
 }
 
 func TestResourcesExactQuantities(t *testing.T) {

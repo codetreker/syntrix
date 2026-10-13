@@ -26,7 +26,7 @@ type Config struct {
 func DefaultConfig() Config {
 	return Config{
 		NumWorkers:      16,
-		ChannelBufSize:  0,
+		ChannelBufSize:  100,
 		DrainTimeout:    0,
 		ShutdownTimeout: 0,
 		StreamName:      "TRIGGERS",
@@ -48,6 +48,9 @@ func (c *Config) ApplyDefaults() {
 	defaults := DefaultConfig()
 	if c.NumWorkers <= 0 {
 		c.NumWorkers = defaults.NumWorkers
+	}
+	if c.ChannelBufSize == 0 {
+		c.ChannelBufSize = defaults.ChannelBufSize
 	}
 	if c.StreamName == "" {
 		c.StreamName = defaults.StreamName
@@ -72,6 +75,9 @@ func (c *Config) ResolvePaths(_, _ string) { _ = c }
 func (c *Config) Validate(_ services.DeploymentMode) error {
 	if c.NumWorkers < 0 {
 		return errors.New("num_workers must be non-negative")
+	}
+	if c.ChannelBufSize < 0 {
+		return errors.New("channel_buf_size must be non-negative")
 	}
 	if c.StreamName == "" {
 		return errors.New("stream_name is required")

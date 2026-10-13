@@ -1,4 +1,5 @@
 mode: standalone
+resource_mode: operator
 namespace: syntrix-instance
 name_prefix: instance
 image: syntrix:development

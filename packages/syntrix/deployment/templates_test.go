@@ -2,14 +2,17 @@ package deployment
 
 import (
 	"bytes"
+	"flag"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/codetreker/syntrix/deployment/config"
 	runtimeconfig "github.com/codetreker/syntrix/internal/config"
-	"github.com/codetreker/syntrix/internal/deployment/config"
+	"github.com/codetreker/syntrix/internal/services"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v3"
@@ -53,7 +56,7 @@ func TestShippedTemplatesUseConfiguredTopologyAndSafetyPhases(t *testing.T) {
 	for _, mode := range []string{"standalone", "distributed"} {
 		for _, bootstrap := range []bool{false, true} {
 			t.Run(mode+"/"+map[bool]string{false: "normal", true: "bootstrap"}[bootstrap], func(t *testing.T) {
-				path := filepath.Join("..", "..", "deployment", mode, "kubernetes.template.yml")
+				path := filepath.Join(mode, "kubernetes.template.yml")
 				source, err := os.ReadFile(path)
 				require.NoError(t, err)
 				c := fixtureConfig(mode)
@@ -74,7 +77,7 @@ func TestShippedTemplatesUseConfiguredTopologyAndSafetyPhases(t *testing.T) {
 					w.Replicas = &n
 					c.Workloads[role] = w
 				}
-				manifest, err := Render(source, c, Options{Bootstrap: bootstrap, WritesQuiesced: bootstrap})
+				manifest, err := RenderSource(source, c, Options{Bootstrap: bootstrap, WritesQuiesced: bootstrap})
 				require.NoError(t, err)
 				objects := renderedObjects(t, manifest)
 				require.Contains(t, objects, "Namespace/customer-private")
@@ -152,6 +155,7 @@ func TestShippedTemplatesUseConfiguredTopologyAndSafetyPhases(t *testing.T) {
 					container := podSpec["containers"].([]any)[0].(map[string]any)
 					assert.Contains(t, container["args"], "--bootstrap-indexes")
 					assert.Contains(t, container["args"], "--writes-quiesced")
+					assert.NotContains(t, container["args"], "--initialization-acceptance")
 					resources := container["resources"].(map[string]any)
 					assert.Equal(t, c.BootstrapResources.Requests.CPU, resources["requests"].(map[string]any)["cpu"])
 					assert.Equal(t, c.BootstrapResources.Limits.Memory, resources["limits"].(map[string]any)["memory"])
@@ -167,24 +171,107 @@ func TestShippedTemplatesUseConfiguredTopologyAndSafetyPhases(t *testing.T) {
 
 func TestShippedTemplatesRejectWrongModeAndSupportOptionalStandaloneKey(t *testing.T) {
 	for _, mode := range []string{"standalone", "distributed"} {
-		source, err := os.ReadFile(filepath.Join("..", "..", "deployment", mode, "kubernetes.template.yml"))
+		source, err := os.ReadFile(filepath.Join(mode, "kubernetes.template.yml"))
 		require.NoError(t, err)
 		other := "standalone"
 		if mode == "standalone" {
 			other = "distributed"
 		}
-		_, err = Render(source, fixtureConfig(other), Options{})
+		_, err = RenderSource(source, fixtureConfig(other), Options{})
 		require.ErrorContains(t, err, "mode")
 	}
 	c := fixtureConfig("standalone")
 	c.SigningKeySecret = "optional-standalone-key"
-	source, err := os.ReadFile(filepath.Join("..", "..", "deployment", "standalone", "kubernetes.template.yml"))
+	source, err := os.ReadFile(filepath.Join("standalone", "kubernetes.template.yml"))
 	require.NoError(t, err)
-	manifest, err := Render(source, c, Options{})
+	manifest, err := RenderSource(source, c, Options{})
 	require.NoError(t, err)
 	objects := renderedObjects(t, manifest)
 	spec := objectSpec(t, objects, "Deployment", c.Workloads["standalone"].Name)["template"].(map[string]any)["spec"].(map[string]any)
 	key := namedVolume(spec["volumes"].([]any), "signing-key")
 	require.NotNil(t, key)
 	assert.Equal(t, c.SigningKeySecret, key["secret"].(map[string]any)["secretName"])
+}
+
+func TestAcceptanceHoldsWritersAndUsesRoleReadiness(t *testing.T) {
+	for _, mode := range []string{"standalone", "distributed"} {
+		c := fixtureConfig(mode)
+		manifest, err := Render(c, Options{AcceptanceOnly: true})
+		require.NoError(t, err)
+		objects := renderedObjects(t, manifest)
+		require.NotContains(t, objects, "Pod/"+c.NamePrefix+"-bootstrap")
+		for role, w := range c.Workloads {
+			spec := objectSpec(t, objects, "Deployment", w.Name)
+			if role == "trigger_evaluator" || role == "trigger_worker" {
+				assert.Equal(t, 0, spec["replicas"])
+			} else {
+				assert.Equal(t, *w.Replicas, spec["replicas"])
+			}
+			container := spec["template"].(map[string]any)["spec"].(map[string]any)["containers"].([]any)[0].(map[string]any)
+			assert.Contains(t, container["args"], "--initialization-acceptance")
+			assert.Contains(t, container["args"], "--writes-quiesced")
+			assert.Equal(t, "IfNotPresent", container["imagePullPolicy"])
+			for _, probe := range []string{"startupProbe", "readinessProbe"} {
+				p := container[probe].(map[string]any)
+				if role == "standalone" || role == "api" {
+					assert.Equal(t, "/ready", p["httpGet"].(map[string]any)["path"])
+				} else {
+					g := p["grpc"].(map[string]any)
+					assert.Equal(t, "syntrix."+role, g["service"])
+					assert.Equal(t, 9000, g["port"])
+				}
+			}
+			live := container["livenessProbe"].(map[string]any)
+			if role == "standalone" || role == "api" {
+				assert.Equal(t, "/health", live["httpGet"].(map[string]any)["path"])
+			} else {
+				assert.Equal(t, "syntrix.liveness", live["grpc"].(map[string]any)["service"])
+			}
+		}
+	}
+}
+
+func TestGeneratedPhasesSatisfyRuntimeMaintenanceOptions(t *testing.T) {
+	for _, mode := range []string{"standalone", "distributed"} {
+		for _, options := range []Options{{}, {AcceptanceOnly: true}, {Bootstrap: true, WritesQuiesced: true}} {
+			manifest, err := Render(fixtureConfig(mode), options)
+			require.NoError(t, err)
+			for name, object := range renderedObjects(t, manifest) {
+				var pod map[string]any
+				switch object["kind"] {
+				case "Deployment":
+					pod = object["spec"].(map[string]any)["template"].(map[string]any)["spec"].(map[string]any)
+				case "Pod":
+					pod = object["spec"].(map[string]any)
+				default:
+					continue
+				}
+				container := pod["containers"].([]any)[0].(map[string]any)
+				var args []string
+				for _, value := range container["args"].([]any) {
+					args = append(args, value.(string))
+				}
+				flags := flag.NewFlagSet("runtime", flag.ContinueOnError)
+				flags.SetOutput(io.Discard)
+				for _, role := range []string{"standalone", "api", "query", "indexer", "puller", "streamer", "trigger-evaluator", "trigger-worker"} {
+					flags.Bool(role, false, "")
+				}
+				flags.String("config-dir", "", "")
+				var runtimeOptions services.Options
+				flags.BoolVar(&runtimeOptions.BootstrapIndexes, "bootstrap-indexes", false, "")
+				flags.BoolVar(&runtimeOptions.InitializationAcceptance, "initialization-acceptance", false, "")
+				flags.BoolVar(&runtimeOptions.WritesQuiesced, "writes-quiesced", false, "")
+				flags.DurationVar(&runtimeOptions.BootstrapTimeout, "bootstrap-timeout", 30*time.Minute, "")
+				require.NoError(t, flags.Parse(args), name)
+				require.Empty(t, flags.Args(), name)
+				require.NoError(t, services.NewManager(runtimeconfig.DefaultConfig(), runtimeOptions).PrepareIndexBootstrap(), name)
+				if object["kind"] == "Pod" {
+					assert.True(t, runtimeOptions.BootstrapIndexes, name)
+					assert.False(t, runtimeOptions.InitializationAcceptance, name)
+				} else {
+					assert.Equal(t, options.AcceptanceOnly, runtimeOptions.InitializationAcceptance, name)
+				}
+			}
+		}
+	}
 }

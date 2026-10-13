@@ -2,323 +2,250 @@ package nats
 
 import (
 	"context"
-	"fmt"
+	"errors"
+	"sync"
 	"testing"
 	"time"
 
-	"github.com/nats-io/nats.go"
+	deployconfig "github.com/codetreker/syntrix/deployment/config"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
-
-	"github.com/codetreker/syntrix/internal/core/pubsub"
 )
 
-func TestNewProvider(t *testing.T) {
-	provider, err := NewProvider("nats://localhost:4222")
-	require.NoError(t, err)
-	assert.NotNil(t, provider)
-	assert.Equal(t, "nats://localhost:4222", provider.url)
-	assert.Nil(t, provider.nc) // Not connected yet
-	assert.Nil(t, provider.js)
+func managedTestBinding() deployconfig.BrokerBinding {
+	b := deployconfig.DefaultOperatorBinding()
+	b.ResourceMode = "managed"
+	b.StreamName = "SYNTRIX_" + b.Ownership.InstanceID + "_TRIGGERS"
+	b.SubjectPrefix = b.StreamName
+	b.ConsumerName = b.StreamName + "_DELIVERY"
+	return b
 }
 
-func TestProvider_NewPublisher_NotConnected(t *testing.T) {
-	provider, err := NewProvider("nats://localhost:4222")
-	require.NoError(t, err)
-
-	// Should fail because not connected
-	_, err = provider.NewPublisher(pubsub.PublisherOptions{
-		StreamName: "test-stream",
-	})
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "NATS not connected")
-}
-
-func TestProvider_NewConsumer_NotConnected(t *testing.T) {
-	provider, err := NewProvider("nats://localhost:4222")
-	require.NoError(t, err)
-
-	// Should fail because not connected
-	_, err = provider.NewConsumer(pubsub.ConsumerOptions{
-		StreamName: "test-stream",
-	})
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "NATS not connected")
-}
-
-func TestProvider_Connect_InvalidURL(t *testing.T) {
-	provider, err := NewProvider("nats://invalid-host-that-does-not-exist:4222")
-	require.NoError(t, err)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-	defer cancel()
-
-	err = provider.Connect(ctx)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "failed to connect to NATS")
-}
-
-func TestProvider_Close_NotConnected(t *testing.T) {
-	provider, err := NewProvider("nats://localhost:4222")
-	require.NoError(t, err)
-
-	// Close on non-connected provider should be safe
-	err = provider.Close()
-	require.NoError(t, err)
-}
-
-func TestProvider_Implements_Interface(t *testing.T) {
-	var _ pubsub.Provider = (*Provider)(nil)
-}
-
-func TestProvider_Implements_Connectable(t *testing.T) {
-	var _ pubsub.Connectable = (*Provider)(nil)
-}
-
-// TestProvider_NewPublisher_Connected tests creating a publisher when connected
-func TestProvider_NewPublisher_Connected(t *testing.T) {
-	mockJS := &MockJetStream{}
-	// Setup mock expectations for publisher creation
-	mockJS.On("CreateOrUpdateStream", mock.Anything, mock.Anything).Return(nil, nil)
-
-	provider := &Provider{
-		url: "nats://localhost:4222",
-		js:  mockJS, // Inject mock JetStream
+func TestManagedAttachmentNeverMutates(t *testing.T) {
+	for _, missing := range []string{"none", "stream", "consumer"} {
+		t.Run(missing, func(t *testing.T) {
+			b := managedTestBinding()
+			f := allocatedFake(b)
+			if missing == "stream" {
+				f.stream = nil
+			}
+			if missing == "consumer" {
+				f.consumer = nil
+			}
+			p, err := NewProvider("nats://unused", b)
+			require.NoError(t, err)
+			p.js = f
+			_, publisherErr := p.NewPublisher(context.Background(), publisherOptions(b))
+			_, consumerErr := p.NewConsumer(context.Background(), consumerOptions(b))
+			checkErr := p.Check(context.Background())
+			if missing == "none" {
+				require.NoError(t, publisherErr)
+				require.NoError(t, consumerErr)
+				require.NoError(t, checkErr)
+			} else {
+				require.Error(t, publisherErr)
+				require.Error(t, consumerErr)
+				require.Error(t, checkErr)
+			}
+			assert.NotContains(t, f.calls, "stream.create")
+			assert.NotContains(t, f.calls, "consumer.create")
+		})
 	}
+}
 
-	// Should succeed because js is set (simulating connected state)
-	pub, err := provider.NewPublisher(pubsub.PublisherOptions{
-		StreamName:    "test-stream",
-		SubjectPrefix: "test",
-	})
+func TestOperatorAttachmentCreatesCompleteSpecification(t *testing.T) {
+	for _, createErr := range []error{nil, jetstream.ErrStreamNameAlreadyInUse, context.DeadlineExceeded} {
+		t.Run(errorName(createErr), func(t *testing.T) {
+			b := deployconfig.DefaultOperatorBinding()
+			f := &fakeJetStream{createStreamErr: createErr, createConsumerErr: createErr, applyOnCreateError: true}
+			_, err := NewPublisher(context.Background(), f, b, publisherOptions(b))
+			require.NoError(t, err)
+			spec, err := b.Specification()
+			require.NoError(t, err)
+			assert.Equal(t, spec.Stream, *f.stream)
+			assert.Equal(t, spec.Consumer, *f.consumer)
+			assert.Equal(t, []string{"stream.lookup", "stream.create", "stream.lookup", "stream.info", "consumer.lookup", "consumer.create", "consumer.lookup", "consumer.info"}, f.calls)
+		})
+	}
+}
+
+func errorName(err error) string {
+	if err == nil {
+		return "success"
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "lost_response"
+	}
+	return "concurrent_creation"
+}
+
+func TestOperatorAttachmentConflictingStreamStopsBeforeConsumer(t *testing.T) {
+	b := deployconfig.DefaultOperatorBinding()
+	f := allocatedFake(b)
+	f.stream.MaxBytes++
+	f.consumer = nil
+	_, err := NewConsumer(context.Background(), f, b, consumerOptions(b))
+	require.Error(t, err)
+	assert.Equal(t, []string{"stream.lookup", "stream.info"}, f.calls)
+}
+
+func TestAttachmentErrorsPreserveCauseAndCanRetry(t *testing.T) {
+	for _, phase := range []string{"stream.lookup", "stream.info", "consumer.lookup", "consumer.info", "stream.create", "consumer.create"} {
+		t.Run(phase, func(t *testing.T) {
+			b := deployconfig.DefaultOperatorBinding()
+			f := allocatedFake(b)
+			cause := errors.New("nats://admin:password@private-host:4222 secret-value")
+			switch phase {
+			case "stream.lookup":
+				f.streamLookup = func(context.Context) error { return cause }
+			case "stream.info":
+				f.streamInfoErr = cause
+			case "consumer.lookup":
+				f.consumerLookupErr = cause
+			case "consumer.info":
+				f.consumerInfoErr = cause
+			case "stream.create":
+				f.stream = nil
+				f.createStreamErr = cause
+			case "consumer.create":
+				f.consumer = nil
+				f.createConsumerErr = cause
+			}
+			_, err := NewPublisher(context.Background(), f, b, publisherOptions(b))
+			require.Error(t, err)
+			assert.ErrorIs(t, err, cause)
+			assert.NotContains(t, err.Error(), "password")
+			assert.NotContains(t, err.Error(), "private-host")
+			assert.NotContains(t, err.Error(), "secret-value")
+			f.streamLookup, f.streamInfoErr, f.consumerLookupErr, f.consumerInfoErr = nil, nil, nil, nil
+			f.createStreamErr, f.createConsumerErr = nil, nil
+			_, err = NewPublisher(context.Background(), f, b, publisherOptions(b))
+			require.NoError(t, err)
+		})
+	}
+}
+
+func TestConcurrentAttachmentKeepsCallerCancellation(t *testing.T) {
+	b := deployconfig.DefaultOperatorBinding()
+	f := allocatedFake(b)
+	entered := make(chan struct{}, 2)
+	release := make(chan struct{})
+	f.streamLookup = func(ctx context.Context) error {
+		entered <- struct{}{}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-release:
+			return nil
+		}
+	}
+	canceled, cancel := context.WithCancel(context.Background())
+	results := make(chan error, 2)
+	go func() { _, err := NewPublisher(canceled, f, b, publisherOptions(b)); results <- err }()
+	go func() { _, err := NewPublisher(context.Background(), f, b, publisherOptions(b)); results <- err }()
+	for range 2 {
+		select {
+		case <-entered:
+		case <-time.After(time.Second):
+			t.Fatal("attachment blocked another caller")
+		}
+	}
+	cancel()
+	select {
+	case err := <-results:
+		require.ErrorIs(t, err, context.Canceled)
+	case <-time.After(time.Second):
+		t.Fatal("canceled attachment did not return")
+	}
+	close(release)
+	select {
+	case err := <-results:
+		require.NoError(t, err)
+	case <-time.After(time.Second):
+		t.Fatal("other attachment did not succeed")
+	}
+	f.mu.Lock()
+	f.streamLookup = nil
+	f.mu.Unlock()
+	_, err := NewPublisher(context.Background(), f, b, publisherOptions(b))
 	require.NoError(t, err)
-	assert.NotNil(t, pub)
-	mockJS.AssertExpectations(t)
 }
 
-// TestProvider_NewConsumer_Connected tests creating a consumer when connected
-func TestProvider_NewConsumer_Connected(t *testing.T) {
-	mockJS := &MockJetStream{}
-	// Note: NewConsumer doesn't call JetStream methods directly,
-	// it only stores the config. JetStream calls happen in Subscribe.
-
-	provider := &Provider{
-		url: "nats://localhost:4222",
-		js:  mockJS, // Inject mock JetStream
-	}
-
-	// Should succeed because js is set (simulating connected state)
-	cons, err := provider.NewConsumer(pubsub.ConsumerOptions{
-		StreamName:    "test-stream",
-		FilterSubject: "test.>",
-	})
+func TestProviderChecksFreshBrokerState(t *testing.T) {
+	b := managedTestBinding()
+	f := allocatedFake(b)
+	p, err := NewProvider("nats://unused", b)
 	require.NoError(t, err)
-	assert.NotNil(t, cons)
-}
-
-// TestProvider_Close_Connected tests closing a connected provider
-func TestProvider_Close_Connected(t *testing.T) {
-	// Create a mock connection that tracks Close calls
-	mockConn := &mockNatsConn{closed: false}
-
-	provider := &Provider{
-		url: "nats://localhost:4222",
-		nc:  mockConn,
-		js:  &MockJetStream{},
-	}
-
-	// Close should succeed and clear nc and js
-	err := provider.Close()
+	p.js = f
+	_, err = p.NewPublisher(context.Background(), publisherOptions(b))
 	require.NoError(t, err)
-	assert.True(t, mockConn.closed, "Connection should be closed")
-	assert.Nil(t, provider.nc)
-	assert.Nil(t, provider.js)
+	require.NoError(t, p.Check(context.Background()))
+	f.consumer.HeadersOnly = true
+	require.Error(t, p.Check(context.Background()))
+	f.consumer.HeadersOnly = false
+	f.stream.Metadata["syntrix.spec_revision"] = "2"
+	require.Error(t, p.Check(context.Background()))
+	f.stream.Metadata["syntrix.spec_revision"] = "1"
+	require.NoError(t, p.Check(context.Background()))
+	f.consumer = nil
+	require.Error(t, p.Check(context.Background()))
+	assert.NotContains(t, f.calls, "consumer.create")
 }
 
-// TestProvider_Close_Idempotent tests that Close can be called multiple times
-func TestProvider_Close_Idempotent(t *testing.T) {
-	mockConn := &mockNatsConn{closed: false}
-
-	provider := &Provider{
-		url: "nats://localhost:4222",
-		nc:  mockConn,
-		js:  &MockJetStream{},
-	}
-
-	// First close
-	err := provider.Close()
+func TestProviderLifecycleAndValidation(t *testing.T) {
+	b := deployconfig.DefaultOperatorBinding()
+	_, err := NewProvider("", b)
+	require.Error(t, err)
+	bad := b
+	bad.SpecRevision = 0
+	_, err = NewProvider("nats://unused", bad)
+	require.Error(t, err)
+	p, err := NewProvider("nats://unused", b)
 	require.NoError(t, err)
-	assert.True(t, mockConn.closed)
+	_, err = p.NewPublisher(context.Background(), publisherOptions(b))
+	require.Error(t, err)
+	_, err = p.NewConsumer(context.Background(), consumerOptions(b))
+	require.Error(t, err)
+	require.Error(t, p.Check(context.Background()))
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	require.ErrorIs(t, p.Connect(ctx), context.Canceled)
+	p.js = allocatedFake(b)
+	require.NoError(t, p.Close())
+	require.NoError(t, p.Close())
+	_, err = p.NewPublisher(context.Background(), publisherOptions(b))
+	require.Error(t, err)
+	_, err = p.NewConsumer(context.Background(), consumerOptions(b))
+	require.Error(t, err)
+	require.Error(t, p.Check(context.Background()))
+}
 
-	// Second close should also succeed (idempotent)
-	err = provider.Close()
+func TestAttachmentCanceledBeforeBrokerCalls(t *testing.T) {
+	b := deployconfig.DefaultOperatorBinding()
+	f := allocatedFake(b)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := NewPublisher(ctx, f, b, publisherOptions(b))
+	require.ErrorIs(t, err, context.Canceled)
+	assert.Empty(t, f.calls)
+	_, err = NewPublisher(context.Background(), f, b, publisherOptions(b))
 	require.NoError(t, err)
 }
 
-// mockNatsConn is a minimal mock for testing Close behavior
-type mockNatsConn struct {
-	closed bool
-}
-
-func (m *mockNatsConn) Close() {
-	m.closed = true
-}
-
-// TestProvider_Connect_Success tests successful connection with mock
-func TestProvider_Connect_Success(t *testing.T) {
-	mockConn := &mockNatsConn{}
-	mockJS := &MockJetStream{}
-
-	provider := &Provider{
-		url: "nats://localhost:4222",
-		natsConnect: func(url string) (natsConnection, error) {
-			assert.Equal(t, "nats://localhost:4222", url)
-			return mockConn, nil
-		},
+func TestConcurrentSuccessfulAttachments(t *testing.T) {
+	b := deployconfig.DefaultOperatorBinding()
+	f := allocatedFake(b)
+	var callers sync.WaitGroup
+	for range 8 {
+		callers.Add(1)
+		go func() {
+			defer callers.Done()
+			_, err := NewPublisher(context.Background(), f, b, publisherOptions(b))
+			assert.NoError(t, err)
+		}()
 	}
-
-	// Manually set js since mock connection won't create it
-	// (Connect skips JetStream creation for non-*nats.Conn)
-	err := provider.Connect(context.Background())
-	require.NoError(t, err)
-	assert.Equal(t, mockConn, provider.nc)
-
-	// Set js manually for further testing
-	provider.js = mockJS
-	assert.NotNil(t, provider.js)
-}
-
-// TestProvider_Connect_JetStreamError tests when JetStream creation fails
-func TestProvider_Connect_JetStreamError(t *testing.T) {
-	// This test verifies error handling when Connect succeeds but
-	// we have a mock connection that doesn't create JetStream
-	mockConn := &mockNatsConn{}
-
-	provider := &Provider{
-		url: "nats://localhost:4222",
-		natsConnect: func(url string) (natsConnection, error) {
-			return mockConn, nil
-		},
-	}
-
-	// Connect should succeed with mock (skips JetStream for non-*nats.Conn)
-	err := provider.Connect(context.Background())
-	require.NoError(t, err)
-	assert.NotNil(t, provider.nc)
-	// js will be nil because mock connection doesn't create JetStream
-	assert.Nil(t, provider.js)
-}
-
-// TestProvider_Connect_NilConnectFunc tests Connect with nil natsConnect
-func TestProvider_Connect_NilConnectFunc(t *testing.T) {
-	provider := &Provider{
-		url:         "nats://invalid-host:4222",
-		natsConnect: nil, // nil should fall back to default
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-	defer cancel()
-
-	// Should use default connect function and fail due to invalid host
-	err := provider.Connect(ctx)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "failed to connect to NATS")
-}
-
-// TestProvider_Connect_WithRealNatsConn tests the path where natsConn cast succeeds
-// and JetStream factory is called. We use a wrapper to return *nats.Conn.
-func TestProvider_Connect_WithJetStreamFactory(t *testing.T) {
-	// Create a mock JetStream
-	mockJS := &MockJetStream{}
-	mockConn := &mockNatsConn{}
-
-	provider := &Provider{
-		url: "nats://localhost:4222",
-		natsConnect: func(url string) (natsConnection, error) {
-			return mockConn, nil
-		},
-		// Use a caster that pretends mockConn is a real *nats.Conn
-		natsConnCaster: func(nc natsConnection) (*nats.Conn, bool) {
-			// Return nil but ok=true to simulate successful cast
-			// The factory will receive nil but that's OK for our test
-			return nil, true
-		},
-		jetStreamFactory: func(nc *nats.Conn) (JetStream, error) {
-			return mockJS, nil
-		},
-	}
-
-	err := provider.Connect(context.Background())
-	require.NoError(t, err)
-	assert.NotNil(t, provider.nc)
-	// Now js should be set because we simulated successful cast
-	assert.Equal(t, mockJS, provider.js)
-}
-
-// TestProvider_Connect_JetStreamFactoryError tests when JetStream factory returns error
-func TestProvider_Connect_JetStreamFactoryError(t *testing.T) {
-	mockConn := &mockNatsConn{}
-
-	provider := &Provider{
-		url: "nats://localhost:4222",
-		natsConnect: func(url string) (natsConnection, error) {
-			return mockConn, nil
-		},
-		// Simulate successful cast to trigger JetStream creation path
-		natsConnCaster: func(nc natsConnection) (*nats.Conn, bool) {
-			return nil, true
-		},
-		jetStreamFactory: func(nc *nats.Conn) (JetStream, error) {
-			return nil, fmt.Errorf("JetStream creation failed")
-		},
-	}
-
-	err := provider.Connect(context.Background())
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "failed to create JetStream")
-	// Connection should be closed after JetStream failure
-	assert.True(t, mockConn.closed, "Connection should be closed after JetStream failure")
-}
-
-// TestProvider_Connect_NilCaster tests Connect with nil natsConnCaster (uses default)
-func TestProvider_Connect_NilCaster(t *testing.T) {
-	mockConn := &mockNatsConn{}
-
-	provider := &Provider{
-		url: "nats://localhost:4222",
-		natsConnect: func(url string) (natsConnection, error) {
-			return mockConn, nil
-		},
-		natsConnCaster: nil, // nil should fall back to default
-	}
-
-	// Connect should succeed - default caster returns false for mockNatsConn
-	err := provider.Connect(context.Background())
-	require.NoError(t, err)
-	assert.NotNil(t, provider.nc)
-	// js is nil because default caster correctly returns false for mockNatsConn
-	assert.Nil(t, provider.js)
-}
-
-// TestProvider_Connect_NilJetStreamFactory tests Connect with nil jetStreamFactory (uses default)
-func TestProvider_Connect_NilJetStreamFactory(t *testing.T) {
-	mockConn := &mockNatsConn{}
-
-	provider := &Provider{
-		url: "nats://localhost:4222",
-		natsConnect: func(url string) (natsConnection, error) {
-			return mockConn, nil
-		},
-		// Simulate successful cast to trigger JetStream creation path
-		natsConnCaster: func(nc natsConnection) (*nats.Conn, bool) {
-			return nil, true
-		},
-		jetStreamFactory: nil, // nil should fall back to default, which will fail with nil conn
-	}
-
-	// Connect should fail because default factory (NewJetStream) will receive nil *nats.Conn
-	err := provider.Connect(context.Background())
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "failed to create JetStream")
+	callers.Wait()
+	assert.NotContains(t, f.calls, "stream.create")
+	assert.NotContains(t, f.calls, "consumer.create")
 }

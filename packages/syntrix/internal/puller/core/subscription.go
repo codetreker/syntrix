@@ -54,6 +54,9 @@ type SubscriptionDriver struct {
 	Maintenance         <-chan time.Time
 	Maintain            func(context.Context, string) error
 	EnterLive           func()
+	Admission           func(context.Context, string, uint64, string) error
+	CheckAdmission      func(context.Context) error
+	FenceAdmission      func(context.Context) error
 }
 
 // RunSubscription delivers replay and live events until the context or
@@ -63,9 +66,59 @@ func RunSubscription(ctx context.Context, sub *Subscriber, initialCatchUp bool, 
 	catchUp := initialCatchUp || recovering
 	enteredLive := false
 	ready := false
+	generation := uint64(1)
+	admissionState := events.AdmissionStarting
+	emitAdmission := func(state, reason string) (SubscriptionExit, bool) {
+		admissionState = state
+		if driver.Admission != nil {
+			if err := driver.Admission(ctx, state, generation, reason); err != nil {
+				return SubscriptionExit{Kind: SubscriptionExitReadyFailed, Phase: SubscriptionPhaseReady, Err: err}, true
+			}
+		}
+		return SubscriptionExit{}, false
+	}
+	if driver.Admission != nil {
+		if exit, stop := emitAdmission(events.AdmissionStarting, ""); stop {
+			return exit
+		}
+	}
 
 	for {
+		if driver.CheckAdmission != nil {
+			if exit, stop := subscriptionStopped(ctx, sub, SubscriptionPhaseReady); stop {
+				return exit
+			}
+			if err := driver.CheckAdmission(ctx); err != nil {
+				if ctx.Err() != nil {
+					return canceledSubscriptionExit(SubscriptionPhaseReady, ctx.Err(), nil)
+				}
+				if !errors.Is(err, ErrCaptureUnavailable) {
+					return SubscriptionExit{Kind: SubscriptionExitMaintenanceFailed, Phase: SubscriptionPhaseMaintenance, Err: err}
+				}
+				if admissionState != events.AdmissionRecovering {
+					generation++
+					ready = false
+					enteredLive = false
+					if exit, stop := emitAdmission(events.AdmissionRecovering, "source_unavailable"); stop {
+						return exit
+					}
+				}
+				select {
+				case <-ctx.Done():
+					return canceledSubscriptionExit(SubscriptionPhaseReady, ctx.Err(), nil)
+				case <-sub.Done():
+					return SubscriptionExit{Kind: SubscriptionExitSubscriberClosed, Phase: SubscriptionPhaseReady}
+				case <-driver.Maintenance:
+				}
+				continue
+			}
+		}
 		if catchUp {
+			if driver.Admission != nil {
+				if exit, stop := emitAdmission(events.AdmissionReplaying, ""); stop {
+					return exit
+				}
+			}
 			if exit, stopped := subscriptionStopped(ctx, sub, SubscriptionPhaseReplay); stopped {
 				return exit
 			}
@@ -103,6 +156,44 @@ func RunSubscription(ctx context.Context, sub *Subscriber, initialCatchUp bool, 
 		}
 
 		if !ready {
+			if driver.Admission != nil {
+				if driver.CheckAdmission != nil {
+					if err := driver.CheckAdmission(ctx); err != nil {
+						continue
+					}
+				}
+				if driver.FenceAdmission != nil {
+					if err := driver.FenceAdmission(ctx); err != nil {
+						if ctx.Err() != nil {
+							return canceledSubscriptionExit(SubscriptionPhaseReady, ctx.Err(), nil)
+						}
+						return SubscriptionExit{Kind: SubscriptionExitReadyFailed, Phase: SubscriptionPhaseReady, Err: err}
+					}
+				}
+				// The admission control follows all business events already queued
+				// at the live barrier, including capture recovery's pending prefix.
+				draining := true
+				for draining && !sub.RecoveryPending() {
+					select {
+					case evt := <-sub.Events():
+						if exit, stop := deliverSubscriptionEvent(ctx, sub, driver, evt, SubscriptionPhaseLive); stop {
+							return exit
+						}
+					default:
+						draining = false
+					}
+				}
+				if sub.RecoveryPending() {
+					catchUp = true
+					recovering = true
+					enteredLive = false
+					generation++
+					if exit, stop := emitAdmission(events.AdmissionRecovering, "overflow"); stop {
+						return exit
+					}
+					continue
+				}
+			}
 			if exit, stopped := subscriptionStopped(ctx, sub, SubscriptionPhaseReady); stopped {
 				return exit
 			}
@@ -116,6 +207,11 @@ func RunSubscription(ctx context.Context, sub *Subscriber, initialCatchUp bool, 
 				}
 			}
 			ready = true
+			if driver.Admission != nil {
+				if exit, stop := emitAdmission(events.AdmissionAdmitted, ""); stop {
+					return exit
+				}
+			}
 		}
 
 		select {
@@ -130,15 +226,26 @@ func RunSubscription(ctx context.Context, sub *Subscriber, initialCatchUp bool, 
 			catchUp = true
 			recovering = true
 			enteredLive = false
-		case <-driver.Maintenance:
-			if driver.Maintain == nil {
-				continue
+			if driver.Admission != nil {
+				ready = false
 			}
-			if err := driver.Maintain(ctx, sub.CurrentProgress().Encode()); err != nil {
-				if ctxErr := ctx.Err(); ctxErr != nil {
-					return canceledSubscriptionExit(SubscriptionPhaseMaintenance, ctxErr, nil)
+			generation++
+			if driver.Admission != nil {
+				if exit, stop := emitAdmission(events.AdmissionRecovering, "overflow"); stop {
+					return exit
 				}
-				return SubscriptionExit{Kind: SubscriptionExitMaintenanceFailed, Phase: SubscriptionPhaseMaintenance, Err: err}
+			}
+		case <-driver.Maintenance:
+			if driver.Maintain != nil {
+				if err := driver.Maintain(ctx, sub.CurrentProgress().Encode()); err != nil {
+					if ctxErr := ctx.Err(); ctxErr != nil {
+						return canceledSubscriptionExit(SubscriptionPhaseMaintenance, ctxErr, nil)
+					}
+					return SubscriptionExit{Kind: SubscriptionExitMaintenanceFailed, Phase: SubscriptionPhaseMaintenance, Err: err}
+				}
+			}
+			if driver.Admission != nil && (driver.CheckAdmission == nil || driver.CheckAdmission(ctx) == nil) {
+				ready = false
 			}
 		case evt := <-sub.Events():
 			if exit, stopped := deliverSubscriptionEvent(ctx, sub, driver, evt, SubscriptionPhaseLive); stopped {
@@ -148,6 +255,15 @@ func RunSubscription(ctx context.Context, sub *Subscriber, initialCatchUp bool, 
 				catchUp = true
 				recovering = true
 				enteredLive = false
+				if driver.Admission != nil {
+					ready = false
+				}
+				generation++
+				if driver.Admission != nil {
+					if exit, stop := emitAdmission(events.AdmissionRecovering, "overflow"); stop {
+						return exit
+					}
+				}
 			}
 		}
 	}

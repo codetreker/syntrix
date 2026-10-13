@@ -6,468 +6,228 @@ import (
 	"testing"
 	"time"
 
+	deployconfig "github.com/codetreker/syntrix/deployment/config"
 	"github.com/codetreker/syntrix/internal/core/pubsub"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 )
 
-func TestNewPublisher_NilJetStream(t *testing.T) {
-	_, err := NewPublisher(nil, pubsub.PublisherOptions{
-		StreamName: "TEST",
-	})
-
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "jetstream cannot be nil")
-}
-
-func TestNewPublisher_WithMock(t *testing.T) {
-	mockJS := new(MockJetStream)
-
-	mockJS.On("CreateOrUpdateStream", mock.Anything, mock.MatchedBy(func(cfg jetstream.StreamConfig) bool {
-		return cfg.Name == "TEST" && len(cfg.Subjects) > 0 && cfg.Subjects[0] == "PREFIX.>"
-	})).Return(nil, nil)
-
-	pub, err := NewPublisher(mockJS, pubsub.PublisherOptions{
-		StreamName:    "TEST",
-		SubjectPrefix: "PREFIX",
-	})
-
+func TestPublisherUsesCallerContextAndPrefixesOnce(t *testing.T) {
+	b := managedTestBinding()
+	f := allocatedFake(b)
+	type contextKey struct{}
+	ctx := context.WithValue(context.Background(), contextKey{}, "caller")
+	calls := 0
+	f.publish = func(actual context.Context, subject string, data []byte, opts []jetstream.PublishOpt) error {
+		assert.Equal(t, "caller", actual.Value(contextKey{}))
+		assert.Equal(t, b.SubjectPrefix+".database.collection.document", subject)
+		assert.Equal(t, []byte("payload"), data)
+		assert.Len(t, opts, 1)
+		calls++
+		return nil
+	}
+	opts := publisherOptions(b)
+	opts.RetryAttempts = 3
+	opts.OnPublish = func(subject string, err error, latency time.Duration) {
+		assert.Equal(t, b.SubjectPrefix+".database.collection.document", subject)
+		assert.NoError(t, err)
+		assert.GreaterOrEqual(t, latency, time.Duration(0))
+		calls++
+	}
+	publisher, err := NewPublisher(ctx, f, b, opts)
 	require.NoError(t, err)
-	assert.NotNil(t, pub)
-	mockJS.AssertExpectations(t)
+	require.NoError(t, publisher.Publish(ctx, "database.collection.document", []byte("payload")))
+	assert.Equal(t, 2, calls)
+	require.NoError(t, publisher.Close())
 }
 
-func TestNewPublisher_StreamCreationError(t *testing.T) {
-	mockJS := new(MockJetStream)
-
-	mockJS.On("CreateOrUpdateStream", mock.Anything, mock.Anything).Return(nil, errors.New("stream error"))
-
-	_, err := NewPublisher(mockJS, pubsub.PublisherOptions{
-		StreamName: "TEST",
-	})
-
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "stream error")
-}
-
-func TestPublisher_Publish(t *testing.T) {
-	mockJS := new(MockJetStream)
-
-	mockJS.On("CreateOrUpdateStream", mock.Anything, mock.Anything).Return(nil, nil)
-	mockJS.On("Publish", mock.Anything, "PREFIX.test.subject", []byte("hello")).Return(&jetstream.PubAck{}, nil)
-
-	pub, err := NewPublisher(mockJS, pubsub.PublisherOptions{
-		StreamName:    "TEST",
-		SubjectPrefix: "PREFIX",
-	})
+func TestPublisherErrorsAreSafeForCallbacks(t *testing.T) {
+	b := deployconfig.DefaultOperatorBinding()
+	f := allocatedFake(b)
+	cause := errors.New("nats://root:password@private-host secret-value")
+	f.publish = func(context.Context, string, []byte, []jetstream.PublishOpt) error { return cause }
+	opts := publisherOptions(b)
+	var callbackErr error
+	opts.OnPublish = func(_ string, err error, _ time.Duration) { callbackErr = err }
+	publisher, err := NewPublisher(context.Background(), f, b, opts)
 	require.NoError(t, err)
-
-	err = pub.Publish(context.Background(), "test.subject", []byte("hello"))
-	assert.NoError(t, err)
-	mockJS.AssertExpectations(t)
-}
-
-func TestPublisher_PublishError(t *testing.T) {
-	mockJS := new(MockJetStream)
-
-	mockJS.On("CreateOrUpdateStream", mock.Anything, mock.Anything).Return(nil, nil)
-	mockJS.On("Publish", mock.Anything, mock.Anything, mock.Anything).Return(nil, errors.New("publish failed"))
-
-	pub, err := NewPublisher(mockJS, pubsub.PublisherOptions{
-		StreamName:    "TEST",
-		SubjectPrefix: "PREFIX",
-	})
-	require.NoError(t, err)
-
-	err = pub.Publish(context.Background(), "test.subject", []byte("hello"))
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "publish failed")
-}
-
-func TestPublisher_OnPublishCallback_WithMock(t *testing.T) {
-	mockJS := new(MockJetStream)
-
-	mockJS.On("CreateOrUpdateStream", mock.Anything, mock.Anything).Return(nil, nil)
-	mockJS.On("Publish", mock.Anything, mock.Anything, mock.Anything).Return(&jetstream.PubAck{}, nil)
-
-	var calledSubject string
-	var calledErr error
-	var calledLatency time.Duration
-
-	pub, err := NewPublisher(mockJS, pubsub.PublisherOptions{
-		StreamName:    "TEST",
-		SubjectPrefix: "PREFIX",
-		OnPublish: func(subject string, err error, latency time.Duration) {
-			calledSubject = subject
-			calledErr = err
-			calledLatency = latency
-		},
-	})
-	require.NoError(t, err)
-
-	err = pub.Publish(context.Background(), "test.subject", []byte("hello"))
-	require.NoError(t, err)
-
-	assert.Equal(t, "PREFIX.test.subject", calledSubject)
-	assert.NoError(t, calledErr)
-	assert.Greater(t, calledLatency, time.Duration(0))
-}
-
-func TestPublisher_Close(t *testing.T) {
-	mockJS := new(MockJetStream)
-
-	mockJS.On("CreateOrUpdateStream", mock.Anything, mock.Anything).Return(nil, nil)
-
-	pub, err := NewPublisher(mockJS, pubsub.PublisherOptions{
-		StreamName: "TEST",
-	})
-	require.NoError(t, err)
-
-	err = pub.Close()
-	assert.NoError(t, err)
-}
-
-func TestNewConsumer_NilJetStream(t *testing.T) {
-	_, err := NewConsumer(nil, pubsub.ConsumerOptions{
-		StreamName: "TEST",
-	})
-
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "jetstream cannot be nil")
-}
-
-func TestNewConsumer_WithMock(t *testing.T) {
-	mockJS := new(MockJetStream)
-
-	consumer, err := NewConsumer(mockJS, pubsub.ConsumerOptions{
-		StreamName:   "TEST",
-		ConsumerName: "test-consumer",
-	})
-
-	require.NoError(t, err)
-	assert.NotNil(t, consumer)
-}
-
-func TestNewConsumer_RequiresStreamName(t *testing.T) {
-	mockJS := new(MockJetStream)
-
-	_, err := NewConsumer(mockJS, pubsub.ConsumerOptions{
-		StreamName: "", // Empty stream name
-	})
-
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "stream name is required")
-}
-
-func TestNewConsumer_DefaultOptions(t *testing.T) {
-	mockJS := new(MockJetStream)
-
-	consumer, err := NewConsumer(mockJS, pubsub.ConsumerOptions{
-		StreamName: "TEST",
-		// All other options left at zero values
-	})
-
-	require.NoError(t, err)
-	assert.NotNil(t, consumer)
-
-	// Verify defaults were applied
-	jsc := consumer.(*jetStreamConsumer)
-	assert.Equal(t, 100, jsc.opts.ChannelBufSize)
-}
-
-func TestPublisher_NoPrefix(t *testing.T) {
-	mockJS := new(MockJetStream)
-
-	mockJS.On("CreateOrUpdateStream", mock.Anything, mock.Anything).Return(nil, nil)
-	// Without prefix, subject should not be prefixed
-	mockJS.On("Publish", mock.Anything, "test.subject", []byte("hello")).Return(&jetstream.PubAck{}, nil)
-
-	pub, err := NewPublisher(mockJS, pubsub.PublisherOptions{
-		StreamName:    "TEST",
-		SubjectPrefix: "", // No prefix
-	})
-	require.NoError(t, err)
-
-	err = pub.Publish(context.Background(), "test.subject", []byte("hello"))
-	assert.NoError(t, err)
-	mockJS.AssertExpectations(t)
-}
-
-func TestPublisher_NoStreamName(t *testing.T) {
-	mockJS := new(MockJetStream)
-
-	// Without stream name, CreateOrUpdateStream should not be called
-	pub, err := NewPublisher(mockJS, pubsub.PublisherOptions{
-		StreamName: "", // No stream name
-	})
-
-	require.NoError(t, err)
-	assert.NotNil(t, pub)
-	mockJS.AssertNotCalled(t, "CreateOrUpdateStream")
-}
-
-func TestConsumer_Subscribe_StreamError(t *testing.T) {
-	mockJS := new(MockJetStream)
-
-	mockJS.On("CreateOrUpdateStream", mock.Anything, mock.Anything).Return(nil, errors.New("stream error"))
-
-	consumer, err := NewConsumer(mockJS, pubsub.ConsumerOptions{
-		StreamName:   "TEST",
-		ConsumerName: "test-consumer",
-	})
-	require.NoError(t, err)
-
-	_, err = consumer.Subscribe(context.Background())
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "stream error")
-}
-
-func TestConsumer_Subscribe_ConsumerCreationError(t *testing.T) {
-	mockJS := new(MockJetStream)
-
-	mockJS.On("CreateOrUpdateStream", mock.Anything, mock.Anything).Return(nil, nil)
-	mockJS.On("CreateOrUpdateConsumer", mock.Anything, "TEST", mock.Anything).Return(nil, errors.New("consumer error"))
-
-	consumer, err := NewConsumer(mockJS, pubsub.ConsumerOptions{
-		StreamName:   "TEST",
-		ConsumerName: "test-consumer",
-	})
-	require.NoError(t, err)
-
-	_, err = consumer.Subscribe(context.Background())
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "consumer error")
-}
-
-func TestConsumer_Subscribe_ConsumeError(t *testing.T) {
-	mockJS := new(MockJetStream)
-	mockConsumer := NewMockConsumer()
-
-	mockJS.On("CreateOrUpdateStream", mock.Anything, mock.Anything).Return(nil, nil)
-	mockJS.On("CreateOrUpdateConsumer", mock.Anything, "TEST", mock.Anything).Return(mockConsumer, nil)
-	mockConsumer.On("Consume", mock.Anything).Return(nil, errors.New("consume error"))
-
-	consumer, err := NewConsumer(mockJS, pubsub.ConsumerOptions{
-		StreamName:   "TEST",
-		ConsumerName: "test-consumer",
-	})
-	require.NoError(t, err)
-
-	_, err = consumer.Subscribe(context.Background())
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "consume error")
-}
-
-func TestConsumer_Subscribe_Success(t *testing.T) {
-	mockJS := new(MockJetStream)
-	mockConsumer := NewMockConsumer()
-	mockCC := NewMockConsumeContext()
-
-	mockJS.On("CreateOrUpdateStream", mock.Anything, mock.Anything).Return(nil, nil)
-	mockJS.On("CreateOrUpdateConsumer", mock.Anything, "TEST", mock.Anything).Return(mockConsumer, nil)
-	mockConsumer.On("Consume", mock.Anything).Return(mockCC, nil)
-	mockCC.On("Stop").Return()
-
-	consumer, err := NewConsumer(mockJS, pubsub.ConsumerOptions{
-		StreamName:   "TEST",
-		ConsumerName: "test-consumer",
-	})
-	require.NoError(t, err)
-
+	err = publisher.Publish(context.Background(), "db.col.id", nil)
+	require.EqualError(t, err, "NATS publish failed")
+	assert.ErrorIs(t, err, cause)
+	assert.Same(t, err, callbackErr)
 	ctx, cancel := context.WithCancel(context.Background())
-	msgCh, err := consumer.Subscribe(ctx)
-	require.NoError(t, err)
-	assert.NotNil(t, msgCh)
-
-	// Cancel to stop consumer
 	cancel()
+	require.ErrorIs(t, publisher.Publish(ctx, "db.col.id", nil), context.Canceled)
+}
 
-	// Wait for channel to close
+func TestPublisherRejectsContradictoryOptions(t *testing.T) {
+	b := deployconfig.DefaultOperatorBinding()
+	edits := []func(*pubsub.PublisherOptions){
+		func(o *pubsub.PublisherOptions) { o.StreamName = "foreign" },
+		func(o *pubsub.PublisherOptions) { o.SubjectPrefix = "foreign" },
+		func(o *pubsub.PublisherOptions) { o.Storage = pubsub.MemoryStorage },
+		func(o *pubsub.PublisherOptions) { o.RetryAttempts = -1 },
+	}
+	for _, edit := range edits {
+		f := allocatedFake(b)
+		opts := publisherOptions(b)
+		edit(&opts)
+		_, err := NewPublisher(context.Background(), f, b, opts)
+		require.Error(t, err)
+		assert.Empty(t, f.calls)
+	}
+	_, err := NewPublisher(context.Background(), nil, b, publisherOptions(b))
+	require.Error(t, err)
+	invalid := b
+	invalid.Policy.MaxBytes = 0
+	_, err = NewPublisher(context.Background(), allocatedFake(b), invalid, publisherOptions(b))
+	require.Error(t, err)
+}
+
+func TestConsumerRejectsContradictoryOptions(t *testing.T) {
+	b := deployconfig.DefaultOperatorBinding()
+	edits := []func(*pubsub.ConsumerOptions){
+		func(o *pubsub.ConsumerOptions) { o.StreamName = "foreign" },
+		func(o *pubsub.ConsumerOptions) { o.ConsumerName = "foreign" },
+		func(o *pubsub.ConsumerOptions) { o.FilterSubject = "foreign.>" },
+		func(o *pubsub.ConsumerOptions) { o.Storage = pubsub.MemoryStorage },
+		func(o *pubsub.ConsumerOptions) { o.ChannelBufSize = 0 },
+	}
+	for _, edit := range edits {
+		f := allocatedFake(b)
+		opts := consumerOptions(b)
+		edit(&opts)
+		_, err := NewConsumer(context.Background(), f, b, opts)
+		require.Error(t, err)
+		assert.Empty(t, f.calls)
+	}
+	_, err := NewConsumer(context.Background(), nil, b, consumerOptions(b))
+	require.Error(t, err)
+}
+
+func TestConsumerDeliversAndDrainsBeforeChannelClose(t *testing.T) {
+	b := deployconfig.DefaultOperatorBinding()
+	f := allocatedFake(b)
+	f.loop = newFakeConsumeContext()
+	f.loop.manualClose = true
+	consumer, err := NewConsumer(context.Background(), f, b, consumerOptions(b))
+	require.NoError(t, err)
+	runtime := consumer.(*jetStreamConsumer)
+	assert.False(t, runtime.Ready())
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	messages, err := consumer.Subscribe(ctx)
+	require.NoError(t, err)
+	assert.True(t, runtime.Ready())
+	_, err = consumer.Subscribe(ctx)
+	require.Error(t, err)
+	first := NewMockMsg("TRIGGERS.db.col.first", []byte("first"))
+	f.handler(first)
+	second := NewMockMsg("TRIGGERS.db.col.second", []byte("second"))
+	second.On("Nak").Return(nil).Once()
+	callbackDone := make(chan struct{})
+	go func() { f.handler(second); close(callbackDone) }()
+	cancel()
 	select {
-	case _, ok := <-msgCh:
-		if ok {
-			t.Log("Received message or channel still open")
+	case <-callbackDone:
+	case <-time.After(time.Second):
+		t.Fatal("full-buffer callback did not stop")
+	}
+	select {
+	case <-f.loop.stopped:
+	case <-time.After(time.Second):
+		t.Fatal("consume Stop was not called")
+	}
+	assert.False(t, runtime.Ready())
+	delivered := <-messages
+	assert.Equal(t, first.Subject(), delivered.Subject())
+	assert.Equal(t, first.Data(), delivered.Data())
+	select {
+	case _, open := <-messages:
+		if !open {
+			t.Fatal("message channel closed before consume Closed")
 		}
-	case <-time.After(100 * time.Millisecond):
+	default:
+	}
+	f.loop.finish()
+	requireChannelClosed(t, messages)
+	assert.NoError(t, runtime.Err())
+	second.AssertExpectations(t)
+}
+
+func TestConsumerUnexpectedCloseAndTerminalErrors(t *testing.T) {
+	for _, terminal := range []error{nil, jetstream.ErrConsumerDeleted, jetstream.ErrBadRequest} {
+		t.Run(errorName(terminal), func(t *testing.T) {
+			b := deployconfig.DefaultOperatorBinding()
+			f := allocatedFake(b)
+			consumer, err := NewConsumer(context.Background(), f, b, consumerOptions(b))
+			require.NoError(t, err)
+			runtime := consumer.(*jetStreamConsumer)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			messages, err := consumer.Subscribe(ctx)
+			require.NoError(t, err)
+			if terminal == nil {
+				f.loop.finish()
+			} else {
+				f.errHandler(f.loop, terminal)
+			}
+			requireChannelClosed(t, messages)
+			assert.False(t, runtime.Ready())
+			if terminal == nil {
+				assert.EqualError(t, runtime.Err(), "NATS consume loop stopped unexpectedly")
+			} else {
+				assert.EqualError(t, runtime.Err(), "NATS consume failed")
+				assert.ErrorIs(t, runtime.Err(), terminal)
+			}
+		})
 	}
 }
 
-func TestConsumer_Subscribe_WithFilterSubject(t *testing.T) {
-	mockJS := new(MockJetStream)
-	mockConsumer := NewMockConsumer()
-	mockCC := NewMockConsumeContext()
-
-	mockJS.On("CreateOrUpdateStream", mock.Anything, mock.MatchedBy(func(cfg jetstream.StreamConfig) bool {
-		return cfg.Name == "TEST" && len(cfg.Subjects) > 0 && cfg.Subjects[0] == "custom.subject.>"
-	})).Return(nil, nil)
-	mockJS.On("CreateOrUpdateConsumer", mock.Anything, "TEST", mock.MatchedBy(func(cfg jetstream.ConsumerConfig) bool {
-		return cfg.FilterSubject == "custom.subject.>"
-	})).Return(mockConsumer, nil)
-	mockConsumer.On("Consume", mock.Anything).Return(mockCC, nil)
-	mockCC.On("Stop").Return()
-
-	consumer, err := NewConsumer(mockJS, pubsub.ConsumerOptions{
-		StreamName:    "TEST",
-		ConsumerName:  "test-consumer",
-		FilterSubject: "custom.subject.>",
-	})
+func TestConsumerStartupFailureCanRetry(t *testing.T) {
+	b := deployconfig.DefaultOperatorBinding()
+	f := allocatedFake(b)
+	consumer, err := NewConsumer(context.Background(), f, b, consumerOptions(b))
 	require.NoError(t, err)
-
+	runtime := consumer.(*jetStreamConsumer)
+	cause := errors.New("credential-bearing startup error")
+	f.consumeErr = cause
+	_, err = consumer.Subscribe(context.Background())
+	require.EqualError(t, err, "NATS consume startup failed")
+	assert.ErrorIs(t, err, cause)
+	assert.False(t, runtime.Ready())
+	f.consumeErr = nil
+	f.consumerInfoErr = cause
+	_, err = consumer.Subscribe(context.Background())
+	require.ErrorIs(t, err, cause)
+	f.consumerInfoErr = nil
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	msgCh, err := consumer.Subscribe(ctx)
+	messages, err := consumer.Subscribe(ctx)
 	require.NoError(t, err)
-	assert.NotNil(t, msgCh)
-
-	mockJS.AssertExpectations(t)
-}
-
-func TestConsumer_Subscribe_DefaultConsumerName(t *testing.T) {
-	mockJS := new(MockJetStream)
-	mockConsumer := NewMockConsumer()
-	mockCC := NewMockConsumeContext()
-
-	mockJS.On("CreateOrUpdateStream", mock.Anything, mock.Anything).Return(nil, nil)
-	mockJS.On("CreateOrUpdateConsumer", mock.Anything, "TEST", mock.MatchedBy(func(cfg jetstream.ConsumerConfig) bool {
-		return cfg.Durable == "consumer" // Default name
-	})).Return(mockConsumer, nil)
-	mockConsumer.On("Consume", mock.Anything).Return(mockCC, nil)
-	mockCC.On("Stop").Return()
-
-	consumer, err := NewConsumer(mockJS, pubsub.ConsumerOptions{
-		StreamName:   "TEST",
-		ConsumerName: "", // Empty, should use default
-	})
-	require.NoError(t, err)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	_, err = consumer.Subscribe(ctx)
-	require.NoError(t, err)
-
-	mockJS.AssertExpectations(t)
-}
-
-func TestConsumer_Subscribe_ReceivesMessages(t *testing.T) {
-	mockJS := new(MockJetStream)
-	mockConsumer := NewMockConsumer()
-	mockCC := NewMockConsumeContext()
-
-	mockJS.On("CreateOrUpdateStream", mock.Anything, mock.Anything).Return(nil, nil)
-	mockJS.On("CreateOrUpdateConsumer", mock.Anything, "TEST", mock.Anything).Return(mockConsumer, nil)
-	mockConsumer.On("Consume", mock.Anything).Return(mockCC, nil)
-	mockCC.On("Stop").Return()
-
-	consumer, err := NewConsumer(mockJS, pubsub.ConsumerOptions{
-		StreamName:   "TEST",
-		ConsumerName: "test-consumer",
-	})
-	require.NoError(t, err)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	msgCh, err := consumer.Subscribe(ctx)
-	require.NoError(t, err)
-
-	// Get the handler from mock and send a message
-	var handler jetstream.MessageHandler
-	select {
-	case handler = <-mockConsumer.HandlerCh():
-	case <-time.After(100 * time.Millisecond):
-		t.Fatal("Handler not registered")
-	}
-
-	// Send a mock message
-	mockMsg := NewMockMsg("test.subject", []byte("hello"))
-	mockMsg.On("Ack").Return(nil)
-	handler(mockMsg)
-
-	// Receive from channel
-	select {
-	case msg := <-msgCh:
-		assert.Equal(t, "test.subject", msg.Subject())
-		assert.Equal(t, []byte("hello"), msg.Data())
-		msg.Ack()
-	case <-time.After(100 * time.Millisecond):
-		t.Fatal("Did not receive message")
-	}
-}
-
-func TestConsumer_Subscribe_ChannelClosedOnCancel(t *testing.T) {
-	mockJS := new(MockJetStream)
-	mockConsumer := NewMockConsumer()
-	mockCC := NewMockConsumeContext()
-
-	mockJS.On("CreateOrUpdateStream", mock.Anything, mock.Anything).Return(nil, nil)
-	mockJS.On("CreateOrUpdateConsumer", mock.Anything, "TEST", mock.Anything).Return(mockConsumer, nil)
-	mockConsumer.On("Consume", mock.Anything).Return(mockCC, nil)
-	mockCC.On("Stop").Return()
-
-	consumer, err := NewConsumer(mockJS, pubsub.ConsumerOptions{
-		StreamName:   "TEST",
-		ConsumerName: "test-consumer",
-	})
-	require.NoError(t, err)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	msgCh, err := consumer.Subscribe(ctx)
-	require.NoError(t, err)
-
-	// Cancel context
+	f.errHandler(f.loop, errors.New("transient heartbeat error"))
+	assert.True(t, runtime.Ready())
+	assert.NoError(t, runtime.Err())
 	cancel()
-
-	// Channel should close
-	select {
-	case _, ok := <-msgCh:
-		assert.False(t, ok, "Channel should be closed")
-	case <-time.After(500 * time.Millisecond):
-		t.Fatal("Channel did not close in time")
-	}
+	requireChannelClosed(t, messages)
 }
 
-func TestConsumer_Subscribe_NakOnContextDone(t *testing.T) {
-	mockJS := new(MockJetStream)
-	mockConsumer := NewMockConsumer()
-	mockCC := NewMockConsumeContext()
-
-	mockJS.On("CreateOrUpdateStream", mock.Anything, mock.Anything).Return(nil, nil)
-	mockJS.On("CreateOrUpdateConsumer", mock.Anything, "TEST", mock.Anything).Return(mockConsumer, nil)
-	mockConsumer.On("Consume", mock.Anything).Return(mockCC, nil)
-	mockCC.On("Stop").Return()
-
-	consumer, err := NewConsumer(mockJS, pubsub.ConsumerOptions{
-		StreamName:     "TEST",
-		ConsumerName:   "test-consumer",
-		ChannelBufSize: 1, // Small buffer
-	})
+func TestMemoryBrokerOptions(t *testing.T) {
+	b := deployconfig.DefaultOperatorBinding()
+	b.Policy.Storage = "memory"
+	f := allocatedFake(b)
+	_, err := NewPublisher(context.Background(), f, b, publisherOptions(b))
 	require.NoError(t, err)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	_, err = consumer.Subscribe(ctx)
+	_, err = NewConsumer(context.Background(), f, b, consumerOptions(b))
 	require.NoError(t, err)
+}
 
-	// Get the handler
-	var handler jetstream.MessageHandler
+func requireChannelClosed(t *testing.T, messages <-chan pubsub.Message) {
+	t.Helper()
 	select {
-	case handler = <-mockConsumer.HandlerCh():
-	case <-time.After(100 * time.Millisecond):
-		t.Fatal("Handler not registered")
+	case _, open := <-messages:
+		require.False(t, open)
+	case <-time.After(time.Second):
+		t.Fatal("message channel did not close")
 	}
-
-	// Cancel first
-	cancel()
-	time.Sleep(50 * time.Millisecond)
-
-	// Message arriving after cancel should be NAK'd
-	mockMsg := NewMockMsg("test.subject", []byte("hello"))
-	mockMsg.On("Nak").Return(nil)
-	handler(mockMsg)
-
-	time.Sleep(50 * time.Millisecond)
-	mockMsg.AssertCalled(t, "Nak")
 }

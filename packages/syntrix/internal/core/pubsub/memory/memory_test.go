@@ -27,11 +27,11 @@ func TestEngine_NewPublisherConsumer(t *testing.T) {
 	engine := New()
 	defer engine.Close()
 
-	pub, err := engine.NewPublisher(pubsub.PublisherOptions{})
+	pub, err := engine.NewPublisher(context.Background(), pubsub.PublisherOptions{})
 	require.NoError(t, err)
 	require.NotNil(t, pub)
 
-	consumer, err := engine.NewConsumer(pubsub.ConsumerOptions{})
+	consumer, err := engine.NewConsumer(context.Background(), pubsub.ConsumerOptions{})
 	require.NoError(t, err)
 	require.NotNil(t, consumer)
 }
@@ -52,7 +52,7 @@ func TestEngine_NewPublisherAfterClose(t *testing.T) {
 	engine := New()
 	require.NoError(t, engine.Close())
 
-	_, err := engine.NewPublisher(pubsub.PublisherOptions{})
+	_, err := engine.NewPublisher(context.Background(), pubsub.PublisherOptions{})
 	assert.ErrorIs(t, err, ErrEngineClosed)
 }
 
@@ -60,7 +60,7 @@ func TestEngine_NewConsumerAfterClose(t *testing.T) {
 	engine := New()
 	require.NoError(t, engine.Close())
 
-	_, err := engine.NewConsumer(pubsub.ConsumerOptions{})
+	_, err := engine.NewConsumer(context.Background(), pubsub.ConsumerOptions{})
 	assert.ErrorIs(t, err, ErrEngineClosed)
 }
 
@@ -75,7 +75,7 @@ func TestBroker_PublishSubscribe(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	consumer, err := engine.NewConsumer(pubsub.ConsumerOptions{
+	consumer, err := engine.NewConsumer(context.Background(), pubsub.ConsumerOptions{
 		FilterSubject: "test.>",
 	})
 	require.NoError(t, err)
@@ -83,7 +83,7 @@ func TestBroker_PublishSubscribe(t *testing.T) {
 	msgCh, err := consumer.Subscribe(ctx)
 	require.NoError(t, err)
 
-	pub, err := engine.NewPublisher(pubsub.PublisherOptions{})
+	pub, err := engine.NewPublisher(context.Background(), pubsub.PublisherOptions{})
 	require.NoError(t, err)
 
 	// Publish
@@ -108,7 +108,7 @@ func TestPublisher_SubjectPrefix(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	consumer, err := engine.NewConsumer(pubsub.ConsumerOptions{
+	consumer, err := engine.NewConsumer(context.Background(), pubsub.ConsumerOptions{
 		FilterSubject: "TRIGGERS.>",
 	})
 	require.NoError(t, err)
@@ -116,7 +116,7 @@ func TestPublisher_SubjectPrefix(t *testing.T) {
 	msgCh, err := consumer.Subscribe(ctx)
 	require.NoError(t, err)
 
-	pub, err := engine.NewPublisher(pubsub.PublisherOptions{
+	pub, err := engine.NewPublisher(context.Background(), pubsub.PublisherOptions{
 		SubjectPrefix: "TRIGGERS",
 	})
 	require.NoError(t, err)
@@ -143,7 +143,7 @@ func TestConsumer_FilterSubject(t *testing.T) {
 	defer cancel()
 
 	// Subscribe to specific pattern
-	consumer, err := engine.NewConsumer(pubsub.ConsumerOptions{
+	consumer, err := engine.NewConsumer(context.Background(), pubsub.ConsumerOptions{
 		FilterSubject: "foo.bar.*",
 	})
 	require.NoError(t, err)
@@ -151,7 +151,7 @@ func TestConsumer_FilterSubject(t *testing.T) {
 	msgCh, err := consumer.Subscribe(ctx)
 	require.NoError(t, err)
 
-	pub, err := engine.NewPublisher(pubsub.PublisherOptions{})
+	pub, err := engine.NewPublisher(context.Background(), pubsub.PublisherOptions{})
 	require.NoError(t, err)
 
 	// Matching message
@@ -189,7 +189,7 @@ func TestConsumer_DefaultPattern(t *testing.T) {
 	defer cancel()
 
 	// No FilterSubject, use StreamName
-	consumer, err := engine.NewConsumer(pubsub.ConsumerOptions{
+	consumer, err := engine.NewConsumer(context.Background(), pubsub.ConsumerOptions{
 		StreamName: "STREAM",
 	})
 	require.NoError(t, err)
@@ -197,7 +197,7 @@ func TestConsumer_DefaultPattern(t *testing.T) {
 	msgCh, err := consumer.Subscribe(ctx)
 	require.NoError(t, err)
 
-	pub, err := engine.NewPublisher(pubsub.PublisherOptions{})
+	pub, err := engine.NewPublisher(context.Background(), pubsub.PublisherOptions{})
 	require.NoError(t, err)
 
 	err = pub.Publish(ctx, "STREAM.foo.bar", []byte("data"))
@@ -216,7 +216,7 @@ func TestBroker_PublishNoSubscribers(t *testing.T) {
 	defer engine.Close()
 
 	ctx := context.Background()
-	pub, err := engine.NewPublisher(pubsub.PublisherOptions{})
+	pub, err := engine.NewPublisher(context.Background(), pubsub.PublisherOptions{})
 	require.NoError(t, err)
 
 	// Should not error, just drop
@@ -226,7 +226,7 @@ func TestBroker_PublishNoSubscribers(t *testing.T) {
 
 func TestBroker_PublishAfterClose(t *testing.T) {
 	engine := New()
-	pub, err := engine.NewPublisher(pubsub.PublisherOptions{})
+	pub, err := engine.NewPublisher(context.Background(), pubsub.PublisherOptions{})
 	require.NoError(t, err)
 
 	require.NoError(t, engine.Close())
@@ -237,7 +237,7 @@ func TestBroker_PublishAfterClose(t *testing.T) {
 
 func TestBroker_SubscribeAfterClose(t *testing.T) {
 	engine := New()
-	consumer, err := engine.NewConsumer(pubsub.ConsumerOptions{})
+	consumer, err := engine.NewConsumer(context.Background(), pubsub.ConsumerOptions{})
 	require.NoError(t, err)
 
 	require.NoError(t, engine.Close())
@@ -252,7 +252,7 @@ func TestBroker_DuplicateSubscribe(t *testing.T) {
 
 	ctx := context.Background()
 
-	consumer1, err := engine.NewConsumer(pubsub.ConsumerOptions{
+	consumer1, err := engine.NewConsumer(context.Background(), pubsub.ConsumerOptions{
 		FilterSubject: "test.>",
 	})
 	require.NoError(t, err)
@@ -260,7 +260,7 @@ func TestBroker_DuplicateSubscribe(t *testing.T) {
 	_, err = consumer1.Subscribe(ctx)
 	require.NoError(t, err)
 
-	consumer2, err := engine.NewConsumer(pubsub.ConsumerOptions{
+	consumer2, err := engine.NewConsumer(context.Background(), pubsub.ConsumerOptions{
 		FilterSubject: "test.>",
 	})
 	require.NoError(t, err)
@@ -280,10 +280,10 @@ func TestMessage_Ack(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	consumer, _ := engine.NewConsumer(pubsub.ConsumerOptions{FilterSubject: ">"})
+	consumer, _ := engine.NewConsumer(context.Background(), pubsub.ConsumerOptions{FilterSubject: ">"})
 	msgCh, _ := consumer.Subscribe(ctx)
 
-	pub, _ := engine.NewPublisher(pubsub.PublisherOptions{})
+	pub, _ := engine.NewPublisher(context.Background(), pubsub.PublisherOptions{})
 	pub.Publish(ctx, "test", []byte("data"))
 
 	msg := <-msgCh
@@ -297,10 +297,10 @@ func TestMessage_DoubleAck(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	consumer, _ := engine.NewConsumer(pubsub.ConsumerOptions{FilterSubject: ">"})
+	consumer, _ := engine.NewConsumer(context.Background(), pubsub.ConsumerOptions{FilterSubject: ">"})
 	msgCh, _ := consumer.Subscribe(ctx)
 
-	pub, _ := engine.NewPublisher(pubsub.PublisherOptions{})
+	pub, _ := engine.NewPublisher(context.Background(), pubsub.PublisherOptions{})
 	pub.Publish(ctx, "test", []byte("data"))
 
 	msg := <-msgCh
@@ -315,10 +315,10 @@ func TestMessage_Nak(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	consumer, _ := engine.NewConsumer(pubsub.ConsumerOptions{FilterSubject: ">"})
+	consumer, _ := engine.NewConsumer(context.Background(), pubsub.ConsumerOptions{FilterSubject: ">"})
 	msgCh, _ := consumer.Subscribe(ctx)
 
-	pub, _ := engine.NewPublisher(pubsub.PublisherOptions{})
+	pub, _ := engine.NewPublisher(context.Background(), pubsub.PublisherOptions{})
 	pub.Publish(ctx, "test", []byte("data"))
 
 	// First delivery
@@ -343,10 +343,10 @@ func TestMessage_NakWithDelay(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	consumer, _ := engine.NewConsumer(pubsub.ConsumerOptions{FilterSubject: ">"})
+	consumer, _ := engine.NewConsumer(context.Background(), pubsub.ConsumerOptions{FilterSubject: ">"})
 	msgCh, _ := consumer.Subscribe(ctx)
 
-	pub, _ := engine.NewPublisher(pubsub.PublisherOptions{})
+	pub, _ := engine.NewPublisher(context.Background(), pubsub.PublisherOptions{})
 	pub.Publish(ctx, "test", []byte("data"))
 
 	msg := <-msgCh
@@ -370,10 +370,10 @@ func TestMessage_Term(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	consumer, _ := engine.NewConsumer(pubsub.ConsumerOptions{FilterSubject: ">"})
+	consumer, _ := engine.NewConsumer(context.Background(), pubsub.ConsumerOptions{FilterSubject: ">"})
 	msgCh, _ := consumer.Subscribe(ctx)
 
-	pub, _ := engine.NewPublisher(pubsub.PublisherOptions{})
+	pub, _ := engine.NewPublisher(context.Background(), pubsub.PublisherOptions{})
 	pub.Publish(ctx, "test", []byte("data"))
 
 	msg := <-msgCh
@@ -395,10 +395,10 @@ func TestMessage_AckAfterNak(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	consumer, _ := engine.NewConsumer(pubsub.ConsumerOptions{FilterSubject: ">"})
+	consumer, _ := engine.NewConsumer(context.Background(), pubsub.ConsumerOptions{FilterSubject: ">"})
 	msgCh, _ := consumer.Subscribe(ctx)
 
-	pub, _ := engine.NewPublisher(pubsub.PublisherOptions{})
+	pub, _ := engine.NewPublisher(context.Background(), pubsub.PublisherOptions{})
 	pub.Publish(ctx, "test", []byte("data"))
 
 	msg := <-msgCh
@@ -413,10 +413,10 @@ func TestMessage_Metadata(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	consumer, _ := engine.NewConsumer(pubsub.ConsumerOptions{FilterSubject: ">"})
+	consumer, _ := engine.NewConsumer(context.Background(), pubsub.ConsumerOptions{FilterSubject: ">"})
 	msgCh, _ := consumer.Subscribe(ctx)
 
-	pub, _ := engine.NewPublisher(pubsub.PublisherOptions{})
+	pub, _ := engine.NewPublisher(context.Background(), pubsub.PublisherOptions{})
 	pub.Publish(ctx, "test.subject", []byte("data"))
 
 	msg := <-msgCh
@@ -438,7 +438,7 @@ func TestConsumer_ContextCancel(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 
-	consumer, _ := engine.NewConsumer(pubsub.ConsumerOptions{FilterSubject: ">"})
+	consumer, _ := engine.NewConsumer(context.Background(), pubsub.ConsumerOptions{FilterSubject: ">"})
 	msgCh, err := consumer.Subscribe(ctx)
 	require.NoError(t, err)
 
@@ -463,13 +463,13 @@ func TestPublisher_ContextCancel(t *testing.T) {
 	pubCtx, cancel := context.WithCancel(context.Background())
 
 	// Create a consumer with small buffer to cause blocking
-	consumer, _ := engine.NewConsumer(pubsub.ConsumerOptions{
+	consumer, _ := engine.NewConsumer(context.Background(), pubsub.ConsumerOptions{
 		FilterSubject:  ">",
 		ChannelBufSize: 1,
 	})
 	_, _ = consumer.Subscribe(consumerCtx)
 
-	pub, _ := engine.NewPublisher(pubsub.PublisherOptions{})
+	pub, _ := engine.NewPublisher(context.Background(), pubsub.PublisherOptions{})
 
 	// Fill buffer
 	pub.Publish(pubCtx, "test", []byte("1"))
@@ -496,7 +496,7 @@ func TestPublisher_OnPublishCallback(t *testing.T) {
 	var capturedErr error
 	var capturedLatency time.Duration
 
-	pub, _ := engine.NewPublisher(pubsub.PublisherOptions{
+	pub, _ := engine.NewPublisher(context.Background(), pubsub.PublisherOptions{
 		SubjectPrefix: "PREFIX",
 		OnPublish: func(subject string, err error, latency time.Duration) {
 			called = true
@@ -519,7 +519,7 @@ func TestPublisher_OnPublishError(t *testing.T) {
 	engine := New()
 
 	var capturedErr error
-	pub, _ := engine.NewPublisher(pubsub.PublisherOptions{
+	pub, _ := engine.NewPublisher(context.Background(), pubsub.PublisherOptions{
 		OnPublish: func(subject string, err error, latency time.Duration) {
 			capturedErr = err
 		},
@@ -543,13 +543,13 @@ func TestConcurrent_PublishSubscribe(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	consumer, _ := engine.NewConsumer(pubsub.ConsumerOptions{
+	consumer, _ := engine.NewConsumer(context.Background(), pubsub.ConsumerOptions{
 		FilterSubject:  ">",
 		ChannelBufSize: 1000,
 	})
 	msgCh, _ := consumer.Subscribe(ctx)
 
-	pub, _ := engine.NewPublisher(pubsub.PublisherOptions{})
+	pub, _ := engine.NewPublisher(context.Background(), pubsub.PublisherOptions{})
 
 	const numMessages = 100
 	var wg sync.WaitGroup
@@ -599,7 +599,7 @@ func TestConcurrent_MultiplePublishers(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			pub, err := engine.NewPublisher(pubsub.PublisherOptions{})
+			pub, err := engine.NewPublisher(context.Background(), pubsub.PublisherOptions{})
 			require.NoError(t, err)
 			for j := 0; j < 10; j++ {
 				pub.Publish(ctx, "test", []byte("data"))
@@ -613,7 +613,7 @@ func TestConcurrent_CloseWhilePublishing(t *testing.T) {
 	engine := New()
 
 	ctx := context.Background()
-	pub, _ := engine.NewPublisher(pubsub.PublisherOptions{})
+	pub, _ := engine.NewPublisher(context.Background(), pubsub.PublisherOptions{})
 
 	var wg sync.WaitGroup
 	wg.Add(1)
@@ -641,10 +641,10 @@ func TestNakWithDelay_EngineClosed(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	consumer, _ := engine.NewConsumer(pubsub.ConsumerOptions{FilterSubject: ">"})
+	consumer, _ := engine.NewConsumer(context.Background(), pubsub.ConsumerOptions{FilterSubject: ">"})
 	msgCh, _ := consumer.Subscribe(ctx)
 
-	pub, _ := engine.NewPublisher(pubsub.PublisherOptions{})
+	pub, _ := engine.NewPublisher(context.Background(), pubsub.PublisherOptions{})
 	pub.Publish(ctx, "test", []byte("data"))
 
 	msg := <-msgCh
@@ -665,10 +665,10 @@ func TestNakWithDelay_ContextCancelled(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 
-	consumer, _ := engine.NewConsumer(pubsub.ConsumerOptions{FilterSubject: ">"})
+	consumer, _ := engine.NewConsumer(context.Background(), pubsub.ConsumerOptions{FilterSubject: ">"})
 	msgCh, _ := consumer.Subscribe(ctx)
 
-	pub, _ := engine.NewPublisher(pubsub.PublisherOptions{})
+	pub, _ := engine.NewPublisher(context.Background(), pubsub.PublisherOptions{})
 	pub.Publish(ctx, "test", []byte("data"))
 
 	msg := <-msgCh
@@ -691,7 +691,7 @@ func TestPublisher_Close(t *testing.T) {
 	engine := New()
 	defer engine.Close()
 
-	pub, err := engine.NewPublisher(pubsub.PublisherOptions{})
+	pub, err := engine.NewPublisher(context.Background(), pubsub.PublisherOptions{})
 	require.NoError(t, err)
 
 	// Close the publisher
@@ -716,13 +716,13 @@ func TestNak_ChannelFull(t *testing.T) {
 	ctx := context.Background()
 
 	// Create consumer with buffer size of 2
-	consumer, _ := engine.NewConsumer(pubsub.ConsumerOptions{
+	consumer, _ := engine.NewConsumer(context.Background(), pubsub.ConsumerOptions{
 		FilterSubject:  ">",
 		ChannelBufSize: 2,
 	})
 	msgCh, _ := consumer.Subscribe(ctx)
 
-	pub, _ := engine.NewPublisher(pubsub.PublisherOptions{})
+	pub, _ := engine.NewPublisher(context.Background(), pubsub.PublisherOptions{})
 
 	// Publish 2 messages to fill the buffer
 	pub.Publish(ctx, "test", []byte("msg1"))
@@ -753,4 +753,15 @@ func TestNak_ChannelFull(t *testing.T) {
 	// Verify we can still receive remaining messages
 	<-msgCh // msg2
 	<-msgCh // msg3
+}
+
+func TestEngineFactoryCancellation(t *testing.T) {
+	engine := New()
+	defer engine.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := engine.NewPublisher(ctx, pubsub.PublisherOptions{})
+	require.ErrorIs(t, err, context.Canceled)
+	_, err = engine.NewConsumer(ctx, pubsub.ConsumerOptions{})
+	require.ErrorIs(t, err, context.Canceled)
 }

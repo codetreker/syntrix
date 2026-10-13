@@ -59,7 +59,11 @@ against existing MongoDB/PostgreSQL dependencies using the
 [instance deployment guide](../packages/syntrix/deployment/README.md). The planned
 Console lifecycle allocates private databases and runtime resources on
 administrator-registered shared infrastructure; it does not deploy MongoDB,
-PostgreSQL, or NATS server Pods.
+PostgreSQL, or NATS server Pods. The implemented
+[managed runtime contract](design/server/console/04.managed_runtime_contract.md)
+provides pure rendering, explicit broker attachment, staged initialization and
+component readiness as prerequisites. It does not itself allocate accounts,
+record Console instance intent or certify product acceptance.
 
 ## Instances, Projects, and Logical Databases
 

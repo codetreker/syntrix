@@ -32,13 +32,57 @@ func main() {
 	runAll := flag.Bool("all", false, "Run All Services")
 	standalone := flag.Bool("standalone", false, "Run in standalone mode (single process, no inter-service HTTP)")
 	bootstrapIndexes := flag.Bool("bootstrap-indexes", false, "Rebuild indexes during maintenance, verify subscription readiness, then keep services running")
-	writesQuiesced := flag.Bool("writes-quiesced", false, "Attest all external writers, including HTTP/gRPC clients and MongoDB tombstone TTL deletion, remain paused until bootstrap readiness")
+	writesQuiesced := flag.Bool("writes-quiesced", false, "Attest external writers and cleanup remain paused through indexed query acceptance and initialization finalization")
 	resetDerived := flag.Bool("reset-derived", false, "Archive configured index and Puller buffer directories before bootstrap; stop other processes using them")
 	bootstrapTimeout := flag.Duration("bootstrap-timeout", 30*time.Minute, "Maximum duration for index bootstrap and subscription readiness")
+	initializationAcceptance := flag.Bool("initialization-acceptance", false, "Run read roles with internal writers and cleanup held for initialization acceptance")
+	inspectInitialization := flag.Bool("inspect-initialization", false, "Inspect initialization definitions without starting services")
+	finalizeInitialization := flag.Bool("finalize-initialization", false, "Finalize cleanup definitions after indexed query acceptance")
+	expectedPreparation := flag.String("expected-preparation", "", "Expected preparation specification for finalization")
+	indexedQueryAccepted := flag.Bool("indexed-query-accepted", false, "Attest an indexed query passed before finalization")
+	initializationTimeout := flag.Duration("initialization-timeout", 30*time.Second, "Maximum duration of initialization inspection or finalization")
+	output := flag.String("output", "", "Initialization result format (json)")
 	flag.Parse()
+	if flag.NArg() != 0 {
+		fmt.Fprintln(os.Stderr, "unexpected positional arguments")
+		os.Exit(1)
+	}
+	timeoutSpecified := false
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == "initialization-timeout" {
+			timeoutSpecified = true
+		}
+	})
+	action := initializationAction{Inspect: *inspectInitialization, Finalize: *finalizeInitialization, Expected: *expectedPreparation, QueryAccepted: *indexedQueryAccepted, Timeout: *initializationTimeout, Output: *output}
+	if timeoutSpecified && !action.enabled() {
+		fmt.Fprintln(os.Stderr, "--initialization-timeout requires inspection or finalization")
+		os.Exit(1)
+	}
+	if err := action.validate(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	if action.enabled() && (*runAPI || *runQuery || *runTriggerEvaluator || *runTriggerWorker || *runIndexer || *runPuller || *runStreamer || *runAll || *standalone || *bootstrapIndexes || *writesQuiesced || *resetDerived || *initializationAcceptance) {
+		fmt.Fprintln(os.Stderr, "initialization commands cannot be combined with runtime or maintenance flags")
+		os.Exit(1)
+	}
 
 	// 1. Load Configuration early to check deployment mode from config
-	cfg := config.LoadConfigFrom(*configDir)
+	cfg, loadErr := config.ReadConfigFrom(*configDir)
+	if loadErr != nil {
+		fmt.Fprintln(os.Stderr, loadErr)
+		os.Exit(1)
+	}
+
+	if action.enabled() {
+		parent, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+		defer cancel()
+		if err := runInitialization(parent, cfg, action, os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 
 	// Initialize logging (before any other services)
 	if err := logging.Initialize(cfg.Logging); err != nil {
@@ -60,12 +104,13 @@ func main() {
 		slog.Info("Starting Syntrix in Standalone Mode...")
 		slog.Info("- All services running in-process")
 		opts := services.Options{
-			Mode:             mode,
-			RunAPI:           true,
-			BootstrapIndexes: *bootstrapIndexes,
-			WritesQuiesced:   *writesQuiesced,
-			ResetDerived:     *resetDerived,
-			BootstrapTimeout: *bootstrapTimeout,
+			Mode:                     mode,
+			RunAPI:                   true,
+			BootstrapIndexes:         *bootstrapIndexes,
+			InitializationAcceptance: *initializationAcceptance,
+			WritesQuiesced:           *writesQuiesced,
+			ResetDerived:             *resetDerived,
+			BootstrapTimeout:         *bootstrapTimeout,
 		}
 		runServer(cfg, opts)
 		return
@@ -104,18 +149,19 @@ func main() {
 
 	// 2. Initialize Service Manager
 	opts := services.Options{
-		RunAPI:              *runAPI,
-		RunQuery:            *runQuery,
-		RunTriggerEvaluator: *runTriggerEvaluator,
-		RunTriggerWorker:    *runTriggerWorker,
-		RunPuller:           *runPuller,
-		RunIndexer:          *runIndexer,
-		RunStreamer:         *runStreamer,
-		Mode:                mode,
-		BootstrapIndexes:    *bootstrapIndexes,
-		WritesQuiesced:      *writesQuiesced,
-		ResetDerived:        *resetDerived,
-		BootstrapTimeout:    *bootstrapTimeout,
+		RunAPI:                   *runAPI,
+		RunQuery:                 *runQuery,
+		RunTriggerEvaluator:      *runTriggerEvaluator,
+		RunTriggerWorker:         *runTriggerWorker,
+		RunPuller:                *runPuller,
+		RunIndexer:               *runIndexer,
+		RunStreamer:              *runStreamer,
+		Mode:                     mode,
+		BootstrapIndexes:         *bootstrapIndexes,
+		InitializationAcceptance: *initializationAcceptance,
+		WritesQuiesced:           *writesQuiesced,
+		ResetDerived:             *resetDerived,
+		BootstrapTimeout:         *bootstrapTimeout,
 	}
 	runServer(cfg, opts)
 }
@@ -123,7 +169,7 @@ func main() {
 // runServer starts the service manager with the given configuration and options.
 func runServer(cfg *config.Config, opts services.Options) {
 	if err := serve(cfg, opts); err != nil {
-		logging.Fatal("Service startup failed", "error", err)
+		logging.Fatal("Service startup failed", "error", services.SafeError(cfg, "process", "startup", "startup_failure", err))
 	}
 }
 
@@ -150,7 +196,7 @@ func serve(cfg *config.Config, opts services.Options) error {
 	}
 
 	if opts.BootstrapIndexes {
-		slog.Info("Index maintenance active; keep all external writers and MongoDB tombstone TTL deletion paused until readiness is confirmed")
+		slog.Info("Index maintenance active; keep external writers and cleanup paused through indexed query acceptance and initialization finalization")
 		bootstrapCtx, bootstrapCancel := context.WithTimeout(bgCtx, opts.BootstrapTimeout)
 		err := mgr.BootstrapIndexes(bgCtx, bootstrapCtx)
 		bootstrapCancel()
@@ -166,10 +212,12 @@ func serve(cfg *config.Config, opts services.Options) error {
 		return fmt.Errorf("start services: %w", err)
 	}
 	if opts.BootstrapIndexes {
-		slog.Info("Index bootstrap and subscription application are ready; external writers and MongoDB tombstone TTL deletion may resume")
+		slog.Info("Index bootstrap and subscription application are ready; internal writers remain held and external writers and cleanup must stay paused through indexed query acceptance and initialization finalization")
 	}
 
-	<-bgCtx.Done()
+	if err := mgr.Wait(bgCtx); err != nil {
+		return err
+	}
 	slog.Info("Shutting down services...")
 	return nil
 }

@@ -11,6 +11,15 @@ keys
 logs
 configs
 deployment
+!deployment/
+deployment/**
+!deployment/*.go
+!deployment/config/
+!deployment/config/*.go
+!deployment/standalone/
+!deployment/standalone/kubernetes.template.yml
+!deployment/distributed/
+!deployment/distributed/kubernetes.template.yml
 coverage
 coverage.*
 test_coverage.html

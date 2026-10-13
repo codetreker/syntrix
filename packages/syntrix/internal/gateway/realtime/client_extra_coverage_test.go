@@ -54,10 +54,10 @@ func TestSafeCheckOrigin(t *testing.T) {
 			expected: true,
 		},
 		{
-			name:     "Same host different port (dev)",
+			name:     "Same host different port",
 			origin:   "http://example.com:3000",
 			host:     "example.com:8080",
-			expected: true,
+			expected: false,
 		},
 		{
 			name:     "Different host",
@@ -275,11 +275,13 @@ func TestClient_WritePump_WriteError(t *testing.T) {
 func TestClient_HandleSubscribe_SnapshotError(t *testing.T) {
 	hub := NewTestHub()
 	ctx, cancel := context.WithCancel(context.Background())
+	hub.setRunCtx(ctx)
 	go hub.Run(ctx)
 	defer cancel()
 
 	mockQS := &MockQueryService{}
-	mockQS.On("Pull", mock.Anything, mock.Anything, mock.Anything).Return(nil, assert.AnError)
+	mockQS.On("Pull", mock.Anything, mock.Anything, mock.Anything).Return(nil, assert.AnError).Once()
+	t.Cleanup(func() { mockQS.AssertExpectations(t) })
 
 	client := &Client{
 		hub:           hub,

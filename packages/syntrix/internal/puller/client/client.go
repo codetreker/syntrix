@@ -127,10 +127,10 @@ func (c *Client) SubscribeWithCoalesce(ctx context.Context, consumerID string, a
 }
 
 // subscribe is the internal implementation with reconnection logic.
-func (c *Client) subscribe(ctx context.Context, consumerID string, after string, coalesce bool, onReady func(string), verified bool) <-chan *events.PullerEvent {
+func (c *Client) subscribe(ctx context.Context, consumerID string, after string, coalesce bool, onReady func(string), verified bool, monitor ...*events.SubscriptionStatus) <-chan *events.PullerEvent {
 	ch := make(chan *events.PullerEvent, 1000)
 
-	go c.subscribeLoop(ctx, consumerID, after, coalesce, ch, onReady, verified)
+	go c.subscribeLoop(ctx, consumerID, after, coalesce, ch, onReady, verified, monitor...)
 
 	return ch
 }
@@ -144,12 +144,23 @@ func (c *Client) subscribeLoop(
 	ch chan *events.PullerEvent,
 	onReady func(string),
 	verified bool,
+	monitor ...*events.SubscriptionStatus,
 ) {
 	defer close(ch)
+	var admission *events.SubscriptionStatus
+	if len(monitor) > 0 {
+		admission = monitor[0]
+	}
+	if admission != nil {
+		defer admission.Fail(fmt.Errorf("subscription closed"), true)
+	}
 
 	currentProgress := initialAfter
 	reportFailure := func(err error, retryable bool) {
-		if !verified || ctx.Err() != nil {
+		if admission != nil {
+			admission.Fail(err, !retryable)
+		}
+		if (!verified && admission == nil) || ctx.Err() != nil {
 			return
 		}
 		select {
@@ -186,11 +197,16 @@ func (c *Client) subscribeLoop(
 		}
 
 		// Create subscription request
+		transport := uint64(0)
+		if admission != nil {
+			transport = admission.BeginAttempt()
+		}
 		req := &pullerv1.SubscribeRequest{
-			ConsumerId:        consumerID,
-			After:             currentProgress,
-			CoalesceOnCatchUp: coalesce,
-			RequireReady:      verified,
+			ConsumerId:           consumerID,
+			After:                currentProgress,
+			CoalesceOnCatchUp:    coalesce,
+			RequireReady:         verified,
+			ReportAdmissionReady: admission != nil,
 		}
 
 		c.mu.RLock()
@@ -199,10 +215,13 @@ func (c *Client) subscribeLoop(
 
 		stream, err := client.Subscribe(ctx, req, grpc.MaxCallRecvMsgSize(events.MaxRPCBytes), grpc.MaxCallSendMsgSize(events.MaxRPCBytes))
 		if err != nil {
-			if verified {
+			if verified || (admission != nil && !temporary(err)) {
 				reportFailure(err, temporary(err))
 				notifyState(StateDisconnected, err)
 				return
+			}
+			if admission != nil {
+				admission.Fail(err, false)
 			}
 			c.logger.Error("failed to subscribe", "error", err, "attempt", consecutiveFailures+1)
 			notifyState(StateReconnecting, err)
@@ -252,10 +271,13 @@ func (c *Client) subscribeLoop(
 		for {
 			evt, err := stream.Recv()
 			if err != nil {
-				if verified {
+				if verified || (admission != nil && !temporary(err)) {
 					reportFailure(err, temporary(err))
 					notifyState(StateDisconnected, err)
 					return
+				}
+				if admission != nil {
+					admission.Fail(err, false)
 				}
 				if err == io.EOF {
 					c.logger.Info("subscription stream closed by server")
@@ -271,6 +293,23 @@ func (c *Client) subscribeLoop(
 				break // Break inner loop to reconnect
 			}
 
+			if admission != nil && evt.AdmissionState != "" {
+				if evt.ChangeEvent != nil || evt.Progress != "" || evt.Ready != (evt.AdmissionState == events.AdmissionAdmitted) {
+					reportFailure(fmt.Errorf("invalid admission control"), false)
+					return
+				}
+				control := &events.PullerEvent{Ready: evt.Ready, AdmissionState: evt.AdmissionState, AdmissionGeneration: evt.AdmissionGeneration, AdmissionReason: evt.AdmissionReason, TransportGeneration: transport}
+				if !admission.Receive(control) {
+					reportFailure(fmt.Errorf("invalid admission generation"), false)
+					return
+				}
+				select {
+				case ch <- control:
+				case <-ctx.Done():
+					return
+				}
+				continue
+			}
 			if evt.Ready {
 				if !verified || evt.ChangeEvent != nil {
 					reportFailure(fmt.Errorf("invalid ready frame"), false)
@@ -426,4 +465,9 @@ func (c *Client) ValidateBoundary(ctx context.Context, after string) error {
 
 func (c *Client) SubscribeReady(ctx context.Context, consumerID, after string, onReady func(string)) <-chan *events.PullerEvent {
 	return c.subscribe(ctx, consumerID, after, false, onReady, true)
+}
+
+func (c *Client) SubscribeStatus(ctx context.Context, consumerID, after string) (<-chan *events.PullerEvent, *events.SubscriptionStatus) {
+	status := events.NewSubscriptionStatus(ctx)
+	return c.subscribe(ctx, consumerID, after, false, nil, false, status), status
 }

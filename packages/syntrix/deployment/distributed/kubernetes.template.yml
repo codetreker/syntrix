@@ -113,7 +113,14 @@ spec:
         - name: syntrix
           image: {{ quote $.Image }}
           imagePullPolicy: IfNotPresent
-          args: [{{ quote .Flag }}, "--config-dir", "/etc/syntrix"]
+          args:
+            - {{ quote .Flag }}
+            - "--config-dir"
+            - "/etc/syntrix"
+{{- if $.AcceptanceOnly }}
+            - "--initialization-acceptance"
+            - "--writes-quiesced"
+{{- end }}
           ports:
             - name: http
               containerPort: 8080
@@ -134,22 +141,24 @@ spec:
           startupProbe:
 {{- if eq .Role "api" }}
             httpGet:
-              path: /health
+              path: /ready
               port: http
 {{- else }}
-            tcpSocket:
-              port: grpc
+            grpc:
+              port: 9000
+              service: {{ quote (printf "syntrix.%s" .Role) }}
 {{- end }}
             periodSeconds: 5
             failureThreshold: 372
           readinessProbe:
 {{- if eq .Role "api" }}
             httpGet:
-              path: /health
+              path: /ready
               port: http
 {{- else }}
-            tcpSocket:
-              port: grpc
+            grpc:
+              port: 9000
+              service: {{ quote (printf "syntrix.%s" .Role) }}
 {{- end }}
           livenessProbe:
 {{- if eq .Role "api" }}
@@ -157,8 +166,9 @@ spec:
               path: /health
               port: http
 {{- else }}
-            tcpSocket:
-              port: grpc
+            grpc:
+              port: 9000
+              service: syntrix.liveness
 {{- end }}
           volumeMounts:
             - name: config
@@ -313,13 +323,13 @@ spec:
           memory: {{ quote .BootstrapResources.Limits.Memory }}
       startupProbe:
         httpGet:
-          path: /health
+          path: /ready
           port: http
         periodSeconds: 5
         failureThreshold: 372
       readinessProbe:
         httpGet:
-          path: /health
+          path: /ready
           port: http
       volumeMounts:
         - name: config

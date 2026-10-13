@@ -13,6 +13,53 @@ import (
 // ErrCaptureUnavailable denotes capture that may resume without rebuilding history.
 var ErrCaptureUnavailable = errors.New("source capture temporarily unavailable")
 
+func (p *Puller) TerminalError() error {
+	for name, b := range p.backends {
+		b.captureMu.Lock()
+		err := b.captureError
+		b.captureMu.Unlock()
+		if err != nil && !errors.Is(err, ErrCaptureUnavailable) && !errors.Is(err, context.Canceled) {
+			return fmt.Errorf("backend %q capture: %w", name, err)
+		}
+	}
+	return nil
+}
+
+// Readiness requires the native idle barrier and a durable usable source buffer.
+func (p *Puller) Readiness(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := p.lifetime.Err(); err != nil {
+		return err
+	}
+	if len(p.backends) == 0 {
+		return fmt.Errorf("%w: no capture backends configured", ErrCaptureUnavailable)
+	}
+	for name, b := range p.backends {
+		b.captureMu.Lock()
+		active, captureErr := b.captureActive, b.captureError
+		b.captureMu.Unlock()
+		if !active {
+			if captureErr != nil {
+				return fmt.Errorf("backend %q: %w", name, captureErr)
+			}
+			return fmt.Errorf("%w: backend %q not admitted", ErrCaptureUnavailable, name)
+		}
+		if err := b.buffer.ValidatePosition("", b.buffer.Lineage()); err != nil {
+			return fmt.Errorf("backend %q buffer: %w", name, err)
+		}
+		token, err := b.buffer.LoadCheckpoint()
+		if err != nil {
+			return fmt.Errorf("backend %q checkpoint: %w", name, err)
+		}
+		if len(token) == 0 {
+			return fmt.Errorf("%w: backend %q missing checkpoint", ErrCaptureUnavailable, name)
+		}
+	}
+	return nil
+}
+
 func (b *Backend) setCaptureState(active bool, err error) {
 	b.captureMu.Lock()
 	defer b.captureMu.Unlock()

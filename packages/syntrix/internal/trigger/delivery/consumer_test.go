@@ -4,14 +4,19 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/codetreker/syntrix/internal/core/pubsub"
+	"github.com/codetreker/syntrix/internal/core/pubsub/memory"
 	pubsubtesting "github.com/codetreker/syntrix/internal/core/pubsub/testing"
 	"github.com/codetreker/syntrix/internal/trigger/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 )
 
 // --- Mocks ---
@@ -23,6 +28,275 @@ type MockWorker struct {
 func (m *MockWorker) ProcessTask(ctx context.Context, task *types.DeliveryTask) error {
 	args := m.Called(ctx, task)
 	return args.Error(0)
+}
+
+type stateConsumer struct {
+	messages chan pubsub.Message
+	ready    atomic.Bool
+	mu       sync.Mutex
+	err      error
+	closed   sync.Once
+	holdOpen bool
+}
+
+func (c *stateConsumer) Subscribe(ctx context.Context) (<-chan pubsub.Message, error) {
+	c.ready.Store(true)
+	if !c.holdOpen {
+		context.AfterFunc(ctx, c.close)
+	}
+	return c.messages, nil
+}
+
+func (c *stateConsumer) close() { c.closed.Do(func() { close(c.messages) }) }
+
+func (c *stateConsumer) Ready() bool { return c.ready.Load() }
+func (c *stateConsumer) Err() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.err
+}
+
+type deliveryWorkerFunc func(context.Context, *types.DeliveryTask) error
+
+func (f deliveryWorkerFunc) ProcessTask(ctx context.Context, task *types.DeliveryTask) error {
+	return f(ctx, task)
+}
+
+func TestConsumer_ReadinessAndTerminalClosure(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	source := &stateConsumer{messages: make(chan pubsub.Message)}
+	c := NewTaskConsumer(source, deliveryWorkerFunc(func(context.Context, *types.DeliveryTask) error { return nil }), 2, nil,
+		WithDrainTimeout(time.Millisecond)).(*natsConsumer)
+	s := &service{consumer: c}
+	require.Error(t, s.Readiness(ctx))
+	require.NoError(t, s.TerminalError())
+	done := make(chan error, 1)
+	go func() { done <- s.Start(ctx) }()
+	require.Eventually(t, func() bool { return s.Readiness(ctx) == nil }, time.Second, time.Millisecond)
+	source.ready.Store(false)
+	require.Error(t, s.Readiness(ctx))
+	source.ready.Store(true)
+	require.NoError(t, s.Readiness(ctx))
+	cancelled, stop := context.WithCancel(ctx)
+	stop()
+	require.ErrorIs(t, s.Readiness(cancelled), context.Canceled)
+	require.ErrorContains(t, s.Start(ctx), "already running")
+	cause := errors.New("consumer deleted")
+	source.mu.Lock()
+	source.err = cause
+	source.mu.Unlock()
+	require.ErrorIs(t, s.Readiness(ctx), cause)
+	require.ErrorIs(t, s.TerminalError(), cause)
+	source.close()
+	require.ErrorIs(t, <-done, cause)
+	require.ErrorIs(t, s.TerminalError(), cause)
+	require.ErrorIs(t, s.Readiness(ctx), cause)
+}
+
+func TestService_UnobservablePoolIsUnready(t *testing.T) {
+	s := &service{consumer: new(MockTaskConsumer)}
+	require.ErrorContains(t, s.Readiness(context.Background()), "state is unavailable")
+	require.NoError(t, s.TerminalError())
+	require.ErrorContains(t, s.Shutdown(context.Background()), "settlement is unavailable")
+	c := NewTaskConsumer(pubsubtesting.NewMockConsumer(), new(MockWorker), 1, nil).(*natsConsumer)
+	require.NoError(t, c.TerminalError())
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- c.Start(ctx) }()
+	require.Eventually(t, func() bool { return c.activeWorkers.Load() == 1 }, time.Second, time.Millisecond)
+	require.ErrorContains(t, c.Readiness(ctx), "consumer is not active")
+	cancel()
+	require.NoError(t, <-done)
+}
+
+func TestConsumer_UnexpectedClosureWithoutCause(t *testing.T) {
+	source := &stateConsumer{messages: make(chan pubsub.Message)}
+	source.close()
+	c := NewTaskConsumer(source, deliveryWorkerFunc(func(context.Context, *types.DeliveryTask) error { return nil }), 1, nil,
+		WithDrainTimeout(time.Millisecond)).(*natsConsumer)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	require.ErrorContains(t, c.Start(ctx), "stopped unexpectedly")
+	require.Error(t, c.TerminalError())
+}
+
+func TestConsumer_CancelReleasesBlockedDispatchAndDrains(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	source := &stateConsumer{messages: make(chan pubsub.Message, 5)}
+	processing := make(chan struct{})
+	c := NewTaskConsumer(source, deliveryWorkerFunc(func(ctx context.Context, _ *types.DeliveryTask) error {
+		close(processing)
+		<-ctx.Done()
+		return ctx.Err()
+	}), 1, nil, WithChannelBufferSize(1), WithDrainTimeout(100*time.Millisecond)).(*natsConsumer)
+	data, err := json.Marshal(types.DeliveryTask{TriggerID: "cancel", Collection: "same", DocumentID: "same"})
+	require.NoError(t, err)
+	messages := make([]*pubsubtesting.MockMessage, 5)
+	for i := range messages {
+		messages[i] = pubsubtesting.NewMockMessage("subject", data)
+		source.messages <- messages[i]
+	}
+	done := make(chan error, 1)
+	go func() { done <- c.Start(ctx) }()
+	select {
+	case <-processing:
+	case <-ctx.Done():
+		t.Fatal("worker never received a message")
+	}
+	require.Eventually(t, func() bool { return c.inFlightCount.Load() == 1 && len(c.workerChans[0]) == 1 }, time.Second, time.Millisecond)
+	cancel()
+	require.NoError(t, <-done)
+	require.Zero(t, c.activeWorkers.Load())
+	require.NoError(t, c.TerminalError())
+	require.Error(t, c.Readiness(context.Background()))
+	for _, message := range messages {
+		require.True(t, message.IsNaked(), "cancelled messages remain available for redelivery")
+	}
+}
+
+func TestConsumer_UnsettledSourceShutdownIsTerminal(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	source := &stateConsumer{messages: make(chan pubsub.Message), holdOpen: true}
+	c := NewTaskConsumer(source, deliveryWorkerFunc(func(context.Context, *types.DeliveryTask) error { return nil }), 1, nil,
+		WithDrainTimeout(time.Millisecond)).(*natsConsumer)
+	done := make(chan error, 1)
+	go func() { done <- c.Start(ctx) }()
+	require.Eventually(t, func() bool { return c.Readiness(ctx) == nil }, time.Second, time.Millisecond)
+	cancel()
+	require.ErrorContains(t, <-done, "consumer shutdown timed out")
+	require.Error(t, c.TerminalError())
+	bounded, stop := context.WithTimeout(context.Background(), time.Millisecond)
+	defer stop()
+	require.ErrorIs(t, c.Shutdown(bounded), context.DeadlineExceeded)
+	source.close()
+	require.NoError(t, c.Shutdown(context.Background()))
+}
+
+func TestConsumer_ShutdownTimeoutIsTerminal(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	source := &stateConsumer{messages: make(chan pubsub.Message, 1)}
+	processing, release := make(chan struct{}), make(chan struct{})
+	c := NewTaskConsumer(source, deliveryWorkerFunc(func(context.Context, *types.DeliveryTask) error {
+		close(processing)
+		<-release
+		return nil
+	}), 1, nil, WithDrainTimeout(time.Millisecond), WithShutdownTimeout(time.Millisecond)).(*natsConsumer)
+	data, err := json.Marshal(types.DeliveryTask{TriggerID: "timeout"})
+	require.NoError(t, err)
+	source.messages <- pubsubtesting.NewMockMessage("subject", data)
+	done := make(chan error, 1)
+	go func() { done <- c.Start(ctx) }()
+	select {
+	case <-processing:
+	case <-ctx.Done():
+		t.Fatal("worker never received a message")
+	}
+	cancel()
+	require.ErrorContains(t, <-done, "shutdown timed out")
+	require.Error(t, c.TerminalError())
+	bounded, stop := context.WithTimeout(context.Background(), time.Millisecond)
+	defer stop()
+	require.ErrorIs(t, c.Shutdown(bounded), context.DeadlineExceeded)
+	close(release)
+	require.NoError(t, c.Shutdown(context.Background()))
+}
+
+func TestConsumer_CancellationClearsServingBeforeWorkerReturns(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	source := &stateConsumer{messages: make(chan pubsub.Message, 1)}
+	processing, release := make(chan struct{}), make(chan struct{})
+	c := NewTaskConsumer(source, deliveryWorkerFunc(func(ctx context.Context, _ *types.DeliveryTask) error {
+		close(processing)
+		<-release
+		return ctx.Err()
+	}), 1, nil, WithDrainTimeout(100*time.Millisecond), WithShutdownTimeout(5*time.Second)).(*natsConsumer)
+	data, err := json.Marshal(types.DeliveryTask{TriggerID: "blocked"})
+	require.NoError(t, err)
+	source.messages <- pubsubtesting.NewMockMessage("subject", data)
+	done := make(chan error, 1)
+	go func() { done <- c.Start(ctx) }()
+	select {
+	case <-processing:
+	case <-ctx.Done():
+		t.Fatal("worker did not start")
+	}
+	require.NoError(t, c.Readiness(ctx))
+	cancel()
+	require.ErrorIs(t, c.Readiness(context.Background()), context.Canceled)
+	bounded, stop := context.WithTimeout(context.Background(), time.Millisecond)
+	defer stop()
+	require.ErrorIs(t, c.Shutdown(bounded), context.DeadlineExceeded)
+	close(release)
+	require.NoError(t, <-done)
+	require.Zero(t, c.activeWorkers.Load())
+	require.NoError(t, c.Shutdown(context.Background()))
+}
+
+func TestService_MemoryConsumerIdleAdmissionAndSettlement(t *testing.T) {
+	for _, terminate := range []bool{false, true} {
+		t.Run(fmt.Sprint(terminate), func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			engine := memory.New()
+			defer engine.Close()
+			consumer, err := engine.NewConsumer(ctx, pubsub.ConsumerOptions{FilterSubject: "managed.>", ChannelBufSize: 10})
+			require.NoError(t, err)
+			svc, err := NewService(Dependencies{Consumer: consumer}, Config{NumWorkers: 2, DrainTimeout: time.Second, ShutdownTimeout: time.Second})
+			require.NoError(t, err)
+			s := svc.(*service)
+			done := make(chan error, 1)
+			go func() { done <- s.Start(ctx) }()
+			require.Eventually(t, func() bool { return s.Readiness(ctx) == nil }, time.Second, time.Millisecond,
+				"an idle worker must prove real subscription admission without a task write")
+			if terminate {
+				require.NoError(t, engine.Close())
+				require.ErrorIs(t, <-done, memory.ErrEngineClosed)
+				require.ErrorIs(t, s.TerminalError(), memory.ErrEngineClosed)
+			} else {
+				cancel()
+				require.NoError(t, <-done)
+				require.NoError(t, s.TerminalError())
+			}
+			require.False(t, consumer.(pubsub.ConsumerState).Ready())
+			require.Error(t, s.Readiness(context.Background()))
+			require.NoError(t, s.Shutdown(context.Background()))
+		})
+	}
+}
+
+func TestConsumer_ShutdownOwnsCancellationAndSerializesSettlement(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	source := &stateConsumer{messages: make(chan pubsub.Message), holdOpen: true}
+	c := NewTaskConsumer(source, deliveryWorkerFunc(func(context.Context, *types.DeliveryTask) error { return nil }), 1, nil,
+		WithDrainTimeout(time.Millisecond)).(*natsConsumer)
+	require.NoError(t, c.Shutdown(ctx))
+	done := make(chan error, 1)
+	go func() { done <- c.Start(ctx) }()
+	require.Eventually(t, func() bool { return c.Readiness(ctx) == nil }, time.Second, time.Millisecond)
+	firstShutdown := make(chan error, 1)
+	go func() { firstShutdown <- c.Shutdown(ctx) }()
+	require.ErrorContains(t, <-done, "consumer shutdown timed out")
+	message := pubsubtesting.NewMockMessage("subject", []byte("pending"))
+	select {
+	case source.messages <- message:
+	case <-ctx.Done():
+		t.Fatal("settlement did not resume the source drain")
+	}
+	bounded, stop := context.WithTimeout(context.Background(), time.Millisecond)
+	defer stop()
+	require.ErrorIs(t, c.Shutdown(bounded), context.DeadlineExceeded)
+	source.close()
+	require.NoError(t, <-firstShutdown)
+	require.True(t, message.IsNaked())
+	require.NoError(t, c.Shutdown(ctx))
+	require.ErrorContains(t, c.Start(ctx), "already running or stopped")
 }
 
 // --- Tests ---

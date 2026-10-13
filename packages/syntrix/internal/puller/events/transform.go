@@ -31,6 +31,8 @@ type SyntrixChangeEvent struct {
 	UpdateDesc *UpdateDescription
 	Timestamp  int64
 	Progress   string // String progress token from Puller
+	// AdmissionSequence is local watcher delivery ownership, never a checkpoint.
+	AdmissionSequence uint64 `json:"-"`
 }
 
 func Transform(pEvent *PullerEvent) (SyntrixChangeEvent, error) {

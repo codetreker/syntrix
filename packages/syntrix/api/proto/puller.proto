@@ -37,6 +37,8 @@ message SubscribeRequest {
   bool coalesce_on_catch_up = 3;
   // Require source readiness and verified replay; receive a ready control frame.
   bool require_ready = 4;
+  // Observe ordinary live admission without requiring a bootstrap boundary.
+  bool report_admission_ready = 5;
 }
 
 // PullerEvent is the top-level wrapper for events emitted by the Puller service.
@@ -48,8 +50,14 @@ message PullerEvent {
   // Consumer should save this value and pass it as 'after'
   // when reconnecting to resume from this position.
   string progress = 2;
-  // Set once after registration and validated replay have reached live mode.
+  // Ordered live barrier for verified replay or ordinary admission. Opted-in
+  // ordinary refresh controls repeat it without advancing progress.
   bool ready = 3;
+  // Admission controls never advance consumer progress.
+  string admission_state = 4;
+  uint64 admission_generation = 5;
+  // Bounded category, never a raw source error.
+  string admission_reason = 6;
 }
 
 // ChangeEvent represents a normalized change event from the database.

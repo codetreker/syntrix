@@ -32,8 +32,9 @@ Publication proceeds in this order:
 3. Push the multi-platform image, verify anonymous access and both target
    platforms, and obtain the registry index digest.
 4. Generate `meta.json` and the deployment archive from the same checkout. Render
-   both modes with the bundled native CLI to validate the staged templates and
-   example values.
+   both modes in bootstrap, acceptance and full phases with the bundled native
+   CLI to validate staged templates and example values. Check its bounded
+   `deployment-contract` JSON against release identity and required capabilities.
 5. Create a draft GitHub Release for the existing tag, upload the archive, then
    publish it. A successful run links the image and release in its job summary.
 
@@ -79,7 +80,8 @@ syntrix-VERSION/
         └── values.example.yml
 ```
 
-The archive includes tracked deployment files from the release commit. Example
+The archive includes deployment documentation and template/value trees from the
+release commit; public Go renderer sources remain in the repository. Example
 values reference `ghcr.io/codetreker/syntrix-server:VERSION@sha256:DIGEST`, pinning
 the uploaded multi-platform index. Operator credentials and generated manifests
 are not bundled. Links to repository files outside the archive resolve to the
@@ -87,7 +89,7 @@ release commit on GitHub.
 
 `meta.json` records `version`, `release_date`, `built_at` (the build-start timestamp in UTC RFC 3339),
 `git_tag`, the full `git_commit`, `workflow_run_url`, and the integer
-`workflow_run_attempt`. Its `image` object
+`workflow_run_attempt`, plus integer `managed_runtime_contract: 1`. Its `image` object
 records `repository`, `tag`, `digest`, and the `linux/amd64` and `linux/arm64`
 `platforms`. The digest identifies the multi-platform registry index, rather than
 a local image ID or a single platform's manifest.
@@ -102,8 +104,8 @@ numerically; a reserved tag or uploaded image alone does not establish a release
 
 Console will download the exact archive and freeze its release/asset identity,
 source commit, archive hash and image version tag before provisioning. It will
-invoke that archive's architecture-matched CLI with its own templates, rather than
-combine new templates with an older compiled-in renderer model. Kubernetes pulls
+invoke that archive's architecture-matched CLI with the same archive's templates.
+The bundled renderer and templates must share their release identity. Kubernetes pulls
 `ghcr.io/codetreker/syntrix-server:VERSION` with `IfNotPresent`; all bootstrap,
 acceptance, finalizer and normal roles use the same recorded version tag. Retries
 and ordinary start/restart preserve that selection. Metadata's image index digest
@@ -117,12 +119,20 @@ but this is a publication rule rather than registry-enforced tag immutability.
 Overwriting a tag violates the supported managed-deployment contract; changing
 pull policy is not a substitute for preserving the published version.
 
-The current `meta.json` does not include a managed-runtime compatibility marker.
-The [PR 1 runtime contract](../../../docs/design/server/console/04.managed_runtime_contract.md)
-plans that marker and matching CLI contract output before Console-managed creation
-is delivered. Unsupported latest packages fail visibly; they are not silently
-replaced by an older package or a local source build. The operator archive commands
-below describe the current published format.
+The [managed runtime contract](../../../docs/design/server/console/04.managed_runtime_contract.md)
+is advertised by metadata and `syntrix-cli deployment-contract`. Both bundled
+CLIs receive `main.version` and `main.gitCommit` at build time. Packaging checks
+that the native CLI emits one JSON object of at most 4096 bytes with integer
+contract version 1, the allocated release version, full source SHA,
+`modes: ["standalone", "distributed"]` and
+`render_phases: ["bootstrap", "acceptance", "full"]`. Invalid types, extra JSON
+objects or mismatched capabilities block publication. A local development CLI
+may identify itself as an unpublished build; it is not a managed release.
+
+Older published archives without this marker remain operator artifacts. Planned
+Console creation rejects unsupported latest packages visibly; it does not
+silently substitute an older package or local build. This change does not modify
+previously published artifacts or automatically publish a new release.
 
 ## Use an extracted archive
 

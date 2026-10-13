@@ -3,6 +3,7 @@ package trigger
 import (
 	"context"
 
+	natspubsub "github.com/codetreker/syntrix/internal/core/pubsub/nats"
 	"github.com/nats-io/nats.go"
 )
 
@@ -42,9 +43,9 @@ func NewRemoteNATSProvider(url string) *RemoteNATSProvider {
 
 // Connect establishes a connection to the external NATS server.
 func (p *RemoteNATSProvider) Connect(ctx context.Context) (*nats.Conn, error) {
-	nc, err := natsConnectFunc(p.url)
+	nc, err := natspubsub.ConnectContext(ctx, p.url, natsConnectFunc)
 	if err != nil {
-		return nil, err
+		return nil, &natspubsub.OperationError{Operation: "connection", Cause: err}
 	}
 	p.conn = nc
 	return nc, nil

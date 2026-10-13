@@ -263,7 +263,7 @@ func (h *Hub) cleanupReplicaRegistration(owner *hubStreamOwner, id string) {
 		h.retireReplicaStream(owner, errReplicaCapacity)
 		return
 	}
-	go func() {
+	if !h.startCleanup(func() {
 		defer release()
 		// Unsubscribe has no context. The timer retires the actual Stream; the
 		// permit remains held until its blocked worker really exits.
@@ -272,7 +272,9 @@ func (h *Hub) cleanupReplicaRegistration(owner *hubStreamOwner, id string) {
 		if err := owner.stream.Unsubscribe(id); err != nil {
 			h.retireReplicaStream(owner, err)
 		}
-	}()
+	}) {
+		release()
+	}
 }
 
 func (h *Hub) retireReplicaStream(owner *hubStreamOwner, reason error) {
@@ -280,10 +282,10 @@ func (h *Hub) retireReplicaStream(owner *hubStreamOwner, reason error) {
 		return
 	}
 	h.invalidateReplicaOwner(owner, reason, 0)
-	slog.Warn("Replica backend cleanup retired its stream", "component", "realtime", "phase", "backend-cleanup", "error", reason)
-	go func() {
+	slog.Warn("Replica backend cleanup retired its stream", "component", "realtime", "phase", "backend-cleanup", "category", "backend_cleanup_failed")
+	h.startCleanup(func() {
 		if err := owner.stream.Close(); err != nil {
-			slog.Warn("Replica backend close failed", "component", "realtime", "phase", "backend-close", "error", err)
+			slog.Warn("Replica backend close failed", "component", "realtime", "phase", "backend-close", "category", "backend_close_failed")
 		}
-	}()
+	})
 }
