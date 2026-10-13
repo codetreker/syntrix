@@ -22,7 +22,10 @@ silently rerun destructive maintenance.
 ## Proposal
 
 The [instance lifecycle design](../../../../docs/design/server/console/03.instance_lifecycle.md)
-owns the mechanism and five ordered delivery PRs. This note owns the proposed
+owns the mechanism and five ordered delivery PRs. The
+[managed runtime contract](../../../../docs/design/server/console/04.managed_runtime_contract.md)
+specifies PR 1 public rendering, attachment, initialization, and readiness. This
+note owns the proposed
 allocation, ownership, and recovery decisions. The
 [platform-boundary proposal](2026-10-10-platform-console-instance-boundaries.md)
 retains employee Management, project Identity realms, and OAuth responsibilities.
@@ -138,7 +141,20 @@ It must not treat the bootstrap process as a batch Job that exits on readiness o
 allow bootstrap and normal owners to overlap on persistent stores. Component
 readiness, a real indexed-query acceptance check, and successful access through
 the configured public or internal-only route establish instance readiness;
-listener probes alone do not.
+listener probes alone do not. Module-owned preparation verifies schemas and
+non-cleanup indexes; document cleanup TTL and internal cleanup/Trigger writers
+remain held through normal read-path indexed-query acceptance. An explicit
+acceptance-only process/render option suppresses colocated writers that distributed
+replica settings cannot hold. A bounded finalizer in the same runtime image then creates or
+verifies owner-defined cleanup indexes and returns an observed specification
+receipt. Console persists that receipt, activates the full normal render, and
+verifies all required roles before application access/write release. Held-role
+process readiness does not claim full instance availability.
+The command opens no state claims or listeners and changes no server-wide TTL
+setting. Observed definitions establish preparation/finalization; no parallel
+runtime finalization database is introduced. Partial or uncertain finalizer effects
+converge against the original specification and remain subject to effect settlement
+before deletion. Restart exposes missing cleanup without silently repairing it.
 
 Create, delete, start, stop, and restart operate through persisted desired state.
 Stop retains source databases, credentials, signing material, claims, and owned
@@ -224,6 +240,17 @@ and stop retains data; additional deletion retention modes would add policy and
 cleanup states rather than changing the meaning of an accepted operation.
 
 ## Alternatives
+
+**Runtime administrative HTTP finalization.** A new privileged endpoint would
+require another authorization and exposure contract for one finite initialization
+step. The same-image command can reuse configuration and owner initializers
+without adding a serving capability. Console owns query acceptance and command
+ordering; the finalizer verifies definitions and returns its own observed receipt.
+
+**Enabling all TTL during bootstrap.** Document TTL can delete source tombstones
+before the normal indexed query is accepted, violating the existing maintenance
+fence. Preparation therefore excludes cleanup, and finalization follows acceptance.
+Per-instance orchestration cannot toggle a shared server's global TTL monitor.
 
 **Deploy dedicated physical database servers per instance.** This provides a
 separate infrastructure lifetime but adds database installation, storage,

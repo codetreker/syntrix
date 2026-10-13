@@ -9,7 +9,11 @@ Management. Console's API continues to provision predefined HTTP test workloads.
 The planned [managed-instance lifecycle](../../../docs/design/server/console/03.instance_lifecycle.md)
 will reuse the renderer contract to allocate private databases on registered
 shared infrastructure and reconcile complete runtime bundles. It does not
-provision MongoDB, PostgreSQL, or NATS server Pods.
+provision MongoDB, PostgreSQL, or NATS server Pods. Its proposed
+[PR 1 runtime contract](../../../docs/design/server/console/04.managed_runtime_contract.md)
+defines public embedded rendering, managed broker attachment, staged cleanup
+initialization, and component readiness. Those interfaces are not implemented by
+the current operator commands below.
 
 ## Templates and requirements
 
@@ -225,9 +229,10 @@ one `restartPolicy: Never` standalone maintenance Pod. Standalone mounts its dat
 claim; distributed bootstrap mounts the normal Puller and Indexer claims at
 `/data/puller` and `/data/indexer`, using the shared signing key and the same
 source/index configuration. The maintenance process keeps serving after its scan
-and applied subscription barrier complete. Confirm its log message `Index
-bootstrap and subscription application are ready; external writers and MongoDB
-tombstone TTL deletion may resume`.
+and applied subscription barrier complete. Confirm the log prefix `Index bootstrap
+and subscription application are ready`. Keep external writers and MongoDB
+tombstone TTL paused through handoff and the normal indexed-query acceptance below;
+the current success log's resume wording does not establish that later fence.
 
 The HTTP listener starts after successful explicit bootstrap. Startup probes allow
 31 minutes for the 30-minute maintenance operation; Deployment progress deadlines

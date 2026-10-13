@@ -169,6 +169,7 @@ enables race detection and enforces the CI coverage thresholds.
 - [Syntrix Container, Kubernetes Templates, and Manifest Generation](../packages/syntrix/deployment/README.md)
 - [Developer Console](design/server/console/01.console.md)
 - [Console Managed-Instance Lifecycle and Implementation Tasks](design/server/console/03.instance_lifecycle.md)
+- [Managed Runtime Contract](design/server/console/04.managed_runtime_contract.md)
 - [Employee Management Platform](design/server/console/02.control_plane.md)
 - [Instance Identity](design/server/core/identity/01.architecture.md)
 - [Gateway Document Authorization](design/server/gateway/authorization.md)
