@@ -113,6 +113,11 @@ ACK 丢失不撤销客户端已提交的页，也不改变并行 Push 的不确�
 | 普通事件共享队列满载 | 关闭溢出事件匹配的普通连接，使消费者重连并恢复状态；按原 Stream owner 定位，避免影响新 owner 复用的订阅 ID；replica 提示继续独立处理 |
 | 取消后晚 ACK | 不能完成新 owner；有界清理孤立注册，无法清理则退休旧 Stream |
 
+Legacy client admission can precede active-map insertion. An old-stream
+subscription created in that interval can lose its mapping while the connection
+remains open. The [admission and retirement proposal](../../proposed/bug-fix/2026-10-13-realtime-client-admission-retirement.md)
+records this existing gap without changing the accepted retirement contract.
+
 generation 只围定注册所有权，不是 Store 数据位置。此扩展不增加通知持久化、普通
 协议 replay、主动 Puller 切换或跨服务订阅存储。日志关联 connection/subId/requestId
 和固定分类，排除 token、文档、filter 与 opaque checkpoint 内容。

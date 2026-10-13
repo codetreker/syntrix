@@ -80,6 +80,11 @@ func TestServerReplacesTerminalStreamAndClosesAllOldClients(t *testing.T) {
 	require.NoError(t, server.StartBackgroundTasks(ctx))
 	ordinary := &Client{hub: server.hub, send: make(chan BaseMessage, 1), subscriptions: make(map[string]Subscription), streamerSubIDs: make(map[string]hubRegistration)}
 	require.True(t, server.hub.Register(ordinary))
+	require.Eventually(t, func() bool {
+		server.hub.mu.RLock()
+		defer server.hub.mu.RUnlock()
+		return server.hub.clients[ordinary]
+	}, time.Second, time.Millisecond)
 	var retired atomic.Int32
 	_, ok := server.hub.RegisterReplicaConnection(func() { retired.Add(1) })
 	require.True(t, ok)
