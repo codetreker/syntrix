@@ -132,7 +132,12 @@ A shared NATS account is supported by that target: each instance has its own
 stream, subject namespace, and durable consumer; workers of the same instance
 share that consumer. Console PostgreSQL will own administrator resource settings,
 profiles, instance bindings, desired revisions, lifecycle phases, ownership
-receipts, and encrypted secrets. This extends its current test-workload records
+receipts, encrypted secrets, and the accepted runtime release/package identity.
+For new instances, Console will resolve the latest complete successful published
+Syntrix release, download its matching CLI/templates, and freeze the source commit,
+archive identity and image index digest before provisioning. Bootstrap, acceptance,
+finalization and all runtime roles use that release; retries and ordinary restart
+preserve it. This extends its current test-workload records
 without moving instance system records into the Console database. The
 [managed-instance design](design/server/console/03.instance_lifecycle.md) owns
 allocation, reconciliation, deletion, configuration, and the five-PR task sequence.

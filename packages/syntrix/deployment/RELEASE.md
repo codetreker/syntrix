@@ -92,6 +92,28 @@ records `repository`, `tag`, `digest`, and the `linux/amd64` and `linux/arm64`
 `platforms`. The digest identifies the multi-platform registry index, rather than
 a local image ID or a single platform's manifest.
 
+## Planned Console consumption
+
+The [managed-instance design](../../../docs/design/server/console/03.instance_lifecycle.md)
+will select the latest complete published Syntrix release from the configured
+repository and exact `syntrix-YYMMDD.sequence` family, excluding drafts/prereleases
+and requiring successful source-workflow completion. Compare date and sequence
+numerically; a reserved tag or uploaded image alone does not establish a release.
+
+Console will download the exact archive and freeze its release/asset identity,
+source commit, archive hash and image index digest before provisioning. It will
+invoke that archive's architecture-matched CLI with its own templates, rather than
+combine new templates with an older compiled-in renderer model. Kubernetes pulls
+the recorded immutable image; all bootstrap, acceptance, finalizer and normal roles
+use the same release. Retries and ordinary start/restart preserve that selection.
+
+The current `meta.json` does not include a managed-runtime compatibility marker.
+The [PR 1 runtime contract](../../../docs/design/server/console/04.managed_runtime_contract.md)
+plans that marker and matching CLI contract output before Console-managed creation
+is delivered. Unsupported latest packages fail visibly; they are not silently
+replaced by an older package or a local source build. The operator archive commands
+below describe the current published format.
+
 ## Use an extracted archive
 
 Extract the attachment and enter its top-level directory. On a Linux operator

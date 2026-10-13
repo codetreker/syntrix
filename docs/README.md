@@ -91,7 +91,11 @@ owns versioning, public GHCR publication, and deployment archives with matching
 Linux CLIs and build metadata. The [instance deployment guide](../packages/syntrix/deployment/README.md)
 owns standalone/distributed Kubernetes templates and the `syntrix-cli
 render-kubernetes` command. Strict deployment values select namespace, workload
-names, replicas, resource requests/limits, and existing backend connections.
+names, replicas, resource requests/limits, and existing backend connections. The
+planned Console lifecycle selects the newest complete successfully published
+Syntrix package at instance creation, uses its matching CLI/templates, and records
+the immutable package and image digest for every initialization/deployment phase.
+A main merge or PR build alone does not publish a runtime release.
 Distributed mode also requires existing NATS JetStream and an operator-managed
 shared signing-key Secret. Explicit bootstrap uses a temporary non-restarting Pod
 while normal Deployments remain stopped. These artifacts do not add full-instance

@@ -28,7 +28,10 @@ and PostgreSQL; distributed Trigger transport additionally requires existing NAT
 JetStream. The planned [Console instance lifecycle](docs/design/server/console/03.instance_lifecycle.md)
 allocates private databases and scoped accounts on administrator-configured shared
 servers, manages per-instance artifacts on a shared NATS account, and delivers
-instance administration through five implementation PRs. Employee Management,
+instance administration through five implementation PRs. New instances will use
+the latest complete published runtime package with its matching CLI/templates and
+frozen image digest; retries and ordinary restart preserve that selected release.
+Employee Management,
 project Identity, and OAuth remain separate target work.
 See the [Console client](packages/console-client/README.md) for browser development
 and static distribution, and the [Console server](packages/console-server/README.md)

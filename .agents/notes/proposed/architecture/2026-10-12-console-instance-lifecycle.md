@@ -38,7 +38,8 @@ independent of the full-instance interface specified here.
 ### Source authority and administrative pools
 
 Console PostgreSQL remains authoritative for developer ownership, instance IDs,
-backend pools, allocation bindings, immutable desired-spec revisions, operation
+backend pools, allocation bindings, selected published runtime-package receipts,
+immutable desired-spec revisions, operation
 phases, observations, deletion tombstones, external-effect attempts/resource
 receipts, and encrypted credentials. Kubernetes and backend servers execute recorded intent;
 they do not replace Console source authority. Developer endpoints remain scoped
@@ -94,15 +95,52 @@ deletes the shared NATS account, server, other streams, or shared credentials.
 Broker isolation does not imply a new task-durability guarantee; the chosen stream
 storage and retention policy must state its actual failure behavior.
 
+### Published runtime selection
+
+The [release guide](../../../../packages/syntrix/deployment/RELEASE.md) owns the
+implemented manual publication of tested version-matched images and deployment
+archives. A main commit is not itself a release. New instance provisioning selects
+the latest complete published non-draft/non-prerelease release in the fixed
+`syntrix-YYMMDD.sequence` family, ordered by numeric date and sequence, from the
+administrator-configured Syntrix source. The metadata's exact workflow run/attempt
+must have succeeded from its main source commit. A consumed tag, an image alone,
+or a draft/failed publication cannot supply that package.
+
+PR 1 adds an integer managed-runtime contract version to `meta.json` and matching
+bounded `syntrix-cli deployment-contract` output, including version/source commit
+and required modes/phases. Console validates the selected release's archive,
+metadata and bundled CLI before backend effects. Missing or unsupported contract
+versions fail visibly; an older compatible release is not silently substituted.
+The administrator controls source identity and supported contract versions;
+developers cannot submit executable URLs or arbitrary images.
+
+The durable receipt freezes repository/release/tag/asset identities, computed
+archive SHA-256, version/source SHA, exact workflow attempt, index digest/platforms,
+contract version and resolution timestamp. Cache and recovery verify those exact
+bytes and identities. Bootstrap, acceptance, finalization and every full runtime
+role use the same pinned package/image. Request replay, retry, start and restart
+retain that release; later publication does not change existing instance intent.
+Only an explicit compatible revision in PR 4 can select a different supported
+package; incompatible image/data-format migration remains separate work.
+
 ### Rendering and lifecycle recovery
 
-Console calls a side-effect-free public runtime renderer over the same canonical
-standalone/distributed templates used by `syntrix-cli`. Typed values, supported
-role topology, replica restrictions, service derivation, and validation have one
-owner. Console adapts recorded instance intent into those values and uses the
-existing client-go workload controller infrastructure to reconcile the rendered
-resources. A second template set, raw developer YAML, or shell-driven CLI
-execution would split the accepted runtime contract.
+The side-effect-free public runtime renderer owns the published CLI implementation
+and canonical standalone/distributed templates. Console's existing provisioning
+adapter downloads and verifies the selected package, chooses its Linux host CPU's
+bundled CLI and invokes it directly with matching templates under a bounded
+process context. Typed values, topology, replica restrictions, validation and
+runtime probes therefore travel with the deployed image, even when Console and
+Syntrix releases differ. Backend allocation can share the public broker
+specification only within explicitly supported managed contract versions.
+
+Controlled private extraction rejects traversal and escaping links and limits
+file count, compressed/unpacked bytes and path lengths. Command arguments contain
+fixed flags and private file paths, never credentials; values and output use
+protected files, and diagnostics sanitize subprocess output. Console reconciles
+the resulting resources through its existing client-go infrastructure. It does
+not invoke a shell, copy an independently maintained template set or apply an
+older compiled-in renderer to arbitrary newly downloaded templates.
 
 Every external action records its attempt, effect identity, target, and exact
 request generation before the bounded call. An unknown owner-creation outcome
@@ -177,7 +215,9 @@ Configuration edits and resize use immutable desired-spec revisions with
 compare-and-swap acceptance. A stale request fails without overwriting a newer
 desired revision. An observation identifies the revision it represents, and
 unfinished operations remain distinct from the last applied state. Console
-validates and renders the entire proposed configuration before accepting effects.
+validates and renders the entire proposed configuration with its selected package
+before accepting effects. Ordinary config/resize retains that version; an explicit
+compatible release revision records a newly validated package before rollout.
 
 Resize covers supported role replicas, CPU/memory requests and limits, and the
 managed stream limits defined by the design. Stateful single-owner roles retain
@@ -267,11 +307,25 @@ Explicit non-overlapping subjects and immutable per-instance stream/consumer
 identities supply the required resource ownership. Dedicated accounts remain a
 valid pool configuration when stronger broker permission isolation is needed.
 
+**Deploy a floating latest image.** A mutable tag can change between bootstrap,
+acceptance, restart and later retries, without a matching CLI/template change.
+The published package and immutable image index digest bind those executions to
+one tested source commit. Choosing latest happens once for a new instance or an
+explicit compatible revision, not every Pod replacement.
+
+**Render downloaded templates with Console's embedded renderer.** Sharing a pure
+renderer initially avoids process execution, but a newly published runtime can
+change its model fields, validation and lifecycle semantics independently of
+Console. Downloaded template syntax cannot prove that an older compiled-in
+renderer implements them. The public renderer remains the matched CLI's owner;
+a compact supported contract marker gates Console adapters and allocation.
+
 **Invoke the CLI through a shell or copy its templates into Console.** A shell
-adds process and secret-output handling; copied templates let Console and manual
-deployments disagree about roles, bootstrap, or validation. A public pure renderer
-preserves one template/configuration contract and leaves all external effects in
-the Console executor.
+adds expansion and credential-handling risks, while copied templates let Console
+and runtime disagree about roles, bootstrap or validation. Direct bounded
+execution of the verified package CLI with its exact templates retains one
+release contract. This accepts private extraction/cache and process lifecycle
+handling in the existing executor without adding a general script runner.
 
 **Introduce a new controller or CRD and complete Management first.** A Kubernetes
 API can own custom resource observations, but it does not remove Console's need
@@ -288,8 +342,12 @@ ownership rather than requiring this flow to depend on employee authentication.
 - Distributed instances coexist on a shared NATS account with distinct streams
   and non-overlapping subjects; all replicas of one worker role share its durable
   consumer, and runtime attachment preserves Console's complete stream policy.
-- Create uses the canonical renderer, completes exclusive bootstrap termination,
-  starts normal components, and proves indexed queries and the configured access
+- New creation selects the latest complete successfully published release by
+  numeric date/sequence, verifies its asset/metadata/matched CLI contract before
+  backend effects, and records the source and image index digest. An unsupported
+  latest package fails visibly; retries/restarts retain the selected version.
+- Create uses the selected package's canonical CLI/templates, completes exclusive
+  bootstrap termination, starts normal components, and proves indexed queries and the configured access
   scope before reporting ready. An internal-only environment does not claim a
   published public endpoint.
 - Create/delete interruption, Console restart, concurrent mutations, stale
@@ -308,11 +366,25 @@ ownership rather than requiring this flow to depend on employee authentication.
 - Broker-limit resize survives runtime restart. Credential rotation recovers from
   effect-before-receipt failure, preserves stopped state, and cannot retire shared
   credentials while old-generation launches or bindings remain unresolved.
+- Release probes reject draft/failed publications, wrong source/metadata/CLI,
+  archive traversal/size attacks, digest/hash/platform mismatch and changed assets;
+  newer publication cannot change an in-flight or ordinary restarted instance.
 - Each of the five ordered PRs has executable completion evidence; real-backend
   acceptance covers two instances on shared physical servers/account and complete
   cleanup after the lifecycle and failure scenarios.
 
 ## Risks
+
+Published package consumption adds a network/extraction/process boundary to
+Console. Fixed administrative source identity, immutable receipts, bounded
+extraction/execution and protected values are required before backend effects.
+The archive hash detects changed downloaded bytes but does not replace trusted
+source identity or introduce a release-signing guarantee. Removed remote assets
+block package-dependent recovery only when the exact verified cached package
+cannot be recovered. Stop/delete and ownership observation still use durable
+resource receipts, subject to existing unsettled-owner gates. Package cache
+custody and exact image retention are operational requirements. A latest release with an unsupported managed contract deliberately
+blocks new deployment until explicit Console support is delivered.
 
 Administrative pools concentrate allocation authority in Console. Private,
 encrypted credential custody, bounded privileged operations, and exact target
