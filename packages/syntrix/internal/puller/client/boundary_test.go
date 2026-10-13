@@ -70,6 +70,7 @@ func TestVerifiedClientReportsOneAttemptAndClassifiesFailure(t *testing.T) {
 			{"unavailable", status.Error(codes.Unavailable, "capture reconnecting"), true},
 			{"deadline", status.Error(codes.DeadlineExceeded, "transport timeout"), true},
 			{"capacity", status.Error(codes.ResourceExhausted, "admission full"), true},
+			{"server-canceled", status.Error(codes.Canceled, "puller service shut down"), true},
 			{"expired", status.Error(codes.FailedPrecondition, "history expired"), false},
 			{"invalid", status.Error(codes.InvalidArgument, "invalid cursor"), false},
 			{"unsupported", status.Error(codes.Unimplemented, "no ready protocol"), false},

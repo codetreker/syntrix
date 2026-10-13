@@ -298,15 +298,18 @@ kubectl --context "$SYNTRIX_KUBE_CONTEXT" -n "$SYNTRIX_NAMESPACE" \
   delete pod "$SYNTRIX_PREFIX-bootstrap" --wait=true --timeout=120s
 "$DEPLOYMENT_CLI" render-kubernetes \
   --template "$SYNTRIX_TEMPLATE" --config "$SYNTRIX_VALUES" \
-  --output .tmp/syntrix-acceptance.yml --acceptance-only --writes-quiesced
+  --output .tmp/syntrix-acceptance.yml --acceptance-only
 kubectl --context "$SYNTRIX_KUBE_CONTEXT" apply -f .tmp/syntrix-acceptance.yml
 kubectl --context "$SYNTRIX_KUBE_CONTEXT" -n "$SYNTRIX_NAMESPACE" \
   rollout status deployment -l "app.kubernetes.io/instance=$SYNTRIX_PREFIX" --timeout=120s
 ```
 
-Acceptance holds DeletionWorker and Trigger writers in the process; distributed
-writer-role Deployments also have zero replicas. Held roles report NOT_SERVING
-individually and are excluded from the active read-role aggregate. This state
+The renderer's `--acceptance-only` flag attests that external writers and cleanup
+remain paused. It generates the runtime's `--initialization-acceptance` and
+`--writes-quiesced` arguments together. Acceptance holds DeletionWorker and
+Trigger writers in the process; distributed writer-role Deployments also have
+zero replicas. Held roles report NOT_SERVING individually and are excluded from
+the active read-role aggregate. This state
 permits the query check but does not establish full normal instance readiness.
 
 Do not force-delete the bootstrap Pod. Normal rendering omits its definition but
@@ -373,9 +376,12 @@ Readiness requires usable storage/Identity, active source capture, Indexer
 applied/flushed lineage, current Puller subscription admission, active delivery
 and fresh dependency verification as appropriate to the role. Admission refresh
 is progress-neutral; freshness expiry clears readiness even under dispatch
-backpressure. Temporary loss clears ready and can recover; terminal ingestion or
-consumer failure reaches process ownership and shutdown. This is component
-readiness, distinct from bootstrap completion, initialization finalization and
+backpressure. Temporary loss, including a planned Puller restart, clears ready
+and can recover while the subscriber's context remains active. Permanent NATS
+connection closure cancels blocked consumer delivery and reaches process ownership
+and shutdown. Known Worker terminal failures are observed before broker/storage
+readiness checks, so dispatch backpressure cannot delay cancellation. This is
+component readiness, distinct from bootstrap completion, initialization finalization and
 external query acceptance.
 
 Configuration loads at startup; restart affected Deployments after changing

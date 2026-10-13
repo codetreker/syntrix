@@ -53,9 +53,11 @@ definitions. Finalization checks an expected versioned specification digest and
 creates/verifies owner-defined cleanup indexes. PostgreSQL definitions use the
 resolved target schema and stable credential-free configured endpoint identity;
 additional search-path entries cannot provide a different owner's tables. MongoDB
-identity retains configured authority/replica-set identity without adopting
-resolved SRV member hosts or credentials. The bounded same-image CLI emits
-one receipt after connections close without constructing Manager, opening Pebble
+identity retains configured authority/replica-set identity and the normalized SRV
+service name without adopting resolved SRV member hosts or credentials. Different
+SRV services on one hostname remain distinct placements; omitted and explicit
+default `mongodb` services identify the same endpoint. The bounded same-image CLI
+emits one receipt after connections close without constructing Manager, opening Pebble
 claims, listeners, or authentication services. Query acceptance is an explicit
 caller attestation, not evidence inferred by the finalizer.
 
@@ -71,12 +73,23 @@ No per-instance operation disables a shared MongoDB server's TTL monitor.
 Ordinary Puller subscriptions expose ordered admission controls with transport and
 admission generations, progress-neutral refresh and independent freshness expiry.
 Streamer and Evaluator observe admission only after preceding business events are
-processed. An empty-source admission does not create progress. Overflow preserves
-the original admission floors; blocked channels clear readiness through freshness
+processed. Upstream gRPC cancellation remains retryable while the ordinary
+subscriber's caller context is active, preserving fresh admission after planned
+Puller restart. Caller cancellation still ends the subscription, and permanent
+rejection remains terminal. An empty-source admission does not create progress.
+Overflow preserves the original admission floors; blocked channels clear readiness
+through freshness
 expiry without unbounded buffering or event loss.
 
 Manager owns bounded role verification, terminal async failures, cancellation and
-drain. `/ready` and standard gRPC role health report enabled-role readiness;
+drain. Permanent NATS connection closure cancels blocked consumer delivery before
+waiting for the consume context and the active delivery callback to settle.
+The output channel closes under the callback gate; late callbacks observe
+cancellation before sending because the SDK closure signal can resolve before
+application callback settlement. Worker terminal failures are checked
+before dependency readiness, so an unavailable broker/storage backend cannot
+prevent cancellation from releasing dispatch backpressure. `/ready` and standard
+gRPC role health report enabled-role readiness;
 `/health` and `syntrix.liveness` report liveness. Held roles remain NOT_SERVING and
 are excluded only from the active acceptance aggregate. Remote dependencies check
 their required role to avoid aggregate cycles. Terminal failure reaches the CLI

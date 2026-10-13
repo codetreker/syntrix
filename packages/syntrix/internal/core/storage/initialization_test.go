@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/DATA-DOG/go-sqlmock"
@@ -50,6 +51,55 @@ func TestInitializationPlacementsAndPrepare(t *testing.T) {
 		require.Error(mt, Prepare(context.Background(), cfg, backends))
 		require.NoError(mt, mock.ExpectationsWereMet())
 	})
+	mt.Run("distinct SRV services preserve routed physical placements", func(mt *mtest.T) {
+		cfg := config.DefaultConfig()
+		backend := cfg.Backends["default_mongo"]
+		backend.Mongo.URI = "mongodb+srv://unresolved.invalid/owned?srvServiceName=documents"
+		cfg.Backends["default_mongo"] = backend
+		backend.Mongo.URI = "mongodb+srv://unresolved.invalid/owned?SRVSERVICENAME=DOCUMENTS"
+		cfg.Backends["alias"] = backend
+		backend.Mongo.URI = "mongodb+srv://unresolved.invalid/owned?srvServiceName=archive"
+		cfg.Backends["archive"] = backend
+		cfg.Topology.Document.Strategy = "read_write_split"
+		cfg.Topology.Document.Replica = "alias"
+		cfg.Databases["archive"] = config.DatabaseConfig{Backend: "archive"}
+		provider := &backendTestProvider{client: mt.Client, dbName: "owned"}
+		db, mock, err := sqlmock.New()
+		require.NoError(mt, err)
+		defer db.Close()
+		backends := &Backends{providers: map[string]Provider{"default_mongo": provider, "alias": provider, "archive": provider}, postgresDB: db}
+		placements, err := InitializationPlacements(cfg, backends)
+		require.NoError(mt, err)
+		require.Len(mt, placements, 4)
+		owners := map[string]int{}
+		physical := map[string]int{}
+		for _, p := range placements {
+			owners[p.Owner]++
+			physical[p.Backend]++
+			require.Len(mt, p.Required, 1)
+			if p.Owner == "documents" {
+				require.Len(mt, p.Cleanup, 1)
+			} else {
+				assert.Empty(mt, p.Cleanup)
+			}
+			mt.AddMockResponses(mtest.CreateCommandErrorResponse(mtest.CommandError{Code: 26, Message: "absent collection"}), mtest.CreateSuccessResponse(), mtest.CreateCursorResponse(0, p.Database+"."+p.Collection, mtest.FirstBatch, bson.D{{Key: "name", Value: "database_1_collection_hash_1"}, {Key: "key", Value: bson.D{{Key: "database", Value: 1}, {Key: "collection_hash", Value: 1}}}}))
+		}
+		assert.Equal(mt, map[string]int{"documents": 2, "sys": 2}, owners)
+		require.Len(mt, physical, 2)
+		for _, count := range physical {
+			assert.Equal(mt, 2, count)
+		}
+		expectSchemaInitialization(mock, "databases")
+		require.NoError(mt, Prepare(context.Background(), cfg, backends))
+		require.NoError(mt, mock.ExpectationsWereMet())
+		creates := 0
+		for _, command := range mt.GetAllStartedEvents() {
+			if command.CommandName == "createIndexes" {
+				creates++
+			}
+		}
+		assert.Equal(mt, 4, creates)
+	})
 }
 
 func TestInitializationPlacementErrors(t *testing.T) {
@@ -83,6 +133,9 @@ func TestMongoEndpointIdentityIsPureAndCredentialIndependent(t *testing.T) {
 	for _, pair := range [][2]string{
 		{"mongodb://u:one@A.example:27017,b.example:27017/db?replicaSet=rs", "mongodb://other:two@b.example:27017,a.example:27017/db?replicaSet=rs"},
 		{"mongodb+srv://u:one@unresolved.invalid/db?replicaSet=rs&srvMaxHosts=0", "mongodb+srv://other:two@unresolved.invalid/db?replicaSet=rs&srvServiceName=mongodb"},
+		{"mongodb+srv://unresolved.invalid/db", "mongodb+srv://UNRESOLVED.invalid/db?SRVSERVICENAME=MONGODB"},
+		{"mongodb+srv://unresolved.invalid/db?srvServiceName=documents", "mongodb+srv://unresolved.invalid/db?sRvSeRvIcEnAmE=%44OCUMENTS"},
+		{"mongodb+srv://unresolved.invalid/db?srvServiceName=documents", "mongodb+srv://unresolved.invalid/db?srvServiceName=archive;SRVSERVICENAME=DOCUMENTS"},
 	} {
 		a, err := mongoEndpointIdentity(pair[0])
 		require.NoError(t, err)
@@ -95,7 +148,13 @@ func TestMongoEndpointIdentityIsPureAndCredentialIndependent(t *testing.T) {
 	b, err := mongoEndpointIdentity("mongodb+srv://other.invalid/db")
 	require.NoError(t, err)
 	assert.NotEqual(t, a, b)
-	for _, uri := range []string{"invalid", "mongodb+srv://unresolved.invalid/db?bad=%not-valid", "mongodb://host:port"} {
+	b, err = mongoEndpointIdentity("mongodb+srv://unresolved.invalid/db?srvServiceName=documents")
+	require.NoError(t, err)
+	assert.NotEqual(t, a, b)
+	a, err = mongoEndpointIdentity("mongodb+srv://unresolved.invalid/db?srvServiceName=archive")
+	require.NoError(t, err)
+	assert.NotEqual(t, a, b)
+	for _, uri := range []string{"invalid", "mongodb+srv://unresolved.invalid/db?bad=%not-valid", "mongodb+srv://unresolved.invalid/db?bad%not-valid=value", "mongodb+srv://unresolved.invalid/db?bad", "mongodb+srv://unresolved.invalid/db?srvServiceName=", "mongodb+srv://unresolved.invalid/db?srvServiceName=" + strings.Repeat("a", 63), "mongodb://host:port"} {
 		_, err := mongoEndpointIdentity(uri)
 		assert.Error(t, err)
 	}

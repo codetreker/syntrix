@@ -191,12 +191,19 @@ func (m *Manager) clearHealth() {
 	}
 }
 
-func (m *Manager) checkSource(ctx context.Context, role string, source any) error {
+func (m *Manager) checkTerminal(role string, source any) error {
 	if terminal, ok := source.(terminalSource); ok {
 		if err := terminal.TerminalError(); err != nil {
 			m.fail(role, err)
 			return err
 		}
+	}
+	return nil
+}
+
+func (m *Manager) checkSource(ctx context.Context, role string, source any) error {
+	if err := m.checkTerminal(role, source); err != nil {
+		return err
 	}
 	readiness, ok := source.(readinessSource)
 	if !ok {
@@ -237,11 +244,8 @@ func (m *Manager) checkRole(ctx context.Context, role string) error {
 	case rolePuller:
 		return m.checkSource(ctx, role, m.pullerService)
 	case roleIndexer:
-		if terminal, ok := m.indexerService.(terminalSource); ok {
-			if err := terminal.TerminalError(); err != nil {
-				m.fail(role, err)
-				return err
-			}
+		if err := m.checkTerminal(role, m.indexerService); err != nil {
+			return err
 		}
 		if m.indexerService == nil {
 			return errors.New("indexer not initialized")
@@ -282,6 +286,9 @@ func (m *Manager) checkRole(ctx context.Context, role string) error {
 		}
 		return m.checkSource(ctx, role, m.triggerService)
 	case roleWorker:
+		if err := m.checkTerminal(role, m.triggerConsumer); err != nil {
+			return err
+		}
 		if m.identityModule == nil {
 			return errors.New("identity not initialized")
 		}

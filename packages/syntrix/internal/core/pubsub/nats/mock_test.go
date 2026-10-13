@@ -22,6 +22,7 @@ type fakeJetStream struct {
 	createStreamErr, createConsumerErr                error
 	applyOnCreateError                                bool
 	consumeErr                                        error
+	consumeHook                                       func(jetstream.MessageHandler, jetstream.ConsumeErrHandler)
 	loop                                              *fakeConsumeContext
 	handler                                           jetstream.MessageHandler
 	errHandler                                        jetstream.ConsumeErrHandler
@@ -158,8 +159,8 @@ func (c *fakeConsumer) Info(ctx context.Context) (*jetstream.ConsumerInfo, error
 func (c *fakeConsumer) Consume(handler jetstream.MessageHandler, opts ...jetstream.PullConsumeOpt) (jetstream.ConsumeContext, error) {
 	f := c.owner
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	if f.consumeErr != nil {
+		f.mu.Unlock()
 		return nil, f.consumeErr
 	}
 	f.handler = handler
@@ -171,7 +172,12 @@ func (c *fakeConsumer) Consume(handler jetstream.MessageHandler, opts ...jetstre
 	if f.loop == nil {
 		f.loop = newFakeConsumeContext()
 	}
-	return f.loop, nil
+	loop, hook, errHandler := f.loop, f.consumeHook, f.errHandler
+	f.mu.Unlock()
+	if hook != nil {
+		hook(handler, errHandler)
+	}
+	return loop, nil
 }
 
 type fakeConsumeContext struct {

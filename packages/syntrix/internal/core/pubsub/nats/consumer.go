@@ -52,14 +52,24 @@ func (c *jetStreamConsumer) Subscribe(ctx context.Context) (<-chan pubsub.Messag
 	}
 	msgCh := make(chan pubsub.Message, c.opts.ChannelBufSize)
 	consumeCtx, cancel := context.WithCancel(ctx)
+	// Closed can already resolve after connection loss while a callback is still settling.
+	// We join active callbacks and prevent cancelled callbacks from sending after channel closure.
+	// https://github.com/nats-io/nats.go/blob/a0e7b702c6b8ef9f86d09008d8cfcb4623fdd608/jetstream/pull.go#L805-L817
+	var callbacks sync.Mutex
 	cc, err := consumer.Consume(func(msg jetstream.Msg) {
+		callbacks.Lock()
+		defer callbacks.Unlock()
+		if consumeCtx.Err() != nil {
+			_ = msg.Nak()
+			return
+		}
 		select {
 		case msgCh <- WrapMessage(msg):
 		case <-consumeCtx.Done():
 			_ = msg.Nak()
 		}
 	}, jetstream.ConsumeErrHandler(func(_ jetstream.ConsumeContext, err error) {
-		if errors.Is(err, jetstream.ErrConsumerDeleted) || errors.Is(err, jetstream.ErrBadRequest) {
+		if errors.Is(err, jetstream.ErrConsumerDeleted) || errors.Is(err, jetstream.ErrBadRequest) || errors.Is(err, jetstream.ErrConnectionClosed) {
 			c.mu.Lock()
 			c.terminal = &OperationError{Operation: "consume", Cause: err}
 			c.mu.Unlock()
@@ -97,7 +107,9 @@ func (c *jetStreamConsumer) Subscribe(ctx context.Context) (<-chan pubsub.Messag
 		cancel()
 		cc.Stop()
 		<-closed
+		callbacks.Lock()
 		close(msgCh)
+		callbacks.Unlock()
 		c.mu.Lock()
 		c.running = false
 		c.mu.Unlock()

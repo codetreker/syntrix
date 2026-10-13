@@ -175,6 +175,9 @@ func (c *Client) subscribeLoop(
 		switch status.Code(err) {
 		case codes.Unavailable, codes.DeadlineExceeded, codes.ResourceExhausted:
 			return true
+		case codes.Canceled:
+			// Server shutdown cancels the RPC independently of its caller.
+			return ctx.Err() == nil
 		default:
 			return false
 		}

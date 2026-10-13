@@ -3,6 +3,7 @@ package nats
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -10,6 +11,7 @@ import (
 	pubsubconfig "github.com/codetreker/syntrix/internal/core/pubsub/config"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 )
 
@@ -157,7 +159,7 @@ func TestConsumerDeliversAndDrainsBeforeChannelClose(t *testing.T) {
 }
 
 func TestConsumerUnexpectedCloseAndTerminalErrors(t *testing.T) {
-	for _, terminal := range []error{nil, jetstream.ErrConsumerDeleted, jetstream.ErrBadRequest} {
+	for _, terminal := range []error{nil, jetstream.ErrConsumerDeleted, jetstream.ErrBadRequest, jetstream.ErrConnectionClosed} {
 		t.Run(errorName(terminal), func(t *testing.T) {
 			b := pubsubconfig.DefaultOperatorBinding()
 			f := allocatedFake(b)
@@ -185,6 +187,52 @@ func TestConsumerUnexpectedCloseAndTerminalErrors(t *testing.T) {
 	}
 }
 
+func TestConsumerConnectionClosesDuringSubscribeWaitsForCallback(t *testing.T) {
+	b := pubsubconfig.DefaultOperatorBinding()
+	f := allocatedFake(b)
+	f.loop = newFakeConsumeContext()
+	consumer, err := NewConsumer(context.Background(), f, b, consumerOptions(b))
+	require.NoError(t, err)
+	naking, release, callbackDone := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	var releaseOnce sync.Once
+	releaseCallback := func() { releaseOnce.Do(func() { close(release) }) }
+	defer releaseCallback()
+	first := NewMockMsg("TRIGGERS.db.col.first", []byte("first"))
+	second := NewMockMsg("TRIGGERS.db.col.second", []byte("second"))
+	second.On("Nak").Run(func(mock.Arguments) { close(naking); <-release }).Return(nil).Once()
+	f.consumeHook = func(handler jetstream.MessageHandler, errHandler jetstream.ConsumeErrHandler) {
+		handler(first)
+		go func() { handler(second); close(callbackDone) }()
+		errHandler(f.loop, jetstream.ErrConnectionClosed)
+		select {
+		case <-naking:
+		case <-time.After(time.Second):
+			t.Fatal("cancelled callback did not begin settlement")
+		}
+		// Closed can already be closed when first captured after connection loss.
+		f.loop.finish()
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	messages, err := consumer.Subscribe(ctx)
+	require.NoError(t, err)
+	require.Equal(t, first.Data(), (<-messages).Data())
+	select {
+	case _, open := <-messages:
+		require.True(t, open, "source closed before the active callback settled")
+	case <-time.After(20 * time.Millisecond):
+	}
+	releaseCallback()
+	select {
+	case <-callbackDone:
+	case <-time.After(time.Second):
+		t.Fatal("callback did not settle")
+	}
+	requireChannelClosed(t, messages)
+	require.ErrorIs(t, consumer.(*jetStreamConsumer).Err(), jetstream.ErrConnectionClosed)
+	second.AssertExpectations(t)
+}
+
 func TestConsumerStartupFailureCanRetry(t *testing.T) {
 	b := pubsubconfig.DefaultOperatorBinding()
 	f := allocatedFake(b)
@@ -205,7 +253,7 @@ func TestConsumerStartupFailureCanRetry(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	messages, err := consumer.Subscribe(ctx)
 	require.NoError(t, err)
-	f.errHandler(f.loop, errors.New("transient heartbeat error"))
+	f.errHandler(f.loop, jetstream.ErrNoHeartbeat)
 	assert.True(t, runtime.Ready())
 	assert.NoError(t, runtime.Err())
 	cancel()

@@ -72,26 +72,46 @@ func mongoEndpointIdentity(uri string) (string, error) {
 		return "", fmt.Errorf("invalid MongoDB URI scheme")
 	}
 	parseURI := uri
+	srvServiceName := ""
 	if scheme == connstring.SchemeMongoDBSRV {
+		srvServiceName = "mongodb"
 		authority, tail, _ := strings.Cut(remainder, "/")
 		if at := strings.LastIndex(authority, "@"); at >= 0 {
 			authority = authority[at+1:]
 		}
 		parseURI = "mongodb://" + authority + "/"
 		if _, query, ok := strings.Cut(tail, "?"); ok {
-			parameters, err := url.ParseQuery(query)
-			if err != nil {
-				return "", err
-			}
-			for key, values := range parameters {
-				if strings.EqualFold(key, "replicaSet") && len(values) > 0 {
-					parseURI += "?replicaSet=" + url.QueryEscape(values[len(values)-1])
+			parameters := url.Values{}
+			for _, option := range strings.FieldsFunc(query, func(r rune) bool { return r == ';' || r == '&' }) {
+				key, value, ok := strings.Cut(option, "=")
+				if !ok || key == "" {
+					return "", fmt.Errorf("invalid MongoDB URI option")
 				}
+				key, err := url.QueryUnescape(key)
+				if err != nil {
+					return "", err
+				}
+				value, err = url.QueryUnescape(value)
+				if err != nil {
+					return "", err
+				}
+				switch strings.ToLower(key) {
+				case "replicaset":
+					parameters.Set("replicaSet", value)
+				case "srvservicename":
+					if len(value) < 1 || len(value) > 62 {
+						return "", fmt.Errorf("MongoDB SRV service name must be between 1 and 62 characters")
+					}
+					srvServiceName = strings.ToLower(value)
+				}
+			}
+			if len(parameters) > 0 {
+				parseURI += "?" + parameters.Encode()
 			}
 		}
 	}
-	// Parsing a non-SRV URI performs no DNS. The frozen configured SRV authority
-	// remains the endpoint identity when its resolved members change.
+	// Parsing a non-SRV URI performs no DNS. The configured SRV authority and
+	// service identify the endpoint even when its resolved members change.
 	parsed, err := connstring.ParseAndValidate(parseURI)
 	if err != nil {
 		return "", err
@@ -103,7 +123,11 @@ func mongoEndpointIdentity(uri string) (string, error) {
 		}
 	}
 	slices.Sort(hosts)
-	hash := sha256.Sum256([]byte(strings.Join(hosts, ",") + "\x00" + parsed.ReplicaSet + "\x00" + scheme))
+	endpoint := strings.Join(hosts, ",") + "\x00" + parsed.ReplicaSet + "\x00" + scheme
+	if scheme == connstring.SchemeMongoDBSRV {
+		endpoint += "\x00" + srvServiceName
+	}
+	hash := sha256.Sum256([]byte(endpoint))
 	return hex.EncodeToString(hash[:]), nil
 }
 

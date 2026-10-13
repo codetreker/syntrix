@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"testing"
@@ -67,6 +68,112 @@ func allocateIntegrationBinding(t *testing.T, ctx context.Context, js jetstream.
 	})
 	_, err = js.CreateConsumer(ctx, spec.Stream.Name, spec.Consumer)
 	require.NoError(t, err)
+}
+
+type observedJetStream struct {
+	JetStream
+	callbacks chan struct{}
+	finished  chan struct{}
+}
+
+func (s *observedJetStream) Consumer(ctx context.Context, stream, consumer string) (jetstream.Consumer, error) {
+	bound, err := s.JetStream.Consumer(ctx, stream, consumer)
+	if err != nil {
+		return nil, err
+	}
+	return &observedConsumer{Consumer: bound, callbacks: s.callbacks, finished: s.finished}, nil
+}
+
+type observedConsumer struct {
+	jetstream.Consumer
+	callbacks chan struct{}
+	finished  chan struct{}
+}
+
+func (c *observedConsumer) Consume(handler jetstream.MessageHandler, opts ...jetstream.PullConsumeOpt) (jetstream.ConsumeContext, error) {
+	return c.Consumer.Consume(func(msg jetstream.Msg) {
+		c.callbacks <- struct{}{}
+		handler(msg)
+		c.finished <- struct{}{}
+	}, opts...)
+}
+
+func TestConsumerFullBufferConnectionLifecycle(t *testing.T) {
+	for _, permanent := range []bool{false, true} {
+		t.Run(fmt.Sprintf("permanent=%t", permanent), func(t *testing.T) {
+			ctx, js, address := integrationNATS(t)
+			binding := managedIntegrationBinding(t)
+			allocateIntegrationBinding(t, ctx, js, binding)
+			provider, err := NewProvider(address, binding)
+			require.NoError(t, err)
+			require.NoError(t, provider.Connect(ctx))
+			t.Cleanup(func() { require.NoError(t, provider.Close()) })
+			observed := &observedJetStream{JetStream: provider.js, callbacks: make(chan struct{}, 2), finished: make(chan struct{}, 2)}
+			consumer, err := NewConsumer(ctx, observed, binding, consumerOptions(binding))
+			require.NoError(t, err)
+			subscription, cancel := context.WithCancel(ctx)
+			defer cancel()
+			messages, err := consumer.Subscribe(subscription)
+			require.NoError(t, err)
+			state := consumer.(pubsub.ConsumerState)
+			for _, payload := range []string{"first", "second"} {
+				_, err = js.Publish(ctx, binding.SubjectPrefix+".db.collection.doc", []byte(payload))
+				require.NoError(t, err)
+				select {
+				case <-observed.callbacks:
+				case <-ctx.Done():
+					t.Fatal("message callback did not start")
+				}
+			}
+			require.Len(t, messages, 1)
+			select {
+			case <-observed.finished:
+			case <-ctx.Done():
+				t.Fatal("first message was not buffered")
+			}
+			if permanent {
+				provider.nc.Close()
+				require.Eventually(t, func() bool {
+					return !state.Ready() && errors.Is(state.Err(), jetstream.ErrConnectionClosed)
+				}, time.Second, time.Millisecond)
+				select {
+				case <-observed.finished:
+				case <-ctx.Done():
+					t.Fatal("permanent closure did not release the full-buffer callback")
+				}
+			} else {
+				reconnected := make(chan struct{}, 1)
+				provider.nc.SetReconnectHandler(func(*nats.Conn) { reconnected <- struct{}{} })
+				require.NoError(t, provider.nc.ForceReconnect())
+				select {
+				case <-reconnected:
+				case <-ctx.Done():
+					t.Fatal("owned connection did not reconnect")
+				}
+				require.True(t, state.Ready())
+				require.NoError(t, state.Err())
+			}
+			select {
+			case message := <-messages:
+				require.Equal(t, []byte("first"), message.Data())
+			case <-ctx.Done():
+				t.Fatal("buffered message was lost")
+			}
+			if permanent {
+				requireChannelClosed(t, messages)
+			} else {
+				select {
+				case message := <-messages:
+					require.Equal(t, []byte("second"), message.Data())
+				case <-ctx.Done():
+					t.Fatal("blocked callback did not resume after reconnect")
+				}
+				cancel()
+				requireChannelClosed(t, messages)
+				require.NoError(t, state.Err())
+			}
+		})
+	}
 }
 func TestManagedSharedNATSRoutingAndAttachment(t *testing.T) {
 	ctx, js, address := integrationNATS(t)

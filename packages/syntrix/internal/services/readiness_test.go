@@ -3,18 +3,21 @@ package services
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/codetreker/syntrix/internal/config"
 	"github.com/codetreker/syntrix/internal/core/pubsub"
+	pubsubtesting "github.com/codetreker/syntrix/internal/core/pubsub/testing"
 	"github.com/codetreker/syntrix/internal/gateway"
 	gatewayconfig "github.com/codetreker/syntrix/internal/gateway/config"
 	"github.com/codetreker/syntrix/internal/gateway/realtime"
@@ -23,6 +26,8 @@ import (
 	initializationconfig "github.com/codetreker/syntrix/internal/initialization/config"
 	"github.com/codetreker/syntrix/internal/server"
 	"github.com/codetreker/syntrix/internal/streamer"
+	"github.com/codetreker/syntrix/internal/trigger/delivery"
+	"github.com/codetreker/syntrix/internal/trigger/types"
 	"github.com/codetreker/syntrix/pkg/model"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
@@ -206,6 +211,104 @@ func TestRuntimeFatalFailurePreservesCauseAndSafeDiagnostics(t *testing.T) {
 		require.Contains(t, output.String(), field)
 	}
 	require.Error(t, mgr.checkSource(context.Background(), rolePuller, &stubPullerService{}))
+}
+
+type readinessConsumer struct {
+	messages chan pubsub.Message
+	failed   atomic.Bool
+	cause    error
+	closed   sync.Once
+}
+
+func (c *readinessConsumer) Subscribe(ctx context.Context) (<-chan pubsub.Message, error) {
+	context.AfterFunc(ctx, c.close)
+	return c.messages, nil
+}
+func (c *readinessConsumer) close()      { c.closed.Do(func() { close(c.messages) }) }
+func (c *readinessConsumer) Ready() bool { return !c.failed.Load() }
+func (c *readinessConsumer) Err() error {
+	if c.failed.Load() {
+		return c.cause
+	}
+	return nil
+}
+
+type readinessWorker func(context.Context, *types.DeliveryTask) error
+
+func (w readinessWorker) ProcessTask(ctx context.Context, task *types.DeliveryTask) error {
+	return w(ctx, task)
+}
+
+func TestWorkerTerminalFailureCancelsFullQueueBeforeDependencyChecks(t *testing.T) {
+	for _, unavailable := range []string{"identity", "storage", "broker"} {
+		t.Run(unavailable, func(t *testing.T) {
+			mgr := readinessManager(t, Options{Mode: ModeDistributed, RunTriggerWorker: true})
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			life := mgr.lifecycle(ctx)
+			mgr.identityModule = &fakeIdentityModule{}
+			mgr.initialization = observedInitialization{state: initialization.Finalized}
+			mgr.pubsubProvider = &readyBroker{}
+			cause := errors.New("consumer connection closed permanently")
+			source := &readinessConsumer{messages: make(chan pubsub.Message, 4), cause: cause}
+			processing := make(chan struct{})
+			pool := delivery.NewTaskConsumer(source, readinessWorker(func(ctx context.Context, _ *types.DeliveryTask) error {
+				close(processing)
+				<-ctx.Done()
+				return ctx.Err()
+			}), 1, nil, delivery.WithChannelBufferSize(1), delivery.WithDrainTimeout(100*time.Millisecond))
+			mgr.triggerConsumer = pool
+			payload, err := json.Marshal(types.DeliveryTask{TriggerID: "blocked", Collection: "same", DocumentID: "same", Timeout: types.Duration(time.Minute)})
+			require.NoError(t, err)
+			messages := make([]*pubsubtesting.MockMessage, 4)
+			for i := range messages {
+				messages[i] = pubsubtesting.NewMockMessage("subject", payload)
+				source.messages <- messages[i]
+			}
+			stopped := make(chan error, 1)
+			mgr.launch(life, roleWorker, true, func(ctx context.Context) error {
+				err := pool.Start(ctx)
+				stopped <- err
+				return err
+			})
+			select {
+			case <-processing:
+			case <-ctx.Done():
+				t.Fatal("worker never received a message")
+			}
+			require.Eventually(t, func() bool { return len(source.messages) == 1 }, time.Second, time.Millisecond)
+			require.NoError(t, mgr.checkRole(ctx, roleWorker))
+			switch unavailable {
+			case "identity":
+				mgr.identityModule = nil
+			case "storage":
+				mgr.initialization = observedInitialization{err: errors.New("temporary storage outage")}
+			case "broker":
+				mgr.pubsubProvider = &readyBroker{err: errors.New("temporary broker outage")}
+			}
+			require.Error(t, mgr.checkRole(ctx, roleWorker))
+			require.NoError(t, life.Err())
+			select {
+			case err := <-stopped:
+				t.Fatalf("dependency outage stopped the worker: %v", err)
+			default:
+			}
+			source.failed.Store(true)
+			source.close()
+			mgr.checkReadiness(ctx)
+			require.ErrorIs(t, mgr.Wait(ctx), cause)
+			require.ErrorIs(t, life.Err(), context.Canceled)
+			select {
+			case <-stopped:
+			case <-time.After(time.Second):
+				t.Fatal("terminal source failure left dispatch or webhook blocked")
+			}
+			for _, message := range messages {
+				require.True(t, message.IsNaked())
+			}
+			require.False(t, mgr.health.ready())
+		})
+	}
 }
 
 func TestRoleReadinessDependenciesAndInitializationPhases(t *testing.T) {
