@@ -180,14 +180,32 @@ func TestPostgresKubernetesReceiptWriteFailureRecoversOriginalIdentity(t *testin
 }
 
 func TestPostgresConcurrentIdempotentCreate(t *testing.T) {
+	const requests = 16
 	db := postgresTestDB(t)
+	db.SetMaxOpenConns(requests + 2)
 	service := postgresService(t, db, &testExecutor{})
+	service.cfg.OperationTimeout = 5 * time.Second
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	const requests = 16
+	var group sync.WaitGroup
+	blocker, err := db.BeginTx(ctx, nil)
+	require.NoError(t, err)
+	defer func() {
+		rollbackErr := blocker.Rollback()
+		cancel()
+		group.Wait()
+		if !errors.Is(rollbackErr, sql.ErrTxDone) {
+			require.NoError(t, rollbackErr)
+		}
+	}()
+
+	// SHARE permits every preflight SELECT but blocks INSERT's ROW EXCLUSIVE lock.
+	// Waiting for all INSERTs forces the losing requests through conflict replay.
+	// https://www.postgresql.org/docs/18/explicit-locking.html
+	_, err = blocker.ExecContext(ctx, "LOCK TABLE console_workloads IN SHARE MODE")
+	require.NoError(t, err)
 	results := make(chan Workload, requests)
 	errors := make(chan error, requests)
-	var group sync.WaitGroup
 	for range requests {
 		group.Add(1)
 		go func() {
@@ -197,6 +215,26 @@ func TestPostgresConcurrentIdempotentCreate(t *testing.T) {
 			errors <- err
 		}()
 	}
+	waitCtx, stopWaiting := context.WithTimeout(ctx, 4*time.Second)
+	defer stopWaiting()
+	ticker := time.NewTicker(5 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		var blocked int
+		err := db.QueryRowContext(waitCtx, `SELECT count(*) FROM pg_locks
+			WHERE relation = 'console_workloads'::regclass
+			AND mode = 'RowExclusiveLock' AND NOT granted`).Scan(&blocked)
+		require.NoError(t, err)
+		if blocked == requests {
+			break
+		}
+		select {
+		case <-waitCtx.Done():
+			require.FailNow(t, "workload INSERTs did not all reach the lock barrier", "blocked %d of %d: %v", blocked, requests, waitCtx.Err())
+		case <-ticker.C:
+		}
+	}
+	require.NoError(t, blocker.Commit())
 	group.Wait()
 	close(results)
 	close(errors)

@@ -30,7 +30,10 @@ Critical uncovered blocks also fail the command. No packages, files, or function
 are excluded, including the command entrypoint. Enforcement is explicit and does
 not depend on the ambient `CI` variable. The entrypoint clears go-cov environment
 overrides so they cannot weaken the module policy. Coverage is written to
-`coverage.out`.
+`coverage.out`. The concurrent idempotency test uses a PostgreSQL lock barrier
+to make every request reach insertion before the winning transaction commits,
+so conflict replay is exercised on every run. Tests release their locks and
+join requests before dropping the dedicated fixture schema.
 
 CI and the pre-push hook use this same gate; CI supplies PostgreSQL and also
 builds the container. Direct `go test` is available for focused development, but
