@@ -40,7 +40,7 @@ build_cli() {
       cd packages/syntrix
       CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build -trimpath \
         -ldflags "-X main.version=$SYNTRIX_VERSION -X main.gitCommit=$GITHUB_SHA" \
-        -o "../../$release_dir/bin/linux-$arch/syntrix-cli" ./cmd/syntrix-cli
+        -o "../../$release_dir/bin/linux-$arch/deployment-cli" ./tools/deployment-cli/cmd/deployment-cli
     )
   done
 }
@@ -96,7 +96,7 @@ bundle() {
     *) printf 'Unsupported release packaging architecture.\n' >&2; return 1 ;;
   esac
   mkdir -p "$root/deployment"
-  git archive "$GITHUB_SHA:packages/syntrix/deployment" README.md RELEASE.md standalone distributed \
+  git archive "$GITHUB_SHA:packages/syntrix/tools/deployment-cli/deployment" README.md RELEASE.md standalone distributed \
     | tar -xf - -C "$root/deployment"
   cp -a "$release_dir/bin" "$root/bin"
   python3 - "$root" "$native_arch" <<'PY'
@@ -118,10 +118,10 @@ sha = os.environ["GITHUB_SHA"]
 repository = os.environ["SYNTRIX_IMAGE_REPOSITORY"]
 digest = os.environ["SYNTRIX_IMAGE_DIGEST"]
 source_url = f'{os.environ["GITHUB_SERVER_URL"]}/{os.environ["GITHUB_REPOSITORY"]}/blob/{sha}/'
-deployment_source = "packages/syntrix/deployment"
+deployment_source = "packages/syntrix/tools/deployment-cli/deployment"
 
 def read_contract():
-    command = [str(root / f"bin/linux-{native_arch}/syntrix-cli"), "deployment-contract"]
+    command = [str(root / f"bin/linux-{native_arch}/deployment-cli"), "deployment-contract"]
     process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
     deadline = time.monotonic() + 10
     output = bytearray()
@@ -206,15 +206,15 @@ metadata = {
 (root / "meta.json").write_text(json.dumps(metadata, indent=2) + "\n")
 PY
   for mode in standalone distributed; do
-    "$root/bin/linux-$native_arch/syntrix-cli" render-kubernetes \
+    "$root/bin/linux-$native_arch/deployment-cli" render-kubernetes \
       --template "$root/deployment/$mode/kubernetes.template.yml" \
       --config "$root/deployment/$mode/values.example.yml" \
       --output "$release_dir/$mode.yml"
-    "$root/bin/linux-$native_arch/syntrix-cli" render-kubernetes \
+    "$root/bin/linux-$native_arch/deployment-cli" render-kubernetes \
       --template "$root/deployment/$mode/kubernetes.template.yml" \
       --config "$root/deployment/$mode/values.example.yml" \
       --bootstrap --writes-quiesced --output "$release_dir/$mode-bootstrap.yml"
-    "$root/bin/linux-$native_arch/syntrix-cli" render-kubernetes \
+    "$root/bin/linux-$native_arch/deployment-cli" render-kubernetes \
       --template "$root/deployment/$mode/kubernetes.template.yml" \
       --config "$root/deployment/$mode/values.example.yml" \
       --acceptance-only --output "$release_dir/$mode-acceptance.yml"

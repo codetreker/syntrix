@@ -21,17 +21,20 @@ must preserve useful failure categories without exposing credentials.
 
 ## Decision
 
-`packages/syntrix` owns the multi-stage Dockerfile and standalone/distributed
-Kubernetes templates. The existing `syntrix-cli` entrypoint supplies
+`packages/syntrix` owns the multi-stage runtime Dockerfile. The
+[deployment-tool decision](2026-10-13-deployment-cli-ownership.md) places
+standalone/distributed Kubernetes templates and rendering under
+`tools/deployment-cli` and replaces the original `syntrix-cli` entrypoint with
+`cmd/deployment-cli`. The tool supplies
 `render-kubernetes --template FILE --config FILE --output FILE`. A module-owned
 configuration package loads one strict values document and validates names,
 connections, exact roles, replica limits, and CPU/memory requests against limits.
 The renderer derives service addresses and names from that configuration and
 returns validated YAML without cluster/database effects; the private CLI adapter
 publishes it atomically with mode 0600. The
-[managed-runtime decision](2026-10-13-managed-runtime-contract.md) owns the public
-renderer/config API and partially supersedes this note for initialization,
-broker attachment and readiness. The [deployment guide](../../../../packages/syntrix/deployment/README.md)
+[managed-runtime decision](2026-10-13-managed-runtime-contract.md) owns the
+rendering compatibility contract and partially supersedes this note for initialization,
+broker attachment and readiness. The [deployment guide](../../../../packages/syntrix/tools/deployment-cli/deployment/README.md)
 owns values and commands; the [deployment design](../../../../docs/design/server/03.deployment_modes.md)
 places these artifacts within runtime modes.
 

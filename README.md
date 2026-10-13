@@ -19,9 +19,11 @@ independent developer Console backend and bilingual browser login/shell. Console
 uses its own PostgreSQL for source data and deploys predefined HTTP test workloads
 through its API to Kubernetes. The browser shell currently provides account login,
 session restoration, and logout; resource-administration pages remain target work.
-The [instance deployment](packages/syntrix/deployment/README.md) supplies a separate
+The [instance deployment](packages/syntrix/tools/deployment-cli/deployment/README.md) supplies a separate
 container, standalone/distributed Kubernetes templates, and a configuration-driven
-manifest generator. The [manual release pipeline](packages/syntrix/deployment/RELEASE.md)
+`deployment-cli` manifest generator under `packages/syntrix/tools/deployment-cli`.
+The tool consumes runtime-owned configuration contracts; the service and its
+Docker build have no deployment-tool dependency. The [manual release pipeline](packages/syntrix/tools/deployment-cli/deployment/RELEASE.md)
 publishes public Linux amd64/arm64 runtime images and deployment archives with
 matching CLIs and build metadata. These deployments connect to existing MongoDB
 and PostgreSQL; distributed Trigger transport additionally requires existing NATS
@@ -61,7 +63,7 @@ repository root; the server runs from its package directory so configuration,
 data, and logs resolve against that package. Infrastructure prerequisites are
 described in the [development guide](deployment/dev/README.md).
 
-For Kubernetes, follow the [instance deployment guide](packages/syntrix/deployment/README.md).
+For Kubernetes, follow the [instance deployment guide](packages/syntrix/tools/deployment-cli/deployment/README.md).
 Its explicit bootstrap phase preserves the existing write-quiescence and persistent
 Indexer startup requirements; cluster creation remains operator-owned.
 

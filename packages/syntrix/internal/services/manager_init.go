@@ -12,11 +12,11 @@ import (
 	pullerv1 "github.com/codetreker/syntrix/api/gen/puller/v1"
 	pb "github.com/codetreker/syntrix/api/gen/query/v1"
 	streamerv1 "github.com/codetreker/syntrix/api/gen/streamer/v1"
-	deploymentconfig "github.com/codetreker/syntrix/deployment/config"
 	"github.com/codetreker/syntrix/internal/config"
 	"github.com/codetreker/syntrix/internal/core/database"
 	"github.com/codetreker/syntrix/internal/core/origin"
 	"github.com/codetreker/syntrix/internal/core/pubsub"
+	pubsubconfig "github.com/codetreker/syntrix/internal/core/pubsub/config"
 	"github.com/codetreker/syntrix/internal/core/pubsub/memory"
 	pubsubnats "github.com/codetreker/syntrix/internal/core/pubsub/nats"
 	"github.com/codetreker/syntrix/internal/core/storage"
@@ -59,7 +59,7 @@ var deliveryServiceFactory = func(deps delivery.Dependencies, cfg delivery.Confi
 }
 
 // pubsubProviderFactory creates pubsub providers for distributed mode - injectable for testing
-var pubsubProviderFactory = func(url string, binding deploymentconfig.BrokerBinding) (pubsub.Provider, error) {
+var pubsubProviderFactory = func(url string, binding pubsubconfig.BrokerBinding) (pubsub.Provider, error) {
 	return pubsubnats.NewProvider(url, binding)
 }
 var initializationFactory = func(ctx context.Context, cfg storageconfig.Config, backends *storage.Backends) (initializationCoordinator, error) {

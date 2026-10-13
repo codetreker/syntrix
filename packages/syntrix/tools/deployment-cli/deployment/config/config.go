@@ -9,25 +9,27 @@ import (
 	"regexp"
 	"strings"
 
+	pubsubconfig "github.com/codetreker/syntrix/internal/core/pubsub/config"
+
 	"github.com/codetreker/syntrix/internal/core/origin"
 	"gopkg.in/yaml.v3"
 )
 
 type Config struct {
-	Mode               string              `yaml:"mode"`
-	ResourceMode       string              `yaml:"resource_mode"`
-	Namespace          string              `yaml:"namespace"`
-	NamePrefix         string              `yaml:"name_prefix"`
-	Image              string              `yaml:"image"`
-	StorageClass       string              `yaml:"storage_class"`
-	StorageGiB         int                 `yaml:"storage_gib"`
-	SigningKeySecret   string              `yaml:"signing_key_secret"`
-	BootstrapResources Resources           `yaml:"bootstrap_resources"`
-	Connections        Connections         `yaml:"connections"`
-	Broker             *BrokerBinding      `yaml:"broker"`
-	Identity           Identity            `yaml:"identity"`
-	AllowedOrigins     []string            `yaml:"allowed_origins"`
-	Workloads          map[string]Workload `yaml:"workloads"`
+	Mode               string                      `yaml:"mode"`
+	ResourceMode       string                      `yaml:"resource_mode"`
+	Namespace          string                      `yaml:"namespace"`
+	NamePrefix         string                      `yaml:"name_prefix"`
+	Image              string                      `yaml:"image"`
+	StorageClass       string                      `yaml:"storage_class"`
+	StorageGiB         int                         `yaml:"storage_gib"`
+	SigningKeySecret   string                      `yaml:"signing_key_secret"`
+	BootstrapResources Resources                   `yaml:"bootstrap_resources"`
+	Connections        Connections                 `yaml:"connections"`
+	Broker             *pubsubconfig.BrokerBinding `yaml:"broker"`
+	Identity           Identity                    `yaml:"identity"`
+	AllowedOrigins     []string                    `yaml:"allowed_origins"`
+	Workloads          map[string]Workload         `yaml:"workloads"`
 }
 
 type Connections struct {

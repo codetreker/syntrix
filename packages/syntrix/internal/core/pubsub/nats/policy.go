@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"slices"
 
-	deployconfig "github.com/codetreker/syntrix/deployment/config"
+	pubsubconfig "github.com/codetreker/syntrix/internal/core/pubsub/config"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -22,14 +22,14 @@ func (e *SpecificationError) Error() string {
 	return fmt.Sprintf("NATS %s specification mismatch: %s", e.Object, e.Field)
 }
 
-func verifySpecification(spec deployconfig.BrokerSpecification, stream jetstream.StreamConfig, consumer jetstream.ConsumerConfig) error {
+func verifySpecification(spec pubsubconfig.BrokerSpecification, stream jetstream.StreamConfig, consumer jetstream.ConsumerConfig) error {
 	if err := verifyStreamSpecification(spec, stream); err != nil {
 		return err
 	}
 	return verifyConsumerSpecification(spec, consumer)
 }
 
-func verifyStreamSpecification(spec deployconfig.BrokerSpecification, actual jetstream.StreamConfig) error {
+func verifyStreamSpecification(spec pubsubconfig.BrokerSpecification, actual jetstream.StreamConfig) error {
 	want := spec.Stream
 	return verifyPolicy("stream", []policyCheck{
 		{"name", actual.Name == want.Name},
@@ -72,7 +72,7 @@ func verifyStreamSpecification(spec deployconfig.BrokerSpecification, actual jet
 	})
 }
 
-func verifyConsumerSpecification(spec deployconfig.BrokerSpecification, actual jetstream.ConsumerConfig) error {
+func verifyConsumerSpecification(spec pubsubconfig.BrokerSpecification, actual jetstream.ConsumerConfig) error {
 	want := spec.Consumer
 	return verifyPolicy("consumer", []policyCheck{
 		{"name", actual.Name == want.Name},

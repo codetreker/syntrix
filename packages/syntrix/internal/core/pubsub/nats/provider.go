@@ -5,8 +5,8 @@ import (
 	"errors"
 	"sync"
 
-	deploymentconfig "github.com/codetreker/syntrix/deployment/config"
 	"github.com/codetreker/syntrix/internal/core/pubsub"
+	pubsubconfig "github.com/codetreker/syntrix/internal/core/pubsub/config"
 	"github.com/nats-io/nats.go"
 )
 
@@ -22,7 +22,7 @@ func (e *OperationError) Unwrap() error { return e.Cause }
 type Provider struct {
 	mu      sync.RWMutex
 	url     string
-	binding deploymentconfig.BrokerBinding
+	binding pubsubconfig.BrokerBinding
 	nc      *nats.Conn
 	js      JetStream
 	closed  bool
@@ -30,7 +30,7 @@ type Provider struct {
 
 var _ pubsub.Provider = (*Provider)(nil)
 
-func NewProvider(url string, binding deploymentconfig.BrokerBinding) (*Provider, error) {
+func NewProvider(url string, binding pubsubconfig.BrokerBinding) (*Provider, error) {
 	if url == "" {
 		return nil, errors.New("NATS URL is required")
 	}

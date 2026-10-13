@@ -5,8 +5,8 @@ import (
 	"errors"
 	"time"
 
-	deploymentconfig "github.com/codetreker/syntrix/deployment/config"
 	"github.com/codetreker/syntrix/internal/core/pubsub"
+	pubsubconfig "github.com/codetreker/syntrix/internal/core/pubsub/config"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -15,7 +15,7 @@ type jetStreamPublisher struct {
 	opts pubsub.PublisherOptions
 }
 
-func NewPublisher(ctx context.Context, js JetStream, binding deploymentconfig.BrokerBinding, opts pubsub.PublisherOptions) (pubsub.Publisher, error) {
+func NewPublisher(ctx context.Context, js JetStream, binding pubsubconfig.BrokerBinding, opts pubsub.PublisherOptions) (pubsub.Publisher, error) {
 	if opts.StreamName != binding.StreamName || opts.SubjectPrefix != binding.SubjectPrefix || opts.Storage != bindingStorage(binding) {
 		return nil, errors.New("publisher options conflict with broker binding")
 	}
@@ -27,7 +27,7 @@ func NewPublisher(ctx context.Context, js JetStream, binding deploymentconfig.Br
 	}
 	return &jetStreamPublisher{js: js, opts: opts}, nil
 }
-func bindingStorage(binding deploymentconfig.BrokerBinding) pubsub.StorageType {
+func bindingStorage(binding pubsubconfig.BrokerBinding) pubsub.StorageType {
 	if binding.Policy.Storage == "file" {
 		return pubsub.FileStorage
 	}

@@ -27,11 +27,16 @@ continues to own placement, persistent claims, signing keys and operator bootstr
 The [Console lifecycle proposal](../../proposed/architecture/2026-10-12-console-instance-lifecycle.md)
 retains allocation, release selection, durable operations, reconciliation and UI.
 
-The public `deployment` package renders embedded canonical templates or explicit
-trusted source in memory. Its `config` subpackage owns strict deployment values
-and the complete broker specification. `internal/deploymentcli` owns private
-atomic file publication. Keeping these effects apart allows external Go callers
-to reuse the contract without filesystem, backend or Kubernetes access.
+The original renderer placement shared broker definitions through deployment
+configuration. The [deployment-tool decision](2026-10-13-deployment-cli-ownership.md)
+partially supersedes that ownership: `tools/deployment-cli/deployment` renders
+embedded canonical templates or explicit trusted source in memory, its `config`
+subpackage owns strict deployment values, and its private
+`internal/deploymentcli` owns atomic file publication. The runtime's
+`internal/core/pubsub/config` owns broker definitions, defaults, validation and
+the complete specification; the tool consumes those contracts. Keeping rendering
+and file effects apart allows operator Go callers to render without filesystem,
+backend or Kubernetes access, while the runtime has no tool dependency.
 
 Managed NATS startup attaches to exact preallocated stream/consumer objects and
 verifies ownership, revision, routing and supported policy. It performs no broker
@@ -86,13 +91,14 @@ allocation and specification revision. Safe startup error attributes preserve th
 context without formatting raw dependency causes. Extended telemetry and scoped
 administrative reports remain separate proposals.
 
-Release metadata and the bundled `syntrix-cli deployment-contract` declare
+Release metadata and the bundled `deployment-cli deployment-contract` declare
 `managed_runtime_contract: 1`. Packaging verifies bounded CLI output, exact build
 identity, both modes and all render phases. Release builds inject `main.version`
 and `main.gitCommit`; canonical templates are embedded in the CLI and staged from
-the same checkout. The image builder compiles both binaries, while the final
-distroless image contains only the runtime. Manual publication and daily version
-allocation remain governed by the
+the same checkout. The runtime Docker context excludes deployment tooling and
+builds only the service; local and release builds compile the tool separately.
+The final distroless image contains only the runtime. Manual publication and daily
+version allocation remain governed by the
 [release decision](../process/2026-10-13-manual-syntrix-release.md).
 
 ## Alternatives

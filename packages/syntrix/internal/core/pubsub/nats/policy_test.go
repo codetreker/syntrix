@@ -5,15 +5,15 @@ import (
 	"testing"
 	"time"
 
-	deployconfig "github.com/codetreker/syntrix/deployment/config"
+	pubsubconfig "github.com/codetreker/syntrix/internal/core/pubsub/config"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-func testBrokerSpecification(t *testing.T) deployconfig.BrokerSpecification {
+func testBrokerSpecification(t *testing.T) pubsubconfig.BrokerSpecification {
 	t.Helper()
-	spec, err := deployconfig.DefaultOperatorBinding().Specification()
+	spec, err := pubsubconfig.DefaultOperatorBinding().Specification()
 	require.NoError(t, err)
 	return spec
 }
@@ -153,7 +153,7 @@ func TestVerifySpecificationServerNormalization(t *testing.T) {
 	for _, replicas := range []int{1, 3, 5} {
 		for _, unlimitedValue := range []int64{0, -1} {
 			for _, consumerReplicas := range []int{0, replicas} {
-				b := deployconfig.DefaultOperatorBinding()
+				b := pubsubconfig.DefaultOperatorBinding()
 				b.Policy.Replicas = replicas
 				spec, err := b.Specification()
 				require.NoError(t, err)

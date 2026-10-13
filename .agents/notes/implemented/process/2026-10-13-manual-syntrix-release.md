@@ -41,7 +41,7 @@ source links. Packaging injects the same release version/full source SHA into bo
 checks bounded `deployment-contract` JSON against the integer managed-runtime
 marker and required modes/phases, and renders bootstrap/acceptance/full for both
 modes using the bundled native CLI before uploading the archive to a draft Release and publishing it. The
-[release guide](../../../../packages/syntrix/deployment/RELEASE.md) owns the
+[release guide](../../../../packages/syntrix/tools/deployment-cli/deployment/RELEASE.md) owns the
 operational procedure and metadata fields. The
 [managed-runtime decision](../architecture/2026-10-13-managed-runtime-contract.md)
 owns capability version 1 and its runtime semantics; previously published

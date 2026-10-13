@@ -7,14 +7,14 @@ import (
 	"testing"
 	"time"
 
-	deployconfig "github.com/codetreker/syntrix/deployment/config"
+	pubsubconfig "github.com/codetreker/syntrix/internal/core/pubsub/config"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-func managedTestBinding() deployconfig.BrokerBinding {
-	b := deployconfig.DefaultOperatorBinding()
+func managedTestBinding() pubsubconfig.BrokerBinding {
+	b := pubsubconfig.DefaultOperatorBinding()
 	b.ResourceMode = "managed"
 	b.StreamName = "SYNTRIX_" + b.Ownership.InstanceID + "_TRIGGERS"
 	b.SubjectPrefix = b.StreamName
@@ -57,7 +57,7 @@ func TestManagedAttachmentNeverMutates(t *testing.T) {
 func TestOperatorAttachmentCreatesCompleteSpecification(t *testing.T) {
 	for _, createErr := range []error{nil, jetstream.ErrStreamNameAlreadyInUse, context.DeadlineExceeded} {
 		t.Run(errorName(createErr), func(t *testing.T) {
-			b := deployconfig.DefaultOperatorBinding()
+			b := pubsubconfig.DefaultOperatorBinding()
 			f := &fakeJetStream{createStreamErr: createErr, createConsumerErr: createErr, applyOnCreateError: true}
 			_, err := NewPublisher(context.Background(), f, b, publisherOptions(b))
 			require.NoError(t, err)
@@ -81,7 +81,7 @@ func errorName(err error) string {
 }
 
 func TestOperatorAttachmentConflictingStreamStopsBeforeConsumer(t *testing.T) {
-	b := deployconfig.DefaultOperatorBinding()
+	b := pubsubconfig.DefaultOperatorBinding()
 	f := allocatedFake(b)
 	f.stream.MaxBytes++
 	f.consumer = nil
@@ -93,7 +93,7 @@ func TestOperatorAttachmentConflictingStreamStopsBeforeConsumer(t *testing.T) {
 func TestAttachmentErrorsPreserveCauseAndCanRetry(t *testing.T) {
 	for _, phase := range []string{"stream.lookup", "stream.info", "consumer.lookup", "consumer.info", "stream.create", "consumer.create"} {
 		t.Run(phase, func(t *testing.T) {
-			b := deployconfig.DefaultOperatorBinding()
+			b := pubsubconfig.DefaultOperatorBinding()
 			f := allocatedFake(b)
 			cause := errors.New("nats://admin:password@private-host:4222 secret-value")
 			switch phase {
@@ -127,7 +127,7 @@ func TestAttachmentErrorsPreserveCauseAndCanRetry(t *testing.T) {
 }
 
 func TestConcurrentAttachmentKeepsCallerCancellation(t *testing.T) {
-	b := deployconfig.DefaultOperatorBinding()
+	b := pubsubconfig.DefaultOperatorBinding()
 	f := allocatedFake(b)
 	entered := make(chan struct{}, 2)
 	release := make(chan struct{})
@@ -194,7 +194,7 @@ func TestProviderChecksFreshBrokerState(t *testing.T) {
 }
 
 func TestProviderLifecycleAndValidation(t *testing.T) {
-	b := deployconfig.DefaultOperatorBinding()
+	b := pubsubconfig.DefaultOperatorBinding()
 	_, err := NewProvider("", b)
 	require.Error(t, err)
 	bad := b
@@ -222,7 +222,7 @@ func TestProviderLifecycleAndValidation(t *testing.T) {
 }
 
 func TestAttachmentCanceledBeforeBrokerCalls(t *testing.T) {
-	b := deployconfig.DefaultOperatorBinding()
+	b := pubsubconfig.DefaultOperatorBinding()
 	f := allocatedFake(b)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -234,7 +234,7 @@ func TestAttachmentCanceledBeforeBrokerCalls(t *testing.T) {
 }
 
 func TestConcurrentSuccessfulAttachments(t *testing.T) {
-	b := deployconfig.DefaultOperatorBinding()
+	b := pubsubconfig.DefaultOperatorBinding()
 	f := allocatedFake(b)
 	var callers sync.WaitGroup
 	for range 8 {

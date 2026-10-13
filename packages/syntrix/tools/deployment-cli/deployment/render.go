@@ -9,7 +9,7 @@ import (
 	"strings"
 	"text/template"
 
-	"github.com/codetreker/syntrix/deployment/config"
+	"github.com/codetreker/syntrix/tools/deployment-cli/deployment/config"
 	"gopkg.in/yaml.v3"
 )
 

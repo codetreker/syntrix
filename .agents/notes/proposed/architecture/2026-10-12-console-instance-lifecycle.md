@@ -100,7 +100,7 @@ storage and retention policy must state its actual failure behavior.
 
 ### Published runtime selection
 
-The [release guide](../../../../packages/syntrix/deployment/RELEASE.md) owns the
+The [release guide](../../../../packages/syntrix/tools/deployment-cli/deployment/RELEASE.md) owns the
 implemented manual publication of tested version-matched images and deployment
 archives. A main commit is not itself a release. New instance provisioning selects
 the latest complete published non-draft/non-prerelease release in the fixed
@@ -110,7 +110,7 @@ must have succeeded from its main source commit. A consumed tag, an image alone,
 or a draft/failed publication cannot supply that package.
 
 PR 1 adds an integer managed-runtime contract version to `meta.json` and matching
-bounded `syntrix-cli deployment-contract` output, including version/source commit
+bounded `deployment-cli deployment-contract` output, including version/source commit
 and required modes/phases. Console validates the selected release's archive,
 metadata and bundled CLI before backend effects. Missing or unsupported contract
 versions fail visibly; an older compatible release is not silently substituted.
@@ -134,13 +134,17 @@ package; incompatible image/data-format migration remains separate work.
 
 ### Rendering and lifecycle recovery
 
-The side-effect-free public runtime renderer owns the published CLI implementation
-and canonical standalone/distributed templates. Console's existing provisioning
+The side-effect-free deployment tool owns the published `deployment-cli`
+implementation and canonical standalone/distributed templates. Runtime Pubsub
+owns the broker binding and complete specification; the tool consumes those
+contracts as described in the
+[deployment-tool decision](../../implemented/architecture/2026-10-13-deployment-cli-ownership.md).
+Console's existing provisioning
 adapter downloads and verifies the selected package, chooses its Linux host CPU's
 bundled CLI and invokes it directly with matching templates under a bounded
 process context. Typed values, topology, replica restrictions, validation and
 runtime probes therefore travel with the deployed image, even when Console and
-Syntrix releases differ. Backend allocation can share the public broker
+Syntrix releases differ. Backend allocation can share the runtime-owned broker
 specification only within explicitly supported managed contract versions.
 
 Controlled private extraction rejects traversal and escaping links and limits
@@ -335,7 +339,7 @@ always publish a new version.
 renderer initially avoids process execution, but a newly published runtime can
 change its model fields, validation and lifecycle semantics independently of
 Console. Downloaded template syntax cannot prove that an older compiled-in
-renderer implements them. The public renderer remains the matched CLI's owner;
+renderer implements them. The tool-owned renderer remains the matched CLI's owner;
 a compact supported contract marker gates Console adapters and allocation.
 
 **Invoke the CLI through a shell or copy its templates into Console.** A shell

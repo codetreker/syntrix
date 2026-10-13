@@ -10,9 +10,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"go.mongodb.org/mongo-driver/mongo"
 
-	deploymentconfig "github.com/codetreker/syntrix/deployment/config"
 	"github.com/codetreker/syntrix/internal/config"
 	"github.com/codetreker/syntrix/internal/core/pubsub"
+	pubsubconfig "github.com/codetreker/syntrix/internal/core/pubsub/config"
 	"github.com/codetreker/syntrix/internal/core/pubsub/memory"
 	pubsubtesting "github.com/codetreker/syntrix/internal/core/pubsub/testing"
 	"github.com/codetreker/syntrix/internal/core/storage"
@@ -106,7 +106,7 @@ func TestManager_InitTriggerServices_DeliverySuccess(t *testing.T) {
 
 	// Mock pubsub provider factory for distributed mode
 	mockProvider := pubsubtesting.NewMockProvider()
-	pubsubProviderFactory = func(url string, binding deploymentconfig.BrokerBinding) (pubsub.Provider, error) {
+	pubsubProviderFactory = func(url string, binding pubsubconfig.BrokerBinding) (pubsub.Provider, error) {
 		return mockProvider, nil
 	}
 
@@ -198,7 +198,7 @@ func TestManager_InitTriggerServices_DeliveryError(t *testing.T) {
 
 	// Mock pubsub provider factory for distributed mode
 	mockProvider := pubsubtesting.NewMockProvider()
-	pubsubProviderFactory = func(url string, binding deploymentconfig.BrokerBinding) (pubsub.Provider, error) {
+	pubsubProviderFactory = func(url string, binding pubsubconfig.BrokerBinding) (pubsub.Provider, error) {
 		return mockProvider, nil
 	}
 
@@ -219,7 +219,7 @@ func TestManager_InitTriggerServices_ProviderError(t *testing.T) {
 	defer restore()
 
 	// Mock pubsub provider factory to return error
-	pubsubProviderFactory = func(url string, binding deploymentconfig.BrokerBinding) (pubsub.Provider, error) {
+	pubsubProviderFactory = func(url string, binding pubsubconfig.BrokerBinding) (pubsub.Provider, error) {
 		return nil, fmt.Errorf("provider error")
 	}
 
@@ -284,7 +284,7 @@ func TestManager_InitTriggerServices_PublisherError(t *testing.T) {
 	// Mock pubsub provider to return error on NewPublisher
 	mockProvider := pubsubtesting.NewMockProvider()
 	mockProvider.SetPublisherError(fmt.Errorf("publisher factory error"))
-	pubsubProviderFactory = func(url string, binding deploymentconfig.BrokerBinding) (pubsub.Provider, error) {
+	pubsubProviderFactory = func(url string, binding pubsubconfig.BrokerBinding) (pubsub.Provider, error) {
 		return mockProvider, nil
 	}
 
@@ -306,7 +306,7 @@ func TestManager_InitTriggerServices_ConsumerError(t *testing.T) {
 	// Mock pubsub provider to return error on NewConsumer
 	mockProvider := pubsubtesting.NewMockProvider()
 	mockProvider.SetConsumerError(fmt.Errorf("consumer factory error"))
-	pubsubProviderFactory = func(url string, binding deploymentconfig.BrokerBinding) (pubsub.Provider, error) {
+	pubsubProviderFactory = func(url string, binding pubsubconfig.BrokerBinding) (pubsub.Provider, error) {
 		return mockProvider, nil
 	}
 
@@ -329,7 +329,7 @@ func TestManager_InitTriggerServices_Distributed_EvaluatorSuccess(t *testing.T) 
 
 	// Mock pubsub provider factory for distributed mode
 	mockProvider := pubsubtesting.NewMockProvider()
-	pubsubProviderFactory = func(url string, binding deploymentconfig.BrokerBinding) (pubsub.Provider, error) {
+	pubsubProviderFactory = func(url string, binding pubsubconfig.BrokerBinding) (pubsub.Provider, error) {
 		return mockProvider, nil
 	}
 
@@ -359,7 +359,7 @@ func TestManager_InitTriggerServices_Distributed_EvaluatorPublisherError(t *test
 	// Mock pubsub provider to return error on NewPublisher
 	mockProvider := pubsubtesting.NewMockProvider()
 	mockProvider.SetPublisherError(fmt.Errorf("publisher error in distributed mode"))
-	pubsubProviderFactory = func(url string, binding deploymentconfig.BrokerBinding) (pubsub.Provider, error) {
+	pubsubProviderFactory = func(url string, binding pubsubconfig.BrokerBinding) (pubsub.Provider, error) {
 		return mockProvider, nil
 	}
 
@@ -382,7 +382,7 @@ func TestManager_InitTriggerServices_Distributed_EvaluatorServiceError(t *testin
 
 	// Mock pubsub provider factory for distributed mode
 	mockProvider := pubsubtesting.NewMockProvider()
-	pubsubProviderFactory = func(url string, binding deploymentconfig.BrokerBinding) (pubsub.Provider, error) {
+	pubsubProviderFactory = func(url string, binding pubsubconfig.BrokerBinding) (pubsub.Provider, error) {
 		return mockProvider, nil
 	}
 

@@ -4,6 +4,7 @@ module_prefix = "github.com/codetreker/syntrix/"
 [exclude]
 packages = [
   "syntrix/cmd/",
+  "syntrix/tools/deployment-cli/cmd/",
   "syntrix/api/",
   "syntrix/scripts/",
   "syntrix/pkg/benchmark/",

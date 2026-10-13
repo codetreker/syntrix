@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codetreker/syntrix/deployment/config"
 	runtimeconfig "github.com/codetreker/syntrix/internal/config"
 	"github.com/codetreker/syntrix/internal/services"
+	"github.com/codetreker/syntrix/tools/deployment-cli/deployment/config"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v3"

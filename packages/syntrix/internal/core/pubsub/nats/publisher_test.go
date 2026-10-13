@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	deployconfig "github.com/codetreker/syntrix/deployment/config"
 	"github.com/codetreker/syntrix/internal/core/pubsub"
+	pubsubconfig "github.com/codetreker/syntrix/internal/core/pubsub/config"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -43,7 +43,7 @@ func TestPublisherUsesCallerContextAndPrefixesOnce(t *testing.T) {
 }
 
 func TestPublisherErrorsAreSafeForCallbacks(t *testing.T) {
-	b := deployconfig.DefaultOperatorBinding()
+	b := pubsubconfig.DefaultOperatorBinding()
 	f := allocatedFake(b)
 	cause := errors.New("nats://root:password@private-host secret-value")
 	f.publish = func(context.Context, string, []byte, []jetstream.PublishOpt) error { return cause }
@@ -62,7 +62,7 @@ func TestPublisherErrorsAreSafeForCallbacks(t *testing.T) {
 }
 
 func TestPublisherRejectsContradictoryOptions(t *testing.T) {
-	b := deployconfig.DefaultOperatorBinding()
+	b := pubsubconfig.DefaultOperatorBinding()
 	edits := []func(*pubsub.PublisherOptions){
 		func(o *pubsub.PublisherOptions) { o.StreamName = "foreign" },
 		func(o *pubsub.PublisherOptions) { o.SubjectPrefix = "foreign" },
@@ -86,7 +86,7 @@ func TestPublisherRejectsContradictoryOptions(t *testing.T) {
 }
 
 func TestConsumerRejectsContradictoryOptions(t *testing.T) {
-	b := deployconfig.DefaultOperatorBinding()
+	b := pubsubconfig.DefaultOperatorBinding()
 	edits := []func(*pubsub.ConsumerOptions){
 		func(o *pubsub.ConsumerOptions) { o.StreamName = "foreign" },
 		func(o *pubsub.ConsumerOptions) { o.ConsumerName = "foreign" },
@@ -107,7 +107,7 @@ func TestConsumerRejectsContradictoryOptions(t *testing.T) {
 }
 
 func TestConsumerDeliversAndDrainsBeforeChannelClose(t *testing.T) {
-	b := deployconfig.DefaultOperatorBinding()
+	b := pubsubconfig.DefaultOperatorBinding()
 	f := allocatedFake(b)
 	f.loop = newFakeConsumeContext()
 	f.loop.manualClose = true
@@ -159,7 +159,7 @@ func TestConsumerDeliversAndDrainsBeforeChannelClose(t *testing.T) {
 func TestConsumerUnexpectedCloseAndTerminalErrors(t *testing.T) {
 	for _, terminal := range []error{nil, jetstream.ErrConsumerDeleted, jetstream.ErrBadRequest} {
 		t.Run(errorName(terminal), func(t *testing.T) {
-			b := deployconfig.DefaultOperatorBinding()
+			b := pubsubconfig.DefaultOperatorBinding()
 			f := allocatedFake(b)
 			consumer, err := NewConsumer(context.Background(), f, b, consumerOptions(b))
 			require.NoError(t, err)
@@ -186,7 +186,7 @@ func TestConsumerUnexpectedCloseAndTerminalErrors(t *testing.T) {
 }
 
 func TestConsumerStartupFailureCanRetry(t *testing.T) {
-	b := deployconfig.DefaultOperatorBinding()
+	b := pubsubconfig.DefaultOperatorBinding()
 	f := allocatedFake(b)
 	consumer, err := NewConsumer(context.Background(), f, b, consumerOptions(b))
 	require.NoError(t, err)
@@ -213,7 +213,7 @@ func TestConsumerStartupFailureCanRetry(t *testing.T) {
 }
 
 func TestMemoryBrokerOptions(t *testing.T) {
-	b := deployconfig.DefaultOperatorBinding()
+	b := pubsubconfig.DefaultOperatorBinding()
 	b.Policy.Storage = "memory"
 	f := allocatedFake(b)
 	_, err := NewPublisher(context.Background(), f, b, publisherOptions(b))

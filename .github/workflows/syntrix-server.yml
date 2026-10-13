@@ -50,7 +50,7 @@ jobs:
       - name: Verify the CLI contract and render every deployment phase
         run: |
           mkdir -p .tmp
-          packages/syntrix/bin/syntrix-cli deployment-contract > .tmp/syntrix-deployment-contract.json
+          packages/syntrix/bin/deployment-cli deployment-contract > .tmp/syntrix-deployment-contract.json
           python3 - <<'PY'
           import json
           from pathlib import Path
@@ -60,18 +60,18 @@ jobs:
           assert contract["render_phases"] == ["bootstrap", "acceptance", "full"]
           PY
           for mode in standalone distributed; do
-            packages/syntrix/bin/syntrix-cli render-kubernetes \
-              --template "packages/syntrix/deployment/$mode/kubernetes.template.yml" \
-              --config "packages/syntrix/deployment/$mode/values.example.yml" \
+            packages/syntrix/bin/deployment-cli render-kubernetes \
+              --template "packages/syntrix/tools/deployment-cli/deployment/$mode/kubernetes.template.yml" \
+              --config "packages/syntrix/tools/deployment-cli/deployment/$mode/values.example.yml" \
               --output ".tmp/syntrix-$mode.yml"
-            packages/syntrix/bin/syntrix-cli render-kubernetes \
-              --template "packages/syntrix/deployment/$mode/kubernetes.template.yml" \
-              --config "packages/syntrix/deployment/$mode/values.example.yml" \
+            packages/syntrix/bin/deployment-cli render-kubernetes \
+              --template "packages/syntrix/tools/deployment-cli/deployment/$mode/kubernetes.template.yml" \
+              --config "packages/syntrix/tools/deployment-cli/deployment/$mode/values.example.yml" \
               --bootstrap --writes-quiesced \
               --output ".tmp/syntrix-$mode-bootstrap.yml"
-            packages/syntrix/bin/syntrix-cli render-kubernetes \
-              --template "packages/syntrix/deployment/$mode/kubernetes.template.yml" \
-              --config "packages/syntrix/deployment/$mode/values.example.yml" \
+            packages/syntrix/bin/deployment-cli render-kubernetes \
+              --template "packages/syntrix/tools/deployment-cli/deployment/$mode/kubernetes.template.yml" \
+              --config "packages/syntrix/tools/deployment-cli/deployment/$mode/values.example.yml" \
               --acceptance-only --output ".tmp/syntrix-$mode-acceptance.yml"
           done
 

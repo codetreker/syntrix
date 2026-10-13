@@ -1,14 +1,17 @@
 # Syntrix Kubernetes Deployment
 
-The package-owned [Dockerfile](../Dockerfile) builds the instance runtime.
+The package-owned [Dockerfile](../../../Dockerfile) builds the instance runtime.
+Deployment tooling lives under `packages/syntrix/tools/deployment-cli` in the
+existing Syntrix Go module; `cmd/deployment-cli` owns its executable. The runtime
+Docker context excludes the tool, and runtime code does not import its packages.
 The [release guide](RELEASE.md) describes the public amd64/arm64 image and the
 archive containing matching Linux CLIs. Standalone and distributed templates
 connect to existing databases; the
-`syntrix-cli render-kubernetes` command renders either template from deployment
-values. The [platform architecture](../../../docs/architecture.md) keeps these
+`deployment-cli render-kubernetes` command renders either template from deployment
+values. The [platform architecture](../../../../../docs/architecture.md) keeps these
 operator-managed runtime resources separate from developer Console and employee
 Management. Console's API continues to provision predefined HTTP test workloads.
-The planned [managed-instance lifecycle](../../../docs/design/server/console/03.instance_lifecycle.md)
+The planned [managed-instance lifecycle](../../../../../docs/design/server/console/03.instance_lifecycle.md)
 will select the latest complete successfully published runtime package, freeze
 its archive identity and image version tag, and use its matching CLI/templates to reconcile
 complete runtime bundles with private databases allocated on registered shared
@@ -17,7 +20,7 @@ release and version tag with `IfNotPresent`; published version tags must not be
 overwritten. Metadata digests remain verification/diagnostic evidence.
 Retries/start/restart reuse the accepted release. It does not
 provision MongoDB, PostgreSQL, or NATS server Pods. The implemented
-[managed runtime contract](../../../docs/design/server/console/04.managed_runtime_contract.md)
+[managed runtime contract](../../../../../docs/design/server/console/04.managed_runtime_contract.md)
 provides public embedded rendering, explicit broker attachment, staged cleanup
 initialization and component readiness. Console allocation and complete-instance
 management remain future work.
@@ -58,7 +61,7 @@ roles. Public TLS ingress is configured separately.
 
 ## Select artifacts and prepare values
 
-For an extracted release archive, select `SYNTRIX_CLI` and
+For an extracted release archive, select `DEPLOYMENT_CLI` and
 `SYNTRIX_DEPLOYMENT` using the [release guide](RELEASE.md#use-an-extracted-archive),
 then continue with the selected mode and values. To build from a repository
 checkout, run from its root:
@@ -70,8 +73,8 @@ docker build -t syntrix:development packages/syntrix
 # For an already prepared k3d cluster named default:
 k3d image import syntrix:development --cluster default
 
-SYNTRIX_CLI=packages/syntrix/bin/syntrix-cli
-SYNTRIX_DEPLOYMENT=packages/syntrix/deployment
+DEPLOYMENT_CLI=packages/syntrix/bin/deployment-cli
+SYNTRIX_DEPLOYMENT=packages/syntrix/tools/deployment-cli/deployment
 mkdir -p .tmp
 SYNTRIX_MODE=standalone
 SYNTRIX_TEMPLATE="$SYNTRIX_DEPLOYMENT/$SYNTRIX_MODE/kubernetes.template.yml"
@@ -134,12 +137,14 @@ objects provisioned beforehand. Managed names derive from the instance ID:
 `SYNTRIX_<id>_TRIGGERS_DELIVERY`. All publisher/consumer settings use that binding.
 The renderer validates values without connecting to NATS.
 
-The public `github.com/codetreker/syntrix/deployment` package exposes
+The `github.com/codetreker/syntrix/tools/deployment-cli/deployment` package exposes
 `Render(config, Options)` with embedded templates and `RenderSource(source,
 config, Options)` for trusted operator templates. Both return complete validated
 manifest bytes or an error without effects. Returned bytes contain Secrets.
 The CLI file adapter owns atomic private publication; the runtime configuration
-uses module-owned `initialization.mode` and `trigger.broker`.
+uses module-owned `initialization.mode` and `trigger.broker`. Pubsub owns broker
+binding, defaults, validation and the complete specification in
+`internal/core/pubsub/config`; deployment values consume that runtime contract.
 
 The templates mount base configuration and a generated connection/administrator
 Secret. Runtime defaults load first, then `config.yml`, then `config.local.yml`.
@@ -182,7 +187,7 @@ Set the context, namespace, and prefix to match the selected values:
 SYNTRIX_KUBE_CONTEXT=k3d-default
 SYNTRIX_NAMESPACE=syntrix-instance
 SYNTRIX_PREFIX=instance
-"$SYNTRIX_CLI" render-kubernetes \
+"$DEPLOYMENT_CLI" render-kubernetes \
   --template "$SYNTRIX_TEMPLATE" --config "$SYNTRIX_VALUES" \
   --output .tmp/syntrix-kubernetes.yml
 ```
@@ -225,7 +230,7 @@ Confirm a real indexed query before admitting traffic as described below.
 Pause every application/direct-source writer, metadata change, and physical
 cleanup process including MongoDB tombstone TTL deletion, using existing database
 and application administration. Keep them paused through normal-runtime query
-acceptance, cleanup finalization and full activation. The [Indexer storage contract](../../../docs/design/server/indexer/04.storage.md#offline-bootstrap-and-startup)
+acceptance, cleanup finalization and full activation. The [Indexer storage contract](../../../../../docs/design/server/indexer/04.storage.md#offline-bootstrap-and-startup)
 owns source-boundary checks, replay readiness, and explicit derived reset.
 `--writes-quiesced` records that attestation; it does not block writers.
 
@@ -247,7 +252,7 @@ it does not enforce exclusive Pebble ownership by itself.
 Render bootstrap with both attestation flags, apply it, and confirm readiness:
 
 ```bash
-"$SYNTRIX_CLI" render-kubernetes \
+"$DEPLOYMENT_CLI" render-kubernetes \
   --template "$SYNTRIX_TEMPLATE" --config "$SYNTRIX_VALUES" \
   --output .tmp/syntrix-bootstrap.yml --bootstrap --writes-quiesced
 kubectl --context "$SYNTRIX_KUBE_CONTEXT" apply -f .tmp/syntrix-bootstrap.yml
@@ -291,7 +296,7 @@ for deletion before read-path acceptance processes open its derived stores:
 ```bash
 kubectl --context "$SYNTRIX_KUBE_CONTEXT" -n "$SYNTRIX_NAMESPACE" \
   delete pod "$SYNTRIX_PREFIX-bootstrap" --wait=true --timeout=120s
-"$SYNTRIX_CLI" render-kubernetes \
+"$DEPLOYMENT_CLI" render-kubernetes \
   --template "$SYNTRIX_TEMPLATE" --config "$SYNTRIX_VALUES" \
   --output .tmp/syntrix-acceptance.yml --acceptance-only --writes-quiesced
 kubectl --context "$SYNTRIX_KUBE_CONTEXT" apply -f .tmp/syntrix-acceptance.yml
@@ -321,7 +326,7 @@ kubectl --context "$SYNTRIX_KUBE_CONTEXT" -n "$SYNTRIX_NAMESPACE" \
   port-forward "service/$SYNTRIX_API_SERVICE" 8080:8080
 ```
 
-Use the [API reference](../../../docs/reference/api.md) to log in and query
+Use the [API reference](../../../../../docs/reference/api.md) to log in and query
 `deployment_checks` with `orderBy` set to
 `[{"field":"createdAt","direction":"desc"}]`. An empty result is valid for a fresh
 instance. For fresh bootstrap, once that authenticated indexed query succeeds,

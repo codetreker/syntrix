@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	deploymentconfig "github.com/codetreker/syntrix/deployment/config"
+	pubsubconfig "github.com/codetreker/syntrix/internal/core/pubsub/config"
 	services "github.com/codetreker/syntrix/internal/services/config"
 	"github.com/codetreker/syntrix/internal/trigger/delivery"
 	"github.com/codetreker/syntrix/internal/trigger/evaluator"
@@ -18,7 +18,7 @@ func TestDefaultConfig(t *testing.T) {
 
 	assert.Equal(t, "nats://localhost:4222", cfg.NatsURL)
 	require.NotNil(t, cfg.Broker)
-	assert.Equal(t, deploymentconfig.DefaultOperatorBinding(), *cfg.Broker)
+	assert.Equal(t, pubsubconfig.DefaultOperatorBinding(), *cfg.Broker)
 
 	// Evaluator config
 	assert.Equal(t, "localhost:9000", cfg.Evaluator.PullerAddr)
@@ -71,7 +71,7 @@ func TestConfig_ApplyDefaults(t *testing.T) {
 }
 
 func TestConfig_BrokerBindingDefaultsAndValidation(t *testing.T) {
-	binding := deploymentconfig.DefaultOperatorBinding()
+	binding := pubsubconfig.DefaultOperatorBinding()
 	binding.ResourceMode = "managed"
 	binding.StreamName = "SYNTRIX_" + binding.Ownership.InstanceID + "_TRIGGERS"
 	binding.SubjectPrefix = binding.StreamName

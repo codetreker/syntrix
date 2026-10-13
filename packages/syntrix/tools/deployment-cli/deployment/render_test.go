@@ -9,9 +9,11 @@ import (
 	"text/template"
 	"time"
 
-	"github.com/codetreker/syntrix/deployment/config"
+	pubsubconfig "github.com/codetreker/syntrix/internal/core/pubsub/config"
+
 	runtimeconfig "github.com/codetreker/syntrix/internal/config"
 	"github.com/codetreker/syntrix/internal/core/origin"
+	"github.com/codetreker/syntrix/tools/deployment-cli/deployment/config"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v3"
@@ -46,7 +48,7 @@ func fixtureConfig(mode string) config.Config {
 		BootstrapResources: resources, Workloads: make(map[string]config.Workload),
 	}
 	if mode == "distributed" {
-		c.Broker = &config.BrokerBinding{ResourceMode: "operator", SpecRevision: 1, Ownership: config.Ownership{InstallationID: "operator", InstanceID: "11111111111111111111111111111111", AllocationID: "22222222222222222222222222222222"}, StreamName: "EXAMPLE_TRIGGERS", SubjectPrefix: "EXAMPLE_TRIGGERS", ConsumerName: "EXAMPLE_DELIVERY", Policy: config.BrokerPolicy{Storage: "file", Replicas: 1, MaxBytes: 1073741824, MaxMessages: 100000, MaxAge: 24 * time.Hour}}
+		c.Broker = &pubsubconfig.BrokerBinding{ResourceMode: "operator", SpecRevision: 1, Ownership: pubsubconfig.Ownership{InstallationID: "operator", InstanceID: "11111111111111111111111111111111", AllocationID: "22222222222222222222222222222222"}, StreamName: "EXAMPLE_TRIGGERS", SubjectPrefix: "EXAMPLE_TRIGGERS", ConsumerName: "EXAMPLE_DELIVERY", Policy: pubsubconfig.BrokerPolicy{Storage: "file", Replicas: 1, MaxBytes: 1073741824, MaxMessages: 100000, MaxAge: 24 * time.Hour}}
 		c.Connections.NATSURL, c.SigningKeySecret = "nats://developer:password@nats:4222", "shared-signing-key"
 	}
 	for _, role := range c.Roles() {

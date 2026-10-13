@@ -37,16 +37,16 @@ class ReleasePipelineTest(unittest.TestCase):
         self.run_command("git", "init", "--bare", "--quiet", str(self.remote))
         self.git("init", "--quiet", "--initial-branch=main")
         self.git("remote", "add", "origin", str(self.remote))
-        deployment = self.repo / "packages/syntrix/deployment"
+        deployment = self.repo / "packages/syntrix/tools/deployment-cli/deployment"
         deployment.mkdir(parents=True)
         (deployment / "README.md").write_text(
-            "[Dockerfile](../Dockerfile)\n"
-            "[Storage](../../../docs/storage.md#bootstrap)\n"
+            "[Dockerfile](../../../Dockerfile)\n"
+            "[Storage](../../../../../docs/storage.md#bootstrap)\n"
             "[Renderer](render.go)\n"
             "[Template](standalone/kubernetes.template.yml)\n"
         )
         (deployment / "RELEASE.md").write_text(
-            "[Deployment](README.md)\n[Workflow](../../../.github/workflows/syntrix-release.yml)\n"
+            "[Deployment](README.md)\n[Workflow](../../../../../.github/workflows/syntrix-release.yml)\n"
         )
         (deployment / "render.go").write_text("package deployment\n")
         for mode in ("standalone", "distributed"):
@@ -115,7 +115,7 @@ class ReleasePipelineTest(unittest.TestCase):
             "        calls.write(json.dumps(sys.argv[1:]) + '\\n')\n"
         )
         for arch in ("amd64", "arm64"):
-            cli = self.repo / f".tmp/release/bin/linux-{arch}/syntrix-cli"
+            cli = self.repo / f".tmp/release/bin/linux-{arch}/deployment-cli"
             cli.parent.mkdir(parents=True, exist_ok=True)
             cli.write_text(source)
             cli.chmod(0o755)
@@ -160,7 +160,7 @@ class ReleasePipelineTest(unittest.TestCase):
     def test_bundle_uses_committed_files_and_pins_image_and_document_links(self):
         release_dir = self.repo / ".tmp/release"
         self.prepare_clis()
-        deployment = self.repo / "packages/syntrix/deployment"
+        deployment = self.repo / "packages/syntrix/tools/deployment-cli/deployment"
         (deployment / "standalone/values.example.yml").write_text("image: working-tree-only\n")
         (deployment / "untracked-secret").write_text("must not ship\n")
         self.release("bundle")
@@ -180,7 +180,7 @@ class ReleasePipelineTest(unittest.TestCase):
             readme = packaged.extractfile(prefix + "deployment/README.md").read().decode()
             self.assertIn(source + "packages/syntrix/Dockerfile", readme)
             self.assertIn(source + "docs/storage.md#bootstrap", readme)
-            self.assertIn(source + "packages/syntrix/deployment/render.go", readme)
+            self.assertIn(source + "packages/syntrix/tools/deployment-cli/deployment/render.go", readme)
             self.assertIn("[Template](standalone/kubernetes.template.yml)", readme)
             root_readme = packaged.extractfile(prefix + "README.md").read().decode()
             self.assertIn("[Deployment](deployment/README.md)", root_readme)
@@ -189,7 +189,7 @@ class ReleasePipelineTest(unittest.TestCase):
                 values = packaged.extractfile(prefix + f"deployment/{mode}/values.example.yml").read().decode()
                 self.assertEqual(values, f"image: ghcr.io/codetreker/syntrix-server:261013.1@{DIGEST}\n")
             for arch in ("amd64", "arm64"):
-                self.assertEqual(packaged.getmember(prefix + f"bin/linux-{arch}/syntrix-cli").mode & 0o111, 0o111)
+                self.assertEqual(packaged.getmember(prefix + f"bin/linux-{arch}/deployment-cli").mode & 0o111, 0o111)
         calls = [json.loads(line) for line in Path(self.env["FIXTURE_CLI_CALLS"]).read_text().splitlines()]
         self.assertEqual(len(calls), 6)
         for mode in ("standalone", "distributed"):
@@ -242,7 +242,9 @@ with Path(os.environ['FIXTURE_GO_CALLS']).open('a') as calls:
             arguments = build["arguments"]
             self.assertEqual(arguments[arguments.index("-ldflags") + 1],
                              f"-X main.version=261013.1 -X main.gitCommit={self.sha}")
-            self.assertEqual(arguments[-1], "./cmd/syntrix-cli")
+            self.assertEqual(arguments[-1], "./tools/deployment-cli/cmd/deployment-cli")
+            self.assertEqual(arguments[arguments.index("-o") + 1],
+                             f"../../.tmp/release/bin/linux-{build['architecture']}/deployment-cli")
 
     def test_push_requires_public_access_and_both_platforms(self):
         release_dir = self.repo / ".tmp/release"

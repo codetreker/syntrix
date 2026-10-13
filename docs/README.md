@@ -28,13 +28,13 @@ and the Console test-workload service.
 syntrix/
 ├── packages/
 │   ├── syntrix/             # Go instance runtime and server tools
-│   │   ├── cmd/             # Server, CLI, and benchmark entrypoints
+│   │   ├── cmd/             # Server and benchmark entrypoints
 │   │   ├── internal/        # Storage, services, gateways, and configuration
 │   │   ├── pkg/             # Shared models and benchmark components
 │   │   ├── api/             # Protocol definitions and generated code
 │   │   ├── tests/           # Integration tests
 │   │   ├── configs/         # Runtime configuration and rule examples
-│   │   ├── deployment/      # Public renderer/config plus Kubernetes templates and values
+│   │   ├── tools/deployment-cli/ # Deployment command, renderer, values and templates
 │   │   ├── scripts/         # Protocol generation and Go coverage helpers
 │   │   ├── go.mod           # Go module dependencies
 │   │   └── Makefile         # Go build, test, coverage, and generation targets
@@ -86,15 +86,16 @@ runtime modes do not describe the Management/Console/instance product layers;
 see the [deployment design](design/server/03.deployment_modes.md).
 
 The package-owned [Dockerfile](../packages/syntrix/Dockerfile) builds only the
-instance runtime for Linux amd64/arm64. The [manual release guide](../packages/syntrix/deployment/RELEASE.md)
+instance runtime for Linux amd64/arm64. The [manual release guide](../packages/syntrix/tools/deployment-cli/deployment/RELEASE.md)
 owns versioning, public GHCR publication, and deployment archives with matching
-Linux CLIs and build metadata. The [instance deployment guide](../packages/syntrix/deployment/README.md)
-owns standalone/distributed Kubernetes templates and the `syntrix-cli
+Linux CLIs and build metadata. The [instance deployment guide](../packages/syntrix/tools/deployment-cli/deployment/README.md)
+owns standalone/distributed Kubernetes templates and the `deployment-cli
 render-kubernetes` command. Strict deployment values select namespace, workload
 names, replicas, resource requests/limits, existing backend connections and
 explicit broker authority/policy. The
 [managed runtime contract](design/server/console/04.managed_runtime_contract.md)
-provides public pure rendering, staged initialization, held read-path acceptance,
+separates tool-owned pure rendering from runtime-owned broker configuration,
+staged initialization, held read-path acceptance,
 actual role readiness and version-matched CLI capability metadata. The
 planned Console lifecycle selects the newest complete successfully published
 Syntrix package at instance creation, uses its matching CLI/templates, and records
@@ -179,8 +180,8 @@ enables race detection and enforces the CI coverage thresholds.
 ## Design and Reference
 
 - [Platform Architecture and Implementation Status](architecture.md)
-- [Syntrix Container, Kubernetes Templates, and Manifest Generation](../packages/syntrix/deployment/README.md)
-- [Manual Syntrix Releases](../packages/syntrix/deployment/RELEASE.md)
+- [Syntrix Container, Kubernetes Templates, and Manifest Generation](../packages/syntrix/tools/deployment-cli/deployment/README.md)
+- [Manual Syntrix Releases](../packages/syntrix/tools/deployment-cli/deployment/RELEASE.md)
 - [Developer Console](design/server/console/01.console.md)
 - [Console Managed-Instance Lifecycle and Implementation Tasks](design/server/console/03.instance_lifecycle.md)
 - [Managed Runtime Contract](design/server/console/04.managed_runtime_contract.md)

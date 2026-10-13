@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	deploymentconfig "github.com/codetreker/syntrix/deployment/config"
 	"github.com/codetreker/syntrix/internal/core/pubsub"
+	pubsubconfig "github.com/codetreker/syntrix/internal/core/pubsub/config"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/require"
@@ -36,12 +36,12 @@ func integrationNATS(t *testing.T) (context.Context, jetstream.JetStream, string
 	require.NoError(t, err)
 	return ctx, js, address
 }
-func managedIntegrationBinding(t *testing.T) deploymentconfig.BrokerBinding {
+func managedIntegrationBinding(t *testing.T) pubsubconfig.BrokerBinding {
 	t.Helper()
 	data := make([]byte, 16)
 	_, err := rand.Read(data)
 	require.NoError(t, err)
-	binding := deploymentconfig.DefaultOperatorBinding()
+	binding := pubsubconfig.DefaultOperatorBinding()
 	binding.ResourceMode = "managed"
 	binding.Ownership.InstanceID = hex.EncodeToString(data)
 	binding.Ownership.AllocationID = binding.Ownership.InstanceID
@@ -54,7 +54,7 @@ func managedIntegrationBinding(t *testing.T) deploymentconfig.BrokerBinding {
 	binding.Policy.MaxAge = time.Hour
 	return binding
 }
-func allocateIntegrationBinding(t *testing.T, ctx context.Context, js jetstream.JetStream, binding deploymentconfig.BrokerBinding) {
+func allocateIntegrationBinding(t *testing.T, ctx context.Context, js jetstream.JetStream, binding pubsubconfig.BrokerBinding) {
 	t.Helper()
 	spec, err := binding.Specification()
 	require.NoError(t, err)
@@ -74,7 +74,7 @@ func TestManagedSharedNATSRoutingAndAttachment(t *testing.T) {
 	var channels []<-chan pubsub.Message
 	var publishers []pubsub.Publisher
 	var states []pubsub.ConsumerState
-	for _, binding := range []deploymentconfig.BrokerBinding{first, second} {
+	for _, binding := range []pubsubconfig.BrokerBinding{first, second} {
 		allocateIntegrationBinding(t, ctx, js, binding)
 		provider, err := NewProvider(address, binding)
 		require.NoError(t, err)

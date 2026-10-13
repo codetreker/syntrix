@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	deploymentconfig "github.com/codetreker/syntrix/deployment/config"
 	"github.com/codetreker/syntrix/internal/core/pubsub"
+	pubsubconfig "github.com/codetreker/syntrix/internal/core/pubsub/config"
 	services "github.com/codetreker/syntrix/internal/services/config"
 	"github.com/stretchr/testify/assert"
 )
@@ -106,7 +106,7 @@ func TestNewConsumer_NilConnection(t *testing.T) {
 	cfg := Config{}
 
 	// Test with nil connection - should fail to create JetStream
-	consumer, err := NewConsumer(context.Background(), nil, cfg, deploymentconfig.DefaultOperatorBinding())
+	consumer, err := NewConsumer(context.Background(), nil, cfg, pubsubconfig.DefaultOperatorBinding())
 	assert.Error(t, err)
 	assert.Nil(t, consumer)
 	assert.Contains(t, err.Error(), "failed to create JetStream")

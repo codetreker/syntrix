@@ -5,8 +5,8 @@ import (
 	"sync"
 	"time"
 
-	deployconfig "github.com/codetreker/syntrix/deployment/config"
 	"github.com/codetreker/syntrix/internal/core/pubsub"
+	pubsubconfig "github.com/codetreker/syntrix/internal/core/pubsub/config"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/mock"
@@ -28,7 +28,7 @@ type fakeJetStream struct {
 	publish                                           func(context.Context, string, []byte, []jetstream.PublishOpt) error
 }
 
-func allocatedFake(binding deployconfig.BrokerBinding) *fakeJetStream {
+func allocatedFake(binding pubsubconfig.BrokerBinding) *fakeJetStream {
 	spec, err := binding.Specification()
 	if err != nil {
 		panic(err)
@@ -194,10 +194,10 @@ func (c *fakeConsumeContext) Drain()                  { c.Stop() }
 func (c *fakeConsumeContext) Closed() <-chan struct{} { return c.closed }
 func (c *fakeConsumeContext) finish()                 { c.closeOnce.Do(func() { close(c.closed) }) }
 
-func publisherOptions(b deployconfig.BrokerBinding) pubsub.PublisherOptions {
+func publisherOptions(b pubsubconfig.BrokerBinding) pubsub.PublisherOptions {
 	return pubsub.PublisherOptions{StreamName: b.StreamName, SubjectPrefix: b.SubjectPrefix, Storage: bindingStorage(b)}
 }
-func consumerOptions(b deployconfig.BrokerBinding) pubsub.ConsumerOptions {
+func consumerOptions(b pubsubconfig.BrokerBinding) pubsub.ConsumerOptions {
 	return pubsub.ConsumerOptions{StreamName: b.StreamName, ConsumerName: b.ConsumerName, FilterSubject: b.SubjectPrefix + ".>", Storage: bindingStorage(b), ChannelBufSize: 1}
 }
 

@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 
-	deploymentconfig "github.com/codetreker/syntrix/deployment/config"
 	"github.com/codetreker/syntrix/internal/core/pubsub"
+	pubsubconfig "github.com/codetreker/syntrix/internal/core/pubsub/config"
 	natspubsub "github.com/codetreker/syntrix/internal/core/pubsub/nats"
 	"github.com/codetreker/syntrix/internal/identity"
 	"github.com/codetreker/syntrix/internal/trigger/delivery/worker"
@@ -67,11 +67,11 @@ func (s *service) Start(ctx context.Context) error {
 }
 
 // NewConsumer creates a pubsub.Consumer from delivery config.
-func NewConsumer(ctx context.Context, nc *nats.Conn, cfg Config, binding deploymentconfig.BrokerBinding) (pubsub.Consumer, error) {
+func NewConsumer(ctx context.Context, nc *nats.Conn, cfg Config, binding pubsubconfig.BrokerBinding) (pubsub.Consumer, error) {
 	return newConsumerWithFactory(ctx, nc, cfg, binding, natspubsub.NewJetStream)
 }
 
-func newConsumerWithFactory(ctx context.Context, nc *nats.Conn, cfg Config, binding deploymentconfig.BrokerBinding, jsFactory func(*nats.Conn) (natspubsub.JetStream, error)) (pubsub.Consumer, error) {
+func newConsumerWithFactory(ctx context.Context, nc *nats.Conn, cfg Config, binding pubsubconfig.BrokerBinding, jsFactory func(*nats.Conn) (natspubsub.JetStream, error)) (pubsub.Consumer, error) {
 	js, err := jsFactory(nc)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create JetStream: %w", err)

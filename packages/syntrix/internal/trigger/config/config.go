@@ -5,7 +5,7 @@ import (
 	"os"
 	"path/filepath"
 
-	deploymentconfig "github.com/codetreker/syntrix/deployment/config"
+	pubsubconfig "github.com/codetreker/syntrix/internal/core/pubsub/config"
 	services "github.com/codetreker/syntrix/internal/services/config"
 	"github.com/codetreker/syntrix/internal/trigger/delivery"
 	"github.com/codetreker/syntrix/internal/trigger/evaluator"
@@ -13,8 +13,8 @@ import (
 
 // Config is the top-level trigger configuration.
 type Config struct {
-	NatsURL string                          `yaml:"nats_url"`
-	Broker  *deploymentconfig.BrokerBinding `yaml:"broker"`
+	NatsURL string                      `yaml:"nats_url"`
+	Broker  *pubsubconfig.BrokerBinding `yaml:"broker"`
 
 	// Evaluator service configuration
 	Evaluator evaluator.Config `yaml:"evaluator"`
@@ -25,7 +25,7 @@ type Config struct {
 
 // DefaultConfig returns the default trigger configuration.
 func DefaultConfig() Config {
-	broker := deploymentconfig.DefaultOperatorBinding()
+	broker := pubsubconfig.DefaultOperatorBinding()
 	cfg := Config{
 		NatsURL:   "nats://localhost:4222",
 		Broker:    &broker,

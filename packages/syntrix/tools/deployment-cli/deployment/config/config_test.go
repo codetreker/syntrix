@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	pubsubconfig "github.com/codetreker/syntrix/internal/core/pubsub/config"
+
 	"github.com/codetreker/syntrix/internal/core/origin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -22,7 +24,7 @@ func validConfig(mode string) Config {
 		BootstrapResources: resources, Workloads: make(map[string]Workload),
 	}
 	if mode == "distributed" {
-		c.Broker = &BrokerBinding{ResourceMode: "operator", SpecRevision: 1, Ownership: Ownership{InstallationID: "operator", InstanceID: "11111111111111111111111111111111", AllocationID: "22222222222222222222222222222222"}, StreamName: "EXAMPLE_TRIGGERS", SubjectPrefix: "EXAMPLE_TRIGGERS", ConsumerName: "EXAMPLE_DELIVERY", Policy: BrokerPolicy{Storage: "file", Replicas: 1, MaxBytes: 1073741824, MaxMessages: 100000, MaxAge: 24 * time.Hour}}
+		c.Broker = &pubsubconfig.BrokerBinding{ResourceMode: "operator", SpecRevision: 1, Ownership: pubsubconfig.Ownership{InstallationID: "operator", InstanceID: "11111111111111111111111111111111", AllocationID: "22222222222222222222222222222222"}, StreamName: "EXAMPLE_TRIGGERS", SubjectPrefix: "EXAMPLE_TRIGGERS", ConsumerName: "EXAMPLE_DELIVERY", Policy: pubsubconfig.BrokerPolicy{Storage: "file", Replicas: 1, MaxBytes: 1073741824, MaxMessages: 100000, MaxAge: 24 * time.Hour}}
 		c.Connections.NATSURL = "nats://nats:4222"
 		c.SigningKeySecret = "shared-signing-key"
 	}

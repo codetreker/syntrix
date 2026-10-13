@@ -3,7 +3,7 @@ package config
 import (
 	"testing"
 
-	deploymentconfig "github.com/codetreker/syntrix/deployment/config"
+	pubsubconfig "github.com/codetreker/syntrix/internal/core/pubsub/config"
 	services "github.com/codetreker/syntrix/internal/services/config"
 	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v3"
@@ -29,7 +29,7 @@ func TestPrepareForLoadPreservesNonBindingDefaults(t *testing.T) {
 }
 
 func TestLoadExplicitBrokerDerivesOmittedRoutes(t *testing.T) {
-	binding := deploymentconfig.DefaultOperatorBinding()
+	binding := pubsubconfig.DefaultOperatorBinding()
 	binding.StreamName = "CUSTOM_STREAM"
 	binding.SubjectPrefix = "custom.tasks"
 	binding.ConsumerName = "custom-delivery"
@@ -50,7 +50,7 @@ func TestLoadExplicitBrokerDerivesOmittedRoutes(t *testing.T) {
 }
 
 func TestLoadExplicitBrokerPreservesContradictions(t *testing.T) {
-	binding := deploymentconfig.DefaultOperatorBinding()
+	binding := pubsubconfig.DefaultOperatorBinding()
 	binding.StreamName = "CUSTOM_STREAM"
 	binding.ConsumerName = "custom-delivery"
 	binding.Policy.Storage = "memory"

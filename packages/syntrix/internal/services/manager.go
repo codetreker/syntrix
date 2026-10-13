@@ -8,10 +8,10 @@ import (
 	"sync"
 	"time"
 
-	deploymentconfig "github.com/codetreker/syntrix/deployment/config"
 	"github.com/codetreker/syntrix/internal/config"
 	"github.com/codetreker/syntrix/internal/core/database"
 	"github.com/codetreker/syntrix/internal/core/pubsub"
+	pubsubconfig "github.com/codetreker/syntrix/internal/core/pubsub/config"
 	"github.com/codetreker/syntrix/internal/core/storage"
 	"github.com/codetreker/syntrix/internal/gateway"
 	"github.com/codetreker/syntrix/internal/gateway/realtime"
@@ -185,7 +185,7 @@ func (m *Manager) Wait(ctx context.Context) error {
 type runtimeFailure struct {
 	role, phase, category string
 	cause                 error
-	binding               *deploymentconfig.BrokerBinding
+	binding               *pubsubconfig.BrokerBinding
 }
 
 func (e *runtimeFailure) Error() string { return "runtime task failed: " + e.role }

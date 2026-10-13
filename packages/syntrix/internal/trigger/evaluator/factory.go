@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 
-	deploymentconfig "github.com/codetreker/syntrix/deployment/config"
 	"github.com/codetreker/syntrix/internal/core/pubsub"
+	pubsubconfig "github.com/codetreker/syntrix/internal/core/pubsub/config"
 	natspubsub "github.com/codetreker/syntrix/internal/core/pubsub/nats"
 	"github.com/codetreker/syntrix/internal/core/storage"
 	"github.com/codetreker/syntrix/internal/puller"
@@ -82,11 +82,11 @@ func NewService(deps Dependencies, cfg Config) (Service, error) {
 }
 
 // NewPublisher creates a pubsub.Publisher from evaluator config.
-func NewPublisher(ctx context.Context, nc *nats.Conn, cfg Config, binding deploymentconfig.BrokerBinding) (pubsub.Publisher, error) {
+func NewPublisher(ctx context.Context, nc *nats.Conn, cfg Config, binding pubsubconfig.BrokerBinding) (pubsub.Publisher, error) {
 	return newPublisherWithFactory(ctx, nc, cfg, binding, natspubsub.NewJetStream)
 }
 
-func newPublisherWithFactory(ctx context.Context, nc *nats.Conn, cfg Config, binding deploymentconfig.BrokerBinding, jsFactory func(*nats.Conn) (natspubsub.JetStream, error)) (pubsub.Publisher, error) {
+func newPublisherWithFactory(ctx context.Context, nc *nats.Conn, cfg Config, binding pubsubconfig.BrokerBinding, jsFactory func(*nats.Conn) (natspubsub.JetStream, error)) (pubsub.Publisher, error) {
 	js, err := jsFactory(nc)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create JetStream: %w", err)

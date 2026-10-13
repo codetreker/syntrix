@@ -4,11 +4,11 @@ import (
 	"context"
 	"errors"
 
-	deploymentconfig "github.com/codetreker/syntrix/deployment/config"
+	pubsubconfig "github.com/codetreker/syntrix/internal/core/pubsub/config"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
-func attach(ctx context.Context, js JetStream, binding deploymentconfig.BrokerBinding, allowCreate bool) (jetstream.Consumer, error) {
+func attach(ctx context.Context, js JetStream, binding pubsubconfig.BrokerBinding, allowCreate bool) (jetstream.Consumer, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}

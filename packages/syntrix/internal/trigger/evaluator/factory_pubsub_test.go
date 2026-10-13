@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	deploymentconfig "github.com/codetreker/syntrix/deployment/config"
+	pubsubconfig "github.com/codetreker/syntrix/internal/core/pubsub/config"
 	natspubsub "github.com/codetreker/syntrix/internal/core/pubsub/nats"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -74,8 +74,8 @@ func (m *mockBrokerConsumer) Info(context.Context) (*jetstream.ConsumerInfo, err
 	return &jetstream.ConsumerInfo{Config: m.cfg}, nil
 }
 
-func factoryBinding() deploymentconfig.BrokerBinding {
-	binding := deploymentconfig.DefaultOperatorBinding()
+func factoryBinding() pubsubconfig.BrokerBinding {
+	binding := pubsubconfig.DefaultOperatorBinding()
 	binding.StreamName = "INSTANCE_TRIGGERS"
 	binding.SubjectPrefix = "instance.triggers"
 	binding.ConsumerName = "instance-delivery"
@@ -83,7 +83,7 @@ func factoryBinding() deploymentconfig.BrokerBinding {
 	return binding
 }
 
-func expectAttachment(t *testing.T, js *mockJetStream, ctx context.Context, binding deploymentconfig.BrokerBinding) {
+func expectAttachment(t *testing.T, js *mockJetStream, ctx context.Context, binding pubsubconfig.BrokerBinding) {
 	spec, err := binding.Specification()
 	require.NoError(t, err)
 	js.On("Stream", ctx, binding.StreamName).Return(&mockStream{cfg: spec.Stream}, nil)

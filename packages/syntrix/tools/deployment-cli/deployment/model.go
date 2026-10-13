@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/codetreker/syntrix/deployment/config"
+	"github.com/codetreker/syntrix/tools/deployment-cli/deployment/config"
 	"gopkg.in/yaml.v3"
 )
 

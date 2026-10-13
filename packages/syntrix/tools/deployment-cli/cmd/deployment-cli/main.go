@@ -8,8 +8,8 @@ import (
 	"io"
 	"os"
 
-	"github.com/codetreker/syntrix/deployment"
-	"github.com/codetreker/syntrix/internal/deploymentcli"
+	"github.com/codetreker/syntrix/tools/deployment-cli/deployment"
+	"github.com/codetreker/syntrix/tools/deployment-cli/internal/deploymentcli"
 )
 
 var version = "development"
@@ -49,7 +49,7 @@ func run(args []string, stdout, stderr io.Writer) error {
 		return nil
 	}
 	if len(args) == 0 || args[0] != "render-kubernetes" {
-		return fmt.Errorf("usage: syntrix-cli deployment-contract | render-kubernetes --template FILE --config FILE --output FILE [--bootstrap --writes-quiesced | --acceptance-only]")
+		return fmt.Errorf("usage: deployment-cli deployment-contract | render-kubernetes --template FILE --config FILE --output FILE [--bootstrap --writes-quiesced | --acceptance-only]")
 	}
 	flags := flag.NewFlagSet("render-kubernetes", flag.ContinueOnError)
 	flags.SetOutput(stderr)

@@ -4,7 +4,7 @@ The manually triggered **Syntrix Release** workflow publishes the instance runti
 from the main commit selected when the workflow is triggered. It delivers a public
 multi-platform image and a version-matched Kubernetes deployment archive. The
 [deployment guide](README.md) owns backend prerequisites, values, bootstrap,
-runtime acceptance, and recovery. The [release decision](../../../.agents/notes/implemented/process/2026-10-13-manual-syntrix-release.md)
+runtime acceptance, and recovery. The [release decision](../../../../../.agents/notes/implemented/process/2026-10-13-manual-syntrix-release.md)
 records version allocation and publication trade-offs.
 
 ## Trigger and publication
@@ -67,8 +67,8 @@ syntrix-VERSION/
 ├── README.md
 ├── meta.json
 ├── bin/
-│   ├── linux-amd64/syntrix-cli
-│   └── linux-arm64/syntrix-cli
+│   ├── linux-amd64/deployment-cli
+│   └── linux-arm64/deployment-cli
 └── deployment/
     ├── README.md
     ├── RELEASE.md
@@ -81,7 +81,9 @@ syntrix-VERSION/
 ```
 
 The archive includes deployment documentation and template/value trees from the
-release commit; public Go renderer sources remain in the repository. Example
+release commit; Go renderer sources remain in the repository under
+`packages/syntrix/tools/deployment-cli`. The runtime Docker build excludes that
+tool tree; release builds compile the command separately. Example
 values reference `ghcr.io/codetreker/syntrix-server:VERSION@sha256:DIGEST`, pinning
 the uploaded multi-platform index. Operator credentials and generated manifests
 are not bundled. Links to repository files outside the archive resolve to the
@@ -96,7 +98,7 @@ a local image ID or a single platform's manifest.
 
 ## Planned Console consumption
 
-The [managed-instance design](../../../docs/design/server/console/03.instance_lifecycle.md)
+The [managed-instance design](../../../../../docs/design/server/console/03.instance_lifecycle.md)
 will select the latest complete published Syntrix release from the configured
 repository and exact `syntrix-YYMMDD.sequence` family, excluding drafts/prereleases
 and requiring successful source-workflow completion. Compare date and sequence
@@ -119,8 +121,8 @@ but this is a publication rule rather than registry-enforced tag immutability.
 Overwriting a tag violates the supported managed-deployment contract; changing
 pull policy is not a substitute for preserving the published version.
 
-The [managed runtime contract](../../../docs/design/server/console/04.managed_runtime_contract.md)
-is advertised by metadata and `syntrix-cli deployment-contract`. Both bundled
+The [managed runtime contract](../../../../../docs/design/server/console/04.managed_runtime_contract.md)
+is advertised by metadata and `deployment-cli deployment-contract`. Both bundled
 CLIs receive `main.version` and `main.gitCommit` at build time. Packaging checks
 that the native CLI emits one JSON object of at most 4096 bytes with integer
 contract version 1, the allocated release version, full source SHA,
@@ -142,8 +144,8 @@ cluster's CPUs:
 
 ```bash
 case "$(uname -m)" in
-  x86_64) SYNTRIX_CLI=./bin/linux-amd64/syntrix-cli ;;
-  aarch64|arm64) SYNTRIX_CLI=./bin/linux-arm64/syntrix-cli ;;
+  x86_64) DEPLOYMENT_CLI=./bin/linux-amd64/deployment-cli ;;
+  aarch64|arm64) DEPLOYMENT_CLI=./bin/linux-arm64/deployment-cli ;;
   *) printf 'Unsupported Linux operator architecture\n' >&2; exit 1 ;;
 esac
 SYNTRIX_DEPLOYMENT=./deployment

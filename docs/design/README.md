@@ -31,7 +31,7 @@ administrator-registered shared MongoDB/PostgreSQL servers, and per-instance
 trigger artifacts within a shared NATS account. It does not deploy database or
 NATS servers. Operators can generate standalone or distributed service manifests
 against existing databases using the
-[package deployment guide](../../packages/syntrix/deployment/README.md). The
+[package deployment guide](../../packages/syntrix/tools/deployment-cli/deployment/README.md). The
 platform status table identifies these gaps independently of source-package
 locations.
 

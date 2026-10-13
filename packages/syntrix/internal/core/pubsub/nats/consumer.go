@@ -6,14 +6,14 @@ import (
 	"sync"
 	"sync/atomic"
 
-	deploymentconfig "github.com/codetreker/syntrix/deployment/config"
 	"github.com/codetreker/syntrix/internal/core/pubsub"
+	pubsubconfig "github.com/codetreker/syntrix/internal/core/pubsub/config"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
 type jetStreamConsumer struct {
 	js       JetStream
-	binding  deploymentconfig.BrokerBinding
+	binding  pubsubconfig.BrokerBinding
 	opts     pubsub.ConsumerOptions
 	mu       sync.Mutex
 	running  bool
@@ -21,7 +21,7 @@ type jetStreamConsumer struct {
 	ready    atomic.Bool
 }
 
-func NewConsumer(ctx context.Context, js JetStream, binding deploymentconfig.BrokerBinding, opts pubsub.ConsumerOptions) (pubsub.Consumer, error) {
+func NewConsumer(ctx context.Context, js JetStream, binding pubsubconfig.BrokerBinding, opts pubsub.ConsumerOptions) (pubsub.Consumer, error) {
 	if opts.StreamName != binding.StreamName || opts.ConsumerName != binding.ConsumerName || opts.FilterSubject != binding.SubjectPrefix+".>" || opts.Storage != bindingStorage(binding) {
 		return nil, errors.New("consumer options conflict with broker binding")
 	}

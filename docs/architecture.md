@@ -56,13 +56,15 @@ through a separate provisioning adapter to manage predefined HTTP test workloads
 Console-managed full instance bundles and employee Management execution remain
 target work. Operators can deploy current standalone or distributed runtime services
 against existing MongoDB/PostgreSQL dependencies using the
-[instance deployment guide](../packages/syntrix/deployment/README.md). The planned
+[instance deployment guide](../packages/syntrix/tools/deployment-cli/deployment/README.md). The planned
 Console lifecycle allocates private databases and runtime resources on
 administrator-registered shared infrastructure; it does not deploy MongoDB,
 PostgreSQL, or NATS server Pods. The implemented
 [managed runtime contract](design/server/console/04.managed_runtime_contract.md)
-provides pure rendering, explicit broker attachment, staged initialization and
-component readiness as prerequisites. It does not itself allocate accounts,
+provides tool-owned pure rendering and runtime-owned broker attachment, staged
+initialization and component readiness as prerequisites. The deployment tool
+consumes runtime contracts; runtime services do not import its configuration,
+renderer or templates. It does not itself allocate accounts,
 record Console instance intent or certify product acceptance.
 
 ## Instances, Projects, and Logical Databases

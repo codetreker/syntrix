@@ -16,8 +16,8 @@ import (
 	"testing"
 	"time"
 
-	deploymentconfig "github.com/codetreker/syntrix/deployment/config"
 	"github.com/codetreker/syntrix/internal/config"
+	pubsubconfig "github.com/codetreker/syntrix/internal/core/pubsub/config"
 	"github.com/codetreker/syntrix/internal/core/storage"
 	storage_config "github.com/codetreker/syntrix/internal/core/storage/config"
 	"github.com/codetreker/syntrix/internal/core/storage/types"
@@ -486,7 +486,7 @@ triggers:
 	// Generate unique stream name to avoid conflicts between test runs
 	streamName := fmt.Sprintf("TRIGGERS_%d", time.Now().UnixNano())
 	resources.NatsURL, resources.StreamName = natsURL, streamName
-	broker := deploymentconfig.DefaultOperatorBinding()
+	broker := pubsubconfig.DefaultOperatorBinding()
 	broker.StreamName, broker.SubjectPrefix = streamName, streamName
 	broker.ConsumerName = streamName + "_DELIVERY"
 	broker.Ownership.InstanceID = strings.ReplaceAll(uuid.NewString(), "-", "")

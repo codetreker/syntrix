@@ -7,8 +7,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/codetreker/syntrix/deployment"
-	"github.com/codetreker/syntrix/deployment/config"
+	"github.com/codetreker/syntrix/tools/deployment-cli/deployment"
+	"github.com/codetreker/syntrix/tools/deployment-cli/deployment/config"
 )
 
 type FileOptions struct {
