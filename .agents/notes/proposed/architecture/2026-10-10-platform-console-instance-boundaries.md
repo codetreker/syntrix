@@ -154,9 +154,10 @@ revisioned configuration are planned in the managed-instance design. Console
 PostgreSQL will own administrator resource configuration, profiles, bindings,
 phases, receipts, encrypted secrets, and accepted release/package identities.
 New instances will select the latest complete successfully published runtime
-package and use its matching CLI/templates with one frozen image index digest
+package and use its matching CLI/templates with one fixed image version tag
 across initialization and normal activation; retries and ordinary restart preserve
-that selection. Runtime database credentials are scoped
+that selection. Published version tags must not be overwritten. Metadata digests
+remain recorded for verification/diagnostics rather than appended to Pod image references. Runtime database credentials are scoped
 to one instance; shared NATS credentials retain their actual account-wide scope.
 Database/NATS server Pods and employee Management execution are
 outside that work. Public issuer configuration, token revocation deadlines,

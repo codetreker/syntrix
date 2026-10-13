@@ -118,8 +118,14 @@ The durable receipt freezes repository/release/tag/asset identities, computed
 archive SHA-256, version/source SHA, exact workflow attempt, index digest/platforms,
 contract version and resolution timestamp. Cache and recovery verify those exact
 bytes and identities. Bootstrap, acceptance, finalization and every full runtime
-role use the same pinned package/image. Request replay, retry, start and restart
-retain that release; later publication does not change existing instance intent.
+role use the same recorded package and versioned image tag, such as
+`ghcr.io/codetreker/syntrix-server:261013.1`, with `imagePullPolicy: IfNotPresent`.
+Console's Pod image references omit the digest suffix; metadata's index digest
+remains release validation and diagnostic evidence. Request replay, retry, start
+and restart retain that release; later publication does not change existing
+instance intent. Version tags must never be repointed or overwritten; corrections
+receive a new version. The publisher allocates fresh versions, while preserving
+those tags remains an operational policy rather than a GHCR-enforced guarantee.
 Only an explicit compatible revision in PR 4 can select a different supported
 package; incompatible image/data-format migration remains separate work.
 
@@ -309,9 +315,18 @@ valid pool configuration when stronger broker permission isolation is needed.
 
 **Deploy a floating latest image.** A mutable tag can change between bootstrap,
 acceptance, restart and later retries, without a matching CLI/template change.
-The published package and immutable image index digest bind those executions to
-one tested source commit. Choosing latest happens once for a new instance or an
-explicit compatible revision, not every Pod replacement.
+The selected package and stable version tag follow the no-overwrite publication
+policy, keeping ordinary replacement on the recorded release. Choosing latest
+happens once for a new instance or an explicit compatible revision, not every Pod
+replacement. `IfNotPresent` then reuses the selected version on nodes that already
+have it, without relying on a floating `:latest` tag.
+
+**Append the registry index digest to Console Pod references.** The publisher's
+archive examples support digest-qualified operator deployment. Console uses the
+human-readable version tag and `IfNotPresent` under the strict no-overwrite
+publication policy. The digest still validates the selected release and supports
+diagnostics; this choice accepts the operational requirement that corrections
+always publish a new version.
 
 **Render downloaded templates with Console's embedded renderer.** Sharing a pure
 renderer initially avoids process execution, but a newly published runtime can
@@ -344,8 +359,10 @@ ownership rather than requiring this flow to depend on employee authentication.
   consumer, and runtime attachment preserves Console's complete stream policy.
 - New creation selects the latest complete successfully published release by
   numeric date/sequence, verifies its asset/metadata/matched CLI contract before
-  backend effects, and records the source and image index digest. An unsupported
-  latest package fails visibly; retries/restarts retain the selected version.
+  backend effects, and records the source and image index digest as evidence.
+  Pods use the version tag and `IfNotPresent`, without a digest suffix or `:latest`.
+  An unsupported latest package fails visibly; retries/restarts retain the selected
+  version. Release corrections allocate a new version without tag overwrite.
 - Create uses the selected package's canonical CLI/templates, completes exclusive
   bootstrap termination, starts normal components, and proves indexed queries and the configured access
   scope before reporting ready. An internal-only environment does not claim a
@@ -383,8 +400,12 @@ source identity or introduce a release-signing guarantee. Removed remote assets
 block package-dependent recovery only when the exact verified cached package
 cannot be recovered. Stop/delete and ownership observation still use durable
 resource receipts, subject to existing unsettled-owner gates. Package cache
-custody and exact image retention are operational requirements. A latest release with an unsupported managed contract deliberately
-blocks new deployment until explicit Console support is delivered.
+custody and exact image retention are operational requirements. Version-tag
+stability relies on the no-overwrite publication policy, not registry-enforced
+immutability. Repointing a tag can leave `IfNotPresent` nodes running different
+cached binaries; corrections must receive a new version, and observed registry
+mismatches are rejected. A latest release with an unsupported managed contract
+deliberately blocks new deployment until explicit Console support is delivered.
 
 Administrative pools concentrate allocation authority in Console. Private,
 encrypted credential custody, bounded privileged operations, and exact target

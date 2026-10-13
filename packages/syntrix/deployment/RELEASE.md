@@ -101,11 +101,21 @@ and requiring successful source-workflow completion. Compare date and sequence
 numerically; a reserved tag or uploaded image alone does not establish a release.
 
 Console will download the exact archive and freeze its release/asset identity,
-source commit, archive hash and image index digest before provisioning. It will
+source commit, archive hash and image version tag before provisioning. It will
 invoke that archive's architecture-matched CLI with its own templates, rather than
 combine new templates with an older compiled-in renderer model. Kubernetes pulls
-the recorded immutable image; all bootstrap, acceptance, finalizer and normal roles
-use the same release. Retries and ordinary start/restart preserve that selection.
+`ghcr.io/codetreker/syntrix-server:VERSION` with `IfNotPresent`; all bootstrap,
+acceptance, finalizer and normal roles use the same recorded version tag. Retries
+and ordinary start/restart preserve that selection. Metadata's image index digest
+remains recorded for verification and diagnostics, not appended to the managed Pod
+image reference. Console supplies those tag-based values to the matched CLI; the
+currently published operator examples above still contain `tag@digest` references.
+
+Version tags must not be repointed or overwritten; corrections allocate a new
+version. The existing workflow allocates/reserves a new version before image push,
+but this is a publication rule rather than registry-enforced tag immutability.
+Overwriting a tag violates the supported managed-deployment contract; changing
+pull policy is not a substitute for preserving the published version.
 
 The current `meta.json` does not include a managed-runtime compatibility marker.
 The [PR 1 runtime contract](../../../docs/design/server/console/04.managed_runtime_contract.md)

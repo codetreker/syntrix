@@ -94,7 +94,9 @@ render-kubernetes` command. Strict deployment values select namespace, workload
 names, replicas, resource requests/limits, and existing backend connections. The
 planned Console lifecycle selects the newest complete successfully published
 Syntrix package at instance creation, uses its matching CLI/templates, and records
-the immutable package and image digest for every initialization/deployment phase.
+the verified package and fixed image version tag for every initialization/deployment
+phase. Published version tags remain unchanged; metadata digests support verification
+and diagnostics rather than managed Pod image references.
 A main merge or PR build alone does not publish a runtime release.
 Distributed mode also requires existing NATS JetStream and an operator-managed
 shared signing-key Secret. Explicit bootstrap uses a temporary non-restarting Pod

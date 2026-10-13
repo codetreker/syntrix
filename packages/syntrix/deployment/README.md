@@ -10,10 +10,12 @@ operator-managed runtime resources separate from developer Console and employee
 Management. Console's API continues to provision predefined HTTP test workloads.
 The planned [managed-instance lifecycle](../../../docs/design/server/console/03.instance_lifecycle.md)
 will select the latest complete successfully published runtime package, freeze
-its archive/image identity, and use its matching CLI/templates to reconcile
+its archive identity and image version tag, and use its matching CLI/templates to reconcile
 complete runtime bundles with private databases allocated on registered shared
 infrastructure. Bootstrap, acceptance, finalization and normal roles retain one
-release; retries/start/restart reuse the accepted release. It does not
+release and version tag with `IfNotPresent`; published version tags must not be
+overwritten. Metadata digests remain verification/diagnostic evidence.
+Retries/start/restart reuse the accepted release. It does not
 provision MongoDB, PostgreSQL, or NATS server Pods. Its proposed
 [PR 1 runtime contract](../../../docs/design/server/console/04.managed_runtime_contract.md)
 defines public embedded rendering, managed broker attachment, staged cleanup

@@ -30,9 +30,8 @@ allocates private databases and scoped accounts on administrator-configured shar
 servers, manages per-instance artifacts on a shared NATS account, and delivers
 instance administration through five implementation PRs. New instances will use
 the latest complete published runtime package with its matching CLI/templates and
-frozen image digest; retries and ordinary restart preserve that selected release.
-Employee Management,
-project Identity, and OAuth remain separate target work.
+a fixed image version tag under the no-overwrite publication policy; retries and
+ordinary restart preserve that selected release. Employee Management, project Identity, and OAuth remain separate target work.
 See the [Console client](packages/console-client/README.md) for browser development
 and static distribution, and the [Console server](packages/console-server/README.md)
 for backend configuration and operating commands.
