@@ -6,6 +6,9 @@ on:
       - 'packages/syntrix/**'
       - 'deployment/pipeline/**'
       - '.github/workflows/syntrix-server.yml'
+      - '.github/workflows/syntrix-release.yml'
+      - '.github/workflows/scripts/release_syntrix.sh'
+      - '.github/workflows/scripts/release_syntrix_test.py'
       - '.github/workflows/scripts/check-fmt.sh'
       - '.github/workflows/scripts/test_and_coverage.sh'
 
@@ -37,6 +40,9 @@ jobs:
 
       - name: Check Formatting
         run: .github/workflows/scripts/check-fmt.sh
+
+      - name: Check release publication contracts
+        run: python3 .github/workflows/scripts/release_syntrix_test.py
 
       - name: Build
         run: make -C packages/syntrix build

@@ -39,7 +39,11 @@ the raw underlying cause remains available through `Unwrap` for programmatic
 classification.
 
 The image contains the nonroot distroless instance binary, keeping runtime
-configuration, credentials, and signing keys outside its build context. Both
+configuration, credentials, and signing keys outside its build context. Its
+builder cross-compiles Linux amd64/arm64 using the target platform. The
+[manual-release decision](../process/2026-10-13-manual-syntrix-release.md) owns
+version allocation, public image publication, and version-matched CLI/deployment
+archives. Both
 templates accept existing MongoDB replica-set and private PostgreSQL connections;
 distributed Trigger transport additionally requires existing NATS JetStream.
 Database installation, source persistence, backups, and cluster lifecycle remain

@@ -1,7 +1,9 @@
 # Syntrix Kubernetes Deployment
 
 The package-owned [Dockerfile](../Dockerfile) builds the instance runtime.
-Standalone and distributed templates connect to existing databases; the
+The [release guide](RELEASE.md) describes the public amd64/arm64 image and the
+archive containing matching Linux CLIs. Standalone and distributed templates
+connect to existing databases; the
 `syntrix-cli render-kubernetes` command renders either template from deployment
 values. The [platform architecture](../../../docs/architecture.md) keeps these
 operator-managed runtime resources separate from developer Console and employee
@@ -50,9 +52,12 @@ and no ServiceAccount token. Stateful roles use Recreate. Services are ClusterIP
 HTTP 8080 for standalone/API and internal gRPC 9000 for applicable distributed
 roles. Public TLS ingress is configured separately.
 
-## Build and prepare values
+## Select artifacts and prepare values
 
-Run from the repository root:
+For an extracted release archive, select `SYNTRIX_CLI` and
+`SYNTRIX_DEPLOYMENT` using the [release guide](RELEASE.md#use-an-extracted-archive),
+then continue with the selected mode and values. To build from a repository
+checkout, run from its root:
 
 ```bash
 make -C packages/syntrix build
@@ -61,11 +66,13 @@ docker build -t syntrix:development packages/syntrix
 # For an already prepared k3d cluster named default:
 k3d image import syntrix:development --cluster default
 
+SYNTRIX_CLI=packages/syntrix/bin/syntrix-cli
+SYNTRIX_DEPLOYMENT=packages/syntrix/deployment
 mkdir -p .tmp
 SYNTRIX_MODE=standalone
-SYNTRIX_TEMPLATE="packages/syntrix/deployment/$SYNTRIX_MODE/kubernetes.template.yml"
+SYNTRIX_TEMPLATE="$SYNTRIX_DEPLOYMENT/$SYNTRIX_MODE/kubernetes.template.yml"
 SYNTRIX_VALUES=.tmp/syntrix-values.yml
-cp "packages/syntrix/deployment/$SYNTRIX_MODE/values.example.yml" "$SYNTRIX_VALUES"
+cp "$SYNTRIX_DEPLOYMENT/$SYNTRIX_MODE/values.example.yml" "$SYNTRIX_VALUES"
 chmod 600 "$SYNTRIX_VALUES"
 ```
 
@@ -150,7 +157,7 @@ Set the context, namespace, and prefix to match the selected values:
 SYNTRIX_KUBE_CONTEXT=k3d-default
 SYNTRIX_NAMESPACE=syntrix-instance
 SYNTRIX_PREFIX=instance
-packages/syntrix/bin/syntrix-cli render-kubernetes \
+"$SYNTRIX_CLI" render-kubernetes \
   --template "$SYNTRIX_TEMPLATE" --config "$SYNTRIX_VALUES" \
   --output .tmp/syntrix-kubernetes.yml
 ```
@@ -214,7 +221,7 @@ it does not enforce exclusive Pebble ownership by itself.
 Render bootstrap with both attestation flags, apply it, and confirm readiness:
 
 ```bash
-packages/syntrix/bin/syntrix-cli render-kubernetes \
+"$SYNTRIX_CLI" render-kubernetes \
   --template "$SYNTRIX_TEMPLATE" --config "$SYNTRIX_VALUES" \
   --output .tmp/syntrix-bootstrap.yml --bootstrap --writes-quiesced
 kubectl --context "$SYNTRIX_KUBE_CONTEXT" apply -f .tmp/syntrix-bootstrap.yml
@@ -246,7 +253,7 @@ for deletion before allowing normal processes to open its derived stores:
 ```bash
 kubectl --context "$SYNTRIX_KUBE_CONTEXT" -n "$SYNTRIX_NAMESPACE" \
   delete pod "$SYNTRIX_PREFIX-bootstrap" --wait=true --timeout=120s
-packages/syntrix/bin/syntrix-cli render-kubernetes \
+"$SYNTRIX_CLI" render-kubernetes \
   --template "$SYNTRIX_TEMPLATE" --config "$SYNTRIX_VALUES" \
   --output .tmp/syntrix-kubernetes.yml
 kubectl --context "$SYNTRIX_KUBE_CONTEXT" apply -f .tmp/syntrix-kubernetes.yml
