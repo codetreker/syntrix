@@ -1,0 +1,116 @@
+name: Syntrix Release
+run-name: Release Syntrix from ${{ github.sha }}
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: write
+
+concurrency:
+  group: syntrix-release
+  queue: max
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build and publish Syntrix
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      SYNTRIX_IMAGE_REPOSITORY: ghcr.io/codetreker/syntrix-server
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Require a manual main release
+        run: |
+          test "$GITHUB_EVENT_NAME" = workflow_dispatch
+          test "$GITHUB_REF" = refs/heads/main
+
+      - name: Checkout the triggered commit
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Allocate the UTC release version
+        run: .github/workflows/scripts/release_syntrix.sh prepare
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: packages/syntrix/go.mod
+          cache-dependency-path: packages/syntrix/go.sum
+
+      - name: Enable the multi-platform Docker image store
+        uses: docker/setup-docker-action@v5
+        with:
+          daemon-config: |
+            {"features":{"containerd-snapshotter":true}}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Start test services
+        id: services
+        run: >-
+          docker compose -f deployment/pipeline/docker-compose.yml
+          up -d --wait --wait-timeout 180
+
+      - name: Run Go tests without race detection
+        run: make -C packages/syntrix test
+
+      - name: Build Linux deployment CLIs
+        run: .github/workflows/scripts/release_syntrix.sh build-cli
+
+      - name: Build both image platforms before creating the Git tag
+        uses: docker/build-push-action@v7
+        with:
+          context: packages/syntrix
+          platforms: linux/amd64,linux/arm64
+          load: true
+          tags: ${{ env.SYNTRIX_IMAGE_REPOSITORY }}:${{ env.SYNTRIX_VERSION }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ env.SYNTRIX_VERSION }}
+            org.opencontainers.image.created=${{ env.SYNTRIX_BUILT_AT }}
+
+      - name: Smoke-test the runtime image
+        run: >-
+          timeout 30s docker run --rm --platform linux/amd64
+          --network none --read-only --cap-drop ALL
+          --security-opt no-new-privileges
+          --tmpfs /tmp:rw,nosuid,nodev,noexec,size=16m
+          "$SYNTRIX_IMAGE_REPOSITORY:$SYNTRIX_VERSION" --help
+
+      - name: Create the Git tag at the tested commit
+        run: .github/workflows/scripts/release_syntrix.sh tag
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Push the image and require anonymous pull access
+        run: .github/workflows/scripts/release_syntrix.sh push-image
+
+      - name: Package deployment files, CLIs, and build metadata
+        run: .github/workflows/scripts/release_syntrix.sh bundle
+
+      - name: Upload the archive and publish the GitHub Release
+        run: .github/workflows/scripts/release_syntrix.sh release
+
+      - name: Summarize the release
+        run: |
+          printf 'Released [Syntrix %s](%s/%s/releases/tag/syntrix-%s).\n\nImage: %s:%s@%s\n' \
+            "$SYNTRIX_VERSION" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$SYNTRIX_VERSION" \
+            "$SYNTRIX_IMAGE_REPOSITORY" "$SYNTRIX_VERSION" "$SYNTRIX_IMAGE_DIGEST" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Stop test services
+        if: ${{ always() && steps.services.outcome != 'skipped' }}
+        continue-on-error: true
+        run: >-
+          docker compose -f deployment/pipeline/docker-compose.yml
+          down -v --remove-orphans --timeout 30

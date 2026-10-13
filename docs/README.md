@@ -82,7 +82,9 @@ runtime modes do not describe the Management/Console/instance product layers;
 see the [deployment design](design/server/03.deployment_modes.md).
 
 The package-owned [Dockerfile](../packages/syntrix/Dockerfile) builds only the
-instance runtime. The [instance deployment guide](../packages/syntrix/deployment/README.md)
+instance runtime for Linux amd64/arm64. The [manual release guide](../packages/syntrix/deployment/RELEASE.md)
+owns versioning, public GHCR publication, and deployment archives with matching
+Linux CLIs and build metadata. The [instance deployment guide](../packages/syntrix/deployment/README.md)
 owns standalone/distributed Kubernetes templates and the `syntrix-cli
 render-kubernetes` command. Strict deployment values select namespace, workload
 names, replicas, resource requests/limits, and existing backend connections.
@@ -158,6 +160,7 @@ enables race detection and enforces the CI coverage thresholds.
 
 - [Platform Architecture and Implementation Status](architecture.md)
 - [Syntrix Container, Kubernetes Templates, and Manifest Generation](../packages/syntrix/deployment/README.md)
+- [Manual Syntrix Releases](../packages/syntrix/deployment/RELEASE.md)
 - [Developer Console](design/server/console/01.console.md)
 - [Employee Management Platform](design/server/console/02.control_plane.md)
 - [Instance Identity](design/server/core/identity/01.architecture.md)

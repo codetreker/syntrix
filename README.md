@@ -21,7 +21,9 @@ through its API to Kubernetes. The browser shell currently provides account logi
 session restoration, and logout; resource-administration pages remain target work.
 The [instance deployment](packages/syntrix/deployment/README.md) supplies a separate
 container, standalone/distributed Kubernetes templates, and a configuration-driven
-manifest generator. They connect to existing MongoDB and PostgreSQL; distributed
+manifest generator. The [manual release pipeline](packages/syntrix/deployment/RELEASE.md)
+publishes public Linux amd64/arm64 runtime images and deployment archives with
+matching CLIs and build metadata. These deployments connect to existing MongoDB and PostgreSQL; distributed
 Trigger transport additionally requires existing NATS JetStream. Console-managed
 full-instance provisioning, employee Management, project Identity, and OAuth
 remain target work.
