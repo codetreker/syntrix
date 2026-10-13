@@ -379,8 +379,11 @@ is progress-neutral; freshness expiry clears readiness even under dispatch
 backpressure. Temporary loss, including a planned Puller restart, clears ready
 and can recover while the subscriber's context remains active. Permanent NATS
 connection closure cancels blocked consumer delivery and reaches process ownership
-and shutdown. Known Worker terminal failures are observed before broker/storage
-readiness checks, so dispatch backpressure cannot delay cancellation. This is
+and shutdown. Known Evaluator and Worker terminal failures are observed before
+broker/storage readiness checks. Evaluator watcher failure remains observable
+while publication retries; Manager preserves the terminal cause and cancels owned
+work to release publication or delivery backpressure despite an unavailable
+dependency. Temporary dependency loss without a terminal cause remains recoverable. This is
 component readiness, distinct from bootstrap completion, initialization finalization and
 external query acceptance.
 

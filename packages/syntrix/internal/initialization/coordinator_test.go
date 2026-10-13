@@ -135,6 +135,44 @@ func TestInitializationAllRoutedAndSplitPlacements(t *testing.T) {
 	assert.NoError(t, backends.PostgresDB().PingContext(ctx))
 }
 
+func TestInitializationAliasesPreserveWriteOwnerThroughFinalization(t *testing.T) {
+	for _, tc := range []struct {
+		name, primary, replica string
+	}{
+		{name: "primary sorts before replica", primary: "a_writer", replica: "z_reader"},
+		{name: "primary sorts after replica", primary: "z_writer", replica: "a_reader"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ctx, _, backends, c := routedFixture(t, func(cfg *storageconfig.Config) {
+				backend := cfg.Backends["default_mongo"]
+				cfg.Backends[tc.primary], cfg.Backends[tc.replica] = backend, backend
+				cfg.Topology.Document.Primary = tc.primary
+				cfg.Topology.Document.Strategy = "read_write_split"
+				cfg.Topology.Document.Replica = tc.replica
+				cfg.Topology.Revocation.Primary = tc.primary
+				cfg.Topology.Revocation.Strategy = "read_write_split"
+				cfg.Topology.Revocation.Replica = tc.replica
+			})
+			writer, _, err := backends.GetMongoClient(tc.primary)
+			require.NoError(t, err)
+			reader, _, err := backends.GetMongoClient(tc.replica)
+			require.NoError(t, err)
+			require.NotSame(t, writer, reader)
+			require.Len(t, c.placements, 3)
+			for _, p := range c.placements {
+				require.True(t, p.Handle.Database().Client() == writer, "%s must retain its configured write owner", p.Owner)
+			}
+			prepared, err := c.PrepareFresh(ctx)
+			require.NoError(t, err)
+			require.Equal(t, Prepared, prepared.State)
+			finalized, err := c.Finalize(ctx, prepared.Specification)
+			require.NoError(t, err)
+			assert.Equal(t, Finalized, finalized.State)
+		})
+	}
+}
+
 func TestInitializationPrepareFinalizeAndReadonlyRestart(t *testing.T) {
 	t.Parallel()
 	ctx, cfg, backends, c := fixture(t)

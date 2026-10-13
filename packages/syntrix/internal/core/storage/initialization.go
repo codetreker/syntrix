@@ -35,7 +35,7 @@ func (e *PlacementError) Error() string { return "invalid MongoDB placement for 
 func (e *PlacementError) Unwrap() error { return e.Cause }
 
 // MongoPlacements freezes physical identities without including credentials.
-// Aliases with equivalent server identities share one collection specification.
+// Equivalent aliases share one specification using the first routed handle.
 func MongoPlacements(cfg config.Config, backends *Backends, owner, collection string, names []string, required, cleanup []mongo.IndexDefinition) ([]MongoPlacement, error) {
 	placements := map[string]MongoPlacement{}
 	for _, name := range names {
@@ -52,7 +52,9 @@ func MongoPlacements(cfg config.Config, backends *Backends, owner, collection st
 			return nil, err
 		}
 		key := physical + "\x00" + db + "\x00" + collection
-		placements[key] = MongoPlacement{Owner: owner, Backend: physical, Database: db, Collection: collection, Required: required, Cleanup: cleanup, Handle: client.Database(db).Collection(collection)}
+		if _, exists := placements[key]; !exists {
+			placements[key] = MongoPlacement{Owner: owner, Backend: physical, Database: db, Collection: collection, Required: required, Cleanup: cleanup, Handle: client.Database(db).Collection(collection)}
+		}
 	}
 	keys := make([]string, 0, len(placements))
 	for key := range placements {
@@ -131,22 +133,34 @@ func mongoEndpointIdentity(uri string) (string, error) {
 	return hex.EncodeToString(hash[:]), nil
 }
 
+// RoutedMongoNames puts primary and single-backend write routes before replicas
+// so physical alias deduplication retains an authoritative write handle.
 func RoutedMongoNames(cfg config.Config, primary, replica, strategy string) ([]string, error) {
-	names := []string{primary}
 	switch strategy {
-	case "single":
-	case "read_write_split":
-		names = append(names, replica)
+	case "single", "read_write_split":
 	default:
 		return nil, fmt.Errorf("unsupported MongoDB routing strategy: %s", strategy)
 	}
+	routed := make([]string, 0, len(cfg.Databases))
 	for logical, placement := range cfg.Databases {
 		if logical != "default" {
-			names = append(names, placement.Backend)
+			routed = append(routed, placement.Backend)
 		}
 	}
-	slices.Sort(names)
-	return slices.Compact(names), nil
+	slices.Sort(routed)
+	names := append([]string{primary}, routed...)
+	if strategy == "read_write_split" {
+		names = append(names, replica)
+	}
+	seen := make(map[string]bool, len(names))
+	result := make([]string, 0, len(names))
+	for _, name := range names {
+		if !seen[name] {
+			result = append(result, name)
+			seen[name] = true
+		}
+	}
+	return result, nil
 }
 
 func InitializationPlacements(cfg config.Config, backends *Backends) ([]MongoPlacement, error) {

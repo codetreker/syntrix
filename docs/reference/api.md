@@ -369,9 +369,10 @@ without a body. Disabled and explicitly held roles do not enter the active
 aggregate; held writer roles remain individually NOT_SERVING and cannot satisfy
 full instance acceptance. Readiness does not certify bootstrap completion,
 cleanup finalization or an accepted external indexed query. Transient dependency
-loss clears readiness until recovery and fresh admission. Permanent consumer
-failure cancels the runtime even under delivery backpressure or simultaneous
-dependency outage; it is not held as an indefinitely unready process.
+loss clears readiness until recovery and fresh admission. Permanent consumer or
+Evaluator watcher failure cancels the runtime even under publication or delivery
+backpressure and simultaneous dependency outage; it is not held as an indefinitely
+unready process.
 
 Exact GET/HEAD requests to these paths bypass application/authentication budgets.
 Other methods and lookalike paths retain normal middleware behavior. Request IDs,

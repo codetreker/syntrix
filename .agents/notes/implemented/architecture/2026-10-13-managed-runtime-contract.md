@@ -56,8 +56,16 @@ additional search-path entries cannot provide a different owner's tables. MongoD
 identity retains configured authority/replica-set identity and the normalized SRV
 service name without adopting resolved SRV member hosts or credentials. Different
 SRV services on one hostname remain distinct placements; omitted and explicit
-default `mongodb` services identify the same endpoint. The bounded same-image CLI
-emits one receipt after connections close without constructing Manager, opening Pebble
+default `mongodb` services identify the same endpoint. Equivalent physical aliases
+share one specification and retain the first handle. Handle selection enumerates
+runtime write routes first: topology Primary, then sorted nondefault single-backend
+database bindings, then a split Replica for otherwise unrepresented placements.
+Inspection, preparation and finalization consistently use that handle; read-only
+aliases cannot replace it,
+and selected-handle authorization failures remain visible. The identity and
+digest exclude credentials and do not depend on handle choice. The bounded
+same-image CLI emits one receipt after connections close without constructing
+Manager, opening Pebble
 claims, listeners, or authentication services. Query acceptance is an explicit
 caller attestation, not evidence inferred by the finalizer.
 
@@ -86,9 +94,11 @@ drain. Permanent NATS connection closure cancels blocked consumer delivery befor
 waiting for the consume context and the active delivery callback to settle.
 The output channel closes under the callback gate; late callbacks observe
 cancellation before sending because the SDK closure signal can resolve before
-application callback settlement. Worker terminal failures are checked
-before dependency readiness, so an unavailable broker/storage backend cannot
-prevent cancellation from releasing dispatch backpressure. `/ready` and standard
+application callback settlement. Evaluator and Worker terminal failures are checked
+before dependency readiness. A terminal watcher cause remains observable while
+Evaluator publication is retrying; Manager preserves it and cancels owned work
+to release publication or delivery backpressure despite a broker/storage outage.
+Dependency loss without a terminal cause remains recoverable. `/ready` and standard
 gRPC role health report enabled-role readiness;
 `/health` and `syntrix.liveness` report liveness. Held roles remain NOT_SERVING and
 are excluded only from the active acceptance aggregate. Remote dependencies check

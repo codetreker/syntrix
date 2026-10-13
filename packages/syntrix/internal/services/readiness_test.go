@@ -18,21 +18,26 @@ import (
 	"github.com/codetreker/syntrix/internal/config"
 	"github.com/codetreker/syntrix/internal/core/pubsub"
 	pubsubtesting "github.com/codetreker/syntrix/internal/core/pubsub/testing"
+	"github.com/codetreker/syntrix/internal/core/storage"
 	"github.com/codetreker/syntrix/internal/gateway"
 	gatewayconfig "github.com/codetreker/syntrix/internal/gateway/config"
 	"github.com/codetreker/syntrix/internal/gateway/realtime"
 	"github.com/codetreker/syntrix/internal/indexer"
 	"github.com/codetreker/syntrix/internal/initialization"
 	initializationconfig "github.com/codetreker/syntrix/internal/initialization/config"
+	"github.com/codetreker/syntrix/internal/puller/events"
 	"github.com/codetreker/syntrix/internal/server"
 	"github.com/codetreker/syntrix/internal/streamer"
 	"github.com/codetreker/syntrix/internal/trigger/delivery"
+	"github.com/codetreker/syntrix/internal/trigger/evaluator"
 	"github.com/codetreker/syntrix/internal/trigger/types"
 	"github.com/codetreker/syntrix/pkg/model"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/health"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
+	"google.golang.org/grpc/status"
 )
 
 type readyPuller struct {
@@ -307,6 +312,141 @@ func TestWorkerTerminalFailureCancelsFullQueueBeforeDependencyChecks(t *testing.
 				require.True(t, message.IsNaked())
 			}
 			require.False(t, mgr.health.ready())
+		})
+	}
+}
+
+type readinessEvaluatorSource struct {
+	messages   chan *events.PullerEvent
+	subscribed chan *events.SubscriptionStatus
+}
+
+func (s *readinessEvaluatorSource) Subscribe(context.Context, string, string) <-chan *events.PullerEvent {
+	return s.messages
+}
+func (s *readinessEvaluatorSource) SubscribeStatus(ctx context.Context, _, _ string) (<-chan *events.PullerEvent, *events.SubscriptionStatus) {
+	admission := events.NewSubscriptionStatus(ctx)
+	admission.BeginAttempt()
+	s.subscribed <- admission
+	return s.messages, admission
+}
+
+type readinessCheckpointStore struct {
+	fakeDocumentStore
+	checkpoint atomic.Value
+}
+
+func (*readinessCheckpointStore) Get(context.Context, string, string, ...storage.ReadOptions) (*storage.StoredDoc, error) {
+	return nil, model.ErrNotFound
+}
+func (s *readinessCheckpointStore) Update(ctx context.Context, _, _ string, data map[string]any, _ model.Filters) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s.checkpoint.Store(data["token"].(string))
+	return nil
+}
+
+type readinessRetryPublisher struct {
+	unavailable atomic.Bool
+	attempts    atomic.Int32
+}
+
+func (p *readinessRetryPublisher) Publish(ctx context.Context, _ string, _ []byte) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	p.attempts.Add(1)
+	if p.unavailable.Load() {
+		return errors.New("temporary broker outage")
+	}
+	return nil
+}
+func (*readinessRetryPublisher) Close() error { return nil }
+
+func TestEvaluatorTerminalFailureCancelsPublicationRetryBeforeDependencyChecks(t *testing.T) {
+	for _, outage := range []string{"storage", "broker", "both", "transient_recovery"} {
+		t.Run(outage, func(t *testing.T) {
+			mgr := readinessManager(t, Options{Mode: ModeDistributed, RunTriggerEvaluator: true})
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			life := mgr.lifecycle(ctx)
+			mgr.initialization = observedInitialization{state: initialization.Finalized}
+			mgr.pubsubProvider = &readyBroker{}
+			source := &readinessEvaluatorSource{messages: make(chan *events.PullerEvent, 2), subscribed: make(chan *events.SubscriptionStatus, 1)}
+			store := &readinessCheckpointStore{}
+			publisher := &readinessRetryPublisher{}
+			publisher.unavailable.Store(true)
+			svc, err := evaluator.NewService(evaluator.Dependencies{Store: store, Puller: source, Publisher: publisher, SubjectPrefix: "managed"}, evaluator.Config{StartFromNow: true})
+			require.NoError(t, err)
+			require.NoError(t, svc.LoadTriggers([]*types.Trigger{{ID: "retry", Database: "db", Collection: "items", Events: []string{"create"}, Condition: "true", URL: "https://example.com/webhook"}}))
+			mgr.triggerService = svc
+			stopped := make(chan error, 1)
+			mgr.launch(life, roleEvaluator, true, func(ctx context.Context) error {
+				err := svc.Start(ctx)
+				stopped <- err
+				return err
+			})
+			var admission *events.SubscriptionStatus
+			select {
+			case admission = <-source.subscribed:
+			case <-ctx.Done():
+				t.Fatal("evaluator watcher did not subscribe")
+			}
+			admit := func(generation uint64) {
+				ready := &events.PullerEvent{Ready: true, AdmissionState: events.AdmissionAdmitted, AdmissionGeneration: generation, TransportGeneration: admission.Snapshot().TransportGeneration}
+				require.True(t, admission.Receive(ready))
+				source.messages <- ready
+				require.Eventually(t, func() bool { return mgr.checkRole(ctx, roleEvaluator) == nil }, time.Second, time.Millisecond)
+			}
+			admit(1)
+			source.messages <- &events.PullerEvent{Change: &events.StoreChangeEvent{EventID: "event", OpType: events.StoreOperationInsert, Database: "db", FullDocument: &storage.StoredDoc{Database: "db", Collection: "items", Id: "doc"}}, Progress: "unfinished-publication"}
+			require.Eventually(t, func() bool { return publisher.attempts.Load() > 0 }, time.Second, time.Millisecond)
+			require.Nil(t, store.checkpoint.Load(), "failed publication cannot advance progress")
+			if outage != "broker" {
+				mgr.initialization = observedInitialization{err: errors.New("temporary storage outage")}
+			}
+			if outage != "storage" {
+				mgr.pubsubProvider = &readyBroker{err: errors.New("temporary broker outage")}
+			}
+			mgr.checkReadiness(ctx)
+			require.False(t, mgr.health.ready())
+			require.NoError(t, life.Err())
+			select {
+			case err := <-stopped:
+				t.Fatalf("dependency outage stopped publication retry: %v", err)
+			default:
+			}
+			if outage == "transient_recovery" {
+				mgr.initialization = observedInitialization{state: initialization.Finalized}
+				mgr.pubsubProvider = &readyBroker{}
+				publisher.unavailable.Store(false)
+				require.Eventually(t, func() bool { return store.checkpoint.Load() != nil }, 2*time.Second, time.Millisecond)
+				require.Equal(t, "unfinished-publication", store.checkpoint.Load())
+				require.GreaterOrEqual(t, publisher.attempts.Load(), int32(2))
+				admit(2)
+				mgr.checkReadiness(ctx)
+				require.True(t, mgr.health.ready())
+				require.NoError(t, life.Err())
+				require.NoError(t, svc.(terminalSource).TerminalError())
+			} else {
+				cause := status.Error(codes.FailedPrecondition, "retained replay boundary is unavailable")
+				source.messages <- &events.PullerEvent{Error: cause}
+				require.Eventually(t, func() bool { return errors.Is(svc.(terminalSource).TerminalError(), cause) }, time.Second, time.Millisecond)
+				mgr.checkReadiness(ctx)
+				bounded, stop := context.WithTimeout(ctx, 500*time.Millisecond)
+				require.ErrorIs(t, mgr.Wait(bounded), cause)
+				stop()
+				require.ErrorIs(t, life.Err(), context.Canceled)
+				require.Nil(t, store.checkpoint.Load())
+			}
+			cancel()
+			select {
+			case err := <-stopped:
+				require.NoError(t, err)
+			case <-time.After(time.Second):
+				t.Fatal("evaluator publication retry did not settle")
+			}
 		})
 	}
 }

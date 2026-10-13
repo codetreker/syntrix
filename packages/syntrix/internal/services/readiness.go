@@ -278,6 +278,9 @@ func (m *Manager) checkRole(ctx context.Context, role string) error {
 		}
 		return m.checkSource(ctx, rolePuller, m.pullerService)
 	case roleEvaluator:
+		if err := m.checkTerminal(role, m.triggerService); err != nil {
+			return err
+		}
 		if err := m.storageReady(ctx); err != nil {
 			return err
 		}

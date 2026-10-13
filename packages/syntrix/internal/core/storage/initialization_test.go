@@ -8,6 +8,7 @@ import (
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/codetreker/syntrix/internal/core/storage/config"
+	storagemongo "github.com/codetreker/syntrix/internal/core/storage/mongo"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.mongodb.org/mongo-driver/bson"
@@ -127,6 +128,95 @@ func TestInitializationPlacementErrors(t *testing.T) {
 	err = &PlacementError{Owner: "sys", Cause: failure}
 	assert.ErrorIs(t, err, failure)
 	assert.NotContains(t, err.Error(), "secret")
+}
+
+func TestInitializationPlacementsRetainWriteOwner(t *testing.T) {
+	mt := mtest.New(t, mtest.NewOptions().ClientType(mtest.Mock))
+	for _, tc := range []struct {
+		name, primary, replica, routed string
+	}{
+		{name: "primary sorts before replica", primary: "a_writer", replica: "z_reader"},
+		{name: "primary sorts after replica", primary: "z_writer", replica: "a_reader"},
+		{name: "routed writer shares replica endpoint", primary: "primary", replica: "z_reader", routed: "a_routed"},
+	} {
+		mt.Run(tc.name, func(mt *mtest.T) {
+			readonly := mtest.New(mt.T, mtest.NewOptions().ClientType(mtest.Mock))
+			readonly.Run("read-only alias", func(readonly *mtest.T) {
+				cfg := config.DefaultConfig()
+				backend := cfg.Backends["default_mongo"]
+				backend.Mongo.URI = "mongodb://writer:write@primary.invalid/owned"
+				cfg.Backends[tc.primary] = backend
+				backend.Mongo.URI = "mongodb://reader:read@primary.invalid/owned"
+				if tc.routed != "" {
+					backend.Mongo.URI = "mongodb://reader:read@routed.invalid/owned"
+				}
+				cfg.Backends[tc.replica] = backend
+				cfg.Topology.Document.Primary = tc.primary
+				cfg.Topology.Document.Strategy = "read_write_split"
+				cfg.Topology.Document.Replica = tc.replica
+				writer := &backendTestProvider{client: mt.Client, dbName: "owned"}
+				providers := map[string]Provider{tc.primary: writer, tc.replica: &backendTestProvider{client: readonly.Client, dbName: "owned"}}
+				if tc.routed != "" {
+					backend.Mongo.URI = "mongodb://writer:write@routed.invalid/owned"
+					cfg.Backends[tc.routed] = backend
+					cfg.Databases["routed"] = config.DatabaseConfig{Backend: tc.routed}
+					providers[tc.routed] = writer
+				}
+				db, mock, err := sqlmock.New()
+				require.NoError(readonly, err)
+				defer db.Close()
+				backends := &Backends{providers: providers, postgresDB: db}
+				placements, err := InitializationPlacements(cfg, backends)
+				require.NoError(readonly, err)
+				expected := 2
+				if tc.routed != "" {
+					expected = 4
+				}
+				require.Len(readonly, placements, expected)
+				for _, p := range placements {
+					assert.True(readonly, p.Handle.Database().Client() == mt.Client, "%s must use a routed write owner", p.Owner)
+					addPlacementIndexCreationResponses(mt, p, p.Required)
+				}
+				readonly.AddMockResponses(
+					mtest.CreateCommandErrorResponse(mtest.CommandError{Code: 26, Message: "absent collection"}),
+					mtest.CreateCommandErrorResponse(mtest.CommandError{Code: 13, Message: "read-only credentials"}),
+				)
+				expectSchemaInitialization(mock, "databases")
+				require.NoError(readonly, Prepare(context.Background(), cfg, backends))
+				require.NoError(readonly, mock.ExpectationsWereMet())
+				for _, p := range placements {
+					addPlacementIndexCreationResponses(mt, p, p.Cleanup)
+					require.NoError(readonly, storagemongo.EnsureIndexDefinitions(context.Background(), p.Handle, p.Cleanup))
+				}
+				assert.Empty(readonly, readonly.GetAllStartedEvents())
+				creates := 0
+				for _, command := range mt.GetAllStartedEvents() {
+					if command.CommandName == "createIndexes" {
+						creates++
+					}
+				}
+				assert.Equal(readonly, expected*3/2, creates)
+			})
+		})
+	}
+}
+
+func addPlacementIndexCreationResponses(mt *mtest.T, p MongoPlacement, definitions []storagemongo.IndexDefinition) {
+	mt.Helper()
+	if len(definitions) == 0 {
+		return
+	}
+	mt.AddMockResponses(mtest.CreateCommandErrorResponse(mtest.CommandError{Code: 26, Message: "absent collection"}))
+	indexes := make([]bson.D, 0, len(definitions))
+	for _, d := range definitions {
+		mt.AddMockResponses(mtest.CreateSuccessResponse())
+		index := bson.D{{Key: "name", Value: d.Name}, {Key: "key", Value: d.Keys}}
+		if d.ExpireAfterSeconds != nil {
+			index = append(index, bson.E{Key: "expireAfterSeconds", Value: *d.ExpireAfterSeconds})
+		}
+		indexes = append(indexes, index)
+	}
+	mt.AddMockResponses(mtest.CreateCursorResponse(0, p.Database+"."+p.Collection, mtest.FirstBatch, indexes...))
 }
 
 func TestMongoEndpointIdentityIsPureAndCredentialIndependent(t *testing.T) {
