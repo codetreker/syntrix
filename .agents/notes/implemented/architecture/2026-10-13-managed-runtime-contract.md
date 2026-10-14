@@ -85,8 +85,13 @@ processed. Upstream gRPC cancellation remains retryable while the ordinary
 subscriber's caller context is active, preserving fresh admission after planned
 Puller restart. Caller cancellation still ends the subscription, and permanent
 rejection remains terminal. An empty-source admission does not create progress.
-Overflow preserves the original admission floors; blocked channels clear readiness
-through freshness
+Current source availability checks live caller/process contexts, configured active
+capture and a usable durable checkpoint, including storage failures. Successful
+age/capacity retention can persist a history floor while source readiness and
+fresh ordinary admission at the registration boundary remain available. Actual
+requested replay positions remain constrained by retained history; verified
+boundaries, original overflow admission floors and explicit bootstrap reset-origin
+requirements stay strict. Blocked channels clear readiness through freshness
 expiry without unbounded buffering or event loss.
 
 Manager owns bounded role verification, terminal async failures, cancellation and

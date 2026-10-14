@@ -46,9 +46,6 @@ func (p *Puller) Readiness(ctx context.Context) error {
 			}
 			return fmt.Errorf("%w: backend %q not admitted", ErrCaptureUnavailable, name)
 		}
-		if err := b.buffer.ValidatePosition("", b.buffer.Lineage()); err != nil {
-			return fmt.Errorf("backend %q buffer: %w", name, err)
-		}
 		token, err := b.buffer.LoadCheckpoint()
 		if err != nil {
 			return fmt.Errorf("backend %q checkpoint: %w", name, err)
