@@ -48,6 +48,7 @@ func TestIdleRetentionPreservesNativeReadyBoundaryAcrossCleanupAndRestart(t *tes
 			defer func() { require.NoError(t, b.Close()) }()
 			p := New(config.DefaultConfig(), logger)
 			backend := &Backend{name: "source", buffer: b}
+			backend.recordCaptureResponse(time.Now())
 			backend.setCaptureState(true, nil)
 			p.backends[backend.name] = backend
 			require.NoError(t, b.SaveCheckpoint(bson.Raw{5, 0, 0, 0, 0}))
@@ -132,6 +133,7 @@ func TestIdleRetentionPreservesNativeReadyBoundaryAcrossCleanupAndRestart(t *tes
 			require.Equal(t, lastToken, restored)
 			p = New(config.DefaultConfig(), logger)
 			backend = &Backend{name: "source", buffer: b}
+			backend.recordCaptureResponse(time.Now())
 			backend.setCaptureState(true, nil)
 			p.backends[backend.name] = backend
 			require.NoError(t, p.ValidateBoundary(ctx, current))

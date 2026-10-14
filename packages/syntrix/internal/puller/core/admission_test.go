@@ -44,6 +44,7 @@ func TestOrdinaryAdmissionIdleSourceAndRecoveryAreProgressNeutral(t *testing.T) 
 	recovery := await(events.AdmissionRecovering, 2)
 	require.Empty(t, recovery.Progress)
 	require.Error(t, state.Err(ctx))
+	b.recordCaptureResponse(time.Now())
 	b.setCaptureState(true, nil)
 	ready = await(events.AdmissionAdmitted, recovery.AdmissionGeneration)
 	require.Empty(t, ready.Progress)
@@ -305,6 +306,7 @@ func TestOrdinaryAdmissionSurvivesRetentionAndBufferReopen(t *testing.T) {
 			require.NoError(t, err)
 			defer func() { require.NoError(t, reopened.Close()) }()
 			backend.buffer = reopened
+			backend.recordCaptureResponse(time.Now())
 			backend.setCaptureState(true, nil)
 			require.Equal(t, lineage, reopened.Lineage())
 			restored, err := reopened.LoadCheckpoint()
@@ -329,6 +331,186 @@ func TestOrdinaryAdmissionSurvivesRetentionAndBufferReopen(t *testing.T) {
 			stopSubscription(cancelSubscription, ch)
 		})
 	}
+}
+
+func TestMonitoredReplayRejectsExpiredHistoryBeforeSurvivingSuffix(t *testing.T) {
+	for _, mode := range []string{"saved", "partial-group", "missing-backend", "foreign-backend"} {
+		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			p, backend, _ := nativeBoundaryFixture(t)
+			old, tail := nativeBoundaryEvent(1), nativeBoundaryEvent(2)
+			token := bson.Raw{5, 0, 0, 0, 0}
+			for _, event := range []*events.StoreChangeEvent{old, tail} {
+				require.NoError(t, backend.buffer.Write(ctx, event, token))
+			}
+			require.NoError(t, backend.buffer.Flush(ctx))
+			progress := &cursor.ProgressMarker{Positions: map[string]string{backend.name: old.EventID}}
+			message := "expired"
+			switch mode {
+			case "saved":
+				require.NoError(t, backend.buffer.Delete(old.BufferKey()))
+			case "partial-group":
+				peer := *old
+				peer.EventID += "-peer"
+				require.NoError(t, backend.buffer.Write(ctx, &peer, token))
+				require.NoError(t, backend.buffer.Flush(ctx))
+				require.NoError(t, backend.buffer.Delete(peer.BufferKey()))
+				stored, err := backend.buffer.Read(old.BufferKey())
+				require.NoError(t, err)
+				require.NotNil(t, stored)
+			case "missing-backend":
+				_, other, _ := nativeBoundaryFixture(t)
+				other.name = "other"
+				p.backends[other.name] = other
+				require.NoError(t, other.buffer.Write(ctx, old, token))
+				require.NoError(t, other.buffer.Flush(ctx))
+				require.NoError(t, other.buffer.Delete(old.BufferKey()))
+			case "foreign-backend":
+				progress.Positions["removed"] = old.EventID
+				message = "backend"
+			}
+			ch, state := p.SubscribeStatus(ctx, mode, progress.Encode())
+			var failure error
+			for {
+				select {
+				case frame, open := <-ch:
+					if !open {
+						require.ErrorContains(t, failure, message)
+						require.True(t, state.Snapshot().Terminal)
+						return
+					}
+					require.NotNil(t, frame)
+					require.Nil(t, frame.Change, "missing history must not deliver the surviving suffix")
+					require.Empty(t, frame.Progress)
+					require.False(t, frame.Ready)
+					if frame.Error != nil {
+						failure = frame.Error
+						require.False(t, frame.Retryable)
+					}
+				case <-ctx.Done():
+					t.Fatal(ctx.Err())
+				}
+			}
+		})
+	}
+}
+
+func TestMonitoredOverflowRejectsExpiredOriginalFloorBeforeFirstDelivery(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	p, backend, _ := nativeBoundaryFixture(t)
+	backend.captureMu.Lock()
+	var release sync.Once
+	unblock := func() { release.Do(func() { backend.captureMu.Unlock() }) }
+	defer unblock()
+	ch, state := p.SubscribeStatus(ctx, "expired-overflow", "")
+	for n := 1; n <= 1001; n++ {
+		event := nativeBoundaryEvent(n)
+		require.NoError(t, backend.buffer.Write(ctx, event, bson.Raw{5, 0, 0, 0, 0}))
+		p.subs.Broadcast(event)
+	}
+	require.NoError(t, backend.buffer.Flush(ctx))
+	sub := p.subs.All()[0]
+	require.True(t, sub.RecoveryPending())
+	require.Empty(t, sub.CurrentProgress().Positions)
+	require.NoError(t, backend.buffer.Delete(nativeBoundaryEvent(1).BufferKey()))
+	backend.captureResponse = time.Now()
+	unblock()
+	for {
+		select {
+		case frame, open := <-ch:
+			if !open {
+				require.True(t, state.Snapshot().Terminal)
+				require.ErrorContains(t, state.Snapshot().Err, "expired")
+				return
+			}
+			require.NotNil(t, frame)
+			require.Nil(t, frame.Change)
+			require.Empty(t, frame.Progress)
+			require.False(t, frame.Ready)
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		}
+	}
+}
+
+func TestRetainedRecoveryUsesEffectiveFloorAndSuppliedLineage(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	p, backend, _ := nativeBoundaryFixture(t)
+	old, tail := nativeBoundaryEvent(1), nativeBoundaryEvent(2)
+	for _, event := range []*events.StoreChangeEvent{old, tail} {
+		require.NoError(t, backend.buffer.Write(ctx, event, bson.Raw{5, 0, 0, 0, 0}))
+	}
+	require.NoError(t, backend.buffer.Flush(ctx))
+	require.NoError(t, backend.buffer.Delete(old.BufferKey()))
+	progress := &cursor.ProgressMarker{Positions: map[string]string{backend.name: tail.EventID}}
+	floors := map[string]events.ClusterTime{backend.name: old.ClusterTime}
+	iter, err := p.ReplayRetained(ctx, progress, floors)
+	require.NoError(t, err)
+	require.True(t, iter.Next())
+	require.Equal(t, tail.EventID, iter.Event().EventID)
+	require.NoError(t, iter.Close())
+	iter, err = p.ReplayRetained(ctx, progress, map[string]events.ClusterTime{"removed": tail.ClusterTime})
+	require.ErrorContains(t, err, "backend")
+	require.Nil(t, iter)
+	progress.Lineages = map[string]string{backend.name: "different"}
+	iter, err = p.ReplayRetained(ctx, progress, floors)
+	require.ErrorContains(t, err, "lineage")
+	require.Nil(t, iter)
+	iter, err = p.ReplayRetained(ctx, progress, map[string]events.ClusterTime{})
+	require.NoError(t, err)
+	require.False(t, iter.Next(), "never-broadcast backends must remain excluded")
+	require.NoError(t, iter.Close())
+}
+
+func TestMonitoredAdmissionRechecksCaptureAfterDrainingQueuedPrefix(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	p, backend, _ := nativeBoundaryFixture(t)
+	sub := testSubscriber(t, "stale-drain", cursor.NewProgressMarker(), true, 1)
+	sub.enqueue(nativeBoundaryEvent(1))
+	var admitted bool
+	driver := SubscriptionDriver{
+		CheckAdmission: p.Readiness,
+		Deliver: func(context.Context, *events.StoreChangeEvent, string) error {
+			backend.recordCaptureResponse(time.Now().Add(-events.AdmissionFreshness))
+			return nil
+		},
+		Admission: func(_ context.Context, state string, _ uint64, _ string) error {
+			if state == events.AdmissionAdmitted {
+				admitted = true
+				cancel()
+			}
+			if state == events.AdmissionRecovering {
+				cancel()
+			}
+			return nil
+		},
+	}
+	exit := RunSubscription(ctx, sub, false, driver)
+	require.Equal(t, SubscriptionExitContextCanceled, exit.Kind)
+	require.False(t, admitted, "a pre-drain observation cannot admit after capture expires")
+}
+
+func TestCaptureResponseExpiryRequiresNewNativeEvidence(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	p, backend, origin := nativeBoundaryFixture(t)
+	backend.recordCaptureResponse(time.Now().Add(-events.AdmissionFreshness))
+	backend.setCaptureState(true, nil)
+	for range 3 {
+		_, err := backend.buffer.LoadCheckpoint()
+		require.NoError(t, err)
+		require.ErrorIs(t, p.Readiness(ctx), ErrCaptureUnavailable)
+		require.ErrorIs(t, p.ValidateBoundary(ctx, origin), ErrCaptureUnavailable)
+		require.NoError(t, p.TerminalError())
+	}
+	backend.recordCaptureResponse(time.Now())
+	require.NoError(t, p.Readiness(ctx))
+	require.NoError(t, p.ValidateBoundary(ctx, origin))
 }
 
 func TestAdmissionFenceFailureNeverPublishesReady(t *testing.T) {

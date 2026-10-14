@@ -31,6 +31,11 @@ type EventHandler = func(ctx context.Context, backendName string, event *events.
 // Retrying a local processing failure could reopen from_now before any token is saved.
 var errCaptureFailed = errors.New("capture failed")
 
+const (
+	captureMaxAwait    = events.AdmissionRefresh
+	capturePollTimeout = 2 * captureMaxAwait
+)
+
 // Backend represents a single MongoDB backend being watched.
 type Backend struct {
 	name            string
@@ -45,11 +50,12 @@ type Backend struct {
 	cleaner         *buffer.Cleaner
 
 	// eventChan receives normalized events from the change stream
-	eventChan      chan *events.StoreChangeEvent
-	captureMu      sync.Mutex
-	captureChanged chan struct{}
-	captureActive  bool
-	captureError   error
+	eventChan       chan *events.StoreChangeEvent
+	captureMu       sync.Mutex
+	captureChanged  chan struct{}
+	captureActive   bool
+	captureError    error
+	captureResponse time.Time
 }
 
 // Puller is the main puller service that watches MongoDB change streams
@@ -119,6 +125,7 @@ func New(cfg config.Config, logger *slog.Logger) *Puller {
 // changeStream defines the subset of mongo.ChangeStream used by the puller.
 type changeStream interface {
 	TryNext(context.Context) bool
+	RemainingBatchLength() int
 	ID() int64
 	ResumeToken() bson.Raw
 	Decode(any) error
@@ -308,6 +315,13 @@ func (p *Puller) runBackend(ctx context.Context, name string, backend *Backend) 
 				logger.Error("capture failed, stopping backend", "error", err)
 				return
 			}
+			if errors.Is(err, ErrCaptureUnavailable) {
+				backend.setCaptureState(false, err)
+				if !waitCaptureRetry(ctx, p.retryDelay) {
+					return
+				}
+				continue
+			}
 
 			action := backend.recoveryHandler.HandleError(err)
 			switch action {
@@ -360,7 +374,7 @@ func (p *Puller) watchChangeStream(ctx context.Context, backend *Backend, logger
 
 	// Configure watch options
 	opts := options.ChangeStream().
-		SetFullDocument(options.UpdateLookup).SetMaxAwaitTime(time.Second)
+		SetFullDocument(options.UpdateLookup).SetMaxAwaitTime(captureMaxAwait)
 
 	if resumeToken != nil {
 		opts.SetResumeAfter(resumeToken)
@@ -377,18 +391,41 @@ func (p *Puller) watchChangeStream(ctx context.Context, backend *Backend, logger
 	if err != nil {
 		return fmt.Errorf("failed to open change stream: %w", err)
 	}
-	defer stream.Close(ctx)
+	backend.recordCaptureResponse(time.Now())
+	defer func() {
+		closeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), capturePollTimeout)
+		defer cancel()
+		result = errors.Join(result, stream.Close(closeCtx))
+	}()
 
 	logger.Info("change stream opened")
 
 	// Only an empty live batch establishes that the native cursor has caught up.
 	// A cached ResumeAfter token alone can precede an unconsumed initial batch.
 	ready := false
+	firstPoll := true
 	for {
-		if !stream.TryNext(ctx) {
-			if err := stream.Err(); err != nil {
-				return fmt.Errorf("change stream error: %w", err)
+		// The first poll consumes the aggregate's cached batch. Later polls with
+		// no cached documents fetch getMore; draining a batch proves no new response.
+		response := !firstPoll && stream.RemainingBatchLength() == 0
+		pollCtx, cancel := context.WithTimeout(ctx, capturePollTimeout)
+		hasNext := stream.TryNext(pollCtx)
+		streamErr, pollErr := stream.Err(), pollCtx.Err()
+		cancel()
+		if pollErr != nil {
+			if err := ctx.Err(); err != nil {
+				return err
 			}
+			return fmt.Errorf("%w: native response deadline: %w", ErrCaptureUnavailable, pollErr)
+		}
+		if streamErr != nil {
+			return fmt.Errorf("change stream error: %w", streamErr)
+		}
+		if response && (hasNext || stream.ID() != 0) {
+			backend.recordCaptureResponse(time.Now())
+		}
+		firstPoll = false
+		if !hasNext {
 			if stream.ID() == 0 {
 				return fmt.Errorf("change stream closed")
 			}
@@ -495,7 +532,7 @@ func (p *Puller) BackendNames() []string {
 // Replay returns an iterator that replays events from the given progress marker.
 // If the marker is empty, it replays from the beginning of the buffer.
 func (p *Puller) Replay(ctx context.Context, after map[string]string, coalesce bool) (events.Iterator, error) {
-	return p.replay(ctx, after, nil, nil, coalesce)
+	return p.replay(ctx, after, nil, nil, coalesce, false)
 }
 
 // ReplayFromAdmission opens raw replay at each backend's first post-registration
@@ -505,10 +542,26 @@ func (p *Puller) ReplayFromAdmission(ctx context.Context, after map[string]strin
 	if firstBroadcast == nil {
 		return nil, fmt.Errorf("admission replay requires backend floors")
 	}
-	return p.replay(ctx, after, nil, firstBroadcast, false)
+	return p.replay(ctx, after, nil, firstBroadcast, false, false)
 }
 
-func (p *Puller) replay(ctx context.Context, after, lineages map[string]string, firstBroadcast map[string]events.ClusterTime, coalesce bool) (events.Iterator, error) {
+// ReplayRetained validates every required saved position or original broadcast
+// floor before any surviving suffix can advance consumer progress.
+func (p *Puller) ReplayRetained(ctx context.Context, progress *cursor.ProgressMarker, firstBroadcast map[string]events.ClusterTime) (events.Iterator, error) {
+	for name := range progress.Positions {
+		if _, ok := p.backends[name]; !ok {
+			return nil, fmt.Errorf("requested replay backend %q is not configured", name)
+		}
+	}
+	for name := range firstBroadcast {
+		if _, ok := p.backends[name]; !ok {
+			return nil, fmt.Errorf("requested recovery backend %q is not configured", name)
+		}
+	}
+	return p.replay(ctx, progress.Positions, progress.Lineages, firstBroadcast, false, true)
+}
+
+func (p *Puller) replay(ctx context.Context, after, lineages map[string]string, firstBroadcast map[string]events.ClusterTime, coalesce, retained bool) (events.Iterator, error) {
 	var iters []events.Iterator
 
 	p.logger.Info("Replay called", "after", after, "coalesce", coalesce)
@@ -535,6 +588,7 @@ func (p *Puller) replay(ctx context.Context, after, lineages map[string]string, 
 				p.logger.Debug("Replay backend", "backend", name, "eventID", eventID, "startID", startID)
 			}
 		}
+		savedGroup := groupStart
 		if firstBroadcast != nil {
 			admissionStart := events.FormatBufferKey(floor, "")
 			if admissionStart > groupStart {
@@ -544,7 +598,17 @@ func (p *Puller) replay(ctx context.Context, after, lineages map[string]string, 
 
 		var iter buffer.Iterator
 		var err error
-		if lineages != nil {
+		if retained {
+			lineage := backend.buffer.Lineage()
+			if supplied, ok := lineages[name]; ok {
+				lineage = supplied
+			}
+			if firstBroadcast != nil && (startID == "" || groupStart > savedGroup) {
+				iter, err = backend.buffer.ScanFromGroup(floor, lineage)
+			} else {
+				iter, err = backend.buffer.ScanFromLineage(startID, lineage)
+			}
+		} else if lineages != nil {
 			iter, err = backend.buffer.ScanFromLineage(startID, lineages[name])
 		} else {
 			iter, err = backend.buffer.ScanFrom(groupStart)
@@ -683,9 +747,15 @@ func (p *Puller) subscribe(ctx context.Context, consumerID, after string, onRead
 				if verified {
 					return p.ReplayBoundary(ctx, progress.Encode(), false)
 				}
+				if admission != nil {
+					return p.ReplayRetained(ctx, progress, nil)
+				}
 				return p.Replay(ctx, progress.Positions, false)
 			},
 			OpenAdmissionReplay: func(ctx context.Context, progress *cursor.ProgressMarker, floors map[string]events.ClusterTime) (events.Iterator, error) {
+				if admission != nil {
+					return p.ReplayRetained(ctx, progress, floors)
+				}
 				return p.ReplayFromAdmission(ctx, progress.Positions, floors)
 			},
 			Deliver: func(ctx context.Context, evt *events.StoreChangeEvent, progress string) error {

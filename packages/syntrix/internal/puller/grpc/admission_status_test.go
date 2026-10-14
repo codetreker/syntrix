@@ -10,11 +10,14 @@ import (
 	"time"
 
 	pb "github.com/codetreker/syntrix/api/gen/puller/v1"
+	"github.com/codetreker/syntrix/internal/puller/buffer"
 	"github.com/codetreker/syntrix/internal/puller/config"
 	"github.com/codetreker/syntrix/internal/puller/core"
 	"github.com/codetreker/syntrix/internal/puller/cursor"
 	"github.com/codetreker/syntrix/internal/puller/events"
+	"github.com/codetreker/syntrix/internal/puller/normalizer"
 	"github.com/stretchr/testify/require"
+	"go.mongodb.org/mongo-driver/bson"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -25,6 +28,57 @@ type admissionEventSource struct {
 	fatal atomic.Bool
 }
 
+type retainedAdmissionBufferSource struct {
+	mockEventSource
+	buffer *buffer.Buffer
+}
+
+func (s *retainedAdmissionBufferSource) Readiness(context.Context) error { return nil }
+
+func (s *retainedAdmissionBufferSource) Replay(context.Context, map[string]string, bool) (events.Iterator, error) {
+	return s.buffer.ScanFrom("")
+}
+
+func (s *retainedAdmissionBufferSource) ReplayRetained(_ context.Context, progress *cursor.ProgressMarker, _ map[string]events.ClusterTime) (events.Iterator, error) {
+	id := progress.Positions["source"]
+	ct, err := normalizer.ParseEventID(id)
+	if err != nil {
+		return nil, err
+	}
+	return s.buffer.ScanFromLineage(events.FormatBufferKey(ct, id), s.buffer.Lineage())
+}
+
+func TestMonitoredWireRejectsExpiredReplayBeforeSuffixOrAdmission(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	b, err := buffer.New(buffer.Options{Path: t.TempDir()})
+	require.NoError(t, err)
+	defer b.Close()
+	old := &events.StoreChangeEvent{Backend: "source", EventID: "1-1-old", ClusterTime: events.ClusterTime{T: 1, I: 1}}
+	tail := &events.StoreChangeEvent{Backend: "source", EventID: "2-1-tail", ClusterTime: events.ClusterTime{T: 2, I: 1}}
+	for _, event := range []*events.StoreChangeEvent{old, tail} {
+		require.NoError(t, b.Write(ctx, event, bson.Raw{5, 0, 0, 0, 0}))
+	}
+	require.NoError(t, b.Flush(ctx))
+	require.NoError(t, b.Delete(old.BufferKey()))
+	source := &retainedAdmissionBufferSource{buffer: b}
+	server := NewServer(config.GRPCConfig{}, source, nil)
+	server.Init()
+	defer server.Shutdown()
+	progress := (&cursor.ProgressMarker{Positions: map[string]string{"source": old.EventID}}).Encode()
+	err = server.Subscribe(&pb.SubscribeRequest{ConsumerId: "expired-wire", After: progress, ReportAdmissionReady: true}, &mockSubscribeServer{
+		ctx: ctx,
+		sendFunc: func(frame *pb.PullerEvent) error {
+			require.Nil(t, frame.ChangeEvent)
+			require.Empty(t, frame.Progress)
+			require.False(t, frame.Ready)
+			return nil
+		},
+	})
+	require.Equal(t, codes.FailedPrecondition, status.Code(err))
+	require.Zero(t, server.SubscriberCount())
+}
+
 func (s *admissionEventSource) Readiness(context.Context) error {
 	if s.fatal.Load() {
 		return errors.New("private source credentials")
@@ -33,6 +87,13 @@ func (s *admissionEventSource) Readiness(context.Context) error {
 		return core.ErrCaptureUnavailable
 	}
 	return nil
+}
+
+func (s *admissionEventSource) ReplayRetained(ctx context.Context, progress *cursor.ProgressMarker, floors map[string]events.ClusterTime) (events.Iterator, error) {
+	if floors != nil {
+		return s.ReplayFromAdmission(ctx, progress.Positions, floors)
+	}
+	return s.Replay(ctx, progress.Positions, false)
 }
 
 func TestAdmissionWireIdleRefreshRecoveryAndSanitizedFailure(t *testing.T) {
@@ -117,6 +178,10 @@ func (s *nativePrefixSource) Readiness(ctx context.Context) error {
 		return s.handler(ctx, "backend", &events.StoreChangeEvent{Backend: "backend", EventID: "1-1-live", OpType: events.StoreOperationInsert, ClusterTime: events.ClusterTime{T: 1, I: 1}})
 	}
 	return nil
+}
+
+func (s *nativePrefixSource) ReplayRetained(ctx context.Context, progress *cursor.ProgressMarker, floors map[string]events.ClusterTime) (events.Iterator, error) {
+	return s.Replay(ctx, progress.Positions, false)
 }
 
 func TestAdmissionCannotOvertakeAcknowledgedNativeIngress(t *testing.T) {

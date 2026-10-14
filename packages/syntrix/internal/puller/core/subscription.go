@@ -194,6 +194,9 @@ func RunSubscription(ctx context.Context, sub *Subscriber, initialCatchUp bool, 
 					continue
 				}
 			}
+			if driver.CheckAdmission != nil && driver.CheckAdmission(ctx) != nil {
+				continue
+			}
 			if exit, stopped := subscriptionStopped(ctx, sub, SubscriptionPhaseReady); stopped {
 				return exit
 			}

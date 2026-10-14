@@ -86,11 +86,23 @@ subscriber's caller context is active, preserving fresh admission after planned
 Puller restart. Caller cancellation still ends the subscription, and permanent
 rejection remains terminal. An empty-source admission does not create progress.
 Current source availability checks live caller/process contexts, configured active
-capture and a usable durable checkpoint, including storage failures. Successful
-age/capacity retention can persist a history floor while source readiness and
-fresh ordinary admission at the registration boundary remain available. Actual
-requested replay positions remain constrained by retained history; verified
-boundaries, original overflow admission floors and explicit bootstrap reset-origin
+capture, recent actual native responses and a usable durable checkpoint, including
+storage failures. Actual response evidence expires after 3s; its original timestamp
+survives event/durable processing. Cached batches, checkpoints, Pings and renewed
+admission/readiness snapshots cannot refresh it. Native polling has a 1s server
+wait and separate 2s client poll/close contexts because server `MaxAwaitTime` does
+not bound a network read. Timeout or expired response evidence withdraws readiness
+recoverably until fresh actual source evidence becomes available. A poll timeout
+closes the stream; the existing retry path reopens from the durable checkpoint and
+requires a flushed empty live batch before admission. Source evidence is rechecked
+after checkpoint reads and after the admission delivery fence.
+Successful age/capacity retention can persist a history floor while source
+readiness and fresh ordinary admission at the registration boundary remain
+available. Monitored saved-position/recovery replay validates required keys/groups and opens its
+snapshots under retention synchronization before delivering a surviving suffix or
+reporting admitted. Missing or partial required history is terminal; generic
+`Replay` retains its existing scan semantics. Verified boundaries, original
+overflow admission floors and explicit bootstrap reset-origin
 requirements stay strict. Blocked channels clear readiness through freshness
 expiry without unbounded buffering or event loss.
 

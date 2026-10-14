@@ -32,6 +32,11 @@ type boundarySource interface {
 	ReplayBoundary(context.Context, string, bool) (events.Iterator, error)
 }
 
+type admissionSource interface {
+	Readiness(context.Context) error
+	ReplayRetained(context.Context, *cursor.ProgressMarker, map[string]events.ClusterTime) (events.Iterator, error)
+}
+
 // Server implements the PullerService gRPC interface.
 // It is designed to be registered with a unified gRPC server.
 type Server struct {
@@ -320,10 +325,10 @@ func (s *Server) Subscribe(req *pullerv1.SubscribeRequest, stream pullerv1.Pulle
 	)
 
 	var source boundarySource
-	var admissionSource interface{ Readiness(context.Context) error }
+	var monitored admissionSource
 	if req.ReportAdmissionReady {
 		var ok bool
-		admissionSource, ok = s.eventSource.(interface{ Readiness(context.Context) error })
+		monitored, ok = s.eventSource.(admissionSource)
 		if !ok {
 			return status.Error(codes.Unimplemented, "subscription admission unavailable")
 		}
@@ -364,6 +369,8 @@ func (s *Server) Subscribe(req *pullerv1.SubscribeRequest, stream pullerv1.Pulle
 			var err error
 			if source != nil {
 				iter, err = source.ReplayBoundary(ctx, progress.Encode(), false)
+			} else if monitored != nil {
+				iter, err = monitored.ReplayRetained(ctx, progress, nil)
 			} else {
 				iter, err = s.eventSource.Replay(ctx, progress.Positions, false)
 			}
@@ -373,7 +380,13 @@ func (s *Server) Subscribe(req *pullerv1.SubscribeRequest, stream pullerv1.Pulle
 			return iter, nil
 		},
 		OpenAdmissionReplay: func(ctx context.Context, progress *cursor.ProgressMarker, floors map[string]events.ClusterTime) (events.Iterator, error) {
-			iter, err := s.eventSource.ReplayFromAdmission(ctx, progress.Positions, floors)
+			var iter events.Iterator
+			var err error
+			if monitored != nil {
+				iter, err = monitored.ReplayRetained(ctx, progress, floors)
+			} else {
+				iter, err = s.eventSource.ReplayFromAdmission(ctx, progress.Positions, floors)
+			}
 			if err != nil {
 				return nil, fmt.Errorf("failed to start replay: %w", err)
 			}
@@ -405,7 +418,7 @@ func (s *Server) Subscribe(req *pullerv1.SubscribeRequest, stream pullerv1.Pulle
 		}
 	}
 	if req.ReportAdmissionReady {
-		driver.CheckAdmission = admissionSource.Readiness
+		driver.CheckAdmission = monitored.Readiness
 		driver.FenceAdmission = s.fenceIngress
 		driver.Maintain = nil
 		driver.Admission = func(_ context.Context, state string, generation uint64, reason string) error {

@@ -9,6 +9,7 @@ import (
 
 	pb "github.com/codetreker/syntrix/api/gen/puller/v1"
 	"github.com/codetreker/syntrix/internal/puller/config"
+	"github.com/codetreker/syntrix/internal/puller/cursor"
 	"github.com/codetreker/syntrix/internal/puller/events"
 	pullergrpc "github.com/codetreker/syntrix/internal/puller/grpc"
 	"github.com/stretchr/testify/require"
@@ -198,6 +199,10 @@ type admissionRestartSource struct {
 }
 
 func (s *admissionRestartSource) Readiness(context.Context) error { return nil }
+
+func (s *admissionRestartSource) ReplayRetained(ctx context.Context, progress *cursor.ProgressMarker, floors map[string]events.ClusterTime) (events.Iterator, error) {
+	return s.Replay(ctx, progress.Positions, false)
+}
 
 func (s *admissionRestartSource) Replay(ctx context.Context, after map[string]string, _ bool) (events.Iterator, error) {
 	select {
