@@ -5,12 +5,15 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"sync"
 
 	"github.com/codetreker/syntrix/internal/query/wire"
 	"github.com/codetreker/syntrix/internal/server/ratelimit"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/health"
+	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/reflection"
 )
 
@@ -27,7 +30,12 @@ type serverImpl struct {
 	authRateLimiter ratelimit.Limiter // Stricter auth-specific rate limiter
 
 	// gRPC State
-	grpcServer *grpc.Server
+	grpcServer    *grpc.Server
+	grpcStopDone  chan struct{}
+	grpcForceDone chan struct{}
+	healthServer  *health.Server
+	listenerWG    sync.WaitGroup
+	stopped       bool
 
 	// Lifecycle State
 	mu      sync.Mutex
@@ -74,6 +82,10 @@ func New(cfg Config, logger *slog.Logger) Service {
 		s.streamInterceptors(),
 	}
 	s.grpcServer = grpc.NewServer(opts...)
+	s.healthServer = health.NewServer()
+	s.healthServer.SetServingStatus("", healthpb.HealthCheckResponse_NOT_SERVING)
+	s.healthServer.SetServingStatus("syntrix.liveness", healthpb.HealthCheckResponse_SERVING)
+	healthpb.RegisterHealthServer(s.grpcServer, s.healthServer)
 
 	if s.cfg.EnableReflection {
 		reflection.Register(s.grpcServer)
@@ -88,37 +100,59 @@ func (s *serverImpl) Start(ctx context.Context) error {
 		s.mu.Unlock()
 		return errors.New("server already started")
 	}
-	// Shutdown may finish before this background startup is scheduled.
-	if ctx.Err() != nil {
+	if s.stopped || ctx.Err() != nil {
 		s.mu.Unlock()
 		return nil
 	}
-	s.started = true
-
-	// Initialize HTTP Server while holding the lock
 	s.initHTTPServer()
-	s.mu.Unlock()
-
+	httpListener, err := net.Listen("tcp", s.httpServer.Addr)
+	if err != nil {
+		s.mu.Unlock()
+		return fmt.Errorf("http listen error: %w", err)
+	}
+	grpcListener, err := net.Listen("tcp", fmt.Sprintf("%s:%d", s.cfg.Host, s.cfg.GRPCPort))
+	if err != nil {
+		_ = httpListener.Close()
+		s.mu.Unlock()
+		return fmt.Errorf("grpc listen error: %w", err)
+	}
+	s.started = true
 	errChan := make(chan error, 2)
-
-	// Start HTTP Listener
-	go s.runHTTPServer(errChan)
-
-	// Start gRPC Listener
-	go s.runGRPCServer(errChan)
-
-	// Wait for Error or Context Cancellation
+	s.listenerWG.Add(2)
+	go func() {
+		defer s.listenerWG.Done()
+		if err := s.httpServer.Serve(httpListener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			errChan <- fmt.Errorf("http server error: %w", err)
+		}
+	}()
+	go func() {
+		defer s.listenerWG.Done()
+		if err := s.grpcServer.Serve(grpcListener); err != nil && !errors.Is(err, grpc.ErrServerStopped) {
+			errChan <- fmt.Errorf("grpc server error: %w", err)
+		}
+	}()
+	s.mu.Unlock()
 	select {
 	case err := <-errChan:
 		return err
 	case <-ctx.Done():
-		return nil // Normal shutdown signal
+		return nil
 	}
+}
+
+func (s *serverImpl) SetServingStatus(role string, ready bool) {
+	status := healthpb.HealthCheckResponse_NOT_SERVING
+	if ready {
+		status = healthpb.HealthCheckResponse_SERVING
+	}
+	s.healthServer.SetServingStatus(role, status)
 }
 
 func (s *serverImpl) Stop(ctx context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.stopped = true
+	s.healthServer.Shutdown()
 
 	var wg sync.WaitGroup
 	errChan := make(chan error, 2)
@@ -142,23 +176,32 @@ func (s *serverImpl) Stop(ctx context.Context) error {
 			defer wg.Done()
 			s.logger.Info("Stopping gRPC server")
 
-			done := make(chan struct{})
-			go func() {
-				s.grpcServer.GracefulStop()
-				close(done)
-			}()
-
+			if s.grpcStopDone == nil {
+				s.grpcStopDone = make(chan struct{})
+				go func() { s.grpcServer.GracefulStop(); close(s.grpcStopDone) }()
+			}
 			select {
-			case <-done:
-				// Graceful stop completed
+			case <-s.grpcStopDone:
+				if s.grpcForceDone != nil {
+					select {
+					case <-s.grpcForceDone:
+					case <-ctx.Done():
+						errChan <- fmt.Errorf("grpc forced stop did not settle before its deadline: %w", ctx.Err())
+					}
+				}
 			case <-ctx.Done():
 				s.logger.Warn("Context deadline exceeded, forcing gRPC stop")
-				s.grpcServer.Stop()
+				if s.grpcForceDone == nil {
+					s.grpcForceDone = make(chan struct{})
+					go func() { s.grpcServer.Stop(); close(s.grpcForceDone) }()
+				}
+				errChan <- fmt.Errorf("grpc shutdown did not settle before its deadline: %w", ctx.Err())
 			}
 		}()
 	}
 
 	wg.Wait()
+	s.listenerWG.Wait()
 	close(errChan)
 
 	// Stop rate limiter cleanup goroutines

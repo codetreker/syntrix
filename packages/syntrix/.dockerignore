@@ -4,13 +4,13 @@
 .tmp
 bin
 syntrix
-syntrix-cli
+deployment-cli
 puller
 data
 keys
 logs
 configs
-deployment
+tools/deployment-cli
 coverage
 coverage.*
 test_coverage.html

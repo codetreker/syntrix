@@ -1,0 +1,26 @@
+mode: standalone
+resource_mode: operator
+namespace: syntrix-instance
+name_prefix: instance
+image: syntrix:development
+storage_class: ""
+storage_gib: 10
+connections:
+  mongodb_uri: "mongodb://mongodb.example.internal:27017/?replicaSet=rs0"
+  mongodb_database: syntrix
+  postgres_dsn: "postgres://syntrix:CHANGE_ME@postgres.example.internal:5432/syntrix?sslmode=require"
+signing_key_secret: ""
+identity:
+  admin_username: syntrix
+  admin_password: "CHANGE_ME_Admin123!"
+allowed_origins: ["http://localhost:8080"]
+bootstrap_resources:
+  requests: {cpu: 500m, memory: 512Mi}
+  limits: {cpu: "2", memory: 2Gi}
+workloads:
+  standalone:
+    name: instance
+    replicas: 1
+    resources:
+      requests: {cpu: 100m, memory: 128Mi}
+      limits: {cpu: "1", memory: 1Gi}

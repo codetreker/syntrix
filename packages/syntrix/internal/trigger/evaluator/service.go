@@ -23,8 +23,7 @@ type Service interface {
 	// LoadTriggers validates and loads trigger rules.
 	LoadTriggers(triggers []*types.Trigger) error
 
-	// Start begins watching for changes and evaluating triggers.
-	// Blocks until context is cancelled.
+	// Start blocks until cancellation or a terminal watch/processing failure.
 	Start(ctx context.Context) error
 
 	// Close releases resources.
@@ -38,6 +37,11 @@ type service struct {
 	publisher TaskPublisher
 	triggers  []*types.Trigger
 	mu        sync.RWMutex
+	running   bool
+	runCtx    context.Context
+	terminal  error
+	runCancel context.CancelFunc
+	startDone chan struct{}
 
 	// Async checkpoint saving
 	latestProgress   string
@@ -62,7 +66,24 @@ func (s *service) LoadTriggers(triggers []*types.Trigger) error {
 }
 
 // Start begins the trigger processing loop.
-func (s *service) Start(ctx context.Context) error {
+func (s *service) Start(ctx context.Context) (result error) {
+	s.mu.Lock()
+	if s.startDone != nil {
+		s.mu.Unlock()
+		return errors.New("trigger evaluator is already running or stopped")
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	s.running, s.runCtx, s.terminal = true, ctx, nil
+	s.runCancel, s.startDone = cancel, make(chan struct{})
+	s.mu.Unlock()
+	defer func() {
+		cancel()
+		s.mu.Lock()
+		s.running = false
+		s.terminal = result
+		close(s.startDone)
+		s.mu.Unlock()
+	}()
 	stream, err := s.watcher.Watch(ctx)
 	if err != nil {
 		return err
@@ -86,12 +107,21 @@ func (s *service) Start(ctx context.Context) error {
 			return nil
 		case evt, ok := <-stream:
 			if !ok {
-				return nil
+				if ctx.Err() != nil {
+					return nil
+				}
+				if source, ok := s.watcher.(interface{ TerminalError() error }); ok {
+					if err := source.TerminalError(); err != nil {
+						return err
+					}
+				}
+				return errors.New("trigger watcher stopped unexpectedly")
 			}
 
 			// Guard: skip events with no document data
 			if evt.Document == nil && evt.Before == nil {
 				slog.Warn("Skipping event with nil Document and Before")
+				s.acknowledge(evt.AdmissionSequence)
 				continue
 			}
 			if evt.Progress == "" {
@@ -104,6 +134,8 @@ func (s *service) Start(ctx context.Context) error {
 				}
 				return err
 			}
+			// Admission cannot pass unfinished publication; checkpoint persistence is asynchronous.
+			s.acknowledge(evt.AdmissionSequence)
 
 			// Update latest progress and notify (non-blocking)
 			if evt.Progress != "" {
@@ -120,6 +152,64 @@ func (s *service) Start(ctx context.Context) error {
 			}
 		}
 	}
+}
+
+// Shutdown settles the watcher before its borrowed Puller and storage dependencies may close.
+func (s *service) Shutdown(ctx context.Context) error {
+	s.mu.RLock()
+	cancel, started := s.runCancel, s.startDone
+	s.mu.RUnlock()
+	if started == nil {
+		return nil
+	}
+	cancel()
+	select {
+	case <-started:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	if source, ok := s.watcher.(interface{ Shutdown(context.Context) error }); ok {
+		return source.Shutdown(ctx)
+	}
+	return errors.New("trigger watcher settlement is unavailable")
+}
+
+func (s *service) acknowledge(sequence uint64) {
+	if source, ok := s.watcher.(interface{ Acknowledge(uint64) }); ok {
+		source.Acknowledge(sequence)
+	}
+}
+
+func (s *service) Readiness(ctx context.Context) error {
+	s.mu.RLock()
+	running, runCtx, terminal := s.running, s.runCtx, s.terminal
+	s.mu.RUnlock()
+	if terminal != nil {
+		return terminal
+	}
+	if !running {
+		return errors.New("trigger evaluator is not running")
+	}
+	if err := runCtx.Err(); err != nil {
+		return err
+	}
+	if source, ok := s.watcher.(interface{ Readiness(context.Context) error }); ok {
+		return source.Readiness(ctx)
+	}
+	return errors.New("trigger watcher admission state is unavailable")
+}
+
+func (s *service) TerminalError() error {
+	s.mu.RLock()
+	terminal := s.terminal
+	s.mu.RUnlock()
+	if terminal != nil {
+		return terminal
+	}
+	if source, ok := s.watcher.(interface{ TerminalError() error }); ok {
+		return source.TerminalError()
+	}
+	return nil
 }
 
 func (s *service) processEvent(ctx context.Context, evt events.SyntrixChangeEvent) error {

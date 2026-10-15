@@ -39,8 +39,10 @@ observable drops, and bounded shutdown; exporter outages must not change data
 operation results. [Puller health reporting](../feature/2026-09-07-puller-health-reporting.md)
 owns ingestion continuity reports. [Console health probes](../bug-fix/2026-09-07-console-health-probes.md)
 owns the authenticated backend readiness aggregation/API for Gateway, identity,
-and database dependencies. This proposal instruments those reports and their
-failures without determining readiness semantics.
+and database dependencies. The [managed runtime decision](../../implemented/architecture/2026-10-13-managed-runtime-contract.md)
+now owns module/role readiness, admission freshness and boolean HTTP/gRPC probes.
+This proposal instruments those delivered observations and future scoped reports
+without determining readiness semantics.
 
 ## Alternatives
 

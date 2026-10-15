@@ -220,6 +220,13 @@ All messages follow a standard JSON envelope:
 当前服务端在 `/realtime/ws?mode=replica-data` 提供独立复制数据模式；普通 WS/SSE
 保留既有协议。这里不使用上面的 seq/滑动窗口草图，也不实现另一套源 checkpoint。
 精确消息与容量由[复制参考](../../../reference/replication.md#replica-websocket-data)维护。
+Classic WS, replica WS and SSE share the
+[browser Origin policy](../../../reference/api.md#browser-origins) with REST.
+Realtime checks the policy before upgrade or streaming effects; its
+`allowed_origins` and `allow_dev_origin` settings must match the server policy.
+Managed runtime rejects development allowances and wildcard origins. Realtime
+readiness requires current background Streamer ingestion admission; shutdown
+cancels and drains that work before borrowed clients or backends close.
 
 ```text
 Streamer collection 变化 -> dirty / 200ms 合并 -> replica_changed

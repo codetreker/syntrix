@@ -1,7 +1,11 @@
 # Syntrix Platform Architecture
 
 **Status:** Accepted target architecture. The implementation status below identifies
-the runtime behavior that exists today and the remaining separation work.
+the runtime behavior that exists today and the remaining separation work. The
+[managed-instance design](design/server/console/03.instance_lifecycle.md) records
+the planned shared-infrastructure allocation and Console lifecycle contracts;
+the [lifecycle proposal](../.agents/notes/proposed/architecture/2026-10-12-console-instance-lifecycle.md)
+owns their rationale and scope.
 
 This document owns the platform's user categories, service boundaries, instance
 hierarchy, and database terminology. Component designs and references must use
@@ -52,7 +56,16 @@ through a separate provisioning adapter to manage predefined HTTP test workloads
 Console-managed full instance bundles and employee Management execution remain
 target work. Operators can deploy current standalone or distributed runtime services
 against existing MongoDB/PostgreSQL dependencies using the
-[instance deployment guide](../packages/syntrix/deployment/README.md).
+[instance deployment guide](../packages/syntrix/tools/deployment-cli/deployment/README.md). The planned
+Console lifecycle allocates private databases and runtime resources on
+administrator-registered shared infrastructure; it does not deploy MongoDB,
+PostgreSQL, or NATS server Pods. The implemented
+[managed runtime contract](design/server/console/04.managed_runtime_contract.md)
+provides tool-owned pure rendering and runtime-owned broker attachment, staged
+initialization and component readiness as prerequisites. The deployment tool
+consumes runtime contracts; runtime services do not import its configuration,
+renderer or templates. It does not itself allocate accounts,
+record Console instance intent or certify product acceptance.
 
 ## Instances, Projects, and Logical Databases
 
@@ -99,10 +112,12 @@ deleting an instance retires its project and runtime resources.
 | Syntrix database | The logical document-database product provided to developers | A project's business documents, accessed through Syntrix APIs and SDKs |
 | Physical MongoDB database or collection | An implementation storage namespace | Holds business documents for the configured logical Syntrix databases |
 
-Each instance contains Syntrix services, MongoDB, and PostgreSQL. PostgreSQL is
-the instance's private system database; it is not a developer-facing Syntrix
-database. MongoDB carries developer business documents. A logical Syntrix
-database need not correspond one-to-one to a physical MongoDB database or
+Each instance owns Syntrix runtime services, a physical MongoDB database for
+business documents, and a private system PostgreSQL database. Database privacy
+means separate database namespaces, credentials, and privileges; Console and
+multiple instances may share the same PostgreSQL server. PostgreSQL is not a
+developer-facing Syntrix database. MongoDB carries developer business documents.
+A logical Syntrix database need not correspond one-to-one to a physical MongoDB database or
 collection. The [storage design](design/server/core/storage/05.multi-database.md)
 owns the physical representation and routing contracts.
 
@@ -113,6 +128,27 @@ which also provides a location for future Management services; test workloads
 run in `syntrix-tests`. Management's persistence backend remains unchosen. An
 instance's PostgreSQL must not be treated as the global employee/developer
 account store or platform inventory authority.
+
+The planned managed-instance lifecycle uses administrator-registered MongoDB,
+PostgreSQL, and NATS servers and protected privileged credentials. Developers
+select a name, runtime mode, profile, and allowed origins. Console allocates a
+private MongoDB database and scoped user, a private PostgreSQL database and
+scoped role, and distributed trigger artifacts named by immutable instance ID.
+A shared NATS account is supported by that target: each instance has its own
+stream, subject namespace, and durable consumer; workers of the same instance
+share that consumer. Console PostgreSQL will own administrator resource settings,
+profiles, instance bindings, desired revisions, lifecycle phases, ownership
+receipts, encrypted secrets, and the accepted runtime release/package identity.
+For new instances, Console will resolve the latest complete successful published
+Syntrix release, download its matching CLI/templates, and freeze the source commit,
+archive identity and image version tag before provisioning. Bootstrap, acceptance,
+finalization and all runtime roles use that version tag; retries and ordinary
+restart preserve it. Published version tags must not be repointed or overwritten.
+The metadata image index digest remains recorded for verification and diagnostics,
+without being appended to the managed Pod image reference. This extends its current test-workload records
+without moving instance system records into the Console database. The
+[managed-instance design](design/server/console/03.instance_lifecycle.md) owns
+allocation, reconciliation, deletion, configuration, and the five-PR task sequence.
 
 The operator-managed templates select a namespace, workload names, resource
 requests/limits, and replicas through deployment values. Standalone retains one
@@ -190,10 +226,10 @@ queue. Go requires the version declared by `packages/syntrix/go.mod`.
 |---|---|---|
 | Platform Management | A cluster-control proposal exists; the Go Manager provides process composition | Employee-facing platform scheduling, monitoring, and resource management |
 | Console | `packages/console-server` owns configured developer authentication and PostgreSQL-backed Kubernetes test workloads; `packages/console-client` supplies bilingual cookie-based login, restoration, logout, and Overview | Full developer-owned Syntrix instance lifecycle and administration |
-| Instance deployment | `packages/syntrix` supplies a package-only image, standalone/distributed templates, and strict values-driven manifest generation with persistent runtime data and existing backend connections | Console-managed full-instance provisioning and employee fleet operations |
+| Instance deployment | `packages/syntrix` supplies a package-only image, standalone/distributed templates, and strict values-driven manifest generation with persistent runtime data and existing backend connections | Console-managed runtime bundles with private databases on shared infrastructure; employee fleet operations remain separate |
 | Identity | `internal/identity` owns current account/authn/config/repositories/runtime and narrow capabilities; Gateway owns HTTP adapters | A peer instance Identity service with project-scoped accounts and both OAuth/OIDC roles |
 | Account scope | Independent Console developer accounts and sessions; instance users still combine runtime-global roles and database administration | Separate platform employee, Console developer, and project end-user domains |
-| System storage | Console owns separate PostgreSQL source data; instance PostgreSQL stores users/catalog and revocation currently uses MongoDB | Instance system data, including identity/OAuth/session state, belongs in PostgreSQL |
+| System storage | Console owns separate PostgreSQL source data; instance PostgreSQL stores users/catalog and revocation currently uses MongoDB | Each instance has a private physical PostgreSQL database and scoped role; identity/OAuth/session state belongs there, even when the server is shared |
 | Project hierarchy | Existing database metadata and APIs have no project identity realm | Instance-owned projects, project-owned identity realms, and multiple databases per project |
 
 These implementation gaps must remain visible in API references and future
@@ -245,6 +281,7 @@ an operator action, not an implicit effect of starting Console.
 ## Related Design Owners
 
 - [Developer Console](design/server/console/01.console.md)
+- [Console Managed-Instance Lifecycle and Implementation Tasks](design/server/console/03.instance_lifecycle.md)
 - [Platform Management](design/server/console/02.control_plane.md)
 - [Instance Identity](design/server/core/identity/01.architecture.md)
 - [Gateway Document Authorization](design/server/gateway/authorization.md)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
@@ -45,8 +46,9 @@ func TestRemoteNATSProvider_Connect(t *testing.T) {
 		origFunc := natsConnectFunc
 		defer func() { natsConnectFunc = origFunc }()
 
+		cause := errors.New("cannot connect nats://admin:secret@example:4222")
 		natsConnectFunc = func(url string, opts ...nats.Option) (*nats.Conn, error) {
-			return nil, errors.New("connection refused")
+			return nil, cause
 		}
 
 		p := NewRemoteNATSProvider("nats://unreachable:4222")
@@ -54,7 +56,42 @@ func TestRemoteNATSProvider_Connect(t *testing.T) {
 
 		assert.Error(t, err)
 		assert.Nil(t, conn)
-		assert.Contains(t, err.Error(), "connection refused")
+		assert.ErrorIs(t, err, cause)
+		assert.NotContains(t, err.Error(), "secret")
+		assert.NotContains(t, err.Error(), "example")
+	})
+	t.Run("canceled context", func(t *testing.T) {
+		origFunc := natsConnectFunc
+		defer func() { natsConnectFunc = origFunc }()
+		natsConnectFunc = func(string, ...nats.Option) (*nats.Conn, error) {
+			t.Fatal("canceled startup must not dial")
+			return nil, nil
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		conn, err := NewRemoteNATSProvider("nats://test:4222").Connect(ctx)
+		assert.Nil(t, conn)
+		assert.ErrorIs(t, err, context.Canceled)
+	})
+	t.Run("deadline limits startup", func(t *testing.T) {
+		origFunc := natsConnectFunc
+		defer func() { natsConnectFunc = origFunc }()
+		natsConnectFunc = func(_ string, opts ...nats.Option) (*nats.Conn, error) {
+			options := nats.GetDefaultOptions()
+			for _, option := range opts {
+				assert.NoError(t, option(&options))
+			}
+			assert.LessOrEqual(t, options.Timeout, 100*time.Millisecond)
+			assert.Greater(t, options.Timeout, time.Duration(0))
+			assert.NotNil(t, options.CustomDialer)
+			assert.True(t, options.SkipHostLookup)
+			return &nats.Conn{}, nil
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+		defer cancel()
+		conn, err := NewRemoteNATSProvider("nats://test:4222").Connect(ctx)
+		assert.NoError(t, err)
+		assert.NotNil(t, conn)
 	})
 }
 

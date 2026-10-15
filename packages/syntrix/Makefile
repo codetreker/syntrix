@@ -1,6 +1,6 @@
-.PHONY: build run test coverage clean generate build-benchmark test-benchmark clean-benchmark
+.PHONY: build check-runtime-deps run test coverage clean generate build-benchmark test-benchmark clean-benchmark
 
-CLI_APP_NAME=syntrix-cli
+CLI_APP_NAME=deployment-cli
 APP_NAME=syntrix
 BENCHMARK_APP_NAME=syntrix-benchmark
 BUILD_DIR=bin
@@ -19,14 +19,21 @@ APP_BIN=$(BUILD_DIR)/$(APP_NAME)$(EXE_EXT)
 CLI_BIN=$(BUILD_DIR)/$(CLI_APP_NAME)$(EXE_EXT)
 BENCHMARK_BIN=$(BUILD_DIR)/$(BENCHMARK_APP_NAME)$(EXE_EXT)
 
-build:
+build: check-runtime-deps
 	@$(MKDIR_P)
 	@echo "Building $(CLI_APP_NAME)..."
-	@go build -o $(CLI_BIN) ./cmd/syntrix-cli
+	@go build -o $(CLI_BIN) ./tools/deployment-cli/cmd/deployment-cli
 	@echo "Building $(APP_NAME)..."
 	@go build -o $(APP_BIN) ./cmd/syntrix
 	@echo "Building $(BENCHMARK_APP_NAME)..."
 	@go build -o $(BENCHMARK_BIN) ./cmd/syntrix-benchmark
+
+check-runtime-deps:
+ifeq ($(OS),Windows_NT)
+	@powershell -NoProfile -Command "$$dependencies = go list -deps ./cmd/syntrix; if ($$LASTEXITCODE -ne 0) { exit $$LASTEXITCODE }; $$forbidden = $$dependencies | Select-String '^github\.com/codetreker/syntrix/(tools/deployment-cli|deployment|internal/deploymentcli)(/|$$)'; if ($$forbidden) { $$forbidden | Write-Error; exit 1 }"
+else
+	@./scripts/check-runtime-deps.sh
+endif
 
 run: build
 	@echo "Running $(APP_NAME)..."

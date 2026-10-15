@@ -107,7 +107,11 @@ type mockTriggerService struct {
 
 func (m *mockTriggerService) Start(ctx context.Context) error {
 	args := m.Called(ctx)
-	return args.Error(0)
+	if err := args.Error(0); err != nil {
+		return err
+	}
+	<-ctx.Done()
+	return nil
 }
 
 func (m *mockTriggerService) LoadTriggers(triggers []*trigger.Trigger) error {
@@ -125,7 +129,7 @@ func TestManager_Start_TriggerEvaluator_CallsStart(t *testing.T) {
 	bgCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	mockTS.On("Start", bgCtx).Return(nil)
+	mockTS.On("Start", mock.Anything).Return(nil)
 
 	mgr.Start(bgCtx)
 
@@ -433,7 +437,11 @@ type MockServerService struct {
 
 func (m *MockServerService) Start(ctx context.Context) error {
 	args := m.Called(ctx)
-	return args.Error(0)
+	if err := args.Error(0); err != nil {
+		return err
+	}
+	<-ctx.Done()
+	return nil
 }
 func (m *MockServerService) Stop(ctx context.Context) error {
 	args := m.Called(ctx)
@@ -507,7 +515,11 @@ type MockTriggerService struct {
 }
 
 func (m *MockTriggerService) Start(ctx context.Context) error {
-	return m.Called(ctx).Error(0)
+	if err := m.Called(ctx).Error(0); err != nil {
+		return err
+	}
+	<-ctx.Done()
+	return nil
 }
 func (m *MockTriggerService) LoadTriggers(triggers []*trigger.Trigger) error {
 	return m.Called(triggers).Error(0)
@@ -518,7 +530,11 @@ type MockTriggerConsumer struct {
 }
 
 func (m *MockTriggerConsumer) Start(ctx context.Context) error {
-	return m.Called(ctx).Error(0)
+	if err := m.Called(ctx).Error(0); err != nil {
+		return err
+	}
+	<-ctx.Done()
+	return nil
 }
 
 type MockAuthService struct {

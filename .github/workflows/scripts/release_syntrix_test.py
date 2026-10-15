@@ -37,16 +37,18 @@ class ReleasePipelineTest(unittest.TestCase):
         self.run_command("git", "init", "--bare", "--quiet", str(self.remote))
         self.git("init", "--quiet", "--initial-branch=main")
         self.git("remote", "add", "origin", str(self.remote))
-        deployment = self.repo / "packages/syntrix/deployment"
+        deployment = self.repo / "packages/syntrix/tools/deployment-cli/deployment"
         deployment.mkdir(parents=True)
         (deployment / "README.md").write_text(
-            "[Dockerfile](../Dockerfile)\n"
-            "[Storage](../../../docs/storage.md#bootstrap)\n"
+            "[Dockerfile](../../../Dockerfile)\n"
+            "[Storage](../../../../../docs/storage.md#bootstrap)\n"
+            "[Renderer](render.go)\n"
             "[Template](standalone/kubernetes.template.yml)\n"
         )
         (deployment / "RELEASE.md").write_text(
-            "[Deployment](README.md)\n[Workflow](../../../.github/workflows/syntrix-release.yml)\n"
+            "[Deployment](README.md)\n[Workflow](../../../../../.github/workflows/syntrix-release.yml)\n"
         )
+        (deployment / "render.go").write_text("package deployment\n")
         for mode in ("standalone", "distributed"):
             (deployment / mode).mkdir()
             (deployment / mode / "values.example.yml").write_text("image: syntrix:development\n")
@@ -91,6 +93,33 @@ class ReleasePipelineTest(unittest.TestCase):
     def release(self, operation, check=True):
         return self.run_command("bash", str(SCRIPT), operation, env=self.env, check=check)
 
+    def contract(self):
+        return {
+            "managed_runtime_contract": 1,
+            "version": self.env["SYNTRIX_VERSION"],
+            "git_commit": self.sha,
+            "modes": ["standalone", "distributed"],
+            "render_phases": ["bootstrap", "acceptance", "full"],
+        }
+
+    def prepare_clis(self, output=None):
+        if output is None:
+            output = json.dumps(self.contract()) + "\n"
+        self.env["FIXTURE_CLI_CALLS"] = str(self.root / "cli-calls")
+        source = (
+            "#!/usr/bin/env python3\nimport json\nimport os\nfrom pathlib import Path\nimport sys\n"
+            "if sys.argv[1:] == ['deployment-contract']:\n"
+            f"    sys.stdout.write({output!r})\n"
+            "else:\n"
+            "    with Path(os.environ['FIXTURE_CLI_CALLS']).open('a') as calls:\n"
+            "        calls.write(json.dumps(sys.argv[1:]) + '\\n')\n"
+        )
+        for arch in ("amd64", "arm64"):
+            cli = self.repo / f".tmp/release/bin/linux-{arch}/deployment-cli"
+            cli.parent.mkdir(parents=True, exist_ok=True)
+            cli.write_text(source)
+            cli.chmod(0o755)
+
     def test_versions_use_numeric_remote_tags_and_frozen_utc_date(self):
         self.release("prepare")
         self.assertIn("SYNTRIX_VERSION=261013.1\n", self.env_file.read_text())
@@ -130,12 +159,8 @@ class ReleasePipelineTest(unittest.TestCase):
 
     def test_bundle_uses_committed_files_and_pins_image_and_document_links(self):
         release_dir = self.repo / ".tmp/release"
-        for arch in ("amd64", "arm64"):
-            cli = release_dir / f"bin/linux-{arch}/syntrix-cli"
-            cli.parent.mkdir(parents=True)
-            cli.write_text("#!/bin/sh\nexit 0\n")
-            cli.chmod(0o755)
-        deployment = self.repo / "packages/syntrix/deployment"
+        self.prepare_clis()
+        deployment = self.repo / "packages/syntrix/tools/deployment-cli/deployment"
         (deployment / "standalone/values.example.yml").write_text("image: working-tree-only\n")
         (deployment / "untracked-secret").write_text("must not ship\n")
         self.release("bundle")
@@ -143,7 +168,10 @@ class ReleasePipelineTest(unittest.TestCase):
         with tarfile.open(archive) as packaged:
             prefix = "syntrix-261013.1/"
             self.assertNotIn(prefix + "deployment/untracked-secret", packaged.getnames())
+            self.assertNotIn(prefix + "deployment/render.go", packaged.getnames())
             metadata = json.load(packaged.extractfile(prefix + "meta.json"))
+            self.assertIs(type(metadata["managed_runtime_contract"]), int)
+            self.assertEqual(metadata["managed_runtime_contract"], 1)
             self.assertEqual(metadata["git_commit"], self.sha)
             self.assertEqual(metadata["git_tag"], "syntrix-261013.1")
             self.assertEqual(metadata["image"]["digest"], DIGEST)
@@ -152,6 +180,7 @@ class ReleasePipelineTest(unittest.TestCase):
             readme = packaged.extractfile(prefix + "deployment/README.md").read().decode()
             self.assertIn(source + "packages/syntrix/Dockerfile", readme)
             self.assertIn(source + "docs/storage.md#bootstrap", readme)
+            self.assertIn(source + "packages/syntrix/tools/deployment-cli/deployment/render.go", readme)
             self.assertIn("[Template](standalone/kubernetes.template.yml)", readme)
             root_readme = packaged.extractfile(prefix + "README.md").read().decode()
             self.assertIn("[Deployment](deployment/README.md)", root_readme)
@@ -160,7 +189,62 @@ class ReleasePipelineTest(unittest.TestCase):
                 values = packaged.extractfile(prefix + f"deployment/{mode}/values.example.yml").read().decode()
                 self.assertEqual(values, f"image: ghcr.io/codetreker/syntrix-server:261013.1@{DIGEST}\n")
             for arch in ("amd64", "arm64"):
-                self.assertEqual(packaged.getmember(prefix + f"bin/linux-{arch}/syntrix-cli").mode & 0o111, 0o111)
+                self.assertEqual(packaged.getmember(prefix + f"bin/linux-{arch}/deployment-cli").mode & 0o111, 0o111)
+        calls = [json.loads(line) for line in Path(self.env["FIXTURE_CLI_CALLS"]).read_text().splitlines()]
+        self.assertEqual(len(calls), 6)
+        for mode in ("standalone", "distributed"):
+            matching = [call for call in calls if f".tmp/release/{mode}" in call[-1]]
+            self.assertEqual(len(matching), 3)
+            self.assertEqual(sum("--bootstrap" in call and "--writes-quiesced" in call for call in matching), 1)
+            self.assertEqual(sum("--acceptance-only" in call for call in matching), 1)
+
+    def test_bundle_rejects_invalid_or_mismatched_contract_before_rendering(self):
+        invalid = []
+        for key, value in (
+            ("managed_runtime_contract", None), ("managed_runtime_contract", True),
+            ("managed_runtime_contract", 1.0), ("managed_runtime_contract", 2),
+            ("version", "development"), ("git_commit", "b" * 40),
+            ("modes", ["standalone"]), ("render_phases", ["bootstrap", "full"]),
+        ):
+            contract = self.contract()
+            if value is None:
+                del contract[key]
+            else:
+                contract[key] = value
+            invalid.append(json.dumps(contract))
+        invalid.extend(("not-json", "[]", "{}\n{}", " " * 4097))
+        for output in invalid:
+            with self.subTest(output=output[:100]):
+                self.prepare_clis(output)
+                result = self.release("bundle", check=False)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse(Path(self.env["FIXTURE_CLI_CALLS"]).exists())
+                self.assertFalse((self.repo / ".tmp/release/syntrix-261013.1.tar.gz").exists())
+
+    def test_build_cli_injects_matching_identity_for_both_architectures(self):
+        calls = self.root / "go-calls"
+        self.env["FIXTURE_GO_CALLS"] = str(calls)
+        self.executable("go", """#!/usr/bin/env python3
+import json
+import os
+from pathlib import Path
+import sys
+with Path(os.environ['FIXTURE_GO_CALLS']).open('a') as calls:
+    calls.write(json.dumps({'arguments': sys.argv[1:], 'os': os.environ['GOOS'],
+                            'architecture': os.environ['GOARCH'], 'cgo': os.environ['CGO_ENABLED']}) + '\\n')
+""")
+        self.release("build-cli")
+        builds = [json.loads(line) for line in calls.read_text().splitlines()]
+        self.assertEqual([build["architecture"] for build in builds], ["amd64", "arm64"])
+        for build in builds:
+            self.assertEqual(build["os"], "linux")
+            self.assertEqual(build["cgo"], "0")
+            arguments = build["arguments"]
+            self.assertEqual(arguments[arguments.index("-ldflags") + 1],
+                             f"-X main.version=261013.1 -X main.gitCommit={self.sha}")
+            self.assertEqual(arguments[-1], "./tools/deployment-cli/cmd/deployment-cli")
+            self.assertEqual(arguments[arguments.index("-o") + 1],
+                             f"../../.tmp/release/bin/linux-{build['architecture']}/deployment-cli")
 
     def test_push_requires_public_access_and_both_platforms(self):
         release_dir = self.repo / ".tmp/release"

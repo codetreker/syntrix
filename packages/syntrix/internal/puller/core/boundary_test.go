@@ -82,6 +82,7 @@ func nativeBoundaryFixture(t *testing.T) (*Puller, *Backend, string) {
 	t.Cleanup(func() { require.NoError(t, b.Close()) })
 	p := New(config.DefaultConfig(), logger)
 	backend := &Backend{name: "source", buffer: b}
+	backend.recordCaptureResponse(time.Now())
 	backend.setCaptureState(true, nil)
 	p.backends[backend.name] = backend
 	require.NoError(t, b.SaveCheckpoint(bson.Raw{5, 0, 0, 0, 0}))
@@ -219,6 +220,7 @@ func TestNativeReplayCorruptionNeverAnnouncesReady(t *testing.T) {
 	defer b.Close()
 	p := New(config.DefaultConfig(), logger)
 	backend := &Backend{name: "source", buffer: b}
+	backend.recordCaptureResponse(time.Now())
 	backend.setCaptureState(true, nil)
 	p.backends[backend.name] = backend
 	marker := (&cursor.ProgressMarker{Positions: map[string]string{"source": ""}, Lineages: map[string]string{"source": lineage}}).Encode()
@@ -646,6 +648,7 @@ func (s *idleBoundaryStream) TryNext(ctx context.Context) bool {
 	return false
 }
 func (s *idleBoundaryStream) ID() int64                   { return 1 }
+func (s *idleBoundaryStream) RemainingBatchLength() int   { return 0 }
 func (s *idleBoundaryStream) ResumeToken() bson.Raw       { return s.token }
 func (s *idleBoundaryStream) Decode(any) error            { return nil }
 func (s *idleBoundaryStream) Err() error                  { return s.ctx.Err() }
@@ -685,6 +688,7 @@ func TestNativeEmptyBoundarySurvivesRestartAndReplaysBeforeReady(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, token, restored)
 	backend.buffer = b
+	backend.recordCaptureResponse(time.Now())
 	backend.setCaptureState(true, nil)
 	evt := &events.StoreChangeEvent{Backend: "source", EventID: "1-1-a", ClusterTime: events.ClusterTime{T: 1, I: 1}}
 	require.NoError(t, b.Write(ctx, evt, token))

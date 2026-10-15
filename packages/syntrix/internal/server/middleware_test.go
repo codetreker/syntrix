@@ -111,7 +111,7 @@ func TestRecoveryMiddleware(t *testing.T) {
 }
 
 func TestCORSMiddleware(t *testing.T) {
-	cfg := Config{EnableCORS: true, AllowCredentials: true}
+	cfg := Config{EnableCORS: true, AllowCredentials: true, AllowedOrigins: []string{"https://example.com"}}
 	cfg.ApplyDefaults() // Apply defaults to get AllowedMethods and AllowedHeaders
 	srv := New(cfg, nil).(*serverImpl)
 

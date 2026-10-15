@@ -4,132 +4,89 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"time"
 
 	"github.com/codetreker/syntrix/internal/server"
 )
 
-// Start launches background tasks and starts the local Puller and Indexer.
-// The caller owns cancellation and Shutdown, including after a startup failure.
+func (m *Manager) launch(ctx context.Context, role string, blocking bool, task func(context.Context) error) {
+	m.wg.Add(1)
+	go func() {
+		defer m.wg.Done()
+		err := task(ctx)
+		if ctx.Err() == nil && (err != nil || blocking) {
+			m.fail(role, err)
+		}
+	}()
+}
+
+// Start launches owned tasks; terminal results are consumed through Wait.
 func (m *Manager) Start(bgCtx context.Context) error {
 	if m.opts.BootstrapIndexes && !m.bootstrapReady {
 		return errors.New("cannot start services before index bootstrap readiness")
 	}
-	// Start Unified Server Service
+	ctx := m.lifecycle(bgCtx)
 	if s := server.Default(); s != nil && !m.serverStarted {
-		m.wg.Add(1)
-		go func() {
-			defer m.wg.Done()
-			slog.Info("Starting Unified Server Service...")
-			if err := s.Start(bgCtx); err != nil {
-				slog.Error("Unified Server Service error", "error", err)
-			}
-		}()
+		m.serverStarted = true
+		m.launch(ctx, "server", true, s.Start)
 	}
-
-	// Start Streamer Service (only for local service, not when using gRPC client)
-	if m.streamerService != nil {
-		go func() {
-			if err := m.streamerService.Start(bgCtx); err != nil {
-				slog.Error("Failed to start Streamer Service", "error", err)
-			}
-		}()
-	}
-
-	// Start Realtime Background Tasks with retry
-	if m.rtServer != nil {
-		go func() {
-			// Give servers a moment to start
-			time.Sleep(50 * time.Millisecond)
-
-			maxRetries := 100
-			for i := 0; i < maxRetries; i++ {
-				// Check context before trying
-				select {
-				case <-bgCtx.Done():
-					return
-				default:
-				}
-
-				if err := m.rtServer.StartBackgroundTasks(bgCtx); err != nil {
-					// Log every 10th attempt to reduce noise
-					if (i+1)%10 == 0 {
-						slog.Warn("Failed to start realtime background tasks", "attempt", i+1, "max_attempts", maxRetries, "error", err)
-					}
-
-					// Wait with context check
-					select {
-					case <-bgCtx.Done():
-						return
-					case <-time.After(50 * time.Millisecond):
-						continue
-					}
-				}
-				slog.Info("Realtime background tasks started successfully")
-				return
-			}
-			slog.Error("Failed to start realtime background tasks after multiple attempts")
-		}()
-	}
-
-	// Start Trigger Evaluator Service
-	if m.triggerService != nil {
-		m.wg.Add(1)
-		go func() {
-			defer m.wg.Done()
-			slog.Info("Starting Trigger Evaluator Service...")
-			if err := m.triggerService.Start(bgCtx); err != nil {
-				slog.Error("Failed to start trigger watcher", "error", err)
-			}
-		}()
-	}
-
-	// Start Trigger Consumer (Delivery Worker)
-	if m.triggerConsumer != nil {
-		m.wg.Add(1)
-		go func() {
-			defer m.wg.Done()
-			slog.Info("Starting Trigger Consumer...")
-			if err := m.triggerConsumer.Start(bgCtx); err != nil {
-				slog.Error("Trigger Consumer stopped with error", "error", err)
-			}
-		}()
-	}
-
-	// Start Change Stream Puller
-	if m.pullerService != nil {
-		if !m.pullerStarted {
-			slog.Info("Starting Change Stream Puller...")
-			if err := m.pullerService.Start(bgCtx); err != nil {
-				return fmt.Errorf("start Change Stream Puller: %w", err)
-			}
+	if m.pullerService != nil && !m.pullerStarted {
+		if err := m.pullerService.Start(ctx); err != nil {
+			return fmt.Errorf("start Change Stream Puller: %w", err)
 		}
-
-		// Initialize gRPC Server event handler (server is registered with unified server)
-		if m.pullerGRPC != nil && !m.pullerGRPCInitialized {
-			slog.Info("Initializing Puller gRPC Service...")
-			m.pullerGRPC.Init()
-		}
+		m.pullerStarted = true
 	}
-
-	// Start Indexer Service
+	if m.pullerGRPC != nil && !m.pullerGRPCInitialized {
+		m.pullerGRPC.Init()
+		m.pullerGRPCInitialized = true
+	}
 	if m.indexerService != nil && !m.indexerStarted {
-		slog.Info("Starting Indexer Service...")
-		if err := m.indexerService.Start(bgCtx); err != nil {
+		if err := m.indexerService.Start(ctx); err != nil {
 			return fmt.Errorf("start Indexer Service: %w", err)
 		}
+		m.indexerStarted = true
 	}
-
-	// Start Deletion Worker
-	if m.deletionWorker != nil {
-		m.wg.Add(1)
-		go func() {
-			defer m.wg.Done()
-			if err := m.deletionWorker.Start(bgCtx); err != nil {
-				slog.Error("Failed to start Deletion Worker", "error", err)
+	if m.streamerService != nil {
+		if err := m.streamerService.Start(ctx); err != nil {
+			return fmt.Errorf("start Streamer: %w", err)
+		}
+	}
+	if m.rtServer != nil {
+		m.launch(ctx, "realtime", false, func(ctx context.Context) error {
+			ticker := time.NewTicker(50 * time.Millisecond)
+			defer ticker.Stop()
+			var last error
+			for attempt := 0; attempt < 100; attempt++ {
+				if ctx.Err() != nil {
+					return nil
+				}
+				if last = m.rtServer.StartBackgroundTasks(ctx); last == nil {
+					return nil
+				}
+				select {
+				case <-ctx.Done():
+					return nil
+				case <-ticker.C:
+				}
 			}
-		}()
+			return last
+		})
+	}
+	if !m.writersHeld() {
+		if m.triggerService != nil {
+			m.launch(ctx, roleEvaluator, true, m.triggerService.Start)
+		}
+		if m.triggerConsumer != nil {
+			m.launch(ctx, roleWorker, true, m.triggerConsumer.Start)
+		}
+		if m.deletionWorker != nil {
+			if err := m.deletionWorker.Start(ctx); err != nil {
+				return fmt.Errorf("start deletion worker: %w", err)
+			}
+		}
+	}
+	if m.health != nil {
+		m.launch(ctx, "readiness", false, func(ctx context.Context) error { m.sampleReadiness(ctx); return nil })
 	}
 	return nil
 }

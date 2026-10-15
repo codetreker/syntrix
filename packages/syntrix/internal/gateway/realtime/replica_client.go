@@ -97,7 +97,7 @@ func (s *Server) serveReplica(w http.ResponseWriter, r *http.Request) {
 	defer release()
 	u := upgrader
 	u.CheckOrigin = func(request *http.Request) bool {
-		return checkAllowedOrigin(request.Header.Get("Origin"), request.Host, s.cfg, hasCredentials(request)) == nil
+		return checkRequestOrigin(request, s.cfg) == nil
 	}
 	conn, err := u.Upgrade(w, r, nil)
 	if err != nil {

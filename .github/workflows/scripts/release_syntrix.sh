@@ -31,13 +31,16 @@ PY
 }
 
 build_cli() {
+  test -n "${SYNTRIX_VERSION:?expected release version}"
+  test -n "${GITHUB_SHA:?expected release source commit}"
   local arch
   for arch in amd64 arm64; do
     mkdir -p "$release_dir/bin/linux-$arch"
     (
       cd packages/syntrix
       CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build -trimpath \
-        -o "../../$release_dir/bin/linux-$arch/syntrix-cli" ./cmd/syntrix-cli
+        -ldflags "-X main.version=$SYNTRIX_VERSION -X main.gitCommit=$GITHUB_SHA" \
+        -o "../../$release_dir/bin/linux-$arch/deployment-cli" ./tools/deployment-cli/cmd/deployment-cli
     )
   done
 }
@@ -86,26 +89,77 @@ push_image() {
 }
 
 bundle() {
-  local root="$release_dir/syntrix-$SYNTRIX_VERSION" mode
+  local root="$release_dir/syntrix-$SYNTRIX_VERSION" mode native_arch
+  case "$(uname -m)" in
+    x86_64) native_arch=amd64 ;;
+    aarch64|arm64) native_arch=arm64 ;;
+    *) printf 'Unsupported release packaging architecture.\n' >&2; return 1 ;;
+  esac
   mkdir -p "$root/deployment"
-  git archive "$GITHUB_SHA:packages/syntrix/deployment" | tar -xf - -C "$root/deployment"
+  git archive "$GITHUB_SHA:packages/syntrix/tools/deployment-cli/deployment" README.md RELEASE.md standalone distributed \
+    | tar -xf - -C "$root/deployment"
   cp -a "$release_dir/bin" "$root/bin"
-  python3 - "$root" <<'PY'
+  python3 - "$root" "$native_arch" <<'PY'
 import json
 import os
 import posixpath
 import re
+import select
+import subprocess
 import sys
+import time
 from pathlib import Path
 from urllib.parse import urlsplit
 
 root = Path(sys.argv[1])
+native_arch = sys.argv[2]
 version = os.environ["SYNTRIX_VERSION"]
 sha = os.environ["GITHUB_SHA"]
 repository = os.environ["SYNTRIX_IMAGE_REPOSITORY"]
 digest = os.environ["SYNTRIX_IMAGE_DIGEST"]
 source_url = f'{os.environ["GITHUB_SERVER_URL"]}/{os.environ["GITHUB_REPOSITORY"]}/blob/{sha}/'
-deployment_source = "packages/syntrix/deployment"
+deployment_source = "packages/syntrix/tools/deployment-cli/deployment"
+
+def read_contract():
+    command = [str(root / f"bin/linux-{native_arch}/deployment-cli"), "deployment-contract"]
+    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    deadline = time.monotonic() + 10
+    output = bytearray()
+    try:
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise ValueError("deployment contract command timed out")
+            readable, _, _ = select.select([process.stdout], [], [], remaining)
+            if not readable:
+                raise ValueError("deployment contract command timed out")
+            chunk = os.read(process.stdout.fileno(), 4097 - len(output))
+            if not chunk:
+                break
+            output.extend(chunk)
+            if len(output) > 4096:
+                raise ValueError("deployment contract output exceeds 4096 bytes")
+        if process.wait(timeout=max(0.001, deadline - time.monotonic())) != 0:
+            raise ValueError("deployment contract command failed")
+    finally:
+        if process.poll() is None:
+            process.kill()
+        process.wait()
+        process.stdout.close()
+    contract = json.loads(output)
+    if not isinstance(contract, dict):
+        raise ValueError("deployment contract must be one JSON object")
+    if type(contract.get("managed_runtime_contract")) is not int or contract["managed_runtime_contract"] != 1:
+        raise ValueError("unsupported managed runtime contract")
+    if contract.get("version") != version or contract.get("git_commit") != sha:
+        raise ValueError("deployment contract does not match release identity")
+    if contract.get("modes") != ["standalone", "distributed"]:
+        raise ValueError("deployment contract does not support both modes")
+    if contract.get("render_phases") != ["bootstrap", "acceptance", "full"]:
+        raise ValueError("deployment contract does not support all render phases")
+    return contract
+
+contract = read_contract()
 
 def rewrite_links(text, relative_file, relocated=False):
     def rewrite(match):
@@ -115,7 +169,8 @@ def rewrite_links(text, relative_file, relocated=False):
             return match.group(0)
         target = posixpath.normpath(posixpath.join(deployment_source, posixpath.dirname(relative_file), url.path))
         suffix = (f"?{url.query}" if url.query else "") + (f"#{url.fragment}" if url.fragment else "")
-        if not target.startswith(deployment_source + "/"):
+        packaged_target = root / "deployment" / posixpath.relpath(target, deployment_source)
+        if not target.startswith(deployment_source + "/") or not packaged_target.exists():
             destination = source_url + target + suffix
         elif relocated:
             destination = "deployment/" + posixpath.relpath(target, deployment_source) + suffix
@@ -133,6 +188,7 @@ for mode in ("standalone", "distributed"):
         raise ValueError(f"expected one image field in {path}")
     path.write_text(text)
 metadata = {
+    "managed_runtime_contract": contract["managed_runtime_contract"],
     "version": version,
     "release_date": os.environ["SYNTRIX_RELEASE_DATE"],
     "built_at": os.environ["SYNTRIX_BUILT_AT"],
@@ -150,14 +206,18 @@ metadata = {
 (root / "meta.json").write_text(json.dumps(metadata, indent=2) + "\n")
 PY
   for mode in standalone distributed; do
-    "$root/bin/linux-amd64/syntrix-cli" render-kubernetes \
+    "$root/bin/linux-$native_arch/deployment-cli" render-kubernetes \
       --template "$root/deployment/$mode/kubernetes.template.yml" \
       --config "$root/deployment/$mode/values.example.yml" \
       --output "$release_dir/$mode.yml"
-    "$root/bin/linux-amd64/syntrix-cli" render-kubernetes \
+    "$root/bin/linux-$native_arch/deployment-cli" render-kubernetes \
       --template "$root/deployment/$mode/kubernetes.template.yml" \
       --config "$root/deployment/$mode/values.example.yml" \
       --bootstrap --writes-quiesced --output "$release_dir/$mode-bootstrap.yml"
+    "$root/bin/linux-$native_arch/deployment-cli" render-kubernetes \
+      --template "$root/deployment/$mode/kubernetes.template.yml" \
+      --config "$root/deployment/$mode/values.example.yml" \
+      --acceptance-only --output "$release_dir/$mode-acceptance.yml"
   done
   tar -czf "$release_dir/syntrix-$SYNTRIX_VERSION.tar.gz" -C "$release_dir" "syntrix-$SYNTRIX_VERSION"
 }

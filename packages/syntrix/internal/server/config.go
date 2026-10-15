@@ -1,6 +1,7 @@
 package server
 
 import (
+	"github.com/codetreker/syntrix/internal/core/origin"
 	"time"
 
 	services "github.com/codetreker/syntrix/internal/services/config"
@@ -18,7 +19,8 @@ type Config struct {
 	EnableCORS       bool          `yaml:"enable_cors"`
 
 	// CORS Configuration
-	AllowedOrigins   []string `yaml:"allowed_origins"`   // Allowed origins for CORS (empty allows all when EnableCORS is true)
+	AllowedOrigins   []string `yaml:"allowed_origins"`
+	AllowDevOrigin   bool     `yaml:"allow_dev_origin"`
 	AllowedMethods   []string `yaml:"allowed_methods"`   // Allowed HTTP methods for CORS
 	AllowedHeaders   []string `yaml:"allowed_headers"`   // Allowed headers for CORS
 	AllowCredentials bool     `yaml:"allow_credentials"` // Allow credentials in CORS requests
@@ -55,6 +57,8 @@ func DefaultConfig() Config {
 		HTTPIdleTimeout:  60 * time.Second,
 		GRPCPort:         9000,
 		ShutdownTimeout:  10 * time.Second,
+		AllowedOrigins:   origin.DefaultAllowedOrigins(),
+		AllowDevOrigin:   true,
 		AllowedMethods:   []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
 		AllowedHeaders:   []string{"Content-Type", "Authorization", "X-Request-ID", "X-Syntrix-Expected-Database-Identity"},
 		AllowCredentials: true,
@@ -129,5 +133,5 @@ func (c *Config) ResolvePaths(_, _ string) { _ = c }
 
 // Validate returns an error if the configuration is invalid.
 func (c *Config) Validate(_ services.DeploymentMode) error {
-	return nil
+	return (origin.Policy{AllowedOrigins: c.AllowedOrigins, AllowDevelopment: c.AllowDevOrigin}).Validate(false)
 }

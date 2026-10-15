@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/codetreker/syntrix/internal/core/origin"
 	"github.com/codetreker/syntrix/internal/ctxkeys"
 	"github.com/codetreker/syntrix/internal/server/ratelimit"
 	"github.com/google/uuid"
@@ -66,9 +67,7 @@ func (s *serverImpl) wrapMiddleware(h http.Handler) http.Handler {
 		s.loggingMiddleware,
 		s.securityHeadersMiddleware,
 	}
-	if s.cfg.EnableCORS {
-		mws = append(mws, s.corsMiddleware)
-	}
+	mws = append(mws, s.corsMiddleware)
 	// Add rate limiting if enabled
 	if s.rateLimiter != nil {
 		mws = append(mws, s.rateLimitMiddleware)
@@ -150,29 +149,16 @@ func TimeoutMiddleware(timeout time.Duration) Middleware {
 }
 
 func (s *serverImpl) corsMiddleware(next http.Handler) http.Handler {
+	policy := origin.Policy{AllowedOrigins: s.cfg.AllowedOrigins, AllowDevelopment: s.cfg.AllowDevOrigin}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		origin := r.Header.Get("Origin")
-
-		// Check if origin is allowed
-		allowedOrigin := ""
-		if len(s.cfg.AllowedOrigins) == 0 {
-			// No origins configured - allow all (development mode)
-			allowedOrigin = origin
-		} else {
-			for _, o := range s.cfg.AllowedOrigins {
-				if o == "*" {
-					allowedOrigin = origin
-					break
-				}
-				if o == origin {
-					allowedOrigin = origin
-					break
-				}
-			}
+		if err := policy.Check(r, false); err != nil {
+			writeError(w, http.StatusForbidden, "ORIGIN_REJECTED", "Request origin is not allowed")
+			return
 		}
-
-		if allowedOrigin != "" && origin != "" {
-			w.Header().Set("Access-Control-Allow-Origin", allowedOrigin)
+		supplied := r.Header.Get("Origin")
+		if supplied != "" && s.cfg.EnableCORS {
+			w.Header().Set("Access-Control-Allow-Origin", supplied)
+			w.Header().Add("Vary", "Origin")
 			if s.cfg.AllowCredentials {
 				w.Header().Set("Access-Control-Allow-Credentials", "true")
 			}
@@ -180,12 +166,10 @@ func (s *serverImpl) corsMiddleware(next http.Handler) http.Handler {
 			w.Header().Set("Access-Control-Allow-Headers", strings.Join(s.cfg.AllowedHeaders, ", "))
 			w.Header().Set("Access-Control-Max-Age", strconv.Itoa(s.cfg.CORSMaxAge))
 		}
-
-		if r.Method == "OPTIONS" {
+		if r.Method == http.MethodOptions && s.cfg.EnableCORS {
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
-
 		next.ServeHTTP(w, r)
 	})
 }
@@ -212,7 +196,7 @@ func (s *serverImpl) securityHeadersMiddleware(next http.Handler) http.Handler {
 func (s *serverImpl) rateLimitMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Health probes must remain available when clients exhaust a shared IP budget.
-		if r.URL.Path == "/health" && (r.Method == http.MethodGet || r.Method == http.MethodHead) {
+		if (r.URL.Path == "/health" || r.URL.Path == "/ready") && (r.Method == http.MethodGet || r.Method == http.MethodHead) {
 			next.ServeHTTP(w, r)
 			return
 		}

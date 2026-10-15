@@ -22,6 +22,7 @@ import (
 	identityconfig "github.com/codetreker/syntrix/internal/identity/config"
 	"github.com/codetreker/syntrix/internal/indexer"
 	indexer_config "github.com/codetreker/syntrix/internal/indexer/config"
+	"github.com/codetreker/syntrix/internal/initialization"
 	"github.com/codetreker/syntrix/internal/puller"
 	puller_config "github.com/codetreker/syntrix/internal/puller/config"
 	"github.com/codetreker/syntrix/internal/server"
@@ -36,14 +37,19 @@ import (
 
 func setupManagerFactories(t *testing.T) {
 	t.Helper()
+	originalInitialization := initializationFactory
 	originalBackends := storageBackendsFactory
 	originalStores := storageFactoryFactory
 	originalModule := identityModuleFactory
 	t.Cleanup(func() {
+		initializationFactory = originalInitialization
 		storageBackendsFactory = originalBackends
 		storageFactoryFactory = originalStores
 		identityModuleFactory = originalModule
 	})
+	initializationFactory = func(context.Context, storageconfig.Config, *storage.Backends) (initializationCoordinator, error) {
+		return fakeInitialization{}, nil
+	}
 	storageBackendsFactory = func(context.Context, *config.Config) (*storage.Backends, error) {
 		return &storage.Backends{}, nil
 	}
@@ -823,7 +829,7 @@ func TestManager_initDistributed_TriggerServicesError(t *testing.T) {
 
 	err := mgr.Init(ctx)
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "failed to connect to NATS")
+	assert.Contains(t, err.Error(), "failed to connect to pubsub provider")
 }
 
 // mockPullerService for streamer testing
@@ -1709,4 +1715,19 @@ func TestManager_initDatabaseService_NoDatabaseStore(t *testing.T) {
 	err = mgr.initDatabaseService(context.Background())
 	assert.NoError(t, err)
 	assert.Nil(t, mgr.databaseService)
+}
+
+type fakeInitialization struct{}
+
+func (fakeInitialization) Prepare(context.Context) (initialization.Receipt, error) {
+	return initialization.Receipt{State: initialization.Prepared}, nil
+}
+func (f fakeInitialization) PrepareFresh(ctx context.Context) (initialization.Receipt, error) {
+	return f.Prepare(ctx)
+}
+func (fakeInitialization) Inspect(context.Context) (initialization.Status, error) {
+	return initialization.Status{State: initialization.Finalized}, nil
+}
+func (fakeInitialization) Finalize(context.Context, string) (initialization.Receipt, error) {
+	return initialization.Receipt{State: initialization.Finalized}, nil
 }

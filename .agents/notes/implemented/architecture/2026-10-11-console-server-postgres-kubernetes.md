@@ -82,6 +82,13 @@ enforces total 90%, package 85%, and function 80% coverage, race detection,
 and critical uncovered-block checks. `make test`, `make coverage`, CI, and
 pre-push share the explicit enforcing entrypoint and require a PostgreSQL test
 database. Command code is included; no coverage exclusions are configured.
+The concurrent idempotency fixture holds a PostgreSQL SHARE table lock while
+all callers finish the absent-request lookup and wait for INSERT's ROW EXCLUSIVE
+lock. Observing every waiting INSERT before releasing the barrier guarantees
+one accepted request and conflict replay for the remaining callers. This makes
+branch coverage depend on the required database interleaving, not scheduler
+luck. Fixture cleanup releases the transaction and joins callers before dropping
+its private schema.
 
 ## Alternatives
 

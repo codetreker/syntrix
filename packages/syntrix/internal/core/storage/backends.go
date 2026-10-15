@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"slices"
 	"sync"
+	"time"
 
 	"github.com/codetreker/syntrix/internal/core/storage/config"
 	"github.com/codetreker/syntrix/internal/core/storage/mongo"
@@ -120,10 +121,16 @@ func (b *Backends) PostgresDB() *sql.DB {
 // Close releases each owned connection once and returns the same aggregated
 // result to repeated callers. Borrowed stores never close these resources.
 func (b *Backends) Close() error {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	return b.CloseContext(ctx)
+}
+
+func (b *Backends) CloseContext(ctx context.Context) error {
 	b.closeOnce.Do(func() {
 		var errs []error
 		for name, p := range b.providers {
-			if err := p.Close(context.Background()); err != nil {
+			if err := p.Close(ctx); err != nil {
 				errs = append(errs, fmt.Errorf("close backend %s: %w", name, err))
 			}
 		}

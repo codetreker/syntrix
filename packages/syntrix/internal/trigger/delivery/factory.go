@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/codetreker/syntrix/internal/core/pubsub"
+	pubsubconfig "github.com/codetreker/syntrix/internal/core/pubsub/config"
 	natspubsub "github.com/codetreker/syntrix/internal/core/pubsub/nats"
 	"github.com/codetreker/syntrix/internal/identity"
 	"github.com/codetreker/syntrix/internal/trigger/delivery/worker"
@@ -66,22 +67,34 @@ func (s *service) Start(ctx context.Context) error {
 }
 
 // NewConsumer creates a pubsub.Consumer from delivery config.
-func NewConsumer(nc *nats.Conn, cfg Config) (pubsub.Consumer, error) {
-	return newConsumerWithFactory(nc, cfg, natspubsub.NewJetStream)
+func NewConsumer(ctx context.Context, nc *nats.Conn, cfg Config, binding pubsubconfig.BrokerBinding) (pubsub.Consumer, error) {
+	return newConsumerWithFactory(ctx, nc, cfg, binding, natspubsub.NewJetStream)
 }
 
-// newConsumerWithFactory is the internal implementation that accepts a JetStream factory for testing.
-func newConsumerWithFactory(nc *nats.Conn, cfg Config, jsFactory func(*nats.Conn) (natspubsub.JetStream, error)) (pubsub.Consumer, error) {
+func newConsumerWithFactory(ctx context.Context, nc *nats.Conn, cfg Config, binding pubsubconfig.BrokerBinding, jsFactory func(*nats.Conn) (natspubsub.JetStream, error)) (pubsub.Consumer, error) {
 	js, err := jsFactory(nc)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create JetStream: %w", err)
 	}
 
+	if cfg.StreamName == "" {
+		cfg.StreamName = binding.StreamName
+	}
+	if cfg.ConsumerName == "" {
+		cfg.ConsumerName = binding.ConsumerName
+	}
+	if cfg.StorageType == "" {
+		cfg.StorageType = binding.Policy.Storage
+	}
 	cfg.ApplyDefaults()
-
-	return natspubsub.NewConsumer(js, pubsub.ConsumerOptions{
-		StreamName:   cfg.StreamName,
-		ConsumerName: cfg.ConsumerName,
-		Storage:      cfg.StorageTypeValue(),
+	if cfg.StreamName != binding.StreamName || cfg.ConsumerName != binding.ConsumerName || cfg.StorageType != binding.Policy.Storage {
+		return nil, fmt.Errorf("delivery stream_name, consumer_name, and storage_type must match broker binding")
+	}
+	return natspubsub.NewConsumer(ctx, js, binding, pubsub.ConsumerOptions{
+		StreamName:     cfg.StreamName,
+		ConsumerName:   cfg.ConsumerName,
+		FilterSubject:  binding.SubjectPrefix + ".>",
+		ChannelBufSize: cfg.ChannelBufSize,
+		Storage:        cfg.StorageTypeValue(),
 	})
 }

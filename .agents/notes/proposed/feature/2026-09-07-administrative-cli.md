@@ -4,17 +4,22 @@ Status: proposed
 
 ## Problem
 
-The [administrative entry point](../../../../packages/syntrix/cmd/syntrix-cli/main.go) only prints
-`"This is the syntrix-cli command."`. The [console design](../../../../docs/design/server/console/01.console.md)
-specifies rule publication, dry-run, rollback, version listing, and account
-administration commands. Operators cannot perform those workflows through the
-CLI. This is an unfinished client interface; it does not establish that every
-underlying server capability is missing. User listing and status updates, for
-example, already exist in the [authentication service](../../../../packages/syntrix/internal/identity/authn/service.go).
+The [deployment tool](../../../../packages/syntrix/tools/deployment-cli/cmd/deployment-cli/main.go)
+renders Kubernetes manifests and reports its deployment compatibility contract.
+It does not provide an authenticated administrative API client. The
+[console design](../../../../docs/design/server/console/01.console.md) describes
+rule publication, dry-run, rollback, version listing and account administration,
+but operators cannot perform those workflows through a supported CLI. This is
+an unfinished client interface; it does not establish that every underlying
+server capability is missing. User listing and status updates, for example,
+already exist in the [authentication service](../../../../packages/syntrix/internal/identity/authn/service.go).
 
 ## Proposal
 
-Implement the documented rules and auth command groups as clients of authenticated administrative APIs. The [platform architecture](../../../../docs/architecture.md) requires explicit employee Management, developer Console, and instance/project Identity authority. A command must select the authority and resource scope it targets; an application role named `admin` does not authorize employee or developer operations. Rules commands should support push, dry-run, activation,
+Implement an administrative client with the documented rules and auth command
+groups, separate from deployment rendering. The
+[deployment-tool decision](../../implemented/architecture/2026-10-13-deployment-cli-ownership.md)
+owns the existing tool's boundary. The [platform architecture](../../../../docs/architecture.md) requires explicit employee Management, developer Console, and instance/project Identity authority. A command must select the authority and resource scope it targets; an application role named `admin` does not authorize employee or developer operations. Rules commands should support push, dry-run, activation,
 rollback, and version listing. Auth commands should support user listing,
 creation, enable/disable, and password rotation with explicit account identifiers.
 Provide instance, project, target, and database selection, request deadlines, cancellation, readable

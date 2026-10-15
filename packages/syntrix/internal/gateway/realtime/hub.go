@@ -45,8 +45,11 @@ type Hub struct {
 
 	mu sync.RWMutex
 
-	runCtx   context.Context
-	runCtxMu sync.RWMutex
+	runCtx         context.Context
+	runCtxMu       sync.RWMutex
+	cleanupMu      sync.Mutex
+	cleanupTasks   sync.WaitGroup
+	cleanupClosing bool
 }
 
 type SubscriptionInfo struct {
@@ -85,6 +88,10 @@ func (h *Hub) Run(ctx context.Context) {
 			h.streamMu.Unlock()
 			h.invalidateReplicaConnections(ctx.Err())
 			h.shutdownClients()
+			h.cleanupMu.Lock()
+			h.cleanupClosing = true
+			h.cleanupMu.Unlock()
+			h.cleanupTasks.Wait()
 			return
 		case client := <-h.register:
 			h.mu.Lock()
@@ -104,6 +111,17 @@ func (h *Hub) Run(ctx context.Context) {
 			h.deliverLegacy(delivery)
 		}
 	}
+}
+
+func (h *Hub) startCleanup(work func()) bool {
+	h.cleanupMu.Lock()
+	defer h.cleanupMu.Unlock()
+	if h.cleanupClosing {
+		return false
+	}
+	h.cleanupTasks.Add(1)
+	go func() { defer h.cleanupTasks.Done(); work() }()
+	return true
 }
 
 type hubRegistration struct {

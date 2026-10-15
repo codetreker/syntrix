@@ -39,6 +39,16 @@ type natsConsumer struct {
 	inFlightCount   atomic.Int32 // Count of messages currently in dispatch()
 	drainTimeout    time.Duration
 	shutdownTimeout time.Duration
+	activeWorkers   atomic.Int32
+	stateMu         sync.RWMutex
+	running         bool
+	runCtx          context.Context
+	terminal        error
+	runCancel       context.CancelFunc
+	startDone       chan struct{}
+	workersDone     chan struct{}
+	messages        <-chan pubsub.Message
+	settlementGate  chan struct{}
 }
 
 // ConsumerOption configures the consumer.
@@ -99,46 +109,82 @@ func NewTaskConsumer(consumer pubsub.Consumer, w worker.DeliveryWorker, numWorke
 	return c
 }
 
-// Start begins consuming messages. It blocks until the context is cancelled.
-func (c *natsConsumer) Start(ctx context.Context) error {
+// Start blocks until cancellation or terminal consumer failure and settles the source and worker pool.
+func (c *natsConsumer) Start(ctx context.Context) (result error) {
+	c.stateMu.Lock()
+	if c.startDone != nil {
+		c.stateMu.Unlock()
+		return errors.New("trigger delivery pool is already running or stopped")
+	}
+	runCtx, cancel := context.WithCancel(ctx)
+	c.running, c.runCtx, c.terminal = true, runCtx, nil
+	c.runCancel, c.startDone = cancel, make(chan struct{})
+	c.settlementGate = make(chan struct{}, 1)
+	c.closing.Store(false)
+	c.stateMu.Unlock()
+	defer func() {
+		cancel()
+		c.stateMu.Lock()
+		c.running, c.terminal = false, result
+		close(c.startDone)
+		c.stateMu.Unlock()
+	}()
 	// Subscribe to messages (stream/consumer creation handled by pubsub.Consumer)
-	msgCh, err := c.consumer.Subscribe(ctx)
+	msgCh, err := c.consumer.Subscribe(runCtx)
 	if err != nil {
 		return fmt.Errorf("failed to subscribe: %w", err)
 	}
+	c.stateMu.Lock()
+	c.messages = msgCh
+	c.stateMu.Unlock()
 
 	// Initialize Worker Pool
 	c.workerChans = make([]chan pubsub.Message, c.numWorkers)
 	for i := 0; i < c.numWorkers; i++ {
 		c.workerChans[i] = make(chan pubsub.Message, c.channelBufSize)
 		c.wg.Add(1)
-		go c.workerLoop(ctx, i)
+		go c.workerLoop(runCtx, i)
 	}
 
 	slog.Info("Trigger Consumer started, waiting for messages", "num_workers", c.numWorkers)
 
-	// Message loop (replaces callback pattern)
-	for msg := range msgCh {
-		c.dispatch(msg)
+consume:
+	for {
+		select {
+		case <-runCtx.Done():
+			break consume
+		case msg, ok := <-msgCh:
+			if !ok {
+				if runCtx.Err() == nil {
+					result = c.consumerError()
+					if result == nil {
+						result = errors.New("trigger delivery consumer stopped unexpectedly")
+					}
+				}
+				break consume
+			}
+			c.dispatchMessage(runCtx, msg)
+		}
 	}
-	// Channel closed means context is cancelled, proceed to shutdown
+	cancel()
 
-	// Phase 1: Stop accepting new messages (already done - channel closed)
 	slog.Info("Stopping Trigger Consumer...")
 	c.closing.Store(true)
 
-	// Phase 2: Wait for in-flight dispatches to complete
+	// The source closes only after its backend consume loop has stopped.
 	drainCtx, drainCancel := context.WithTimeout(context.Background(), c.drainTimeout)
 	defer drainCancel()
+	result = errors.Join(result, c.drainMessages(drainCtx, msgCh))
 	c.waitForDrain(drainCtx)
 
-	// Phase 3: Close worker channels
 	for _, ch := range c.workerChans {
 		close(ch)
 	}
 
-	// Phase 4: Wait for workers with timeout
 	done := make(chan struct{})
+	c.stateMu.Lock()
+	c.workersDone = done
+	c.stateMu.Unlock()
 	go func() {
 		c.wg.Wait()
 		close(done)
@@ -151,10 +197,111 @@ func (c *natsConsumer) Start(ctx context.Context) error {
 	case <-done:
 		slog.Info("All workers stopped gracefully")
 	case <-shutdownCtx.Done():
-		slog.Warn("Shutdown timeout exceeded, some workers may still be running")
+		result = errors.Join(result, errors.New("trigger delivery worker shutdown timed out"))
 	}
 
+	return result
+}
+
+// Shutdown confirms source and worker settlement after Start, including a timed-out shutdown.
+// A failed attempt retains the owned lifecycle state for a later bounded retry.
+func (c *natsConsumer) Shutdown(ctx context.Context) error {
+	c.stateMu.RLock()
+	cancel, started, gate := c.runCancel, c.startDone, c.settlementGate
+	c.stateMu.RUnlock()
+	if started == nil {
+		return nil
+	}
+	cancel()
+	select {
+	case <-started:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	select {
+	case gate <- struct{}{}:
+		defer func() { <-gate }()
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	c.stateMu.RLock()
+	messages, workersDone := c.messages, c.workersDone
+	c.stateMu.RUnlock()
+	if messages != nil {
+		if err := c.drainMessages(ctx, messages); err != nil {
+			return err
+		}
+	}
+	if workersDone != nil {
+		select {
+		case <-workersDone:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
 	return nil
+}
+
+func (c *natsConsumer) drainMessages(ctx context.Context, messages <-chan pubsub.Message) error {
+	var result error
+	for {
+		select {
+		case msg, ok := <-messages:
+			if !ok {
+				return result
+			}
+			result = errors.Join(result, msg.Nak())
+		case <-ctx.Done():
+			return errors.Join(result, fmt.Errorf("trigger delivery consumer shutdown timed out: %w", ctx.Err()))
+		}
+	}
+}
+
+func (c *natsConsumer) consumerError() error {
+	if source, ok := c.consumer.(pubsub.ConsumerState); ok {
+		return source.Err()
+	}
+	return nil
+}
+
+func (c *natsConsumer) Readiness(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	c.stateMu.RLock()
+	running, runCtx, terminal := c.running, c.runCtx, c.terminal
+	c.stateMu.RUnlock()
+	if terminal != nil {
+		return terminal
+	}
+	if !running {
+		return errors.New("trigger delivery pool is not active")
+	}
+	if err := runCtx.Err(); err != nil {
+		return err
+	}
+	if c.closing.Load() || c.activeWorkers.Load() != int32(c.numWorkers) {
+		return errors.New("trigger delivery pool is not active")
+	}
+	if source, ok := c.consumer.(pubsub.ConsumerState); ok {
+		if err := source.Err(); err != nil {
+			return err
+		}
+		if source.Ready() {
+			return nil
+		}
+	}
+	return errors.New("trigger delivery consumer is not active")
+}
+
+func (c *natsConsumer) TerminalError() error {
+	c.stateMu.RLock()
+	terminal := c.terminal
+	c.stateMu.RUnlock()
+	if terminal != nil {
+		return terminal
+	}
+	return c.consumerError()
 }
 
 // waitForDrain waits for all in-flight dispatch() calls to complete.
@@ -180,6 +327,10 @@ func (c *natsConsumer) waitForDrain(ctx context.Context) {
 }
 
 func (c *natsConsumer) dispatch(msg pubsub.Message) {
+	c.dispatchMessage(context.Background(), msg)
+}
+
+func (c *natsConsumer) dispatchMessage(ctx context.Context, msg pubsub.Message) {
 	// Track in-flight count for graceful shutdown
 	c.inFlightCount.Add(1)
 	defer c.inFlightCount.Add(-1)
@@ -205,13 +356,23 @@ func (c *natsConsumer) dispatch(msg pubsub.Message) {
 	hash := h.Sum32()
 	workerIdx := int(hash % uint32(c.numWorkers))
 
-	c.workerChans[workerIdx] <- msg
+	select {
+	case c.workerChans[workerIdx] <- msg:
+	case <-ctx.Done():
+		msg.Nak()
+	}
 }
 
 func (c *natsConsumer) workerLoop(ctx context.Context, id int) {
 	defer c.wg.Done()
+	c.activeWorkers.Add(1)
+	defer c.activeWorkers.Add(-1)
 
 	for msg := range c.workerChans[id] {
+		if ctx.Err() != nil {
+			msg.Nak()
+			continue
+		}
 		if err := c.processMsg(ctx, msg); err != nil {
 			if types.IsFatal(err) {
 				slog.Error("Fatal error processing message. Terminating.", "worker_id", id, "error", err)

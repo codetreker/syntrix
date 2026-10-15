@@ -25,9 +25,15 @@ import (
 // selected derived stores before Init opens them. Source storage is never reset.
 // Operators must stop other processes using these paths before calling it.
 func (m *Manager) PrepareIndexBootstrap() error {
+	if m.opts.InitializationAcceptance && m.opts.BootstrapIndexes {
+		return errors.New("initialization acceptance and bootstrap are mutually exclusive")
+	}
+	if m.opts.InitializationAcceptance && !m.opts.WritesQuiesced {
+		return errors.New("initialization acceptance requires --writes-quiesced")
+	}
 	if !m.opts.BootstrapIndexes {
-		if m.opts.WritesQuiesced || m.opts.ResetDerived {
-			return errors.New("--writes-quiesced and --reset-derived require --bootstrap-indexes")
+		if m.opts.ResetDerived || (m.opts.WritesQuiesced && !m.opts.InitializationAcceptance) {
+			return errors.New("--reset-derived requires --bootstrap-indexes; --writes-quiesced requires bootstrap or initialization acceptance")
 		}
 		return nil
 	}
@@ -47,6 +53,7 @@ func (m *Manager) PrepareIndexBootstrap() error {
 // operationCtx bounds inventory, scanning, publication, and applied readiness.
 // Call before Start so internal writers remain stopped throughout maintenance.
 func (m *Manager) BootstrapIndexes(lifeCtx, operationCtx context.Context) error {
+	lifeCtx = m.lifecycle(lifeCtx)
 	if !m.opts.BootstrapIndexes || !m.opts.WritesQuiesced {
 		return errors.New("index bootstrap requires maintenance mode and quiesced writes")
 	}
@@ -104,6 +111,7 @@ func (m *Manager) BootstrapIndexes(lifeCtx, operationCtx context.Context) error 
 			defer m.wg.Done()
 			if err := s.Start(lifeCtx); err != nil {
 				cancel(fmt.Errorf("bootstrap server failed: %w", err))
+				m.fail("server", err)
 				slog.Error("Bootstrap server stopped", "error", err)
 			}
 		}()

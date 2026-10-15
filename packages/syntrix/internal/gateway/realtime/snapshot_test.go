@@ -32,6 +32,9 @@ func snapshotClient(t *testing.T, pages ...*storage.ReplicationPullResponse) (*C
 		hub: NewTestHub(), queryService: service, database: "db", authenticated: true,
 		send: make(chan BaseMessage, 3), subscriptions: make(map[string]Subscription), streamerSubIDs: make(map[string]hubRegistration),
 	}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	client.hub.setRunCtx(ctx)
 	t.Cleanup(func() { service.AssertExpectations(t) })
 	return client, service
 }

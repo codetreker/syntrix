@@ -58,6 +58,43 @@ func TestBufferBoundaryPersistsLineageAndPruningFloor(t *testing.T) {
 	require.ErrorContains(t, b.ValidatePosition(eventsToWrite[1].BufferKey(), lineage), "expired")
 }
 
+func TestAdmissionGroupSnapshotRejectsPrunedHistoryAndRetainsOpenedPrefix(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	b, err := New(Options{Path: t.TempDir()})
+	require.NoError(t, err)
+	defer b.Close()
+	first := &events.StoreChangeEvent{EventID: "1-1-a", ClusterTime: events.ClusterTime{T: 1, I: 1}}
+	peer := &events.StoreChangeEvent{EventID: "1-1-b", ClusterTime: first.ClusterTime}
+	tail := &events.StoreChangeEvent{EventID: "2-1-tail", ClusterTime: events.ClusterTime{T: 2, I: 1}}
+	for _, event := range []*events.StoreChangeEvent{first, peer, tail} {
+		require.NoError(t, b.Write(ctx, event, testToken))
+	}
+	require.NoError(t, b.Flush(ctx))
+	_, err = b.ScanFromGroup(first.ClusterTime, "wrong")
+	require.ErrorContains(t, err, "lineage")
+	iter, err := b.ScanFromGroup(first.ClusterTime, b.Lineage())
+	require.NoError(t, err)
+	require.NoError(t, b.Delete(first.BufferKey()))
+	var received []string
+	for iter.Next() {
+		received = append(received, iter.Event().EventID)
+	}
+	require.NoError(t, iter.Err())
+	require.NoError(t, iter.Close())
+	require.Equal(t, []string{first.EventID, peer.EventID, tail.EventID}, received)
+	_, err = b.ScanFromGroup(first.ClusterTime, b.Lineage())
+	require.ErrorContains(t, err, "expired")
+	iter, err = b.ScanFromGroup(tail.ClusterTime, b.Lineage())
+	require.NoError(t, err)
+	require.True(t, iter.Next())
+	require.Equal(t, tail.EventID, iter.Event().EventID)
+	require.NoError(t, iter.Close())
+	require.NoError(t, b.Close())
+	_, err = b.ScanFromGroup(tail.ClusterTime, b.Lineage())
+	require.ErrorContains(t, err, "closed")
+}
+
 func TestBufferBoundaryRejectsDamagedLineage(t *testing.T) {
 	t.Parallel()
 	for _, missing := range []bool{false, true} {

@@ -2,108 +2,117 @@ package nats
 
 import (
 	"context"
-	"fmt"
-	"log"
+	"errors"
+	"sync"
 	"sync/atomic"
 
 	"github.com/codetreker/syntrix/internal/core/pubsub"
+	pubsubconfig "github.com/codetreker/syntrix/internal/core/pubsub/config"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
-// jetStreamConsumer implements pubsub.Consumer using NATS JetStream.
 type jetStreamConsumer struct {
-	js   JetStream
-	opts pubsub.ConsumerOptions
+	js       JetStream
+	binding  pubsubconfig.BrokerBinding
+	opts     pubsub.ConsumerOptions
+	mu       sync.Mutex
+	running  bool
+	terminal error
+	ready    atomic.Bool
 }
 
-// NewConsumer creates a new Consumer backed by NATS JetStream.
-func NewConsumer(js JetStream, opts pubsub.ConsumerOptions) (pubsub.Consumer, error) {
-	if js == nil {
-		return nil, fmt.Errorf("jetstream cannot be nil")
+func NewConsumer(ctx context.Context, js JetStream, binding pubsubconfig.BrokerBinding, opts pubsub.ConsumerOptions) (pubsub.Consumer, error) {
+	if opts.StreamName != binding.StreamName || opts.ConsumerName != binding.ConsumerName || opts.FilterSubject != binding.SubjectPrefix+".>" || opts.Storage != bindingStorage(binding) {
+		return nil, errors.New("consumer options conflict with broker binding")
 	}
-
-	// Apply defaults
 	if opts.ChannelBufSize <= 0 {
-		opts.ChannelBufSize = pubsub.DefaultConsumerOptions().ChannelBufSize
+		return nil, errors.New("consumer channel buffer size must be positive")
 	}
-	if opts.StreamName == "" {
-		return nil, fmt.Errorf("stream name is required")
+	if _, err := attach(ctx, js, binding, true); err != nil {
+		return nil, err
 	}
-
-	return &jetStreamConsumer{js: js, opts: opts}, nil
+	return &jetStreamConsumer{js: js, binding: binding, opts: opts}, nil
 }
-
-// Subscribe starts consuming messages and returns a channel.
+func (c *jetStreamConsumer) Ready() bool { return c.ready.Load() }
+func (c *jetStreamConsumer) Err() error  { c.mu.Lock(); defer c.mu.Unlock(); return c.terminal }
 func (c *jetStreamConsumer) Subscribe(ctx context.Context) (<-chan pubsub.Message, error) {
-	// Ensure stream exists
-	filterSubject := c.opts.FilterSubject
-	if filterSubject == "" {
-		filterSubject = c.opts.StreamName + ".>"
+	c.mu.Lock()
+	if c.running {
+		c.mu.Unlock()
+		return nil, errors.New("consumer subscription already active")
 	}
-
-	storage := jetstream.MemoryStorage
-	if c.opts.Storage == pubsub.FileStorage {
-		storage = jetstream.FileStorage
-	}
-
-	_, err := c.js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
-		Name:     c.opts.StreamName,
-		Subjects: []string{filterSubject},
-		Storage:  storage,
-	})
+	c.running, c.terminal = true, nil
+	c.mu.Unlock()
+	consumer, err := attach(ctx, c.js, c.binding, false)
 	if err != nil {
-		return nil, fmt.Errorf("failed to ensure stream: %w", err)
+		c.mu.Lock()
+		c.running = false
+		c.mu.Unlock()
+		return nil, err
 	}
-
-	// Create durable consumer
-	consumerName := c.opts.ConsumerName
-	if consumerName == "" {
-		consumerName = "consumer"
-	}
-
-	consumer, err := c.js.CreateOrUpdateConsumer(ctx, c.opts.StreamName, jetstream.ConsumerConfig{
-		Durable:       consumerName,
-		AckPolicy:     jetstream.AckExplicitPolicy,
-		FilterSubject: filterSubject,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to create consumer: %w", err)
-	}
-
-	// Create message channel
 	msgCh := make(chan pubsub.Message, c.opts.ChannelBufSize)
-
-	// Track if we're closing to avoid sending to closed channel
-	var closing atomic.Bool
-
-	// Start consuming
+	consumeCtx, cancel := context.WithCancel(ctx)
+	// Closed can already resolve after connection loss while a callback is still settling.
+	// We join active callbacks and prevent cancelled callbacks from sending after channel closure.
+	// https://github.com/nats-io/nats.go/blob/a0e7b702c6b8ef9f86d09008d8cfcb4623fdd608/jetstream/pull.go#L805-L817
+	var callbacks sync.Mutex
 	cc, err := consumer.Consume(func(msg jetstream.Msg) {
-		if closing.Load() {
-			msg.Nak()
+		callbacks.Lock()
+		defer callbacks.Unlock()
+		if consumeCtx.Err() != nil {
+			_ = msg.Nak()
 			return
 		}
 		select {
 		case msgCh <- WrapMessage(msg):
-		case <-ctx.Done():
-			msg.Nak()
+		case <-consumeCtx.Done():
+			_ = msg.Nak()
 		}
-	})
+	}, jetstream.ConsumeErrHandler(func(_ jetstream.ConsumeContext, err error) {
+		if errors.Is(err, jetstream.ErrConsumerDeleted) || errors.Is(err, jetstream.ErrBadRequest) || errors.Is(err, jetstream.ErrConnectionClosed) {
+			c.mu.Lock()
+			c.terminal = &OperationError{Operation: "consume", Cause: err}
+			c.mu.Unlock()
+			c.ready.Store(false)
+			cancel()
+		}
+	}))
 	if err != nil {
+		cancel()
 		close(msgCh)
-		return nil, fmt.Errorf("failed to start consumer: %w", err)
+		c.mu.Lock()
+		c.running = false
+		c.mu.Unlock()
+		return nil, &OperationError{Operation: "consume startup", Cause: err}
 	}
-
-	log.Printf("[pubsub] Consumer subscribed, stream=%s", c.opts.StreamName)
-
-	// Goroutine to handle shutdown
+	c.mu.Lock()
+	if c.terminal == nil && consumeCtx.Err() == nil {
+		c.ready.Store(true)
+	}
+	c.mu.Unlock()
+	closed := cc.Closed()
 	go func() {
-		<-ctx.Done()
-		log.Println("[pubsub] Stopping consumer...")
-		closing.Store(true)
+		select {
+		case <-consumeCtx.Done():
+		case <-closed:
+			if ctx.Err() == nil {
+				c.mu.Lock()
+				if c.terminal == nil {
+					c.terminal = errors.New("NATS consume loop stopped unexpectedly")
+				}
+				c.mu.Unlock()
+			}
+		}
+		c.ready.Store(false)
+		cancel()
 		cc.Stop()
+		<-closed
+		callbacks.Lock()
 		close(msgCh)
-		log.Println("[pubsub] Consumer stopped")
+		callbacks.Unlock()
+		c.mu.Lock()
+		c.running = false
+		c.mu.Unlock()
 	}()
-
 	return msgCh, nil
 }

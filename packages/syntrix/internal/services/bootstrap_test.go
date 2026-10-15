@@ -44,6 +44,7 @@ func TestBootstrapCaptureDefaultConfiguration(t *testing.T) {
 		require.NoError(t, validateBootstrapCapture(cfg, []string{"default", "dynamic"}))
 	})
 	t.Run("shipped configuration", func(t *testing.T) {
+		t.Setenv("SYNTRIX_DEPLOYMENT_MODE", "standalone")
 		data, err := os.ReadFile(filepath.Join("..", "..", "configs", "config.yml"))
 		require.NoError(t, err)
 		var shipped config.Config

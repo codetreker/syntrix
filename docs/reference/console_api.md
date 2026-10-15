@@ -117,7 +117,13 @@ Workload rows retain the accepted target and snapshot. PostgreSQL and Kubernetes
 do not participate in one atomic transaction. Stable identities and retries
 provide recovery after uncertain remote effects.
 
-This API provisions HTTP test workloads. Full MongoDB/PostgreSQL/Syntrix instance
-provisioning, project management, developer OAuth, and resource-administration
-UI remain separate capabilities. The delivered browser client provides bilingual
-login/session restoration/logout and an authenticated Overview using this API.
+This API provisions HTTP test workloads. The planned
+[managed-instance lifecycle](../design/server/console/03.instance_lifecycle.md)
+owns future instance requests, private database and scoped credential allocation
+on administrator-registered shared MongoDB/PostgreSQL servers, shared-account
+NATS artifact isolation, runtime reconciliation, and revisioned configuration.
+Those routes and payloads are design requirements, not supported interfaces in
+this reference. Database/NATS server deployment, project management, developer
+OAuth, and employee Management remain separate capabilities. The delivered
+browser client provides bilingual login/session restoration/logout and an
+authenticated Overview using this API.

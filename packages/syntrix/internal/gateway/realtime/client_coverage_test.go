@@ -82,11 +82,11 @@ func TestCheckAllowedOrigin_EmptyStringInConfig(t *testing.T) {
 	}
 
 	// Should match valid origin
-	err := checkAllowedOrigin("http://example.com", "example.com", cfg, false)
+	err := checkRequestOrigin(originRequest("http://example.com", "example.com", false), cfg)
 	assert.NoError(t, err)
 
 	// Should not match invalid origin
-	err = checkAllowedOrigin("http://evil.com", "example.com", cfg, false)
+	err = checkRequestOrigin(originRequest("http://evil.com", "example.com", false), cfg)
 	assert.Error(t, err)
 }
 

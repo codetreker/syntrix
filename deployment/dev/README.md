@@ -57,7 +57,7 @@ and logs with the server package. Standalone assembles services in one process;
 it does not combine employee, developer, and application identity domains.
 This Compose file runs dependencies and monitoring. The package-owned
 [Dockerfile](../../packages/syntrix/Dockerfile) and
-[Kubernetes guide](../../packages/syntrix/deployment/README.md) provide a separate
+[Kubernetes guide](../../packages/syntrix/tools/deployment-cli/deployment/README.md) provide a separate
 standalone/distributed service templates and a configuration-driven manifest
 generator. Both modes connect to existing MongoDB and PostgreSQL; distributed
 Trigger transport also requires existing NATS JetStream. Kubernetes deployment

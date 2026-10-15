@@ -14,8 +14,12 @@ databases.
 
 Instance PostgreSQL is private system storage for projects, application users,
 OAuth and session state, and logical-database configuration. MongoDB stores
-developer business documents. The architecture's implementation-status table
-distinguishes this accepted target from current runtime accounts, schemas, APIs,
+developer business documents. Private per-instance databases and scoped
+credentials may use shared database servers. The planned
+[Console instance lifecycle](design/server/console/03.instance_lifecycle.md)
+allocates those databases and distributed trigger artifacts from
+administrator-registered infrastructure. The architecture's implementation-status
+table distinguishes this accepted target from current runtime accounts, schemas, APIs,
 and the Console test-workload service.
 
 ## Project Structure
@@ -24,13 +28,13 @@ and the Console test-workload service.
 syntrix/
 ├── packages/
 │   ├── syntrix/             # Go instance runtime and server tools
-│   │   ├── cmd/             # Server, CLI, and benchmark entrypoints
+│   │   ├── cmd/             # Server and benchmark entrypoints
 │   │   ├── internal/        # Storage, services, gateways, and configuration
 │   │   ├── pkg/             # Shared models and benchmark components
 │   │   ├── api/             # Protocol definitions and generated code
 │   │   ├── tests/           # Integration tests
 │   │   ├── configs/         # Runtime configuration and rule examples
-│   │   ├── deployment/      # Standalone/distributed Kubernetes templates and values
+│   │   ├── tools/deployment-cli/ # Deployment command, renderer, values and templates
 │   │   ├── scripts/         # Protocol generation and Go coverage helpers
 │   │   ├── go.mod           # Go module dependencies
 │   │   └── Makefile         # Go build, test, coverage, and generation targets
@@ -82,15 +86,27 @@ runtime modes do not describe the Management/Console/instance product layers;
 see the [deployment design](design/server/03.deployment_modes.md).
 
 The package-owned [Dockerfile](../packages/syntrix/Dockerfile) builds only the
-instance runtime for Linux amd64/arm64. The [manual release guide](../packages/syntrix/deployment/RELEASE.md)
+instance runtime for Linux amd64/arm64. The [manual release guide](../packages/syntrix/tools/deployment-cli/deployment/RELEASE.md)
 owns versioning, public GHCR publication, and deployment archives with matching
-Linux CLIs and build metadata. The [instance deployment guide](../packages/syntrix/deployment/README.md)
-owns standalone/distributed Kubernetes templates and the `syntrix-cli
+Linux CLIs and build metadata. The [instance deployment guide](../packages/syntrix/tools/deployment-cli/deployment/README.md)
+owns standalone/distributed Kubernetes templates and the `deployment-cli
 render-kubernetes` command. Strict deployment values select namespace, workload
-names, replicas, resource requests/limits, and existing backend connections.
+names, replicas, resource requests/limits, existing backend connections and
+explicit broker authority/policy. The
+[managed runtime contract](design/server/console/04.managed_runtime_contract.md)
+separates tool-owned pure rendering from runtime-owned broker configuration,
+staged initialization, held read-path acceptance,
+actual role readiness and version-matched CLI capability metadata. The
+planned Console lifecycle selects the newest complete successfully published
+Syntrix package at instance creation, uses its matching CLI/templates, and records
+the verified package and fixed image version tag for every initialization/deployment
+phase. Published version tags remain unchanged; metadata digests support verification
+and diagnostics rather than managed Pod image references.
+A main merge or PR build alone does not publish a runtime release.
 Distributed mode also requires existing NATS JetStream and an operator-managed
 shared signing-key Secret. Explicit bootstrap uses a temporary non-restarting Pod
-while normal Deployments remain stopped. These artifacts do not add full-instance
+while normal Deployments remain stopped; query acceptance, cleanup finalization
+and full-role activation precede writer release. These artifacts do not add full-instance
 provisioning to Console's API.
 
 Run instance binaries with `packages/syntrix` as the working directory to use the
@@ -107,9 +123,14 @@ ownership, accepted deployment intent, template snapshots, and operation records
 Its API currently creates, observes, and deletes predefined Kubernetes HTTP test
 workloads. The independent [Console client](../packages/console-client/README.md)
 delivers bilingual developer login, session restoration, logout, and an
-authenticated Overview. Workload administration pages and Console-managed full
-Syntrix bundles remain target work. The former embedded administration frontend and Gateway
-static route are removed.
+authenticated Overview. Workload administration pages and Console-managed
+instances remain target work. The
+[managed-instance design and task sequence](design/server/console/03.instance_lifecycle.md)
+cover administrator-registered shared MongoDB/PostgreSQL/NATS, private database
+allocation, runtime lifecycle, revisioned configuration, and bilingual instance
+UI in five implementation PRs. Database/NATS server deployment, employee
+Management, and project/OAuth capabilities retain separate scope. The former
+embedded administration frontend and Gateway static route are removed.
 
 Local deployment uses an operator-provided Kubernetes cluster, such as k3d, with
 an explicit kubeconfig/context and configured namespace. Console does not manage
@@ -159,9 +180,11 @@ enables race detection and enforces the CI coverage thresholds.
 ## Design and Reference
 
 - [Platform Architecture and Implementation Status](architecture.md)
-- [Syntrix Container, Kubernetes Templates, and Manifest Generation](../packages/syntrix/deployment/README.md)
-- [Manual Syntrix Releases](../packages/syntrix/deployment/RELEASE.md)
+- [Syntrix Container, Kubernetes Templates, and Manifest Generation](../packages/syntrix/tools/deployment-cli/deployment/README.md)
+- [Manual Syntrix Releases](../packages/syntrix/tools/deployment-cli/deployment/RELEASE.md)
 - [Developer Console](design/server/console/01.console.md)
+- [Console Managed-Instance Lifecycle and Implementation Tasks](design/server/console/03.instance_lifecycle.md)
+- [Managed Runtime Contract](design/server/console/04.managed_runtime_contract.md)
 - [Employee Management Platform](design/server/console/02.control_plane.md)
 - [Instance Identity](design/server/core/identity/01.architecture.md)
 - [Gateway Document Authorization](design/server/gateway/authorization.md)

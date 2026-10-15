@@ -1,11 +1,15 @@
 package core
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
+	"net"
 	"os"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -20,8 +24,10 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
+	"go.mongodb.org/mongo-driver/x/mongo/driver/wiremessage"
 )
 
 func init() {
@@ -279,6 +285,7 @@ func TestPuller_runBackend_RecoveryActions(t *testing.T) {
 	cfg := newTestConfig(t)
 	cfg.Buffer.BatchInterval = 5 * time.Millisecond
 	p := New(cfg, nil)
+	t.Cleanup(func() { require.NoError(t, p.Stop(context.Background())) })
 
 	client, err := mongo.NewClient(options.Client().ApplyURI("mongodb://localhost:27017"))
 	if err != nil {
@@ -524,6 +531,7 @@ func TestPuller_runBackend_ProcessingFailureStopsBeforeNextEvent(t *testing.T) {
 			assert.Equal(t, 1, stream.nextCalls, "the second event must remain unread")
 			assert.Zero(t, published)
 			assert.True(t, stream.closed.Load())
+			require.NoError(t, p.Stop(ctx))
 			reopened, err := buffer.NewForBackend(cfg.Buffer.Path, "backend1", nil)
 			require.NoError(t, err)
 			defer reopened.Close()
@@ -578,6 +586,7 @@ func TestPuller_runBackend_NativeErrorsKeepDurableCheckpoint(t *testing.T) {
 					wantOpened = 2
 				}
 				assert.Equal(t, wantOpened, opened)
+				require.NoError(t, p.Stop(ctx))
 				reopened, err := buffer.NewForBackend(cfg.Buffer.Path, "backend1", nil)
 				require.NoError(t, err)
 				defer reopened.Close()
@@ -830,6 +839,7 @@ type fakeChangeStream struct {
 }
 
 func (f *fakeChangeStream) TryNext(context.Context) bool { return false }
+func (f *fakeChangeStream) RemainingBatchLength() int    { return 0 }
 func (f *fakeChangeStream) ID() int64                    { return 0 }
 func (f *fakeChangeStream) ResumeToken() bson.Raw        { return nil }
 
@@ -850,6 +860,8 @@ type captureTestStream struct {
 	beforeDecode func()
 }
 
+func (s *captureTestStream) RemainingBatchLength() int { return len(s.raw) - s.nextCalls }
+
 func (s *captureTestStream) TryNext(context.Context) bool {
 	if s.nextCalls == len(s.raw) {
 		return false
@@ -867,6 +879,286 @@ func (s *captureTestStream) Decode(dst any) error {
 	}
 	*dst.(*normalizer.RawEvent) = s.raw[s.nextCalls-1]
 	return nil
+}
+
+func nativeCaptureWireFixture(t *testing.T, ctx context.Context) (string, <-chan net.Conn, <-chan net.Conn, <-chan bson.Raw) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(ctx)
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	stalled := make(chan net.Conn, 1)
+	pinged := make(chan net.Conn, 1)
+	resumed := make(chan bson.Raw, 1)
+	var aggregates, firstCursorPolls atomic.Int32
+	var owners sync.WaitGroup
+	var connectionsMu sync.Mutex
+	var connections []net.Conn
+	respond := func(conn net.Conn, request int32, opcode wiremessage.OpCode, response bson.D) error {
+		doc, err := bson.Marshal(response)
+		if err != nil {
+			return err
+		}
+		var body []byte
+		responseOpcode := wiremessage.OpMsg
+		if opcode == wiremessage.OpQuery {
+			responseOpcode = wiremessage.OpReply
+			body = wiremessage.AppendReplyFlags(body, 0)
+			body = wiremessage.AppendReplyCursorID(body, 0)
+			body = wiremessage.AppendReplyStartingFrom(body, 0)
+			body = wiremessage.AppendReplyNumberReturned(body, 1)
+		} else {
+			body = wiremessage.AppendMsgFlags(body, 0)
+			body = wiremessage.AppendMsgSectionType(body, wiremessage.SingleDocument)
+		}
+		body = append(body, doc...)
+		packet := wiremessage.AppendHeader(nil, int32(len(body)+16), 1, request, responseOpcode)
+		_, err = conn.Write(append(packet, body...))
+		return err
+	}
+	cursorResponse := func(id int64, first bool, event bool) bson.D {
+		token := bson.D{{Key: "_data", Value: fmt.Sprint(id)}}
+		batch := bson.A{}
+		if event {
+			batch = append(batch, bson.D{
+				{Key: "_id", Value: token}, {Key: "operationType", Value: "insert"},
+				{Key: "clusterTime", Value: primitive.Timestamp{T: uint32(id), I: 1}},
+				{Key: "ns", Value: bson.D{{Key: "db", Value: "capture"}, {Key: "coll", Value: "documents"}}},
+				{Key: "documentKey", Value: bson.D{{Key: "_id", Value: fmt.Sprint(id)}}},
+			})
+		}
+		kind := "nextBatch"
+		if first {
+			kind = "firstBatch"
+		}
+		return bson.D{{Key: "ok", Value: 1}, {Key: "cursor", Value: bson.D{
+			{Key: "id", Value: id}, {Key: "ns", Value: "capture.documents"},
+			{Key: kind, Value: batch}, {Key: "postBatchResumeToken", Value: token},
+		}}}
+	}
+	serve := func(conn net.Conn) {
+		defer owners.Done()
+		defer conn.Close()
+		deadline, _ := ctx.Deadline()
+		if err := conn.SetDeadline(deadline); err != nil {
+			return
+		}
+		for {
+			header := make([]byte, 16)
+			if _, err := io.ReadFull(conn, header); err != nil {
+				return
+			}
+			length, request, _, opcode, _, ok := wiremessage.ReadHeader(header)
+			if !ok || length < 16 || length > 16<<20 {
+				return
+			}
+			body := make([]byte, length-16)
+			if _, err := io.ReadFull(conn, body); err != nil {
+				return
+			}
+			var command bson.Raw
+			switch opcode {
+			case wiremessage.OpMsg:
+				command = bson.Raw(body[5:])
+			case wiremessage.OpQuery:
+				end := bytes.IndexByte(body[4:], 0)
+				if end < 0 {
+					return
+				}
+				command = bson.Raw(body[4+end+1+8:])
+			default:
+				return
+			}
+			response := bson.D{{Key: "ok", Value: 1}}
+			switch {
+			case command.Lookup("hello").Type != 0 || command.Lookup("isMaster").Type != 0 || command.Lookup("ismaster").Type != 0:
+				response = append(response, bson.E{Key: "isWritablePrimary", Value: true}, bson.E{Key: "ismaster", Value: true},
+					bson.E{Key: "minWireVersion", Value: 0}, bson.E{Key: "maxWireVersion", Value: 13},
+					bson.E{Key: "maxBsonObjectSize", Value: 16 << 20}, bson.E{Key: "maxMessageSizeBytes", Value: 48 << 20},
+					bson.E{Key: "maxWriteBatchSize", Value: 100000}, bson.E{Key: "logicalSessionTimeoutMinutes", Value: 30})
+			case command.Lookup("aggregate").Type != 0:
+				id := int64(aggregates.Add(1))
+				if id > 1 {
+					pipeline := command.Lookup("pipeline").Array()
+					resume := pipeline.Index(0).Value().Document().Lookup("$changeStream").Document().Lookup("resumeAfter").Document()
+					select {
+					case resumed <- append(bson.Raw(nil), resume...):
+					case <-ctx.Done():
+						return
+					}
+				}
+				response = cursorResponse(id, true, true)
+			case command.Lookup("getMore").Type != 0:
+				id := command.Lookup("getMore").Int64()
+				if id == 1 && firstCursorPolls.Add(1) > 1 {
+					stalled <- conn
+					<-ctx.Done()
+					return
+				}
+				select {
+				case <-time.After(100 * time.Millisecond):
+				case <-ctx.Done():
+					return
+				}
+				response = cursorResponse(id, false, false)
+			case command.Lookup("ping").Type != 0:
+				select {
+				case pinged <- conn:
+				default:
+				}
+			}
+			if err := respond(conn, request, opcode, response); err != nil {
+				return
+			}
+		}
+	}
+	owners.Add(1)
+	go func() {
+		defer owners.Done()
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			connectionsMu.Lock()
+			connections = append(connections, conn)
+			connectionsMu.Unlock()
+			owners.Add(1)
+			go serve(conn)
+		}
+	}()
+	t.Cleanup(func() {
+		cancel()
+		require.NoError(t, listener.Close())
+		connectionsMu.Lock()
+		for _, conn := range connections {
+			_ = conn.Close()
+		}
+		connectionsMu.Unlock()
+		done := make(chan struct{})
+		go func() { owners.Wait(); close(done) }()
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+			t.Error("owned native wire fixture did not stop")
+		}
+	})
+	return listener.Addr().String(), stalled, pinged, resumed
+}
+
+func TestNativeCaptureGetMoreTimeoutWithdrawsAndResumesWhilePingSucceeds(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+	defer cancel()
+	address, stalled, pinged, resumed := nativeCaptureWireFixture(t, ctx)
+	client, err := mongo.Connect(ctx, options.Client().ApplyURI("mongodb://"+address).SetDirect(true).SetServerSelectionTimeout(time.Second))
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		closeCtx, cancelClose := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancelClose()
+		require.NoError(t, client.Disconnect(closeCtx))
+	})
+	cfg := config.DefaultConfig()
+	cfg.Buffer.Path = t.TempDir()
+	p := New(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	require.NoError(t, p.AddBackend("source", client, "capture", cfg.Backends[0]))
+	t.Cleanup(func() {
+		stopCtx, cancelStop := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancelStop()
+		require.NoError(t, p.Stop(stopCtx))
+	})
+	ch, state := p.SubscribeStatus(ctx, "native-timeout", "")
+	require.NoError(t, p.Start(ctx))
+	var delivered []uint32
+	await := func(target string, minimum uint64) *events.PullerEvent {
+		for {
+			select {
+			case frame, open := <-ch:
+				require.True(t, open)
+				require.NotNil(t, frame)
+				require.NoError(t, frame.Error)
+				if frame.Change != nil {
+					delivered = append(delivered, frame.Change.ClusterTime.T)
+				}
+				state.Observe(frame)
+				if frame.AdmissionState == target && frame.AdmissionGeneration >= minimum {
+					return frame
+				}
+			case <-ctx.Done():
+				t.Fatal(ctx.Err())
+				return nil
+			}
+		}
+	}
+	first := await(events.AdmissionAdmitted, 1)
+	require.Equal(t, []uint32{1}, delivered)
+	require.NoError(t, p.Readiness(ctx))
+	var blocked net.Conn
+	select {
+	case blocked = <-stalled:
+	case <-ctx.Done():
+		t.Fatal("native getMore did not stall")
+	}
+	pingCtx, cancelPing := context.WithTimeout(ctx, time.Second)
+	require.NoError(t, client.Ping(pingCtx, nil))
+	cancelPing()
+	select {
+	case healthy := <-pinged:
+		require.True(t, blocked != healthy, "a separate healthy pool connection cannot renew native evidence")
+	case <-ctx.Done():
+		t.Fatal("health command was not observed")
+	}
+	require.Eventually(t, func() bool { return errors.Is(p.Readiness(ctx), ErrCaptureUnavailable) }, 3*time.Second, 10*time.Millisecond)
+	require.NoError(t, p.TerminalError())
+	recovery := await(events.AdmissionRecovering, first.AdmissionGeneration+1)
+	require.False(t, state.Snapshot().Terminal)
+	require.Error(t, state.Err(ctx))
+	select {
+	case token := <-resumed:
+		require.Equal(t, "1", token.Lookup("_data").StringValue(), "reopen must use the durable checkpoint")
+	case <-ctx.Done():
+		t.Fatal("native cursor was not reopened")
+	}
+	await(events.AdmissionAdmitted, recovery.AdmissionGeneration)
+	require.Equal(t, []uint32{1, 2}, delivered)
+	require.NoError(t, p.Readiness(ctx))
+	require.NoError(t, state.Err(ctx))
+	checkpoint, err := p.backends["source"].buffer.LoadCheckpoint()
+	require.NoError(t, err)
+	require.Equal(t, "2", checkpoint.Lookup("_data").StringValue())
+}
+
+func TestNativeCachedBatchConsumptionDoesNotRenewResponseEvidence(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	client, err := mongo.NewClient(options.Client().ApplyURI("mongodb://localhost:27017"))
+	require.NoError(t, err)
+	cfg := config.DefaultConfig()
+	cfg.Buffer.Path = t.TempDir()
+	p := New(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	require.NoError(t, p.AddBackend("source", client, "capture", cfg.Backends[0]))
+	backend := p.backends["source"]
+	defer backend.buffer.Close()
+	token := bson.Raw{5, 0, 0, 0, 0}
+	require.NoError(t, backend.buffer.SaveCheckpoint(token))
+	stream := &captureTestStream{raw: []normalizer.RawEvent{
+		{OperationType: "insert", DocumentKey: bson.M{"_id": "first"}, ClusterTime: primitive.Timestamp{T: 1, I: 1}, ResumeToken: token},
+		{OperationType: "insert", DocumentKey: bson.M{"_id": "cached"}, ClusterTime: primitive.Timestamp{T: 1, I: 2}, ResumeToken: token},
+	}}
+	var checked bool
+	stream.beforeDecode = func() {
+		if stream.nextCalls == 1 {
+			backend.recordCaptureResponse(time.Now().Add(-events.AdmissionFreshness))
+			backend.setCaptureState(true, nil)
+		} else {
+			checked = true
+			require.ErrorIs(t, p.Readiness(ctx), ErrCaptureUnavailable)
+			require.ErrorIs(t, backend.waitCapture(ctx), ErrCaptureUnavailable)
+		}
+	}
+	p.openStream = func(context.Context, *mongo.Database, mongo.Pipeline, *options.ChangeStreamOptions) (changeStream, error) {
+		return stream, nil
+	}
+	require.ErrorContains(t, p.watchChangeStream(ctx, backend, p.logger), "change stream closed")
+	require.True(t, checked)
 }
 
 func TestPuller_Subscribe_WithAfter(t *testing.T) {

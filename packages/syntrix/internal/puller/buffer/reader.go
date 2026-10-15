@@ -216,25 +216,15 @@ func timestampGroupStart(key string) (string, error) {
 }
 
 func (b *Buffer) validatePosition(afterKey, lineage string) (string, error) {
-	b.mu.RLock()
-	closed := b.closed
-	b.mu.RUnlock()
-	if closed {
-		return "", fmt.Errorf("buffer is closed")
-	}
-	if lineage == "" || lineage != b.lineage {
-		return "", fmt.Errorf("buffer lineage changed; offline rebuild required")
+	if err := b.validateLineage(lineage); err != nil {
+		return "", err
 	}
 	group, err := timestampGroupStart(afterKey)
 	if err != nil {
 		return "", err
 	}
-	floor, err := b.pruningFloor()
-	if err != nil {
+	if err := b.validateHistoryFloor(group); err != nil {
 		return "", err
-	}
-	if floor != "" && floor >= group {
-		return "", fmt.Errorf("event history expired; offline rebuild required")
 	}
 	if afterKey == "" {
 		return "", nil
@@ -258,6 +248,30 @@ func (b *Buffer) validatePosition(afterKey, lineage string) (string, error) {
 	return "", fmt.Errorf("unknown event position; offline rebuild required")
 }
 
+func (b *Buffer) validateLineage(lineage string) error {
+	b.mu.RLock()
+	closed := b.closed
+	b.mu.RUnlock()
+	if closed {
+		return fmt.Errorf("buffer is closed")
+	}
+	if lineage == "" || lineage != b.lineage {
+		return fmt.Errorf("buffer lineage changed; offline rebuild required")
+	}
+	return nil
+}
+
+func (b *Buffer) validateHistoryFloor(group string) error {
+	floor, err := b.pruningFloor()
+	if err != nil {
+		return err
+	}
+	if floor != "" && floor >= group {
+		return fmt.Errorf("event history expired; offline rebuild required")
+	}
+	return nil
+}
+
 // ScanFromLineage validates the saved event and replays its entire cluster-time
 // group, including the saved event, then all later events. Validation and snapshot
 // creation share the retention lock so pruning cannot invalidate the boundary.
@@ -266,6 +280,21 @@ func (b *Buffer) ScanFromLineage(afterKey, lineage string) (Iterator, error) {
 	defer b.retentionMu.Unlock()
 	group, err := b.validatePosition(afterKey, lineage)
 	if err != nil {
+		return nil, err
+	}
+	return b.ScanFrom(group)
+}
+
+// ScanFromGroup preserves an original admission floor even when its first event
+// has not been delivered. Retention validation and snapshot creation are atomic.
+func (b *Buffer) ScanFromGroup(floor events.ClusterTime, lineage string) (Iterator, error) {
+	b.retentionMu.Lock()
+	defer b.retentionMu.Unlock()
+	if err := b.validateLineage(lineage); err != nil {
+		return nil, err
+	}
+	group := events.FormatBufferKey(floor, "")
+	if err := b.validateHistoryFloor(group); err != nil {
 		return nil, err
 	}
 	return b.ScanFrom(group)

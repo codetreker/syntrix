@@ -2,99 +2,209 @@ package nats
 
 import (
 	"context"
+	"sync"
 	"time"
 
+	"github.com/codetreker/syntrix/internal/core/pubsub"
+	pubsubconfig "github.com/codetreker/syntrix/internal/core/pubsub/config"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/mock"
 )
 
-// MockJetStream is a mock implementation of the JetStream interface for testing.
-type MockJetStream struct {
-	mock.Mock
+type fakeJetStream struct {
+	mu                                                sync.Mutex
+	stream                                            *jetstream.StreamConfig
+	consumer                                          *jetstream.ConsumerConfig
+	calls                                             []string
+	streamLookup                                      func(context.Context) error
+	consumerLookupErr, streamInfoErr, consumerInfoErr error
+	createStreamErr, createConsumerErr                error
+	applyOnCreateError                                bool
+	consumeErr                                        error
+	consumeHook                                       func(jetstream.MessageHandler, jetstream.ConsumeErrHandler)
+	loop                                              *fakeConsumeContext
+	handler                                           jetstream.MessageHandler
+	errHandler                                        jetstream.ConsumeErrHandler
+	publish                                           func(context.Context, string, []byte, []jetstream.PublishOpt) error
 }
 
-func (m *MockJetStream) CreateOrUpdateStream(ctx context.Context, cfg jetstream.StreamConfig) (jetstream.Stream, error) {
-	args := m.Called(ctx, cfg)
-	if args.Get(0) == nil {
-		return nil, args.Error(1)
+func allocatedFake(binding pubsubconfig.BrokerBinding) *fakeJetStream {
+	spec, err := binding.Specification()
+	if err != nil {
+		panic(err)
 	}
-	return args.Get(0).(jetstream.Stream), args.Error(1)
+	return &fakeJetStream{stream: &spec.Stream, consumer: &spec.Consumer}
 }
 
-func (m *MockJetStream) CreateOrUpdateConsumer(ctx context.Context, stream string, cfg jetstream.ConsumerConfig) (jetstream.Consumer, error) {
-	args := m.Called(ctx, stream, cfg)
-	if args.Get(0) == nil {
-		return nil, args.Error(1)
+func (f *fakeJetStream) Stream(ctx context.Context, name string) (jetstream.Stream, error) {
+	f.mu.Lock()
+	f.calls = append(f.calls, "stream.lookup")
+	hook := f.streamLookup
+	f.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
-	return args.Get(0).(jetstream.Consumer), args.Error(1)
-}
-
-func (m *MockJetStream) Publish(ctx context.Context, subject string, data []byte, opts ...jetstream.PublishOpt) (*jetstream.PubAck, error) {
-	args := m.Called(ctx, subject, data)
-	if args.Get(0) == nil {
-		return nil, args.Error(1)
-	}
-	return args.Get(0).(*jetstream.PubAck), args.Error(1)
-}
-
-// MockConsumer is a mock implementation of jetstream.Consumer for testing.
-type MockConsumer struct {
-	mock.Mock
-	jetstream.Consumer
-	handlerCh chan jetstream.MessageHandler
-}
-
-// NewMockConsumer creates a new MockConsumer with handler channel.
-func NewMockConsumer() *MockConsumer {
-	return &MockConsumer{
-		handlerCh: make(chan jetstream.MessageHandler, 1),
-	}
-}
-
-func (m *MockConsumer) Consume(handler jetstream.MessageHandler, opts ...jetstream.PullConsumeOpt) (jetstream.ConsumeContext, error) {
-	args := m.Called(handler)
-	if m.handlerCh != nil {
-		select {
-		case m.handlerCh <- handler:
-		default:
+	if hook != nil {
+		if err := hook(ctx); err != nil {
+			return nil, err
 		}
 	}
-	if args.Get(0) == nil {
-		return nil, args.Error(1)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.stream == nil || f.stream.Name != name {
+		return nil, jetstream.ErrStreamNotFound
 	}
-	return args.Get(0).(jetstream.ConsumeContext), args.Error(1)
+	return &fakeStream{owner: f}, nil
 }
 
-// HandlerCh returns a channel that receives the message handler when Consume is called.
-func (m *MockConsumer) HandlerCh() <-chan jetstream.MessageHandler {
-	return m.handlerCh
+func (f *fakeJetStream) Consumer(ctx context.Context, stream, name string) (jetstream.Consumer, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, "consumer.lookup")
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if f.consumerLookupErr != nil {
+		return nil, f.consumerLookupErr
+	}
+	if f.stream == nil || f.stream.Name != stream {
+		return nil, jetstream.ErrStreamNotFound
+	}
+	if f.consumer == nil || f.consumer.Name != name {
+		return nil, jetstream.ErrConsumerNotFound
+	}
+	return &fakeConsumer{owner: f}, nil
 }
 
-// MockConsumeContext is a mock implementation of jetstream.ConsumeContext for testing.
-type MockConsumeContext struct {
-	mock.Mock
-	jetstream.ConsumeContext // Embed to avoid implementing all methods
-	stopCh                   chan struct{}
+func (f *fakeJetStream) CreateStream(ctx context.Context, config jetstream.StreamConfig) (jetstream.Stream, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, "stream.create")
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if f.createStreamErr == nil || f.applyOnCreateError {
+		f.stream = &config
+	}
+	return &fakeStream{owner: f}, f.createStreamErr
 }
 
-func NewMockConsumeContext() *MockConsumeContext {
-	return &MockConsumeContext{
-		stopCh: make(chan struct{}),
+func (f *fakeJetStream) CreateConsumer(ctx context.Context, stream string, config jetstream.ConsumerConfig) (jetstream.Consumer, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, "consumer.create")
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if f.stream == nil || f.stream.Name != stream {
+		return nil, jetstream.ErrStreamNotFound
+	}
+	if f.createConsumerErr == nil || f.applyOnCreateError {
+		f.consumer = &config
+	}
+	return &fakeConsumer{owner: f}, f.createConsumerErr
+}
+
+func (f *fakeJetStream) Publish(ctx context.Context, subject string, data []byte, options ...jetstream.PublishOpt) (*jetstream.PubAck, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if f.publish != nil {
+		if err := f.publish(ctx, subject, data, options); err != nil {
+			return nil, err
+		}
+	}
+	return &jetstream.PubAck{Stream: "TRIGGERS", Sequence: 1}, nil
+}
+
+type fakeStream struct {
+	jetstream.Stream
+	owner *fakeJetStream
+}
+
+func (s *fakeStream) Info(ctx context.Context, _ ...jetstream.StreamInfoOpt) (*jetstream.StreamInfo, error) {
+	f := s.owner
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, "stream.info")
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if f.streamInfoErr != nil {
+		return nil, f.streamInfoErr
+	}
+	return &jetstream.StreamInfo{Config: *f.stream}, nil
+}
+
+type fakeConsumer struct {
+	jetstream.Consumer
+	owner *fakeJetStream
+}
+
+func (c *fakeConsumer) Info(ctx context.Context) (*jetstream.ConsumerInfo, error) {
+	f := c.owner
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, "consumer.info")
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if f.consumerInfoErr != nil {
+		return nil, f.consumerInfoErr
+	}
+	return &jetstream.ConsumerInfo{Config: *f.consumer}, nil
+}
+
+func (c *fakeConsumer) Consume(handler jetstream.MessageHandler, opts ...jetstream.PullConsumeOpt) (jetstream.ConsumeContext, error) {
+	f := c.owner
+	f.mu.Lock()
+	if f.consumeErr != nil {
+		f.mu.Unlock()
+		return nil, f.consumeErr
+	}
+	f.handler = handler
+	for _, option := range opts {
+		if errHandler, ok := option.(jetstream.ConsumeErrHandler); ok {
+			f.errHandler = errHandler
+		}
+	}
+	if f.loop == nil {
+		f.loop = newFakeConsumeContext()
+	}
+	loop, hook, errHandler := f.loop, f.consumeHook, f.errHandler
+	f.mu.Unlock()
+	if hook != nil {
+		hook(handler, errHandler)
+	}
+	return loop, nil
+}
+
+type fakeConsumeContext struct {
+	stopped             chan struct{}
+	closed              chan struct{}
+	stopOnce, closeOnce sync.Once
+	manualClose         bool
+}
+
+func newFakeConsumeContext() *fakeConsumeContext {
+	return &fakeConsumeContext{stopped: make(chan struct{}), closed: make(chan struct{})}
+}
+func (c *fakeConsumeContext) Stop() {
+	c.stopOnce.Do(func() { close(c.stopped) })
+	if !c.manualClose {
+		c.finish()
 	}
 }
+func (c *fakeConsumeContext) Drain()                  { c.Stop() }
+func (c *fakeConsumeContext) Closed() <-chan struct{} { return c.closed }
+func (c *fakeConsumeContext) finish()                 { c.closeOnce.Do(func() { close(c.closed) }) }
 
-func (m *MockConsumeContext) Stop() {
-	select {
-	case <-m.stopCh:
-	default:
-		close(m.stopCh)
-	}
-	m.Called()
+func publisherOptions(b pubsubconfig.BrokerBinding) pubsub.PublisherOptions {
+	return pubsub.PublisherOptions{StreamName: b.StreamName, SubjectPrefix: b.SubjectPrefix, Storage: bindingStorage(b)}
 }
-
-func (m *MockConsumeContext) Drain() {
-	m.Called()
+func consumerOptions(b pubsubconfig.BrokerBinding) pubsub.ConsumerOptions {
+	return pubsub.ConsumerOptions{StreamName: b.StreamName, ConsumerName: b.ConsumerName, FilterSubject: b.SubjectPrefix + ".>", Storage: bindingStorage(b), ChannelBufSize: 1}
 }
 
 // MockMsg is a mock implementation of jetstream.Msg for testing.

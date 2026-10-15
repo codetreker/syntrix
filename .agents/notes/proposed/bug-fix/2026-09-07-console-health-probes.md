@@ -12,11 +12,17 @@ failure mode remains a constraint for future scoped diagnostics. The current
 [public health handler](../../../../packages/syntrix/internal/gateway/rest/handler_health.go)
 and [admin health handler](../../../../packages/syntrix/internal/gateway/rest/handler_admin.go)
 return `OK` rather than checking all instance dependencies. Console's new
-Kubernetes workload readiness does not implement this instance aggregation API.
+Kubernetes workload readiness does not implement authenticated scoped diagnostics.
+The [managed runtime decision](../../implemented/architecture/2026-10-13-managed-runtime-contract.md)
+now supplies fresh enabled-role `/ready` and native gRPC health aggregation.
+Those boolean probes expose no administrative component reports, project/database
+scope or Console diagnostic consumer; this proposal retains those additions.
 
 ## Proposal
 
-Own and deliver the authenticated instance readiness aggregation API together with its administration consumer and tests. Under the [accepted platform architecture](../../../../docs/architecture.md), the developer Console selects an owned instance and, where applicable, a project and logical database. Platform Management serves employee fleet operations; application end-user availability views do not inherit either administrative authority. Extend the existing administrative health endpoint to report Gateway request-serving readiness, Auth and its identity-store prerequisites, configured storage backends, and database metadata/routing readiness. A selected database must use its canonical identifier and server-validated administrative scope. Keep `/health` as gateway process liveness.
+Build authenticated scoped diagnostics and their administration consumer on the
+delivered runtime role-readiness mechanism. Preserve its expiry and failure
+semantics; do not introduce an independent readiness calculation. Under the [accepted platform architecture](../../../../docs/architecture.md), the developer Console selects an owned instance and, where applicable, a project and logical database. Platform Management serves employee fleet operations; application end-user availability views do not inherit either administrative authority. Extend the existing administrative health endpoint to report Gateway request-serving readiness, Auth and its identity-store prerequisites, configured storage backends, and database metadata/routing readiness. A selected database must use its canonical identifier and server-validated administrative scope. Keep `/health` as gateway process liveness.
 
 Define component reports with ready, unavailable, or unknown status, observation time, freshness deadline, latency, and a bounded diagnostic category. The aggregate is ready only when all required components in the requested scope have fresh ready reports; failed, missing, or expired reports must remain visible and prevent a ready aggregate. In standalone and distributed modes, service assembly must connect the actual component checks or reports to this endpoint. Bound check concurrency, request deadlines, cached-result age, and cancellation. Auth checks verify configured prerequisites without synthetic sign-ins or credential mutations; storage and database checks must avoid reading application documents merely to infer availability.
 

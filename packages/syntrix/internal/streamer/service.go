@@ -83,7 +83,13 @@ type streamerService struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 
-	logger *slog.Logger
+	logger          *slog.Logger
+	ingestionMu     sync.RWMutex
+	admission       *puller.SubscriptionStatus
+	terminal        error
+	ingestionCancel context.CancelFunc
+	ingestionDone   chan struct{}
+	ownedPuller     bool
 }
 
 // NewService creates a new streamerService and returns the StreamerServer interface.
@@ -152,6 +158,14 @@ func (s *streamerService) Stream(ctx context.Context) (Stream, error) {
 
 // Start begins the streamer service, connecting to Puller and consuming events.
 func (s *streamerService) Start(ctx context.Context) error {
+	s.ingestionMu.Lock()
+	defer s.ingestionMu.Unlock()
+	if s.ingestionDone != nil {
+		return errors.New("streamer already started")
+	}
+	if err := s.ctx.Err(); err != nil {
+		return err
+	}
 	// Use pre-configured client if available (e.g., for testing)
 	if s.config.pullerClient != nil {
 		s.pullerClient = s.config.pullerClient
@@ -163,6 +177,7 @@ func (s *streamerService) Start(ctx context.Context) error {
 			return fmt.Errorf("failed to create puller client: %w", err)
 		}
 		s.pullerClient = pullerClient
+		s.ownedPuller = true
 	}
 
 	// If no Puller client configured, run in standalone mode
@@ -172,27 +187,59 @@ func (s *streamerService) Start(ctx context.Context) error {
 	}
 
 	// Subscribe to events (auto-reconnects on failures)
-	eventChan := s.pullerClient.Subscribe(ctx, "streamer", s.progress)
-
-	go s.consumePullerEvents(ctx, eventChan)
+	source, ok := s.pullerClient.(puller.AdmissionService)
+	if !ok {
+		return errors.New("puller subscription admission unavailable")
+	}
+	ctx, s.ingestionCancel = context.WithCancel(ctx)
+	eventChan, admission := source.SubscribeStatus(ctx, "streamer", s.progress)
+	if admission == nil || eventChan == nil {
+		s.ingestionCancel()
+		return errors.New("puller returned no admission subscription")
+	}
+	s.admission = admission
+	s.ingestionDone = make(chan struct{})
+	go func() {
+		defer close(s.ingestionDone)
+		if err := s.consumePullerEvents(ctx, eventChan); err != nil && ctx.Err() == nil && s.ctx.Err() == nil {
+			s.failIngestion(err)
+		}
+	}()
 	s.logger.Info("Started consuming from Puller")
 	return nil
 }
 
 // consumePullerEvents consumes events from Puller and processes them.
-func (s *streamerService) consumePullerEvents(ctx context.Context, eventChan <-chan *puller.Event) {
+func (s *streamerService) consumePullerEvents(ctx context.Context, eventChan <-chan *puller.Event) error {
 	for {
 		select {
 		case <-ctx.Done():
 			s.logger.Info("Stopping Puller consumption")
-			return
+			return nil
 		case <-s.ctx.Done():
 			s.logger.Info("Stopping Puller consumption (service stopped)")
-			return
+			return nil
 		case evt, ok := <-eventChan:
 			if !ok {
+				if ctx.Err() == nil && s.ctx.Err() == nil {
+					cause := s.admission.Snapshot().Err
+					if cause == nil {
+						cause = errors.New("puller ingestion closed unexpectedly")
+					}
+					return cause
+				}
 				s.logger.Info("Puller event channel closed")
-				return
+				return nil
+			}
+			if evt == nil {
+				return errors.New("puller returned nil event")
+			}
+			if evt.Error != nil {
+				return evt.Error
+			}
+			if evt.AdmissionState != "" {
+				s.admission.Observe(evt)
+				continue
 			}
 			if evt.Change == nil {
 				continue // Skip events without change data
@@ -204,9 +251,13 @@ func (s *streamerService) consumePullerEvents(ctx context.Context, eventChan <-c
 				"backend", evt.Change.Backend,
 			)
 
-			if event, err := events.Transform(evt); err == nil {
+			event, err := events.Transform(evt)
+			if err != nil && !errors.Is(err, events.ErrDeleteOPIgnored) {
+				return err
+			}
+			if err == nil {
 				if err := s.ProcessEvent(event); err != nil {
-					s.logger.Error("Failed to process event", "error", err, "eventID", evt.Change.EventID)
+					return err
 				}
 			}
 			s.progress = evt.Progress
@@ -218,6 +269,12 @@ func (s *streamerService) consumePullerEvents(ctx context.Context, eventChan <-c
 func (s *streamerService) Stop(ctx context.Context) error {
 	s.logger.Info("Streamer service stopping")
 	s.cancel()
+	s.ingestionMu.RLock()
+	cancel, done, owned := s.ingestionCancel, s.ingestionDone, s.ownedPuller
+	s.ingestionMu.RUnlock()
+	if cancel != nil {
+		cancel()
+	}
 
 	s.streamsMu.Lock()
 	for id, ls := range s.streams {
@@ -225,7 +282,63 @@ func (s *streamerService) Stop(ctx context.Context) error {
 		delete(s.streams, id)
 	}
 	s.streamsMu.Unlock()
+	if done != nil {
+		select {
+		case <-done:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	if owned {
+		if closer, ok := s.pullerClient.(interface{ Close() error }); ok {
+			return closer.Close()
+		}
+	}
 
+	return nil
+}
+
+func (s *streamerService) failIngestion(err error) {
+	s.ingestionMu.Lock()
+	defer s.ingestionMu.Unlock()
+	if s.terminal == nil {
+		s.terminal = err
+	}
+	if s.admission != nil {
+		s.admission.Fail(err, true)
+	}
+	if s.ingestionCancel != nil {
+		s.ingestionCancel()
+	}
+}
+
+func (s *streamerService) Readiness(ctx context.Context) error {
+	s.ingestionMu.RLock()
+	defer s.ingestionMu.RUnlock()
+	if s.terminal != nil {
+		return s.terminal
+	}
+	if s.admission == nil {
+		return events.ErrAdmissionUnavailable
+	}
+	if err := s.ctx.Err(); err != nil {
+		return err
+	}
+	return s.admission.Err(ctx)
+}
+
+func (s *streamerService) TerminalError() error {
+	s.ingestionMu.RLock()
+	defer s.ingestionMu.RUnlock()
+	if s.terminal != nil {
+		return s.terminal
+	}
+	if s.admission != nil {
+		snap := s.admission.Snapshot()
+		if snap.Terminal && !errors.Is(snap.Err, context.Canceled) {
+			return snap.Err
+		}
+	}
 	return nil
 }
 

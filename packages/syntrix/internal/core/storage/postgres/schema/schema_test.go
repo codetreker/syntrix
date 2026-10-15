@@ -122,3 +122,31 @@ func TestEnsureCanceledBeforeBegin(t *testing.T) {
 	require.ErrorIs(t, Ensure(ctx, db, "CREATE TABLE one"), context.Canceled)
 	require.NoError(t, mock.ExpectationsWereMet())
 }
+
+func TestEnsureInPinsQuotedNamespaceTransactionLocally(t *testing.T) {
+	for _, failNamespace := range []bool{false, true} {
+		db, mock, err := sqlmock.New()
+		require.NoError(t, err)
+		mock.ExpectBegin()
+		mock.ExpectExec("SELECT pg_advisory_xact_lock").WithArgs(lockKey).WillReturnResult(sqlmock.NewResult(0, 1))
+		selection := mock.ExpectExec("SELECT set_config").WithArgs(`"owned""namespace"`)
+		failure := errors.New("namespace denied")
+		if failNamespace {
+			selection.WillReturnError(failure)
+			mock.ExpectRollback()
+		} else {
+			selection.WillReturnResult(sqlmock.NewResult(0, 1))
+			mock.ExpectExec("CREATE TABLE owned").WillReturnResult(sqlmock.NewResult(0, 1))
+			mock.ExpectCommit()
+		}
+		err = EnsureIn(context.Background(), db, `owned"namespace`, "CREATE TABLE owned")
+		if failNamespace {
+			require.ErrorIs(t, err, failure)
+		} else {
+			require.NoError(t, err)
+		}
+		mock.ExpectClose()
+		require.NoError(t, db.Close())
+		require.NoError(t, mock.ExpectationsWereMet())
+	}
+}

@@ -137,6 +137,9 @@ func TestClientHandleMessage_AuthSystemRole(t *testing.T) {
 func TestClientHandleMessage_SubscribeSnapshot(t *testing.T) {
 	queryService := setupMockQuery()
 	c := &Client{hub: NewTestHub(), queryService: queryService, send: make(chan BaseMessage, 2), subscriptions: make(map[string]Subscription), streamerSubIDs: make(map[string]hubRegistration), authenticated: true}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	c.hub.setRunCtx(ctx)
 	payload := SubscribePayload{Query: model.Query{Collection: "users"}, IncludeData: true, SendSnapshot: true}
 	b, _ := json.Marshal(payload)
 

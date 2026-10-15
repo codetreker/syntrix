@@ -35,6 +35,8 @@ available.
 | `packages/syntrix/` | Go instance runtime, shared code, protocols, configuration, and integration tests |
 | `packages/syntrix/internal/identity/` | Account contracts, authentication/configuration, credential repositories, and local runtime composition |
 | `packages/syntrix/internal/core/storage/` | Shared physical backend ownership and document/catalog storage infrastructure |
+| `packages/syntrix/internal/core/pubsub/config/` | Runtime-owned broker binding, defaults, validation and JetStream specification |
+| `packages/syntrix/tools/deployment-cli/` | Deployment command, renderer, private file adapter, values and Kubernetes templates; consumes runtime contracts |
 | `packages/sdks/client-ts/` | TypeScript client SDK |
 | `packages/console-server/` | Independent developer Console API, PostgreSQL source data, and Kubernetes test-workload provisioning |
 | `packages/console-client/` | Bilingual developer login/shell, browser session integration, and same-origin static web distribution |
@@ -118,6 +120,9 @@ contents or replacing the existing planning directories.
   to the corresponding module's `config` package. `internal/config` loads and
   composes those module types; it must not introduce module-specific wrappers
   or lifecycle implementations.
+- Runtime packages must not import `tools/deployment-cli`. Broker contracts belong
+  to `internal/core/pubsub/config`; deployment values consume those runtime-owned
+  types. The runtime Docker build excludes deployment tooling.
 - Run tests after code changes. Run `make -C packages/syntrix coverage` from the
   repository root to evaluate Go coverage and address gaps within the authorized
   task.

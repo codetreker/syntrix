@@ -3,25 +3,34 @@ package standalone
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/codetreker/syntrix/internal/config"
+	"github.com/codetreker/syntrix/internal/core/storage"
 	storage_config "github.com/codetreker/syntrix/internal/core/storage/config"
+	"github.com/codetreker/syntrix/internal/core/storage/types"
 	authorizationconfig "github.com/codetreker/syntrix/internal/gateway/authorization/config"
 	api_config "github.com/codetreker/syntrix/internal/gateway/config"
 	identity_config "github.com/codetreker/syntrix/internal/identity/config"
 	identityconfig "github.com/codetreker/syntrix/internal/identity/config"
 	indexer_config "github.com/codetreker/syntrix/internal/indexer/config"
+	"github.com/codetreker/syntrix/internal/initialization"
 	puller_config "github.com/codetreker/syntrix/internal/puller/config"
 	"github.com/codetreker/syntrix/internal/server"
 	"github.com/codetreker/syntrix/internal/services"
+	triggerconfig "github.com/codetreker/syntrix/internal/trigger/config"
+	"github.com/codetreker/syntrix/pkg/model"
+	"github.com/lib/pq"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.mongodb.org/mongo-driver/mongo"
@@ -65,6 +74,51 @@ func setupStandaloneEnv(t *testing.T, rulesContent string, configModifiers ...fu
 		safeName = safeName[len(safeName)-20:]
 	}
 	dbName := fmt.Sprintf("test_%s_%d", safeName, time.Now().UnixNano()%100000)
+	postgresBaseDSN := postgresDSN
+	postgresSchema := fmt.Sprintf("standalone_%d", time.Now().UnixNano())
+	parsedDSN, err := url.Parse(postgresDSN)
+	require.NoError(t, err)
+	require.Contains(t, []string{"postgres", "postgresql"}, parsedDSN.Scheme)
+	pgDB, err := sql.Open("postgres", postgresBaseDSN)
+	require.NoError(t, err)
+	defer pgDB.Close()
+	pgCtx, pgCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer pgCancel()
+	_, err = pgDB.ExecContext(pgCtx, "CREATE SCHEMA "+pq.QuoteIdentifier(postgresSchema))
+	require.NoError(t, err)
+	query := parsedDSN.Query()
+	query.Set("search_path", postgresSchema)
+	parsedDSN.RawQuery = query.Encode()
+	postgresDSN = parsedDSN.String()
+	var manager *services.Manager
+	var mgrCancel context.CancelFunc
+	var cleanupOnce sync.Once
+	cleanup := func() {
+		cleanupOnce.Do(func() {
+			if mgrCancel != nil {
+				mgrCancel()
+			}
+			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cleanupCancel()
+			if manager != nil {
+				manager.Shutdown(cleanupCtx)
+			}
+			client, err := mongo.Connect(cleanupCtx, options.Client().ApplyURI(mongoURI))
+			if err == nil {
+				defer client.Disconnect(context.Background())
+				assert.NoError(t, client.Database(dbName).Drop(cleanupCtx))
+			} else {
+				assert.NoError(t, err)
+			}
+			db, err := sql.Open("postgres", postgresBaseDSN)
+			if err == nil {
+				defer db.Close()
+				_, err = db.ExecContext(cleanupCtx, "DROP SCHEMA "+pq.QuoteIdentifier(postgresSchema)+" CASCADE")
+			}
+			assert.NoError(t, err)
+		})
+	}
+	t.Cleanup(cleanup)
 
 	// Connect and clean DB
 	ctx := context.Background()
@@ -175,7 +229,7 @@ templates:
 		},
 		Puller: puller_config.Config{
 			Backends: []puller_config.PullerBackendConfig{
-				{Name: "default"},
+				{Name: "default", Collections: []string{"documents", "sys"}},
 			},
 			Buffer: puller_config.BufferConfig{
 				Path: t.TempDir() + "/buffer",
@@ -212,14 +266,16 @@ templates:
 			},
 		},
 	}
+	cfg.Trigger = triggerconfig.DefaultConfig()
+	cfg.Trigger.Evaluator.RulesPath = t.TempDir()
+	cfg.Trigger.Evaluator.StorageType = "memory"
+	cfg.Trigger.Delivery.StorageType = "memory"
+	cfg.Trigger.Broker.Policy.Storage = "memory"
 
 	// Apply config modifiers
 	for _, mod := range configModifiers {
 		mod(cfg)
 	}
-
-	// Initialize the unified server for standalone mode
-	server.InitDefault(cfg.Server, nil)
 
 	// Create manager in standalone mode
 	// In standalone mode, RunXXX options are ignored - all services are always started.
@@ -232,17 +288,13 @@ templates:
 		RunIndexer:          false, // Ignored in standalone mode
 		RunPuller:           false, // Ignored in standalone mode
 		Mode:                services.ModeStandalone,
+		BootstrapIndexes:    true,
+		WritesQuiesced:      true,
+		BootstrapTimeout:    30 * time.Second,
 	}
 
-	manager := services.NewManager(cfg, opts)
-	require.NoError(t, manager.Init(context.Background()))
-
-	// Start Manager
-	mgrCtx, mgrCancel := context.WithCancel(context.Background())
-	manager.Start(mgrCtx)
-
-	// Wait for API server only
-	waitForHealth(t, fmt.Sprintf("http://localhost:%d/health", apiPort))
+	manager, mgrCancel, err = startInitializedFixture(cfg, opts)
+	require.NoError(t, err)
 
 	return &StandaloneEnv{
 		APIURL:      fmt.Sprintf("http://localhost:%d", apiPort),
@@ -250,22 +302,7 @@ templates:
 		MongoURI:    mongoURI,
 		PostgresDSN: postgresDSN,
 		DBName:      dbName,
-		Cancel: func() {
-			mgrCancel()
-			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			manager.Shutdown(shutdownCtx)
-
-			// Cleanup DB
-			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cleanupCancel()
-
-			client, err := mongo.Connect(cleanupCtx, options.Client().ApplyURI(mongoURI))
-			if err == nil {
-				defer client.Disconnect(context.Background())
-				_ = client.Database(dbName).Drop(cleanupCtx)
-			}
-		},
+		Cancel:      cleanup,
 	}
 }
 
@@ -528,4 +565,174 @@ triggers:
 	// 1. Document creation succeeded (trigger evaluator didn't block)
 	// 2. No panics occurred (memory pubsub is working correctly)
 	// 3. The service started successfully with memory pubsub (verified by reaching this point)
+}
+
+func startInitializedFixture(cfg *config.Config, opts services.Options) (_ *services.Manager, _ context.CancelFunc, startupErr error) {
+	var manager *services.Manager
+	var cancel context.CancelFunc
+	stop := func() error {
+		if cancel != nil {
+			cancel()
+		}
+		if manager != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			manager.Shutdown(ctx)
+			if err := ctx.Err(); err != nil {
+				return fmt.Errorf("integration runtime did not drain: %w", err)
+			}
+			return manager.Wait(ctx)
+		}
+		return nil
+	}
+	defer func() {
+		if startupErr != nil {
+			stop()
+		}
+	}()
+	startOwner := func(options services.Options, bootstrap bool) error {
+		manager = services.NewManager(cfg, options)
+		ctx, done := context.WithTimeout(context.Background(), 30*time.Second)
+		defer done()
+		if err := manager.PrepareIndexBootstrap(); err != nil {
+			return err
+		}
+		if err := manager.Init(ctx); err != nil {
+			return err
+		}
+		lifeCtx, lifeCancel := context.WithCancel(context.Background())
+		cancel = lifeCancel
+		if bootstrap {
+			if err := seedInitializationFixture(ctx, cfg); err != nil {
+				return err
+			}
+			if err := manager.BootstrapIndexes(lifeCtx, ctx); err != nil {
+				return fmt.Errorf("bootstrap integration indexes: %w", err)
+			}
+			return nil
+		}
+		if err := manager.Start(lifeCtx); err != nil {
+			return err
+		}
+		return waitForReadyFixture(fmt.Sprintf("http://localhost:%d/ready", cfg.Server.HTTPPort))
+	}
+	if err := startOwner(opts, true); err != nil {
+		return nil, nil, err
+	}
+	if err := stop(); err != nil {
+		return nil, nil, err
+	}
+	opts.BootstrapIndexes = false
+	opts.InitializationAcceptance = true
+	if err := startOwner(opts, false); err != nil {
+		return nil, nil, err
+	}
+	if err := acceptInitializationFixture(manager, cfg.Server.HTTPPort); err != nil {
+		return nil, nil, err
+	}
+	if err := stop(); err != nil {
+		return nil, nil, err
+	}
+	ctx, done := context.WithTimeout(context.Background(), 30*time.Second)
+	defer done()
+	if err := finalizeInitializationFixture(ctx, cfg); err != nil {
+		return nil, nil, err
+	}
+	opts.InitializationAcceptance, opts.WritesQuiesced = false, false
+	if err := startOwner(opts, false); err != nil {
+		return nil, nil, err
+	}
+	return manager, cancel, nil
+}
+
+func seedInitializationFixture(ctx context.Context, cfg *config.Config) error {
+	backends, err := storage.NewBackends(ctx, cfg.Storage)
+	if err != nil {
+		return err
+	}
+	defer backends.Close()
+	factory, err := storage.NewFactory(ctx, cfg.Storage, backends)
+	if err != nil {
+		return err
+	}
+	return factory.Document().Create(ctx, model.DefaultDatabase, types.NewStoredDoc(model.DefaultDatabase, "initialization-acceptance", "seed", map[string]interface{}{"id": "seed"}))
+}
+
+func acceptInitializationFixture(manager *services.Manager, port int) error {
+	token, err := manager.SystemTokenIssuer().GenerateSystemToken("initialization-acceptance")
+	if err != nil {
+		return err
+	}
+	body, err := json.Marshal(model.Query{Collection: "initialization-acceptance", OrderBy: []model.Order{{Field: "id", Direction: "asc"}}})
+	if err != nil {
+		return err
+	}
+	request, err := http.NewRequest(http.MethodPost, fmt.Sprintf("http://localhost:%d/api/v1/databases/default/query", port), bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	request.Header.Set("Authorization", "Bearer "+token)
+	request.Header.Set("Content-Type", "application/json")
+	response, err := (&http.Client{Timeout: 5 * time.Second}).Do(request)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return fmt.Errorf("indexed-query initialization acceptance returned HTTP %d", response.StatusCode)
+	}
+	var page struct {
+		Documents []json.RawMessage `json:"documents"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&page); err != nil {
+		return err
+	}
+	if len(page.Documents) != 1 {
+		return fmt.Errorf("indexed-query initialization acceptance returned %d documents", len(page.Documents))
+	}
+	value, err := model.DecodeTypedValue(page.Documents[0])
+	if err != nil {
+		return err
+	}
+	document, ok := value.(map[string]interface{})
+	if !ok || document["id"] != "seed" {
+		return fmt.Errorf("indexed-query initialization acceptance did not return the bootstrap seed")
+	}
+	return nil
+}
+
+func finalizeInitializationFixture(ctx context.Context, cfg *config.Config) error {
+	backends, err := storage.NewBackends(ctx, cfg.Storage)
+	if err != nil {
+		return err
+	}
+	defer backends.Close()
+	coordinator, err := initialization.New(ctx, cfg.Storage, backends)
+	if err != nil {
+		return err
+	}
+	status, err := coordinator.Inspect(ctx)
+	if err != nil {
+		return err
+	}
+	if _, err := coordinator.Finalize(ctx, status.Specification); err != nil {
+		return fmt.Errorf("finalize integration storage after indexed-query acceptance: %w", err)
+	}
+	return nil
+}
+
+func waitForReadyFixture(url string) error {
+	deadline := time.Now().Add(30 * time.Second)
+	client := &http.Client{Timeout: time.Second}
+	for time.Now().Before(deadline) {
+		response, err := client.Get(url)
+		if err == nil {
+			response.Body.Close()
+			if response.StatusCode == http.StatusOK {
+				return nil
+			}
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return fmt.Errorf("runtime readiness timed out for %s", url)
 }

@@ -1,9 +1,11 @@
 package evaluator
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/codetreker/syntrix/internal/core/pubsub"
+	pubsubconfig "github.com/codetreker/syntrix/internal/core/pubsub/config"
 	natspubsub "github.com/codetreker/syntrix/internal/core/pubsub/nats"
 	"github.com/codetreker/syntrix/internal/core/storage"
 	"github.com/codetreker/syntrix/internal/puller"
@@ -14,10 +16,11 @@ import (
 
 // Dependencies contains external dependencies for the evaluator service.
 type Dependencies struct {
-	Store     storage.DocumentStore
-	Puller    puller.Service
-	Publisher pubsub.Publisher
-	Metrics   types.Metrics
+	Store         storage.DocumentStore
+	Puller        puller.Service
+	Publisher     pubsub.Publisher
+	SubjectPrefix string
+	Metrics       types.Metrics
 }
 
 // NewService creates a new evaluator Service.
@@ -47,7 +50,10 @@ func NewService(deps Dependencies, cfg Config) (Service, error) {
 	// Create publisher wrapping pubsub.Publisher
 	var pub TaskPublisher
 	if deps.Publisher != nil {
-		pub = NewTaskPublisher(deps.Publisher, cfg.StreamName, deps.Metrics)
+		if deps.SubjectPrefix == "" {
+			return nil, fmt.Errorf("subject prefix is required with a publisher")
+		}
+		pub = NewTaskPublisher(deps.Publisher, deps.SubjectPrefix, deps.Metrics)
 	}
 
 	svc := &service{
@@ -76,22 +82,30 @@ func NewService(deps Dependencies, cfg Config) (Service, error) {
 }
 
 // NewPublisher creates a pubsub.Publisher from evaluator config.
-func NewPublisher(nc *nats.Conn, cfg Config) (pubsub.Publisher, error) {
-	return newPublisherWithFactory(nc, cfg, natspubsub.NewJetStream)
+func NewPublisher(ctx context.Context, nc *nats.Conn, cfg Config, binding pubsubconfig.BrokerBinding) (pubsub.Publisher, error) {
+	return newPublisherWithFactory(ctx, nc, cfg, binding, natspubsub.NewJetStream)
 }
 
-// newPublisherWithFactory is the internal implementation that accepts a JetStream factory for testing.
-func newPublisherWithFactory(nc *nats.Conn, cfg Config, jsFactory func(*nats.Conn) (natspubsub.JetStream, error)) (pubsub.Publisher, error) {
+func newPublisherWithFactory(ctx context.Context, nc *nats.Conn, cfg Config, binding pubsubconfig.BrokerBinding, jsFactory func(*nats.Conn) (natspubsub.JetStream, error)) (pubsub.Publisher, error) {
 	js, err := jsFactory(nc)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create JetStream: %w", err)
 	}
 
+	if cfg.StreamName == "" {
+		cfg.StreamName = binding.StreamName
+	}
+	if cfg.StorageType == "" {
+		cfg.StorageType = binding.Policy.Storage
+	}
 	cfg.ApplyDefaults()
+	if cfg.StreamName != binding.StreamName || cfg.StorageType != binding.Policy.Storage {
+		return nil, fmt.Errorf("evaluator stream_name and storage_type must match broker binding")
+	}
 
-	return natspubsub.NewPublisher(js, pubsub.PublisherOptions{
+	return natspubsub.NewPublisher(ctx, js, binding, pubsub.PublisherOptions{
 		StreamName:    cfg.StreamName,
-		SubjectPrefix: cfg.StreamName,
+		SubjectPrefix: binding.SubjectPrefix,
 		RetryAttempts: cfg.RetryAttempts,
 		Storage:       cfg.StorageTypeValue(),
 	})

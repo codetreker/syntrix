@@ -5,16 +5,20 @@ import (
 	"path/filepath"
 	"testing"
 
+	pubsubconfig "github.com/codetreker/syntrix/internal/core/pubsub/config"
 	services "github.com/codetreker/syntrix/internal/services/config"
 	"github.com/codetreker/syntrix/internal/trigger/delivery"
 	"github.com/codetreker/syntrix/internal/trigger/evaluator"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestDefaultConfig(t *testing.T) {
 	cfg := DefaultConfig()
 
 	assert.Equal(t, "nats://localhost:4222", cfg.NatsURL)
+	require.NotNil(t, cfg.Broker)
+	assert.Equal(t, pubsubconfig.DefaultOperatorBinding(), *cfg.Broker)
 
 	// Evaluator config
 	assert.Equal(t, "localhost:9000", cfg.Evaluator.PullerAddr)
@@ -63,6 +67,48 @@ func TestConfig_ApplyDefaults(t *testing.T) {
 	assert.Equal(t, "TRIGGERS", cfg.Evaluator.StreamName)
 	assert.Equal(t, 3, cfg.Evaluator.RetryAttempts)
 	assert.Equal(t, 16, cfg.Delivery.NumWorkers)
+	assert.Nil(t, cfg.Broker)
+}
+
+func TestConfig_BrokerBindingDefaultsAndValidation(t *testing.T) {
+	binding := pubsubconfig.DefaultOperatorBinding()
+	binding.ResourceMode = "managed"
+	binding.StreamName = "SYNTRIX_" + binding.Ownership.InstanceID + "_TRIGGERS"
+	binding.SubjectPrefix = binding.StreamName
+	binding.ConsumerName = binding.StreamName + "_DELIVERY"
+	binding.Policy.Storage = "memory"
+	cfg := Config{Broker: &binding, Evaluator: evaluator.Config{RulesPath: "triggers"}}
+	cfg.ApplyDefaults()
+	require.NoError(t, cfg.Validate(services.ModeDistributed))
+	assert.Equal(t, binding.StreamName, cfg.Evaluator.StreamName)
+	assert.Equal(t, binding.StreamName, cfg.Delivery.StreamName)
+	assert.Equal(t, binding.ConsumerName, cfg.Delivery.ConsumerName)
+	assert.Equal(t, "memory", cfg.Evaluator.StorageType)
+	assert.Equal(t, "memory", cfg.Delivery.StorageType)
+
+	tests := []struct {
+		name    string
+		mutate  func(*Config)
+		message string
+	}{
+		{"missing", func(c *Config) { c.Broker = nil }, "broker is required"},
+		{"incomplete", func(c *Config) { copy := *c.Broker; copy.SpecRevision = 0; c.Broker = &copy }, "spec_revision"},
+		{"evaluator stream", func(c *Config) { c.Evaluator.StreamName = "OTHER" }, "stream_name must match"},
+		{"delivery stream", func(c *Config) { c.Delivery.StreamName = "OTHER" }, "stream_name must match"},
+		{"delivery durable", func(c *Config) { c.Delivery.ConsumerName = "other" }, "consumer_name must match"},
+		{"evaluator storage", func(c *Config) { c.Evaluator.StorageType = "file" }, "storage_type must match"},
+		{"delivery storage", func(c *Config) { c.Delivery.StorageType = "file" }, "storage_type must match"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			candidate := cfg
+			tt.mutate(&candidate)
+			candidate.ApplyDefaults()
+			assert.ErrorContains(t, candidate.Validate(services.ModeDistributed), tt.message)
+		})
+	}
+	cfg.Broker = nil
+	assert.NoError(t, cfg.Validate(services.ModeStandalone))
 }
 
 func TestConfig_ApplyEnvOverrides(t *testing.T) {

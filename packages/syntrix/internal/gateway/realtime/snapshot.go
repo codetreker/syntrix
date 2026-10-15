@@ -22,7 +22,7 @@ func (c *Client) sendSnapshot(ctx context.Context, subID, collection string) {
 	payload, err := c.collectSnapshot(ctx, subID, collection)
 	message := BaseMessage{ID: subID, Type: TypeSnapshot, Payload: payload}
 	if err != nil {
-		slog.Error("WS: Snapshot failed", "error", err)
+		slog.Error("WS: Snapshot failed", "component", "realtime", "category", "snapshot_failed")
 		failure := ErrorPayload{Code: "snapshot_failed", Message: "Snapshot could not be completed"}
 		if errors.Is(err, model.ErrQueryWorkLimit) {
 			failure = ErrorPayload{Code: "snapshot_limit", Message: "Snapshot exceeds 1000 documents or 16 MiB; use paginated Pull"}

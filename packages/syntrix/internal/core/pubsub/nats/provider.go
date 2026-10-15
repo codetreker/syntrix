@@ -2,136 +2,110 @@ package nats
 
 import (
 	"context"
-	"fmt"
-	"log/slog"
+	"errors"
+	"sync"
 
 	"github.com/codetreker/syntrix/internal/core/pubsub"
+	pubsubconfig "github.com/codetreker/syntrix/internal/core/pubsub/config"
 	"github.com/nats-io/nats.go"
 )
 
-// natsConnection abstracts the nats.Conn for testing purposes
-type natsConnection interface {
-	Close()
+// OperationError preserves the cause without rendering broker addresses or credentials.
+type OperationError struct {
+	Operation string
+	Cause     error
 }
 
-// natsConnectFunc is a function type for connecting to NATS (injectable for testing)
-type natsConnectFunc func(url string) (natsConnection, error)
+func (e *OperationError) Error() string { return "NATS " + e.Operation + " failed" }
+func (e *OperationError) Unwrap() error { return e.Cause }
 
-// jetStreamFactory is a function type for creating JetStream (injectable for testing)
-type jetStreamFactory func(nc *nats.Conn) (JetStream, error)
-
-// natsConnCaster is a function type that attempts to cast natsConnection to *nats.Conn
-// This is injectable for testing to simulate real *nats.Conn behavior
-type natsConnCaster func(nc natsConnection) (*nats.Conn, bool)
-
-// defaultNatsConnect is the default implementation that uses nats.Connect
-var defaultNatsConnect natsConnectFunc = func(url string) (natsConnection, error) {
-	return nats.Connect(url)
-}
-
-// defaultJetStreamFactory is the default implementation that creates JetStream
-var defaultJetStreamFactory jetStreamFactory = NewJetStream
-
-// defaultNatsConnCaster is the default implementation that casts natsConnection to *nats.Conn
-var defaultNatsConnCaster natsConnCaster = func(nc natsConnection) (*nats.Conn, bool) {
-	natsConn, ok := nc.(*nats.Conn)
-	return natsConn, ok
-}
-
-// Provider implements pubsub.Provider using NATS JetStream.
-// It manages the NATS connection lifecycle and provides factory methods
-// for creating publishers and consumers.
 type Provider struct {
-	url              string
-	nc               natsConnection
-	js               JetStream
-	natsConnect      natsConnectFunc  // injectable for testing
-	jetStreamFactory jetStreamFactory // injectable for testing
-	natsConnCaster   natsConnCaster   // injectable for testing
+	mu      sync.RWMutex
+	url     string
+	binding pubsubconfig.BrokerBinding
+	nc      *nats.Conn
+	js      JetStream
+	closed  bool
 }
 
-// Compile-time check that Provider implements pubsub.Provider
 var _ pubsub.Provider = (*Provider)(nil)
 
-// NewProvider creates a new NATS-based pubsub provider.
-// It connects to the NATS server and initializes JetStream.
-func NewProvider(url string) (*Provider, error) {
-	return &Provider{
-		url:              url,
-		natsConnect:      defaultNatsConnect,
-		jetStreamFactory: defaultJetStreamFactory,
-		natsConnCaster:   defaultNatsConnCaster,
-	}, nil
+func NewProvider(url string, binding pubsubconfig.BrokerBinding) (*Provider, error) {
+	if url == "" {
+		return nil, errors.New("NATS URL is required")
+	}
+	if _, err := binding.Specification(); err != nil {
+		return nil, err
+	}
+	return &Provider{url: url, binding: binding}, nil
 }
-
-// Connect establishes the NATS connection and initializes JetStream.
-// This must be called before using NewPublisher or NewConsumer.
 func (p *Provider) Connect(ctx context.Context) error {
-	connectFn := p.natsConnect
-	if connectFn == nil {
-		connectFn = defaultNatsConnect
+	if err := ctx.Err(); err != nil {
+		return err
 	}
-
-	nc, err := connectFn(p.url)
+	nc, err := ConnectContext(ctx, p.url, nats.Connect)
 	if err != nil {
-		return fmt.Errorf("failed to connect to NATS at %s: %w", p.url, err)
+		return &OperationError{Operation: "connection", Cause: err}
 	}
-	p.nc = nc
-
-	// Use injectable caster for testing
-	caster := p.natsConnCaster
-	if caster == nil {
-		caster = defaultNatsConnCaster
-	}
-
-	// NewJetStream expects *nats.Conn, so we need to cast
-	natsConn, ok := caster(nc)
-	if !ok {
-		// For testing with mock connections, skip JetStream creation
-		// The test should set js directly
-		slog.Info("Connected to NATS (mock)", "url", p.url)
-		return nil
-	}
-
-	jsFactory := p.jetStreamFactory
-	if jsFactory == nil {
-		jsFactory = defaultJetStreamFactory
-	}
-
-	js, err := jsFactory(natsConn)
+	js, err := NewJetStream(nc)
 	if err != nil {
 		nc.Close()
-		return fmt.Errorf("failed to create JetStream: %w", err)
+		return &OperationError{Operation: "JetStream initialization", Cause: err}
 	}
-	p.js = js
-
-	slog.Info("Connected to NATS", "url", p.url)
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.closed {
+		nc.Close()
+		return errors.New("NATS provider is closed")
+	}
+	if p.nc != nil {
+		nc.Close()
+		return errors.New("NATS provider is already connected")
+	}
+	p.nc, p.js = nc, js
 	return nil
 }
-
-// NewPublisher creates a new Publisher backed by NATS JetStream.
-func (p *Provider) NewPublisher(opts pubsub.PublisherOptions) (pubsub.Publisher, error) {
-	if p.js == nil {
-		return nil, fmt.Errorf("NATS not connected, call Connect first")
+func (p *Provider) connection() (JetStream, error) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	if p.closed {
+		return nil, errors.New("NATS provider is closed")
 	}
-	return NewPublisher(p.js, opts)
-}
-
-// NewConsumer creates a new Consumer backed by NATS JetStream.
-func (p *Provider) NewConsumer(opts pubsub.ConsumerOptions) (pubsub.Consumer, error) {
 	if p.js == nil {
-		return nil, fmt.Errorf("NATS not connected, call Connect first")
+		return nil, errors.New("NATS not connected")
 	}
-	return NewConsumer(p.js, opts)
+	return p.js, nil
 }
-
-// Close closes the NATS connection.
+func (p *Provider) NewPublisher(ctx context.Context, opts pubsub.PublisherOptions) (pubsub.Publisher, error) {
+	js, err := p.connection()
+	if err != nil {
+		return nil, err
+	}
+	return NewPublisher(ctx, js, p.binding, opts)
+}
+func (p *Provider) NewConsumer(ctx context.Context, opts pubsub.ConsumerOptions) (pubsub.Consumer, error) {
+	js, err := p.connection()
+	if err != nil {
+		return nil, err
+	}
+	return NewConsumer(ctx, js, p.binding, opts)
+}
+func (p *Provider) Check(ctx context.Context) error {
+	js, err := p.connection()
+	if err != nil {
+		return err
+	}
+	_, err = attach(ctx, js, p.binding, false)
+	return err
+}
 func (p *Provider) Close() error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.closed = true
 	if p.nc != nil {
-		slog.Info("Closing NATS connection...")
 		p.nc.Close()
 		p.nc = nil
-		p.js = nil
 	}
+	p.js = nil
 	return nil
 }

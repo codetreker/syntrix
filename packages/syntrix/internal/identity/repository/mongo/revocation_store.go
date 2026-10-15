@@ -5,10 +5,10 @@ import (
 	"errors"
 	"time"
 
+	storagemongo "github.com/codetreker/syntrix/internal/core/storage/mongo"
 	"github.com/codetreker/syntrix/internal/identity/repository"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
-	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
 type revocationStore struct {
@@ -117,10 +117,10 @@ func (s *revocationStore) IsRevoked(ctx context.Context, jti string, gracePeriod
 }
 
 func (s *revocationStore) EnsureIndexes(ctx context.Context) error {
-	// Revocation TTL index (Global cleanup)
-	_, err := s.coll.Indexes().CreateOne(ctx, mongo.IndexModel{
-		Keys:    bson.D{{Key: "expires_at", Value: 1}},
-		Options: options.Index().SetExpireAfterSeconds(0),
-	})
-	return err
+	return storagemongo.EnsureIndexDefinitions(ctx, s.coll, RevocationIndexDefinitions())
+}
+
+func RevocationIndexDefinitions() []storagemongo.IndexDefinition {
+	zero := int64(0)
+	return []storagemongo.IndexDefinition{{Name: "expires_at_1", Keys: bson.D{{Key: "expires_at", Value: 1}}, ExpireAfterSeconds: &zero}}
 }

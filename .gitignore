@@ -6,7 +6,7 @@
 *.dylib
 /syntrix
 /puller
-/syntrix-cli
+/deployment-cli
 /bin/
 
 # Test binary

@@ -59,15 +59,16 @@ ten-minute timeout. Only the test job starts this stack. Tests do not
 require build artifacts; generated protocol sources are committed. Separate
 jobs keep cold-cache build compilation out of the race-test budget.
 
-After building `syntrix-cli`, the Go build job renders both standalone and
-distributed templates in normal and explicit-bootstrap modes. These four renders
+After building `deployment-cli`, the Go build job renders both standalone and
+distributed templates in bootstrap, acceptance and full phases. These six renders
 use the committed example values and validate generation without contacting
-databases or applying resources.
+databases or applying resources. The build also verifies that the runtime import
+graph contains no deployment-tool package.
 
 The container job builds the package-owned image and runs its help command with
 a read-only root, no network, and no Linux capabilities. It does not deploy the
 Kubernetes artifact. The
-[instance deployment guide](../../packages/syntrix/deployment/README.md) owns
+[instance deployment guide](../../packages/syntrix/tools/deployment-cli/deployment/README.md) owns
 operator setup and the write-quiesced bootstrap procedure.
 
 The required `Syntrix Server (Go)` check succeeds only when all three jobs succeed;

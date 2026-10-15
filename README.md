@@ -19,14 +19,21 @@ independent developer Console backend and bilingual browser login/shell. Console
 uses its own PostgreSQL for source data and deploys predefined HTTP test workloads
 through its API to Kubernetes. The browser shell currently provides account login,
 session restoration, and logout; resource-administration pages remain target work.
-The [instance deployment](packages/syntrix/deployment/README.md) supplies a separate
+The [instance deployment](packages/syntrix/tools/deployment-cli/deployment/README.md) supplies a separate
 container, standalone/distributed Kubernetes templates, and a configuration-driven
-manifest generator. The [manual release pipeline](packages/syntrix/deployment/RELEASE.md)
+`deployment-cli` manifest generator under `packages/syntrix/tools/deployment-cli`.
+The tool consumes runtime-owned configuration contracts; the service and its
+Docker build have no deployment-tool dependency. The [manual release pipeline](packages/syntrix/tools/deployment-cli/deployment/RELEASE.md)
 publishes public Linux amd64/arm64 runtime images and deployment archives with
-matching CLIs and build metadata. These deployments connect to existing MongoDB and PostgreSQL; distributed
-Trigger transport additionally requires existing NATS JetStream. Console-managed
-full-instance provisioning, employee Management, project Identity, and OAuth
-remain target work.
+matching CLIs and build metadata. These deployments connect to existing MongoDB
+and PostgreSQL; distributed Trigger transport additionally requires existing NATS
+JetStream. The planned [Console instance lifecycle](docs/design/server/console/03.instance_lifecycle.md)
+allocates private databases and scoped accounts on administrator-configured shared
+servers, manages per-instance artifacts on a shared NATS account, and delivers
+instance administration through five implementation PRs. New instances will use
+the latest complete published runtime package with its matching CLI/templates and
+a fixed image version tag under the no-overwrite publication policy; retries and
+ordinary restart preserve that selected release. Employee Management, project Identity, and OAuth remain separate target work.
 See the [Console client](packages/console-client/README.md) for browser development
 and static distribution, and the [Console server](packages/console-server/README.md)
 for backend configuration and operating commands.
@@ -56,7 +63,7 @@ repository root; the server runs from its package directory so configuration,
 data, and logs resolve against that package. Infrastructure prerequisites are
 described in the [development guide](deployment/dev/README.md).
 
-For Kubernetes, follow the [instance deployment guide](packages/syntrix/deployment/README.md).
+For Kubernetes, follow the [instance deployment guide](packages/syntrix/tools/deployment-cli/deployment/README.md).
 Its explicit bootstrap phase preserves the existing write-quiescence and persistent
 Indexer startup requirements; cluster creation remains operator-owned.
 

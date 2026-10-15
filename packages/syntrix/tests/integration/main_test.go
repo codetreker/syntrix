@@ -1,6 +1,7 @@
 package integration
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -8,6 +9,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -15,12 +17,16 @@ import (
 	"time"
 
 	"github.com/codetreker/syntrix/internal/config"
+	pubsubconfig "github.com/codetreker/syntrix/internal/core/pubsub/config"
+	"github.com/codetreker/syntrix/internal/core/storage"
 	storage_config "github.com/codetreker/syntrix/internal/core/storage/config"
+	"github.com/codetreker/syntrix/internal/core/storage/types"
 	authorizationconfig "github.com/codetreker/syntrix/internal/gateway/authorization/config"
 	api_config "github.com/codetreker/syntrix/internal/gateway/config"
 	identity_config "github.com/codetreker/syntrix/internal/identity/config"
 	identityconfig "github.com/codetreker/syntrix/internal/identity/config"
 	indexer_config "github.com/codetreker/syntrix/internal/indexer/config"
+	"github.com/codetreker/syntrix/internal/initialization"
 	puller_config "github.com/codetreker/syntrix/internal/puller/config"
 	query_config "github.com/codetreker/syntrix/internal/query/config"
 	"github.com/codetreker/syntrix/internal/server"
@@ -29,7 +35,11 @@ import (
 	trigger_config "github.com/codetreker/syntrix/internal/trigger/config"
 	"github.com/codetreker/syntrix/internal/trigger/delivery"
 	"github.com/codetreker/syntrix/internal/trigger/evaluator"
-	_ "github.com/lib/pq"
+	"github.com/codetreker/syntrix/pkg/model"
+	"github.com/google/uuid"
+	"github.com/lib/pq"
+	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
@@ -57,6 +67,8 @@ type GlobalTestEnv struct {
 	WebhookServer   *WebhookTestServer
 	cancel          context.CancelFunc
 	tempDir         string
+	postgresSchema  string
+	postgresBaseDSN string
 }
 
 // WebhookTestServer captures webhook deliveries for testing
@@ -237,7 +249,7 @@ func GetGlobalEnv() *GlobalTestEnv {
 }
 
 // setupGlobalEnv creates and starts the global service instance
-func setupGlobalEnv() (*GlobalTestEnv, error) {
+func setupGlobalEnv() (_ *GlobalTestEnv, setupErr error) {
 	// MongoDB connection
 	mongoURI := os.Getenv("MONGO_URI")
 	if mongoURI == "" {
@@ -252,6 +264,12 @@ func setupGlobalEnv() (*GlobalTestEnv, error) {
 
 	// Use a single database for all tests, with collection-level isolation
 	dbName := fmt.Sprintf("integration_test_%d", time.Now().UnixNano())
+	resources := &GlobalTestEnv{MongoURI: mongoURI, DBName: dbName}
+	defer func() {
+		if setupErr != nil {
+			resources.Shutdown()
+		}
+	}()
 
 	// Connect and ensure MongoDB is clean
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -276,13 +294,29 @@ func setupGlobalEnv() (*GlobalTestEnv, error) {
 		pgDB.Close()
 		return nil, fmt.Errorf("failed to ping PostgreSQL: %w", err)
 	}
+	postgresBaseDSN := postgresDSN
+	postgresSchema := fmt.Sprintf("integration_%d", time.Now().UnixNano())
+	if _, err := pgDB.ExecContext(ctx, "CREATE SCHEMA "+pq.QuoteIdentifier(postgresSchema)); err != nil {
+		pgDB.Close()
+		return nil, fmt.Errorf("create isolated PostgreSQL schema: %w", err)
+	}
+	resources.postgresBaseDSN, resources.postgresSchema = postgresBaseDSN, postgresSchema
 	pgDB.Close()
+	parsedDSN, err := url.Parse(postgresDSN)
+	if err != nil || (parsedDSN.Scheme != "postgres" && parsedDSN.Scheme != "postgresql") {
+		return nil, fmt.Errorf("integration PostgreSQL fixture requires a PostgreSQL URL")
+	}
+	query := parsedDSN.Query()
+	query.Set("search_path", postgresSchema)
+	parsedDSN.RawQuery = query.Encode()
+	postgresDSN = parsedDSN.String()
 
 	// Create temp directories for test files
 	tempDir, err := os.MkdirTemp("", "integration_test_")
 	if err != nil {
 		return nil, fmt.Errorf("failed to create temp dir: %w", err)
 	}
+	resources.tempDir = tempDir
 
 	keysDir := tempDir + "/keys"
 	if err := os.MkdirAll(keysDir, 0755); err != nil {
@@ -421,6 +455,7 @@ templates:
 	if err != nil {
 		return nil, fmt.Errorf("failed to create webhook test server: %w", err)
 	}
+	resources.WebhookServer = webhookServer
 
 	// Create trigger rules file with webhook server URL
 	// This trigger watches any collection and fires when age >= 18
@@ -450,6 +485,13 @@ triggers:
 
 	// Generate unique stream name to avoid conflicts between test runs
 	streamName := fmt.Sprintf("TRIGGERS_%d", time.Now().UnixNano())
+	resources.NatsURL, resources.StreamName = natsURL, streamName
+	broker := pubsubconfig.DefaultOperatorBinding()
+	broker.StreamName, broker.SubjectPrefix = streamName, streamName
+	broker.ConsumerName = streamName + "_DELIVERY"
+	broker.Ownership.InstanceID = strings.ReplaceAll(uuid.NewString(), "-", "")
+	broker.Ownership.AllocationID = strings.ReplaceAll(uuid.NewString(), "-", "")
+	broker.Policy.Storage = "memory"
 
 	// Get available ports
 	apiPort, err := getAvailablePort()
@@ -563,6 +605,7 @@ triggers:
 		},
 		Trigger: trigger_config.Config{
 			NatsURL: natsURL,
+			Broker:  &broker,
 			Evaluator: evaluator.Config{
 				PullerAddr:         fmt.Sprintf("localhost:%d", grpcPort),
 				StartFromNow:       true,
@@ -575,14 +618,12 @@ triggers:
 			Delivery: delivery.Config{
 				NumWorkers:   4,
 				StreamName:   streamName,
-				ConsumerName: "trigger-delivery-test",
+				ConsumerName: broker.ConsumerName,
 				StorageType:  "memory", // Use memory for tests
 			},
 		},
 	}
-
-	// Initialize the unified server
-	server.InitDefault(cfg.Server, nil)
+	cfg.Trigger.ApplyDefaults()
 
 	opts := services.Options{
 		Mode:                services.ModeDistributed, // Services communicate via gRPC even in same process
@@ -598,26 +639,9 @@ triggers:
 		BootstrapTimeout:    30 * time.Second,
 	}
 
-	manager := services.NewManager(cfg, opts)
-	if err := manager.Init(context.Background()); err != nil {
-		return nil, fmt.Errorf("failed to init manager: %w", err)
-	}
-
-	// Start manager
-	mgrCtx, mgrCancel := context.WithCancel(context.Background())
-	bootstrapCtx, bootstrapCancel := context.WithTimeout(mgrCtx, 30*time.Second)
-	err = manager.BootstrapIndexes(mgrCtx, bootstrapCtx)
-	bootstrapCancel()
+	manager, mgrCancel, err := startInitializedFixture(cfg, opts)
 	if err != nil {
-		mgrCancel()
-		return nil, fmt.Errorf("bootstrap integration indexes: %w", err)
-	}
-	manager.Start(mgrCtx)
-
-	// Wait for services to be healthy
-	if err := waitForHealthWithTimeout(fmt.Sprintf("http://localhost:%d/health", apiPort), 30*time.Second); err != nil {
-		mgrCancel()
-		return nil, fmt.Errorf("API server failed to start: %w", err)
+		return nil, err
 	}
 	// Query service now uses unified gRPC server, no separate health check needed
 
@@ -637,6 +661,8 @@ triggers:
 		WebhookServer:   webhookServer,
 		cancel:          mgrCancel,
 		tempDir:         tempDir,
+		postgresSchema:  postgresSchema,
+		postgresBaseDSN: postgresBaseDSN,
 	}, nil
 }
 
@@ -651,6 +677,22 @@ func (e *GlobalTestEnv) Shutdown() {
 
 	if e.Manager != nil {
 		e.Manager.Shutdown(shutdownCtx)
+	}
+	if connection, err := nats.Connect(e.NatsURL, nats.Timeout(2*time.Second)); err == nil {
+		defer connection.Close()
+		if broker, err := jetstream.New(connection); err == nil {
+			if err := broker.DeleteStream(shutdownCtx, e.StreamName); err != nil && err != jetstream.ErrStreamNotFound {
+				log.Printf("Delete integration stream: %v", err)
+			}
+		}
+	}
+	if e.postgresSchema != "" {
+		if db, err := sql.Open("postgres", e.postgresBaseDSN); err == nil {
+			defer db.Close()
+			if _, err := db.ExecContext(shutdownCtx, "DROP SCHEMA "+pq.QuoteIdentifier(e.postgresSchema)+" CASCADE"); err != nil {
+				log.Printf("Drop integration PostgreSQL schema: %v", err)
+			}
+		}
 	}
 
 	// Shutdown webhook server
@@ -706,4 +748,158 @@ func waitForHealthWithTimeout(url string, timeout time.Duration) error {
 		time.Sleep(100 * time.Millisecond)
 	}
 	return fmt.Errorf("health check timed out for %s", url)
+}
+
+func startInitializedFixture(cfg *config.Config, opts services.Options) (_ *services.Manager, _ context.CancelFunc, startupErr error) {
+	var manager *services.Manager
+	var cancel context.CancelFunc
+	stop := func() error {
+		if cancel != nil {
+			cancel()
+		}
+		if manager != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			manager.Shutdown(ctx)
+			if err := ctx.Err(); err != nil {
+				return fmt.Errorf("integration runtime did not drain: %w", err)
+			}
+			return manager.Wait(ctx)
+		}
+		return nil
+	}
+	defer func() {
+		if startupErr != nil {
+			stop()
+		}
+	}()
+	startOwner := func(options services.Options, bootstrap bool) error {
+		manager = services.NewManager(cfg, options)
+		ctx, done := context.WithTimeout(context.Background(), 30*time.Second)
+		defer done()
+		if err := manager.PrepareIndexBootstrap(); err != nil {
+			return err
+		}
+		if err := manager.Init(ctx); err != nil {
+			return err
+		}
+		lifeCtx, lifeCancel := context.WithCancel(context.Background())
+		cancel = lifeCancel
+		if bootstrap {
+			if err := seedInitializationFixture(ctx, cfg); err != nil {
+				return err
+			}
+			if err := manager.BootstrapIndexes(lifeCtx, ctx); err != nil {
+				return fmt.Errorf("bootstrap integration indexes: %w", err)
+			}
+			return nil
+		}
+		if err := manager.Start(lifeCtx); err != nil {
+			return err
+		}
+		return waitForHealthWithTimeout(fmt.Sprintf("http://localhost:%d/ready", cfg.Server.HTTPPort), 30*time.Second)
+	}
+	if err := startOwner(opts, true); err != nil {
+		return nil, nil, err
+	}
+	if err := stop(); err != nil {
+		return nil, nil, err
+	}
+	opts.BootstrapIndexes = false
+	opts.InitializationAcceptance = true
+	if err := startOwner(opts, false); err != nil {
+		return nil, nil, err
+	}
+	if err := acceptInitializationFixture(manager, cfg.Server.HTTPPort); err != nil {
+		return nil, nil, err
+	}
+	if err := stop(); err != nil {
+		return nil, nil, err
+	}
+	ctx, done := context.WithTimeout(context.Background(), 30*time.Second)
+	defer done()
+	if err := finalizeInitializationFixture(ctx, cfg); err != nil {
+		return nil, nil, err
+	}
+	opts.InitializationAcceptance, opts.WritesQuiesced = false, false
+	if err := startOwner(opts, false); err != nil {
+		return nil, nil, err
+	}
+	return manager, cancel, nil
+}
+
+func seedInitializationFixture(ctx context.Context, cfg *config.Config) error {
+	backends, err := storage.NewBackends(ctx, cfg.Storage)
+	if err != nil {
+		return err
+	}
+	defer backends.Close()
+	factory, err := storage.NewFactory(ctx, cfg.Storage, backends)
+	if err != nil {
+		return err
+	}
+	return factory.Document().Create(ctx, model.DefaultDatabase, types.NewStoredDoc(model.DefaultDatabase, "initialization-acceptance", "seed", map[string]interface{}{"id": "seed"}))
+}
+
+func acceptInitializationFixture(manager *services.Manager, port int) error {
+	token, err := manager.SystemTokenIssuer().GenerateSystemToken("initialization-acceptance")
+	if err != nil {
+		return err
+	}
+	body, err := json.Marshal(model.Query{Collection: "initialization-acceptance", OrderBy: []model.Order{{Field: "id", Direction: "asc"}}})
+	if err != nil {
+		return err
+	}
+	request, err := http.NewRequest(http.MethodPost, fmt.Sprintf("http://localhost:%d/api/v1/databases/default/query", port), bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	request.Header.Set("Authorization", "Bearer "+token)
+	request.Header.Set("Content-Type", "application/json")
+	response, err := httpClientWithTimeout.Do(request)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return fmt.Errorf("indexed-query initialization acceptance returned HTTP %d", response.StatusCode)
+	}
+	var page struct {
+		Documents []json.RawMessage `json:"documents"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&page); err != nil {
+		return err
+	}
+	if len(page.Documents) != 1 {
+		return fmt.Errorf("indexed-query initialization acceptance returned %d documents", len(page.Documents))
+	}
+	value, err := model.DecodeTypedValue(page.Documents[0])
+	if err != nil {
+		return err
+	}
+	document, ok := value.(map[string]interface{})
+	if !ok || document["id"] != "seed" {
+		return fmt.Errorf("indexed-query initialization acceptance did not return the bootstrap seed")
+	}
+	return nil
+}
+
+func finalizeInitializationFixture(ctx context.Context, cfg *config.Config) error {
+	backends, err := storage.NewBackends(ctx, cfg.Storage)
+	if err != nil {
+		return err
+	}
+	defer backends.Close()
+	coordinator, err := initialization.New(ctx, cfg.Storage, backends)
+	if err != nil {
+		return err
+	}
+	status, err := coordinator.Inspect(ctx)
+	if err != nil {
+		return err
+	}
+	if _, err := coordinator.Finalize(ctx, status.Specification); err != nil {
+		return fmt.Errorf("finalize integration storage after indexed-query acceptance: %w", err)
+	}
+	return nil
 }

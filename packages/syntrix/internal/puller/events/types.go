@@ -5,6 +5,7 @@ package events
 import (
 	"github.com/codetreker/syntrix/internal/core/storage"
 	"go.mongodb.org/mongo-driver/bson/primitive"
+	"time"
 )
 
 // StoreOperationType represents the type of change operation.
@@ -94,9 +95,14 @@ type PullerEvent struct {
 	Progress string            `json:"progress"`
 	// Ready follows every replay event; consumers apply and flush that prefix first.
 	Ready bool `json:"ready,omitempty"`
-	// Error terminates a verified subscription attempt without changing event progress.
-	Error     error `json:"-"`
-	Retryable bool  `json:"-"`
+	// Error terminates a monitored subscription attempt without changing progress.
+	Error               error  `json:"-"`
+	Retryable           bool   `json:"-"`
+	AdmissionState      string `json:"admission_state,omitempty"`
+	AdmissionGeneration uint64 `json:"admission_generation,omitempty"`
+	AdmissionReason     string `json:"admission_reason,omitempty"`
+	TransportGeneration uint64 `json:"-"`
+	admissionReceived   time.Time
 }
 
 // StoreChangeEvent is the canonical event schema published by Puller.

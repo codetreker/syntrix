@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/codetreker/syntrix/internal/core/origin"
 	authorization "github.com/codetreker/syntrix/internal/gateway/authorization/config"
 	services "github.com/codetreker/syntrix/internal/services/config"
 )
@@ -97,7 +98,7 @@ func DefaultGatewayConfig() GatewayConfig {
 		StreamerServiceURL: "localhost:9000",
 		AuthZ:              authorization.DefaultConfig(),
 		Realtime: RealtimeConfig{
-			AllowedOrigins: []string{"http://localhost:8080", "http://localhost:3000", "http://localhost:5173"},
+			AllowedOrigins: origin.DefaultAllowedOrigins(),
 			AllowDevOrigin: true,
 			Replica:        DefaultReplicaConfig(),
 		},
@@ -135,6 +136,9 @@ func (g *GatewayConfig) ResolvePaths(configDir, dataDir string) {
 
 // Validate returns an error if the configuration is invalid.
 func (g *GatewayConfig) Validate(mode services.DeploymentMode) error {
+	if err := (origin.Policy{AllowedOrigins: g.Realtime.AllowedOrigins, AllowDevelopment: g.Realtime.AllowDevOrigin}).Validate(false); err != nil {
+		return err
+	}
 	if mode.IsDistributed() {
 		if g.QueryServiceURL == "" {
 			return fmt.Errorf("gateway.query_service_url is required in distributed mode")

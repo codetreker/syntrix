@@ -21,14 +21,20 @@ must preserve useful failure categories without exposing credentials.
 
 ## Decision
 
-`packages/syntrix` owns the multi-stage Dockerfile and standalone/distributed
-Kubernetes templates. The existing `syntrix-cli` entrypoint supplies
+`packages/syntrix` owns the multi-stage runtime Dockerfile. The
+[deployment-tool decision](2026-10-13-deployment-cli-ownership.md) places
+standalone/distributed Kubernetes templates and rendering under
+`tools/deployment-cli` and replaces the original `syntrix-cli` entrypoint with
+`cmd/deployment-cli`. The tool supplies
 `render-kubernetes --template FILE --config FILE --output FILE`. A module-owned
 configuration package loads one strict values document and validates names,
 connections, exact roles, replica limits, and CPU/memory requests against limits.
 The renderer derives service addresses and names from that configuration and
-writes validated YAML atomically with mode 0600. It has no cluster/database side
-effects. The [deployment guide](../../../../packages/syntrix/deployment/README.md)
+returns validated YAML without cluster/database effects; the private CLI adapter
+publishes it atomically with mode 0600. The
+[managed-runtime decision](2026-10-13-managed-runtime-contract.md) owns the
+rendering compatibility contract and partially supersedes this note for initialization,
+broker attachment and readiness. The [deployment guide](../../../../packages/syntrix/tools/deployment-cli/deployment/README.md)
 owns values and commands; the [deployment design](../../../../docs/design/server/03.deployment_modes.md)
 places these artifacts within runtime modes.
 
@@ -73,19 +79,19 @@ Before applying it, the operator pauses every writer and MongoDB TTL cleanup and
 waits for existing normal Pods to stop. `ReadWriteOnce` alone does not prohibit
 simultaneous same-node access to Pebble stores. After bootstrap's applied-readiness
 barrier, the operator gracefully deletes the maintenance Pod, waits for deletion,
-and applies a normal render. This preserves exclusive store ownership and keeps
+and starts held read-path acceptance before finalization and full activation. This preserves exclusive store ownership and keeps
 maintenance flags out of ordinary restart. Compatible initialized state starts
 normally; invalid state fails rather than silently resetting. The existing
 [Indexer storage contract](../../../../docs/design/server/indexer/04.storage.md)
 owns recovery and replay invariants.
 
-Exact GET/HEAD `/health` requests bypass the general application limiter without
-consuming its budget; remaining middleware, other paths/methods, and authentication
-limits retain their existing behavior. HTTP and TCP probes report listener
-availability, not dependency/replay/consumer readiness. A TCP probe can briefly
-pass while startup validation or replay is pending.
+Exact GET/HEAD `/health` and `/ready` requests bypass application budgets.
+HTTP readiness and standard gRPC role probes now report actual enabled-role
+readiness; separate liveness probes retain process availability. The
+managed-runtime decision owns admission freshness, role aggregation and held-role
+semantics. These probes do not replace authenticated indexed-query acceptance.
 
-Manager returns synchronous local Puller/Indexer startup errors and rejects
+Manager returns synchronous startup and terminal asynchronous errors and rejects
 startup before bootstrap readiness. The CLI owner cancels work and invokes
 shutdown before exiting nonzero. Normal Kubernetes containers restart and
 revalidate persistent state when dependencies become available. Invalid state
@@ -97,14 +103,14 @@ its canceled owner under the startup mutex before initializing listeners, so lat
 background startup cannot reopen sockets after owned cleanup.
 
 Real normal-runtime indexed-query acceptance is required before resuming writers.
-API rule caches remain local to each process. Distributed Trigger composition
-currently uses a MEMORY JetStream stream and the durable consumer `consumer`; pending tasks do not survive NATS
-restart merely because NATS has a volume. Standalone pubsub is also in-memory.
-The templates preserve these runtime limits without claiming new coordination
-or durability guarantees.
+API rule caches remain local to each process. Distributed Trigger configuration
+now declares a complete broker policy, including storage and retention. The
+managed-runtime decision replaces runtime upsert with managed attach/verify and
+operator create-missing/refetch/verify. Standalone pubsub remains in-memory;
+replica configuration does not add fleet coordination.
 
 The server CI gate includes Go build, race/coverage, container build/hardened help
-smoke, and normal/bootstrap rendering of both templates using the built CLI.
+smoke, and bootstrap/acceptance/full rendering of both templates using the built CLI.
 Shared Compose stacks remain repository-owned infrastructure; their obsolete
 commented root-image application template is removed. The
 [package-layout note](2026-10-09-package-layout.md) retains package/tooling ownership.
@@ -141,7 +147,7 @@ placement, or runtime readiness. Generated manifests contain credentials and
 remain operator-controlled artifacts outside Git and routine logs.
 
 Failed initial Puller/Indexer startup remains observable as a nonzero process
-exit and ordinary container restart. Probe success during startup cannot replace
+exit and ordinary container restart. Component readiness cannot replace
 the indexed-query acceptance step, and invalid persisted state remains an explicit
 maintenance failure. Template rendering failures preserve output integrity.
 Displayed diagnostics identify the failure stage while omitting template
@@ -149,11 +155,10 @@ expressions and runtime values; programmatic callers can classify the retained
 raw cause through the error chain.
 
 Operators select instance-private MongoDB and PostgreSQL databases. Distributed
-connections must use an instance-dedicated NATS server or account with JetStream:
-generated configurations retain the runtime-default `TRIGGERS` stream/subject
-prefix and durable consumer `consumer`. Namespace and resource-prefix values
-rename Kubernetes resources without creating broker or source-data tenancy
-isolation.
+connections use JetStream with an explicit broker binding. Distinct stream/subject
+and durable names permit shared-account routing separation; common credentials
+retain account-wide authority. Kubernetes namespace and prefix values rename
+resources without assigning source-database authority.
 
 Ordinary replacement preserves stateful claims and shared signing material.
 Deleting runtime volumes or the signing-key Secret is destructive. Initial
@@ -165,5 +170,10 @@ The templates expose ClusterIP application/internal service access. Public TLS
 ingress, source-database backups/lifecycle, sharding, rule distribution, and trigger
 durability remain outside the delivered deployment guarantees. Configurable
 replicas do not establish those mechanisms. Console-managed full-instance
-provisioning and fleet operations remain owned by the
+provisioning is planned in the
+[Console instance-lifecycle proposal](../../proposed/architecture/2026-10-12-console-instance-lifecycle.md),
+which owns future backend allocation, durable lifecycle authority, matched-package
+selection/execution and product acceptance. The runtime prerequisite supports
+shared broker namespaces but does not create Console instance records or allocate
+backend accounts. Employee fleet operations and project Identity retain the
 [platform-boundary proposal](../../proposed/architecture/2026-10-10-platform-console-instance-boundaries.md).

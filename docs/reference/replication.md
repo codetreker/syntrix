@@ -355,7 +355,11 @@ records source projection, identity checking, and their guarantees.
 | 普通 `/realtime/ws` 与 `/realtime/sse` | 保留普通 realtime 订阅与事件协议 |
 | `mode=replica-data` | 注册查询源，以有限 read 请求取得真实 typed Query/Pull 页；不接收普通事件协议消息 |
 
-Upgrade 前校验模式与现有 Origin 规则；token 不得放在 URL。连接随后以 auth 帧
+Upgrade uses the shared [browser Origin policy](api.md#browser-origins): exact
+scheme/host/effective port, with null, malformed and repeated Origins rejected.
+An absent Origin is permitted without Authorization; explicit operator development
+allowances are forbidden in managed runtime. Tokens must not appear in URLs.
+连接随后以 auth 帧
 提供 token、原配置 database namespace 和相同模式标记。数据库必须有效，调用者
 须为 owner 或具有匹配 ID/slug 的 `db_admin` grant。权限判断先于绑定 ID 比较，
 管理存储失败不降级为缓存结果。

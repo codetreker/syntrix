@@ -15,6 +15,7 @@ type broker struct {
 	mu            sync.RWMutex
 	subscriptions map[string]*subscription
 	closed        atomic.Bool
+	done          chan struct{}
 }
 
 // subscription represents a single consumer's subscription.
@@ -29,6 +30,7 @@ type subscription struct {
 func newBroker(engine *Engine) *broker {
 	return &broker{
 		engine:        engine,
+		done:          make(chan struct{}),
 		subscriptions: make(map[string]*subscription),
 	}
 }
@@ -57,6 +59,8 @@ func (b *broker) publish(ctx context.Context, subject string, data []byte) error
 			case sub.msgCh <- msg:
 			case <-ctx.Done():
 				return ctx.Err()
+			case <-b.done:
+				return ErrEngineClosed
 			case <-sub.ctx.Done():
 				// Subscription cancelled, skip
 			}
@@ -74,6 +78,12 @@ func (b *broker) subscribe(ctx context.Context, pattern string, bufSize int) (<-
 
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if b.closed.Load() {
+		return nil, nil, ErrEngineClosed
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, nil, err
+	}
 
 	if b.subscriptions[pattern] != nil {
 		return nil, nil, ErrPatternSubscribed
@@ -109,6 +119,7 @@ func (b *broker) close() error {
 		return nil // Already closed
 	}
 
+	close(b.done)
 	b.mu.Lock()
 	defer b.mu.Unlock()
 

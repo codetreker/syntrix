@@ -1,7 +1,7 @@
 package config
 
 import (
-	"log"
+	"github.com/codetreker/syntrix/internal/core/origin"
 	"os"
 	"path/filepath"
 
@@ -10,6 +10,7 @@ import (
 	api "github.com/codetreker/syntrix/internal/gateway/config"
 	identity "github.com/codetreker/syntrix/internal/identity/config"
 	indexer "github.com/codetreker/syntrix/internal/indexer/config"
+	initialization "github.com/codetreker/syntrix/internal/initialization/config"
 	puller "github.com/codetreker/syntrix/internal/puller/config"
 	query "github.com/codetreker/syntrix/internal/query/config"
 	server "github.com/codetreker/syntrix/internal/server"
@@ -21,9 +22,11 @@ import (
 
 // Config holds the application configuration
 type Config struct {
-	Deployment services.DeploymentConfig `yaml:"deployment"`
-	Server     server.Config             `yaml:"server"`
-	Logging    LoggingConfig             `yaml:"logging"`
+	Deployment     services.DeploymentConfig `yaml:"deployment"`
+	Services       services.Config           `yaml:"services"`
+	Initialization initialization.Config     `yaml:"initialization"`
+	Server         server.Config             `yaml:"server"`
+	Logging        LoggingConfig             `yaml:"logging"`
 
 	// Services
 	Query    query.Config      `yaml:"query"`
@@ -63,6 +66,14 @@ func LoadConfig() *Config {
 // If configDir is empty, it checks SYNTRIX_CONFIG_DIR env var, then falls back to "configs".
 // Order: defaults -> config.yml -> config.local.yml -> ApplyEnvOverrides -> ResolvePaths -> Validate
 func LoadConfigFrom(configDir string) *Config {
+	cfg, err := ReadConfigFrom(configDir)
+	if err != nil {
+		panic(err)
+	}
+	return cfg
+}
+
+func ReadConfigFrom(configDir string) (*Config, error) {
 	// Determine config directory: parameter > env var > default
 	if configDir == "" {
 		configDir = os.Getenv("SYNTRIX_CONFIG_DIR")
@@ -72,28 +83,22 @@ func LoadConfigFrom(configDir string) *Config {
 	}
 
 	// 1. Start with default values (so YAML can override them, including bool fields)
-	cfg := &Config{
-		Storage:    storage.DefaultConfig(),
-		Identity:   identity.DefaultConfig(),
-		Server:     server.DefaultConfig(),
-		Logging:    DefaultLoggingConfig(),
-		Query:      query.DefaultConfig(),
-		Gateway:    api.DefaultGatewayConfig(),
-		Trigger:    trigger.DefaultConfig(),
-		Deployment: services.DefaultDeploymentConfig(),
-		Puller:     puller.DefaultConfig(),
-		Streamer:   streamer.DefaultConfig(),
-		Indexer:    indexer.DefaultConfig(),
-		Database:   database.DefaultConfig(),
-		DataDir:    DefaultDataDir,
-		ConfigDir:  configDir,
+	cfg := DefaultConfig()
+	cfg.ConfigDir = configDir
+
+	if configFileExists(filepath.Join(configDir, "config.yml")) || configFileExists(filepath.Join(configDir, "config.local.yml")) {
+		cfg.Trigger.PrepareForLoad()
 	}
 
 	// 2. Load config.yml (overrides defaults)
-	loadFile(filepath.Join(configDir, "config.yml"), cfg)
+	if err := loadFile(filepath.Join(configDir, "config.yml"), cfg); err != nil {
+		return nil, err
+	}
 
 	// 3. Load config.local.yml (overrides config.yml)
-	loadFile(filepath.Join(configDir, "config.local.yml"), cfg)
+	if err := loadFile(filepath.Join(configDir, "config.local.yml"), cfg); err != nil {
+		return nil, err
+	}
 
 	// 4. Apply data_dir from environment variable if set
 	if val := os.Getenv("SYNTRIX_DATA_DIR"); val != "" {
@@ -106,11 +111,13 @@ func LoadConfigFrom(configDir string) *Config {
 	cfg.Deployment.ApplyEnvOverrides()
 	cfg.Deployment.ResolvePaths(configDir, cfg.DataDir)
 	if err := cfg.Deployment.Validate(cfg.Deployment.Mode); err != nil {
-		log.Fatalf("Configuration error: %v", err)
+		return nil, &LoadError{Phase: "validation", Cause: err}
 	}
 
 	// Apply other configs with the now-known deployment mode
 	if err := ApplyServiceConfigs(configDir, cfg.DataDir, cfg.Deployment.Mode,
+		&cfg.Services,
+		&cfg.Initialization,
 		&cfg.Server,
 		&cfg.Logging,
 		&cfg.Query,
@@ -122,23 +129,62 @@ func LoadConfigFrom(configDir string) *Config {
 		&cfg.Storage,
 		&cfg.Identity,
 	); err != nil {
-		log.Fatalf("Configuration error: %v", err)
+		return nil, &LoadError{Phase: "validation", Cause: err}
 	}
 
-	return cfg
+	if err := services.ValidateOrigins(cfg.Initialization.Mode == initialization.Managed, cfg.Server.EnableCORS,
+		origin.Policy{AllowedOrigins: cfg.Server.AllowedOrigins, AllowDevelopment: cfg.Server.AllowDevOrigin},
+		origin.Policy{AllowedOrigins: cfg.Gateway.Realtime.AllowedOrigins, AllowDevelopment: cfg.Gateway.Realtime.AllowDevOrigin}); err != nil {
+		return nil, &LoadError{Phase: "validation", Cause: err}
+	}
+	return cfg, nil
 }
 
-func loadFile(filename string, cfg *Config) {
+type LoadError struct {
+	Phase string
+	Cause error
+}
+
+func (e *LoadError) Error() string { return "configuration " + e.Phase + " failed" }
+func (e *LoadError) Unwrap() error { return e.Cause }
+
+func loadFile(filename string, cfg *Config) error {
 	data, err := os.ReadFile(filename)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return // File doesn't exist, skip
+			return nil
 		}
-		log.Printf("Warning: Error reading %s: %v", filename, err)
-		return
+		return &LoadError{Phase: "read", Cause: err}
+	}
+	if err := yaml.Unmarshal(data, cfg); err != nil {
+		return &LoadError{Phase: "decode", Cause: err}
+	}
+	return nil
+}
+
+func DefaultConfig() *Config {
+	return &Config{
+		Storage:        storage.DefaultConfig(),
+		Services:       services.DefaultConfig(),
+		Initialization: initialization.DefaultConfig(),
+		Identity:       identity.DefaultConfig(),
+		Server:         server.DefaultConfig(),
+		Logging:        DefaultLoggingConfig(),
+		Query:          query.DefaultConfig(),
+		Gateway:        api.DefaultGatewayConfig(),
+		Trigger:        trigger.DefaultConfig(),
+		Deployment:     services.DefaultDeploymentConfig(),
+		Puller:         puller.DefaultConfig(),
+		Streamer:       streamer.DefaultConfig(),
+		Indexer:        indexer.DefaultConfig(),
+		Database:       database.DefaultConfig(),
+		DataDir:        DefaultDataDir,
+		ConfigDir:      DefaultConfigDir,
 	}
 
-	if err := yaml.Unmarshal(data, cfg); err != nil {
-		log.Printf("Warning: Error parsing %s: %v", filename, err)
-	}
+}
+
+func configFileExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
 }

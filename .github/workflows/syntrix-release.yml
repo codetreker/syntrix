@@ -59,7 +59,7 @@ jobs:
       - name: Run Go tests without race detection
         run: make -C packages/syntrix test
 
-      - name: Build Linux deployment CLIs
+      - name: Build Linux deployment CLIs with the release version and source identity
         run: .github/workflows/scripts/release_syntrix.sh build-cli
 
       - name: Build both image platforms before creating the Git tag
@@ -96,7 +96,7 @@ jobs:
       - name: Push the image and require anonymous pull access
         run: .github/workflows/scripts/release_syntrix.sh push-image
 
-      - name: Package deployment files, CLIs, and build metadata
+      - name: Verify the managed contract and package deployment files, CLIs, and metadata
         run: .github/workflows/scripts/release_syntrix.sh bundle
 
       - name: Upload the archive and publish the GitHub Release

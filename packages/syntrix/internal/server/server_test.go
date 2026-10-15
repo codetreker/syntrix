@@ -4,6 +4,7 @@ import (
 	"context"
 	"net"
 	"net/http"
+	"sync"
 	"testing"
 	"time"
 
@@ -187,6 +188,7 @@ func TestServer_Stop_ContextTimeout(t *testing.T) {
 		entered:  make(chan struct{}),
 		finished: make(chan error, 1),
 	}
+	srv.grpcServer = grpc.NewServer()
 	healthpb.RegisterHealthServer(srv.grpcServer, health)
 	listener := bufconn.Listen(1024 * 1024)
 	t.Cleanup(func() { _ = listener.Close() })
@@ -224,7 +226,7 @@ func TestServer_Stop_ContextTimeout(t *testing.T) {
 	go func() { stopDone <- srv.Stop(stopCtx) }()
 	select {
 	case err := <-stopDone:
-		require.NoError(t, err)
+		require.ErrorIs(t, err, context.Canceled)
 	case <-watchdog.Done():
 		t.Fatal("Stop did not interrupt the active RPC")
 	}
@@ -281,4 +283,143 @@ func TestServer_AuthRateLimiter(t *testing.T) {
 		limiter := srv.AuthRateLimiter()
 		assert.NotNil(t, limiter)
 	})
+}
+
+func TestStandardHealthStartsUnreadyAndPublishesRoleStatus(t *testing.T) {
+	service := New(DefaultConfig(), nil).(*serverImpl)
+	ctx := context.Background()
+	observed, err := service.healthServer.Check(ctx, &healthpb.HealthCheckRequest{})
+	require.NoError(t, err)
+	require.Equal(t, healthpb.HealthCheckResponse_NOT_SERVING, observed.Status)
+	observed, err = service.healthServer.Check(ctx, &healthpb.HealthCheckRequest{Service: "syntrix.liveness"})
+	require.NoError(t, err)
+	require.Equal(t, healthpb.HealthCheckResponse_SERVING, observed.Status)
+	for _, ready := range []bool{true, false} {
+		service.SetServingStatus("syntrix.puller", ready)
+		observed, err = service.healthServer.Check(ctx, &healthpb.HealthCheckRequest{Service: "syntrix.puller"})
+		require.NoError(t, err)
+		expected := healthpb.HealthCheckResponse_NOT_SERVING
+		if ready {
+			expected = healthpb.HealthCheckResponse_SERVING
+		}
+		require.Equal(t, expected, observed.Status)
+	}
+	require.NoError(t, service.Stop(ctx))
+}
+
+type heldHealthServer struct {
+	healthpb.UnimplementedHealthServer
+	entered, cancelled chan struct{}
+	release            <-chan struct{}
+}
+
+func (s *heldHealthServer) Check(ctx context.Context, _ *healthpb.HealthCheckRequest) (*healthpb.HealthCheckResponse, error) {
+	close(s.entered)
+	<-ctx.Done()
+	close(s.cancelled)
+	<-s.release
+	return nil, status.FromContextError(ctx.Err()).Err()
+}
+
+func TestForcedStopRetainsHandlerSettlementAcrossRetries(t *testing.T) {
+	srv := New(DefaultConfig(), nil).(*serverImpl)
+	srv.grpcServer = grpc.NewServer()
+	release := make(chan struct{})
+	var once sync.Once
+	unblock := func() { once.Do(func() { close(release) }) }
+	t.Cleanup(func() {
+		unblock()
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		require.NoError(t, srv.Stop(ctx))
+	})
+	handler := &heldHealthServer{entered: make(chan struct{}), cancelled: make(chan struct{}), release: release}
+	healthpb.RegisterHealthServer(srv.grpcServer, handler)
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	go func() { _ = srv.grpcServer.Serve(listener) }()
+	conn, err := grpc.NewClient(listener.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = conn.Close() })
+	request, requestCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer requestCancel()
+	callDone := make(chan error, 1)
+	go func() {
+		_, err := healthpb.NewHealthClient(conn).Check(request, &healthpb.HealthCheckRequest{})
+		callDone <- err
+	}()
+	select {
+	case <-handler.entered:
+	case <-request.Done():
+		t.Fatal("RPC handler never started")
+	}
+	stopCtx, stopCancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer stopCancel()
+	firstResult := make(chan error, 1)
+	go func() { firstResult <- srv.Stop(stopCtx) }()
+	select {
+	case err := <-firstResult:
+		require.ErrorIs(t, err, context.DeadlineExceeded)
+	case <-time.After(time.Second):
+		unblock()
+		t.Fatal("forced stop exceeded its deadline")
+	}
+	graceful, forced := srv.grpcStopDone, srv.grpcForceDone
+	require.NotNil(t, graceful)
+	require.NotNil(t, forced)
+	select {
+	case <-graceful:
+		t.Fatal("held RPC was falsely reported as settled")
+	default:
+	}
+	retryCtx, retryCancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	require.ErrorIs(t, srv.Stop(retryCtx), context.DeadlineExceeded)
+	retryCancel()
+	require.Equal(t, graceful, srv.grpcStopDone)
+	require.Equal(t, forced, srv.grpcForceDone)
+	unblock()
+	settle, settleCancel := context.WithTimeout(context.Background(), time.Second)
+	defer settleCancel()
+	require.NoError(t, srv.Stop(settle))
+	select {
+	case <-callDone:
+	case <-settle.Done():
+		t.Fatal("forced RPC did not finish")
+	}
+}
+
+func TestShutdownRequiresForcedSDKStopSettlementAfterGracefulCompletion(t *testing.T) {
+	srv := New(DefaultConfig(), nil).(*serverImpl)
+	graceful := make(chan struct{})
+	close(graceful)
+	forced := make(chan struct{})
+	var forcedOnce sync.Once
+	settleForced := func() { forcedOnce.Do(func() { close(forced) }) }
+	srv.grpcStopDone = graceful
+	srv.grpcForceDone = forced
+	t.Cleanup(func() { settleForced(); srv.grpcServer.Stop() })
+	timeout, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	err := srv.Stop(timeout)
+	cancel()
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	require.ErrorContains(t, err, "grpc forced stop did not settle")
+	retryCtx, retryCancel := context.WithTimeout(context.Background(), time.Second)
+	defer retryCancel()
+	result := make(chan error, 1)
+	go func() { result <- srv.Stop(retryCtx) }()
+	select {
+	case err := <-result:
+		t.Fatalf("shutdown returned before forced stop settled: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+	settleForced()
+	select {
+	case err := <-result:
+		require.NoError(t, err)
+	case <-retryCtx.Done():
+		t.Fatal("shutdown retry did not observe settlement")
+	}
+	require.Equal(t, graceful, srv.grpcStopDone)
+	require.Equal(t, forced, srv.grpcForceDone)
+	require.NoError(t, srv.Stop(context.Background()))
 }

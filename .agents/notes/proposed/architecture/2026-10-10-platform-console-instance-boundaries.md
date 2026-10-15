@@ -24,14 +24,19 @@ does not complete resource-administration or full-instance provisioning. The
 [instance deployment decision](../../implemented/architecture/2026-10-12-instance-container-kubernetes.md)
 supplies standalone/distributed service templates and values-driven manifest
 generation against existing backends without implementing Console-owned instance
-lifecycle.
+lifecycle. The [managed-instance design](../../../../docs/design/server/console/03.instance_lifecycle.md)
+owns the planned Console allocation/lifecycle contracts and five-PR task
+sequence. Its [lifecycle proposal](2026-10-12-console-instance-lifecycle.md) owns
+shared-infrastructure allocation and reconciliation rationale; this note retains
+ownership of the user domains and hierarchy.
 
 - The Management platform serves Syntrix employees and owns whole-platform
   scheduling, resource operations, monitoring, and administration.
 - The Console service serves developers. Each developer creates and manages
   one or more Syntrix instances through Console.
 - A Syntrix instance serves application end users and contains Syntrix services,
-  MongoDB, and a private system PostgreSQL database.
+  a private physical MongoDB database, and a private system PostgreSQL database.
+  Private databases and scoped credentials may use shared database servers.
 
 Every instance owns its projects. Each project owns an isolated identity realm
 and may use multiple logical Syntrix databases. Instance Identity is a peer
@@ -67,7 +72,14 @@ Instance PostgreSQL stores projects, application users, credentials, OAuth/OIDC
 state, sessions, and logical-database configuration and metadata. Syntrix
 databases are the developer-facing logical document product; MongoDB holds
 their business documents. System records are reached through authorized system
-operations, not application document APIs.
+operations, not application document APIs. Database privacy is a namespace and
+privilege boundary, not a requirement for a dedicated database server. The
+managed-instance design plans a physical MongoDB database and scoped user plus
+a PostgreSQL database and scoped role for each instance on registered shared
+servers. It permits a shared NATS account using per-instance stream, subject,
+and consumer names; workers of one instance share its durable consumer.
+Current operator templates retain fixed trigger names and require an isolated
+NATS server or account until the planned runtime contract changes are delivered.
 
 Management and Console have their own platform/developer account and inventory
 ownership. Console uses independent PostgreSQL source data, while the Management
@@ -137,12 +149,22 @@ keys despite the verifier object's public-only ownership. Project/session/OAuth
 work must adopt those boundaries without reintroducing signing access into
 verification-only consumers.
 
-Full Syntrix provisioning, whole-instance deletion coordination, public issuer
-configuration, token revocation deadlines, Management storage, and inter-service
-authorization require further design. Console's persisted intent/UID-checked
-Kubernetes test-workload lifecycle does not establish these full-instance
-contracts. These open mechanisms do not change the
-accepted actor, ownership, project, or database boundaries.
+Managed instance allocation, lifecycle/deletion coordination, bootstrap, and
+revisioned configuration are planned in the managed-instance design. Console
+PostgreSQL will own administrator resource configuration, profiles, bindings,
+phases, receipts, encrypted secrets, and accepted release/package identities.
+New instances will select the latest complete successfully published runtime
+package and use its matching CLI/templates with one fixed image version tag
+across initialization and normal activation; retries and ordinary restart preserve
+that selection. Published version tags must not be overwritten. Metadata digests
+remain recorded for verification/diagnostics rather than appended to Pod image references. Runtime database credentials are scoped
+to one instance; shared NATS credentials retain their actual account-wide scope.
+Database/NATS server Pods and employee Management execution are
+outside that work. Public issuer configuration, token revocation deadlines,
+Management storage, and inter-service authorization still require separate
+design. Console's delivered persisted intent/UID-checked Kubernetes
+test-workload lifecycle does not establish these managed-instance contracts.
+These open mechanisms do not change the accepted actor, ownership, project, or database boundaries.
 
 The [reference-alignment proposal](../process/2026-09-07-reference-contract-alignment.md)
 owns executable API/SDK documentation consistency. It must preserve the

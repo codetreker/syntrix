@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/codetreker/syntrix/internal/puller/cursor"
 	"github.com/codetreker/syntrix/internal/puller/events"
@@ -12,6 +13,65 @@ import (
 
 // ErrCaptureUnavailable denotes capture that may resume without rebuilding history.
 var ErrCaptureUnavailable = errors.New("source capture temporarily unavailable")
+
+func (p *Puller) TerminalError() error {
+	for name, b := range p.backends {
+		b.captureMu.Lock()
+		err := b.captureError
+		b.captureMu.Unlock()
+		if err != nil && !errors.Is(err, ErrCaptureUnavailable) && !errors.Is(err, context.Canceled) {
+			return fmt.Errorf("backend %q capture: %w", name, err)
+		}
+	}
+	return nil
+}
+
+// Readiness requires the native idle barrier and a durable usable source buffer.
+func (p *Puller) Readiness(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := p.lifetime.Err(); err != nil {
+		return err
+	}
+	if len(p.backends) == 0 {
+		return fmt.Errorf("%w: no capture backends configured", ErrCaptureUnavailable)
+	}
+	checkCapture := func(name string, b *Backend) error {
+		active, captureErr, _ := b.captureState()
+		if !active {
+			if captureErr != nil {
+				return fmt.Errorf("backend %q: %w", name, captureErr)
+			}
+			return fmt.Errorf("%w: backend %q not admitted", ErrCaptureUnavailable, name)
+		}
+		return nil
+	}
+	for name, b := range p.backends {
+		if err := checkCapture(name, b); err != nil {
+			return err
+		}
+		token, err := b.buffer.LoadCheckpoint()
+		if err != nil {
+			return fmt.Errorf("backend %q checkpoint: %w", name, err)
+		}
+		if len(token) == 0 {
+			return fmt.Errorf("%w: backend %q missing checkpoint", ErrCaptureUnavailable, name)
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := p.lifetime.Err(); err != nil {
+		return err
+	}
+	for name, b := range p.backends {
+		if err := checkCapture(name, b); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
 func (b *Backend) setCaptureState(active bool, err error) {
 	b.captureMu.Lock()
@@ -23,14 +83,31 @@ func (b *Backend) setCaptureState(active bool, err error) {
 	b.captureChanged = make(chan struct{})
 }
 
+func (b *Backend) recordCaptureResponse(at time.Time) {
+	b.captureMu.Lock()
+	defer b.captureMu.Unlock()
+	b.captureResponse = at
+}
+
+func (b *Backend) captureState() (bool, error, <-chan struct{}) {
+	b.captureMu.Lock()
+	defer b.captureMu.Unlock()
+	if b.captureChanged == nil {
+		b.captureChanged = make(chan struct{})
+	}
+	active, err := b.captureActive, b.captureError
+	if active && time.Since(b.captureResponse) >= events.AdmissionFreshness {
+		active, err = false, ErrCaptureUnavailable
+	}
+	return active, err, b.captureChanged
+}
+
 func (b *Backend) waitCapture(ctx context.Context) error {
 	for {
-		b.captureMu.Lock()
-		if b.captureChanged == nil {
-			b.captureChanged = make(chan struct{})
+		if err := ctx.Err(); err != nil {
+			return err
 		}
-		active, err, changed := b.captureActive, b.captureError, b.captureChanged
-		b.captureMu.Unlock()
+		active, err, changed := b.captureState()
 		if active {
 			return nil
 		}
@@ -140,5 +217,5 @@ func (p *Puller) ReplayBoundary(ctx context.Context, after string, coalesce bool
 	if err != nil {
 		return nil, err
 	}
-	return p.replay(ctx, pm.Positions, pm.Lineages, nil, coalesce)
+	return p.replay(ctx, pm.Positions, pm.Lineages, nil, coalesce, false)
 }

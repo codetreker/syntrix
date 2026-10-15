@@ -48,6 +48,7 @@ func TestServer_HandleWS_TableDriven(t *testing.T) {
 	// Start Hub
 	ctxHub, cancelHub := context.WithCancel(context.Background())
 	t.Cleanup(cancelHub)
+	server.hub.setRunCtx(ctxHub)
 	go server.hub.Run(ctxHub)
 
 	tests := []struct {
@@ -102,6 +103,7 @@ func TestServer_HandleSSE_TableDriven(t *testing.T) {
 	// Start Hub
 	ctxHub, cancelHub := context.WithCancel(context.Background())
 	t.Cleanup(cancelHub)
+	server.hub.setRunCtx(ctxHub)
 	go server.hub.Run(ctxHub)
 
 	tests := []struct {

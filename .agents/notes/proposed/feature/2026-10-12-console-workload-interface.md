@@ -13,8 +13,14 @@ to manage these existing resources.
 
 ## Proposal
 
-Add browser resource pages for the existing API rather than expanding the
-deployment model. List/detail queries remain scoped to the authenticated
+Add browser resource pages for the existing HTTP test-workload API. This note
+owns that interface and its current deployment model. The
+[instance lifecycle proposal](../architecture/2026-10-12-console-instance-lifecycle.md)
+and its [design](../../../../docs/design/server/console/03.instance_lifecycle.md)
+own the separate full-instance interface, including source allocation,
+configuration, resize, and start/stop/restart. Test-workload API resources do not
+become full instances, and completing either interface does not deliver the other.
+List/detail queries remain scoped to the authenticated
 developer, and account changes cancel private requests and clear account-owned
 page state. Do not substitute instance-user credentials or client-side menu
 visibility for Console backend ownership.
@@ -57,6 +63,8 @@ It remains the supported way to use workloads until this proposal is delivered.
 Adding these pages requires auth-scoped data state, idempotency handling,
 observation feedback, and polling cleanup. The current shell separates session
 authority from page data so they can be added without replacing login/restoration.
-The [platform proposal](../architecture/2026-10-10-platform-console-instance-boundaries.md)
-continues to own full instance/project administration; this note owns only the
-missing browser interface for the implemented test-workload API.
+The [instance lifecycle proposal](../architecture/2026-10-12-console-instance-lifecycle.md)
+owns full-instance browser lifecycle and resource administration. The
+[platform proposal](../architecture/2026-10-10-platform-console-instance-boundaries.md)
+retains project Identity and employee Management targets. This note owns only
+the missing browser interface for the implemented HTTP test-workload API.
